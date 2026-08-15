@@ -42,7 +42,7 @@ claim(region, object) is either present or absent
   browser, and immutable shared owners.
 - `internal/runtime/memory` owns typed heap payloads in explicit regions and
   slots. Synthetic Cells exercise indexed mutation; native Strings, Objects,
-  and sparse Arrays are the first concrete payloads.
+  sparse Arrays, and lexical Contexts are the first concrete payloads.
 - Freed slots advance their generation and exhausted generations are retired,
   so a stale Ref cannot become valid again.
 - Every mutable physical region has exactly one owner. Published regions are

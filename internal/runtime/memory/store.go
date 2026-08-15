@@ -24,6 +24,11 @@ var (
 	ErrTypeMismatch         = errors.New("memory: heap object type mismatch")
 	ErrInvalidField         = errors.New("memory: invalid field")
 	ErrInvalidIndex         = errors.New("memory: invalid array index")
+	ErrBindingExists        = errors.New("memory: binding already exists")
+	ErrBindingNotFound      = errors.New("memory: binding not found")
+	ErrBindingUninitialized = errors.New("memory: binding is uninitialized")
+	ErrImmutableBinding     = errors.New("memory: binding is immutable")
+	ErrContextCycle         = errors.New("memory: context parent cycle")
 	ErrObjectReferenced     = errors.New("memory: heap object still has incoming references")
 	ErrCellReferenced       = ErrObjectReferenced
 	ErrRegionReferenced     = errors.New("memory: region still has incoming references")
@@ -41,6 +46,7 @@ type Stats struct {
 	LiveStrings        uint64
 	LiveObjects        uint64
 	LiveArrays         uint64
+	LiveContexts       uint64
 	LiveBytes          uint64
 	LiveRegions        uint64
 	BulkRegionReleases uint64
@@ -65,6 +71,8 @@ func (kind HeapKind) String() string {
 		return "Object"
 	case HeapArray:
 		return "Array"
+	case HeapContext:
+		return "Context"
 	default:
 		return fmt.Sprintf("HeapKind(%d)", kind)
 	}
@@ -194,7 +202,7 @@ func (store *Store) allocLocked(owner ownership.OwnerID, regionID RegionID, inte
 }
 
 func (store *Store) allocKindLocked(owner ownership.OwnerID, regionID RegionID, kind HeapKind, internal bool) (Ref, error) {
-	if kind < HeapCell || kind > HeapArray {
+	if kind < HeapCell || kind > HeapContext {
 		return Ref{}, fmt.Errorf("%w: heap kind %d", ErrTypeMismatch, kind)
 	}
 	region, err := store.mutableRegionLocked(owner, regionID, internal)
@@ -212,8 +220,7 @@ func (store *Store) allocKindLocked(owner ownership.OwnerID, regionID RegionID, 
 		slot := &region.Slots[index]
 		slot.Occupied = true
 		slot.object = object
-		clearSlotPayload(slot)
-		slot.Kind = kind
+		initializeSlotPayload(slot, kind)
 	} else {
 		if uint64(len(region.Slots)) > math.MaxUint32 {
 			_ = store.ledger.Release(object, owner)
@@ -221,6 +228,7 @@ func (store *Store) allocKindLocked(owner ownership.OwnerID, regionID RegionID, 
 		}
 		index = uint32(len(region.Slots))
 		region.Slots = append(region.Slots, Slot{Generation: 1, Kind: kind, Occupied: true, object: object})
+		initializeSlotPayload(&region.Slots[index], kind)
 	}
 	store.stats.Allocations++
 	store.stats.LiveSlots++
@@ -379,7 +387,11 @@ func (store *Store) Free(owner ownership.OwnerID, ref Ref) error {
 	}
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
-	region, slot, err := store.writeSlotLocked(owner, ref, false)
+	return store.freeLocked(owner, ref, false)
+}
+
+func (store *Store) freeLocked(owner ownership.OwnerID, ref Ref, internal bool) error {
+	region, slot, err := store.writeSlotLocked(owner, ref, internal)
 	if err != nil {
 		return err
 	}
@@ -618,6 +630,8 @@ func (store *Store) recordKindAllocationLocked(kind HeapKind, bytes uint64) {
 		store.stats.LiveObjects++
 	case HeapArray:
 		store.stats.LiveArrays++
+	case HeapContext:
+		store.stats.LiveContexts++
 	}
 	store.stats.LiveBytes += bytes
 }
@@ -636,6 +650,8 @@ func (store *Store) recordKindFreeLocked(slot *Slot) {
 		store.stats.LiveObjects--
 	case HeapArray:
 		store.stats.LiveArrays--
+	case HeapContext:
+		store.stats.LiveContexts--
 	}
 }
 
@@ -1146,6 +1162,24 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 				if err := store.setArrayElementLocked(to, copyRef, element.Index, remapValue(element.Value, mapping), true); err != nil {
 					_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
 					return nil, err
+				}
+			}
+		case HeapContext:
+			if err := store.setContextParentLocked(to, copyRef, remapValue(sourceSlot.Context.Parent, mapping), true); err != nil {
+				_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
+				return nil, err
+			}
+			for _, binding := range sourceSlot.Context.Bindings {
+				name := mapping[binding.Name]
+				if err := store.declareBindingLocked(to, copyRef, name, binding.Mutable, true); err != nil {
+					_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
+					return nil, err
+				}
+				if binding.Initialized {
+					if err := store.initializeBindingLocked(to, copyRef, name, remapValue(binding.Value, mapping), true); err != nil {
+						_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
+						return nil, err
+					}
 				}
 			}
 		default:

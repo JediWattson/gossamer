@@ -46,6 +46,18 @@ length, and shrinking length removes and unlinks every truncated element.
 Array element references use the ordinary counted barrier. Copy and Promote
 preserve holes, length, ordering, and shared aliases.
 
+### Context
+
+Native Contexts are lexical environments with a null-or-Context parent and
+insertion-ordered String-named bindings. Declaration and initialization are
+separate, so the temporal dead zone remains distinct from an initialized
+`undefined`. Bindings record mutability, and assignment updates the nearest
+binding in a cycle-checked parent chain.
+
+Parent, name, and initialized value references are counted edges. Copy and
+Promote preserve parent structure, binding order, initialization, mutability,
+and captured aliases.
+
 ## Deliberate boundaries
 
 These native payloads are not yet ECMAScript implementations. String

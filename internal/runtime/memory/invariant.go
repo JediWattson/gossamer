@@ -33,6 +33,7 @@ func (store *Store) CheckInvariants() error {
 	liveStrings := uint64(0)
 	liveObjects := uint64(0)
 	liveArrays := uint64(0)
+	liveContexts := uint64(0)
 	liveBytes := uint64(0)
 	liveRegions := uint64(0)
 	for owner, claim := range store.ownerClaims {
@@ -148,18 +149,18 @@ func (store *Store) CheckInvariants() error {
 			switch slot.Kind {
 			case HeapCell:
 				liveCells++
-				if slot.String.Text != "" || slot.Object.Prototype != (Value{}) || len(slot.Object.Properties) != 0 || slot.Array.Length != 0 || len(slot.Array.Elements) != 0 {
+				if slotHasOtherPayload(slot, HeapCell) {
 					return invariantError("Cell %s retains another typed payload", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
 				}
 			case HeapString:
 				liveStrings++
 				liveBytes += uint64(len(slot.String.Text))
-				if len(slot.Cell.Fields) != 0 || slot.Object.Prototype != (Value{}) || len(slot.Object.Properties) != 0 || slot.Array.Length != 0 || len(slot.Array.Elements) != 0 {
+				if slotHasOtherPayload(slot, HeapString) {
 					return invariantError("String %s retains another typed payload", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
 				}
 			case HeapObject:
 				liveObjects++
-				if len(slot.Cell.Fields) != 0 || slot.String.Text != "" || slot.Array.Length != 0 || len(slot.Array.Elements) != 0 {
+				if slotHasOtherPayload(slot, HeapObject) {
 					return invariantError("Object %s retains another typed payload", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
 				}
 				if slot.Object.Prototype.Kind() != ValueNull && !slot.Object.Prototype.IsRef() {
@@ -193,7 +194,7 @@ func (store *Store) CheckInvariants() error {
 				}
 			case HeapArray:
 				liveArrays++
-				if len(slot.Cell.Fields) != 0 || slot.String.Text != "" || slot.Object.Prototype != (Value{}) || len(slot.Object.Properties) != 0 {
+				if slotHasOtherPayload(slot, HeapArray) {
 					return invariantError("Array %s retains another typed payload", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
 				}
 				var previous uint32
@@ -205,6 +206,35 @@ func (store *Store) CheckInvariants() error {
 						return invariantError("Array %s elements are not strictly ordered at %d", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, elementIndex)
 					}
 					previous = element.Index
+				}
+			case HeapContext:
+				liveContexts++
+				if slotHasOtherPayload(slot, HeapContext) {
+					return invariantError("Context %s retains another typed payload", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
+				}
+				if slot.Context.Parent.Kind() != ValueNull && !slot.Context.Parent.IsRef() {
+					return invariantError("Context %s has invalid parent kind %d", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot.Context.Parent.Kind())
+				}
+				if err := store.checkContextChainLocked(Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}); err != nil {
+					return err
+				}
+				seenNames := make(map[string]struct{}, len(slot.Context.Bindings))
+				for bindingIndex, binding := range slot.Context.Bindings {
+					nameRegion := store.regions[binding.Name.Region]
+					if nameRegion == nil || nameRegion.State == RegionDestroyed || uint64(binding.Name.Slot) >= uint64(len(nameRegion.Slots)) {
+						return invariantError("Context %s binding %d has stale name %s", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, bindingIndex, binding.Name)
+					}
+					nameSlot := &nameRegion.Slots[binding.Name.Slot]
+					if !nameSlot.Occupied || nameSlot.Generation != binding.Name.Gen || nameSlot.Kind != HeapString {
+						return invariantError("Context %s binding %d has non-String name %s", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, bindingIndex, binding.Name)
+					}
+					if _, duplicate := seenNames[nameSlot.String.Text]; duplicate {
+						return invariantError("Context %s has duplicate binding %q", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, nameSlot.String.Text)
+					}
+					seenNames[nameSlot.String.Text] = struct{}{}
+					if !binding.Initialized && binding.Value != (Value{}) {
+						return invariantError("Context %s binding %q retains an uninitialized value", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, nameSlot.String.Text)
+					}
 				}
 			default:
 				return invariantError("R%d occupied slot %d has unknown heap kind %d", id, index, slot.Kind)
@@ -276,8 +306,8 @@ func (store *Store) CheckInvariants() error {
 			return invariantError("ledger object %d edges %v, want %v", object, snapshot.Edges, wantTargets)
 		}
 	}
-	if store.stats.LiveSlots != liveSlots || store.stats.LiveCells != liveCells || store.stats.LiveStrings != liveStrings || store.stats.LiveObjects != liveObjects || store.stats.LiveArrays != liveArrays || store.stats.LiveBytes != liveBytes || store.stats.LiveRegions != liveRegions {
-		return invariantError("stats slots/cells/strings/objects/arrays/bytes/regions = %d/%d/%d/%d/%d/%d/%d, derived %d/%d/%d/%d/%d/%d/%d", store.stats.LiveSlots, store.stats.LiveCells, store.stats.LiveStrings, store.stats.LiveObjects, store.stats.LiveArrays, store.stats.LiveBytes, store.stats.LiveRegions, liveSlots, liveCells, liveStrings, liveObjects, liveArrays, liveBytes, liveRegions)
+	if store.stats.LiveSlots != liveSlots || store.stats.LiveCells != liveCells || store.stats.LiveStrings != liveStrings || store.stats.LiveObjects != liveObjects || store.stats.LiveArrays != liveArrays || store.stats.LiveContexts != liveContexts || store.stats.LiveBytes != liveBytes || store.stats.LiveRegions != liveRegions {
+		return invariantError("stats slots/cells/strings/objects/arrays/contexts/bytes/regions = %d/%d/%d/%d/%d/%d/%d/%d, derived %d/%d/%d/%d/%d/%d/%d/%d", store.stats.LiveSlots, store.stats.LiveCells, store.stats.LiveStrings, store.stats.LiveObjects, store.stats.LiveArrays, store.stats.LiveContexts, store.stats.LiveBytes, store.stats.LiveRegions, liveSlots, liveCells, liveStrings, liveObjects, liveArrays, liveContexts, liveBytes, liveRegions)
 	}
 	if store.closed && (liveSlots != 0 || liveRegions != 0) {
 		return invariantError("closed store retains %d slots in %d regions", liveSlots, liveRegions)
@@ -339,4 +369,48 @@ func equalObjectIDs(left, right []ownership.ObjectID) bool {
 
 func invariantError(format string, arguments ...any) error {
 	return fmt.Errorf("%w: %s", ErrInvariantViolation, fmt.Sprintf(format, arguments...))
+}
+
+func slotHasOtherPayload(slot *Slot, kind HeapKind) bool {
+	if kind != HeapCell && len(slot.Cell.Fields) != 0 {
+		return true
+	}
+	if kind != HeapString && slot.String.Text != "" {
+		return true
+	}
+	if kind != HeapObject && (slot.Object.Prototype != (Value{}) || len(slot.Object.Properties) != 0) {
+		return true
+	}
+	if kind != HeapArray && (slot.Array.Length != 0 || len(slot.Array.Elements) != 0) {
+		return true
+	}
+	if kind != HeapContext && (slot.Context.Parent != (Value{}) || len(slot.Context.Bindings) != 0) {
+		return true
+	}
+	return false
+}
+
+func (store *Store) checkContextChainLocked(start Ref) error {
+	seen := make(map[Ref]struct{})
+	current := start
+	for {
+		if _, duplicate := seen[current]; duplicate {
+			return invariantError("Context %s has a parent cycle", start)
+		}
+		seen[current] = struct{}{}
+		_, slot, err := store.slotLocked(current)
+		if err != nil {
+			return invariantError("Context %s parent chain: %v", start, err)
+		}
+		if slot.Kind != HeapContext {
+			return invariantError("Context %s parent chain reaches %s", start, slot.Kind)
+		}
+		if slot.Context.Parent.Kind() == ValueNull {
+			return nil
+		}
+		if !slot.Context.Parent.IsRef() {
+			return invariantError("Context %s parent chain has kind %d", start, slot.Context.Parent.Kind())
+		}
+		current = slot.Context.Parent.Ref()
+	}
 }

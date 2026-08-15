@@ -32,6 +32,7 @@ const (
 	HeapString
 	HeapObject
 	HeapArray
+	HeapContext
 )
 
 // StringObject is the first real typed native-heap payload. Text is immutable;
@@ -48,6 +49,7 @@ type Slot struct {
 	String     StringObject
 	Object     Object
 	Array      Array
+	Context    Context
 	Occupied   bool
 
 	object ownership.ObjectID
@@ -81,6 +83,7 @@ func cloneSlot(slot Slot) Slot {
 		String:     cloneString(slot.String),
 		Object:     cloneObject(slot.Object),
 		Array:      cloneArray(slot.Array),
+		Context:    cloneContext(slot.Context),
 		Occupied:   slot.Occupied,
 	}
 }
@@ -107,11 +110,22 @@ func slotReferences(slot *Slot) []Value {
 		}
 		return values
 	}
+	if slot.Kind == HeapContext {
+		values := make([]Value, 0, 1+len(slot.Context.Bindings)*2)
+		values = append(values, slot.Context.Parent)
+		for _, binding := range slot.Context.Bindings {
+			values = append(values, RefValue(binding.Name))
+			if binding.Initialized {
+				values = append(values, binding.Value)
+			}
+		}
+		return values
+	}
 	return nil
 }
 
 func slotStorageEmpty(slot *Slot) bool {
-	return slot != nil && slot.Kind == HeapInvalid && len(slot.Cell.Fields) == 0 && slot.String.Text == "" && slot.Object.Prototype == (Value{}) && len(slot.Object.Properties) == 0 && slot.Array.Length == 0 && len(slot.Array.Elements) == 0
+	return slot != nil && slot.Kind == HeapInvalid && len(slot.Cell.Fields) == 0 && slot.String.Text == "" && slot.Object.Prototype == (Value{}) && len(slot.Object.Properties) == 0 && slot.Array.Length == 0 && len(slot.Array.Elements) == 0 && slot.Context.Parent == (Value{}) && len(slot.Context.Bindings) == 0
 }
 
 func clearSlotPayload(slot *Slot) {
@@ -120,6 +134,18 @@ func clearSlotPayload(slot *Slot) {
 	slot.String = StringObject{}
 	slot.Object = Object{}
 	slot.Array = Array{}
+	slot.Context = Context{}
+}
+
+func initializeSlotPayload(slot *Slot, kind HeapKind) {
+	clearSlotPayload(slot)
+	slot.Kind = kind
+	switch kind {
+	case HeapObject:
+		slot.Object.Prototype = NullValue()
+	case HeapContext:
+		slot.Context.Parent = NullValue()
+	}
 }
 
 func cloneRegion(region *Region) Region {

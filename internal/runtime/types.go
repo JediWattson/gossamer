@@ -162,6 +162,48 @@ func (context *TaskContext) SetArrayLength(array memory.Ref, length uint32) erro
 	return context.Realm.store.SetArrayLength(context.Owner, array, length)
 }
 
+func (context *TaskContext) NewContext(parent memory.Value) (memory.Ref, error) {
+	if context == nil || context.Realm == nil {
+		return memory.Ref{}, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.AllocContext(context.Owner, context.MemoryRegion, parent)
+}
+
+func (context *TaskContext) DerefContext(ref memory.Ref) (memory.Context, error) {
+	if context == nil || context.Realm == nil {
+		return memory.Context{}, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.DerefContext(context.Owner, ref)
+}
+
+func (context *TaskContext) DeclareBinding(contextRef, name memory.Ref, mutable bool) error {
+	if context == nil || context.Realm == nil {
+		return fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.DeclareBinding(context.Owner, contextRef, name, mutable)
+}
+
+func (context *TaskContext) InitializeBinding(contextRef, name memory.Ref, value memory.Value) error {
+	if context == nil || context.Realm == nil {
+		return fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.InitializeBinding(context.Owner, contextRef, name, value)
+}
+
+func (context *TaskContext) SetBinding(contextRef, name memory.Ref, value memory.Value) error {
+	if context == nil || context.Realm == nil {
+		return fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.SetBinding(context.Owner, contextRef, name, value)
+}
+
+func (context *TaskContext) ResolveBinding(contextRef, name memory.Ref) (memory.Value, bool, error) {
+	if context == nil || context.Realm == nil {
+		return memory.Value{}, false, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.ResolveBinding(context.Owner, contextRef, name)
+}
+
 func (context *TaskContext) Set(ref memory.Ref, field int, value memory.Value) error {
 	if context == nil || context.Realm == nil {
 		return fmt.Errorf("runtime: nil task context")
