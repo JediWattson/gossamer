@@ -150,6 +150,48 @@ type taskHost struct {
 	autoRender bool
 }
 
+func (host *taskHost) GetElementByID(value string) (NodeHandle, bool, error) {
+	host.page.mutex.RLock()
+	defer host.page.mutex.RUnlock()
+	if host.page.closed {
+		return NodeHandle{}, false, ErrPageClosed
+	}
+	if host.page.documentGeneration != host.generation {
+		return NodeHandle{}, false, ErrStaleNodeHandle
+	}
+	node, ok := host.page.document.ElementByID(value)
+	if !ok {
+		return NodeHandle{}, false, nil
+	}
+	return NodeHandle{Document: host.generation, Node: node}, true, nil
+}
+
+func (host *taskHost) TextContent(handle NodeHandle) (string, error) {
+	host.page.mutex.RLock()
+	defer host.page.mutex.RUnlock()
+	if err := host.validateHandleLocked(handle); err != nil {
+		return "", err
+	}
+	return host.page.document.TextContent(handle.Node)
+}
+
+func (host *taskHost) SetTextContent(handle NodeHandle, data string) error {
+	host.page.mutex.Lock()
+	defer host.page.mutex.Unlock()
+	if err := host.validateHandleLocked(handle); err != nil {
+		return err
+	}
+	before := host.page.document.Version()
+	if err := host.page.document.SetTextContent(handle.Node, data); err != nil {
+		return err
+	}
+	if host.page.document.Version() != before {
+		host.page.dirty = true
+		host.mutated = true
+	}
+	return nil
+}
+
 func (host *taskHost) Text(handle NodeHandle) (string, error) {
 	host.page.mutex.RLock()
 	defer host.page.mutex.RUnlock()

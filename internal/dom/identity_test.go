@@ -87,6 +87,66 @@ func TestDocumentRejectsUnknownAndWrongKindMutations(t *testing.T) {
 	}
 }
 
+func TestDocumentElementLookupAndTextContentPreserveDetachedIdentity(t *testing.T) {
+	t.Parallel()
+
+	root, _, body, paragraph, text := identityFixture()
+	paragraph.Attributes = []Attribute{{Name: "id", Value: "counter"}}
+	nested := NewElement("strong")
+	nestedText := NewText(" plus")
+	nested.AppendChild(nestedText)
+	paragraph.AppendChild(nested)
+	document, err := IndexDocument(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paragraphID := mustNodeID(t, document, paragraph)
+	textID := mustNodeID(t, document, text)
+	nestedID := mustNodeID(t, document, nested)
+	nestedTextID := mustNodeID(t, document, nestedText)
+
+	if got, ok := document.ElementByID("counter"); !ok || got != paragraphID {
+		t.Fatalf("ElementByID(counter) = %d, %t; want %d, true", got, ok, paragraphID)
+	}
+	if got, err := document.TextContent(paragraphID); err != nil || got != "before plus" {
+		t.Fatalf("TextContent(%d) = %q, %v; want before plus", paragraphID, got, err)
+	}
+	version := document.Version()
+	if err := document.SetTextContent(paragraphID, "after"); err != nil {
+		t.Fatal(err)
+	}
+	if document.Version() != version+1 {
+		t.Fatalf("version = %d, want %d", document.Version(), version+1)
+	}
+	if got, err := document.TextContent(paragraphID); err != nil || got != "after" {
+		t.Fatalf("TextContent after mutation = %q, %v; want after", got, err)
+	}
+	if text.Parent != nil || nested.Parent != nil {
+		t.Fatalf("replaced descendants remain attached: text=%p nested=%p", text.Parent, nested.Parent)
+	}
+	if resolved, ok := document.Resolve(textID); !ok || resolved != text {
+		t.Fatalf("detached text identity = %p, %t; want %p, true", resolved, ok, text)
+	}
+	if resolved, ok := document.Resolve(nestedTextID); !ok || resolved != nestedText {
+		t.Fatalf("detached nested text identity = %p, %t; want %p, true", resolved, ok, nestedText)
+	}
+	if _, ok := document.ElementByID("counter"); !ok {
+		t.Fatal("mutated element disappeared from connected lookup")
+	}
+	if resolved, ok := document.Resolve(nestedID); !ok || resolved != nested {
+		t.Fatalf("detached element identity = %p, %t; want %p, true", resolved, ok, nested)
+	}
+	if got, err := document.TextContent(nestedID); err != nil || got != " plus" {
+		t.Fatalf("detached TextContent = %q, %v; want space-plus", got, err)
+	}
+	if _, ok := document.ElementByID("missing"); ok {
+		t.Fatal("ElementByID(missing) unexpectedly found a node")
+	}
+	if got, _ := document.TextContent(mustNodeID(t, document, body)); got != "after" {
+		t.Fatalf("body TextContent = %q, want after", got)
+	}
+}
+
 func identityFixture() (root, html, body, paragraph, text *Node) {
 	root = NewDocument()
 	html = NewElement("html")

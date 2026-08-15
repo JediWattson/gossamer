@@ -109,9 +109,11 @@ proves the full click-to-paint flow without a JavaScript parser. See
 
 An optional stock V8 15.2 adapter now occupies that socket on Apple Silicon.
 The pinned, symbolized build keeps JavaScript values under V8 GC while browser
-objects remain under Go regions and queue ARC. Initial profiling covers heap
-totals, sampled allocations, GC callbacks, explicit Promise checkpoints, and
-isolate teardown before DOM wrappers are added. See
+objects remain under Go regions and queue ARC. Its first wrapper slice exposes
+stable numeric node identity, `getElementById`, `textContent`, click listeners,
+microtasks, and timers without passing Go pointers into V8. Profiling covers
+heap totals, sampled allocations, GC callbacks, weak-wrapper collection,
+callback publication, explicit Promise checkpoints, and isolate teardown. See
 [`docs/stock-v8-integration.md`](docs/stock-v8-integration.md).
 
 ## What works today
@@ -134,7 +136,8 @@ isolate teardown before DOM wrappers are added. See
 - Common implied elements and implied end tags
 - Deterministic DOM dumps for parser development
 - Stable `NodeID` lookup in both directions through an indexed `Document`
-- Body `<noscript>` fallback rendering because JavaScript is not enabled
+- Optional stock-V8 classic-script execution and first-slice DOM wrappers on
+  Apple Silicon; default builds still render body `<noscript>` fallback
 
 ### CSS, layout, and paint
 
@@ -172,8 +175,8 @@ isolate teardown before DOM wrappers are added. See
 
 The following are intentionally still outside the current milestone:
 
-- General JavaScript/DOM APIs, navigation history, forms, text input,
-  selection, scrolling, and a windowed UI
+- General JavaScript/DOM APIs beyond the initial V8 wrapper slice, navigation
+  history, forms, text input, selection, scrolling, and a windowed UI
 - Full HTML error recovery, including table foster parenting, formatting
   element reconstruction, templates, SVG/MathML, and encoding sniffing
 - Flexbox, Grid, table layout, floats, positioned layout, and retained inline
@@ -182,8 +185,7 @@ The following are intentionally still outside the current milestone:
   background images, border radii, shadows, transforms, and generated content
 - `@import`, `@supports`, anonymous, nested, or dotted cascade layers, and the
   remaining media-query syntax and features
-- SVG, AVIF, video, canvas, browser controls, accessibility trees, and script
-  execution
+- SVG, AVIF, video, canvas, browser controls, and accessibility trees
 
 Only `inline`, `block`, `list-item`, and `none` have dedicated display
 behavior; `inline-block` currently degrades to inline. Screenshots clip to one

@@ -48,6 +48,15 @@ type RealmProfile struct {
 	MinorGCs             uint64          `json:"minorGCs"`
 	MajorGCs             uint64          `json:"majorGCs"`
 	GCTime               time.Duration   `json:"gcNanos"`
+	WrappersCreated      uint64          `json:"wrappersCreated"`
+	WrapperCacheHits     uint64          `json:"wrapperCacheHits"`
+	WrappersCollected    uint64          `json:"wrappersCollected"`
+	LiveWrappers         uint64          `json:"liveWrappers"`
+	CallbacksCreated     uint64          `json:"callbacksCreated"`
+	CallbacksInvoked     uint64          `json:"callbacksInvoked"`
+	LiveCallbacks        uint64          `json:"liveCallbacks"`
+	EventListeners       uint64          `json:"eventListeners"`
+	EventsDispatched     uint64          `json:"eventsDispatched"`
 }
 
 type EngineProfile struct {
@@ -58,10 +67,9 @@ type EngineProfile struct {
 }
 
 var (
-	ErrEngineClosed        = errors.New("v8engine: engine is closed")
-	ErrRealmClosed         = errors.New("v8engine: realm is closed")
-	ErrBindingsUnavailable = errors.New("v8engine: DOM and callback bindings are not installed")
-	ErrICUDataRequired     = errors.New("v8engine: ICU data path is required")
+	ErrEngineClosed    = errors.New("v8engine: engine is closed")
+	ErrRealmClosed     = errors.New("v8engine: realm is closed")
+	ErrICUDataRequired = errors.New("v8engine: ICU data path is required")
 )
 
 func addRealmProfile(total *RealmProfile, profile RealmProfile) {
@@ -79,4 +87,13 @@ func addRealmProfile(total *RealmProfile, profile RealmProfile) {
 	total.MinorGCs += profile.MinorGCs
 	total.MajorGCs += profile.MajorGCs
 	total.GCTime += profile.GCTime
+	total.WrappersCreated += profile.WrappersCreated
+	total.WrapperCacheHits += profile.WrapperCacheHits
+	total.WrappersCollected += profile.WrappersCollected
+	total.LiveWrappers += profile.LiveWrappers
+	total.CallbacksCreated += profile.CallbacksCreated
+	total.CallbacksInvoked += profile.CallbacksInvoked
+	total.LiveCallbacks += profile.LiveCallbacks
+	total.EventListeners += profile.EventListeners
+	total.EventsDispatched += profile.EventsDispatched
 }

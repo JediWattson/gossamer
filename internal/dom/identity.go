@@ -3,6 +3,7 @@ package dom
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 )
@@ -111,6 +112,38 @@ func (document *Document) ID(node *Node) (NodeID, bool) {
 	return document.store.ID(node)
 }
 
+// ElementByID returns the first connected element whose id attribute exactly
+// matches value. Detached nodes remain addressable by NodeID but are excluded
+// from document lookup.
+func (document *Document) ElementByID(value string) (NodeID, bool) {
+	if document == nil || document.store == nil {
+		return InvalidNodeID, false
+	}
+	document.store.mutex.RLock()
+	defer document.store.mutex.RUnlock()
+	root, ok := document.store.resolveLocked(document.root)
+	if !ok {
+		return InvalidNodeID, false
+	}
+	stack := []*Node{root}
+	for len(stack) != 0 {
+		last := len(stack) - 1
+		node := stack[last]
+		stack = stack[:last]
+		if node.Type == ElementNode {
+			for _, attribute := range node.Attributes {
+				if attribute.Name == "id" && attribute.Value == value {
+					return document.store.ids[node], true
+				}
+			}
+		}
+		for index := len(node.Children) - 1; index >= 0; index-- {
+			stack = append(stack, node.Children[index])
+		}
+	}
+	return InvalidNodeID, false
+}
+
 // Version changes after each effective mutation made through Document.
 func (document *Document) Version() uint64 {
 	if document == nil {
@@ -135,6 +168,38 @@ func (document *Document) Text(id NodeID) (string, error) {
 		return "", fmt.Errorf("%w: node %d is %d, want text", ErrWrongNodeKind, id, node.Type)
 	}
 	return node.Data, nil
+}
+
+// TextContent returns the concatenated descendant text for an element or the
+// node data for text and comment nodes.
+func (document *Document) TextContent(id NodeID) (string, error) {
+	if document == nil || document.store == nil {
+		return "", ErrInvalidDocument
+	}
+	document.store.mutex.RLock()
+	defer document.store.mutex.RUnlock()
+	node, ok := document.store.resolveLocked(id)
+	if !ok {
+		return "", fmt.Errorf("%w: %d", ErrUnknownNode, id)
+	}
+	var content strings.Builder
+	stack := []*Node{node}
+	for len(stack) != 0 {
+		last := len(stack) - 1
+		current := stack[last]
+		stack = stack[:last]
+		if current.Type == TextNode {
+			content.WriteString(current.Data)
+			continue
+		}
+		if current.Type == CommentNode && current == node {
+			return current.Data, nil
+		}
+		for index := len(current.Children) - 1; index >= 0; index-- {
+			stack = append(stack, current.Children[index])
+		}
+	}
+	return content.String(), nil
 }
 
 // ClosestElement returns the nearest element ancestor, including id itself.
@@ -176,6 +241,49 @@ func (document *Document) SetText(id NodeID, data string) error {
 		return nil
 	}
 	node.Data = data
+	document.version.Add(1)
+	return nil
+}
+
+// SetTextContent replaces an element's children with one new text node, or
+// updates the data of an existing text or comment node. Previously indexed
+// descendants become detached but keep their stable IDs.
+func (document *Document) SetTextContent(id NodeID, data string) error {
+	if document == nil || document.store == nil {
+		return ErrInvalidDocument
+	}
+	document.store.mutex.Lock()
+	defer document.store.mutex.Unlock()
+	node, ok := document.store.resolveLocked(id)
+	if !ok {
+		return fmt.Errorf("%w: %d", ErrUnknownNode, id)
+	}
+	switch node.Type {
+	case TextNode, CommentNode:
+		if node.Data == data {
+			return nil
+		}
+		node.Data = data
+	case ElementNode:
+		if len(node.Children) == 0 && data == "" {
+			return nil
+		}
+		if len(node.Children) == 1 && node.Children[0].Type == TextNode && node.Children[0].Data == data {
+			return nil
+		}
+		for _, child := range node.Children {
+			child.Parent = nil
+		}
+		node.Children = nil
+		if data != "" {
+			child := NewText(data)
+			child.Parent = node
+			node.Children = []*Node{child}
+			document.store.assignLocked(child)
+		}
+	default:
+		return fmt.Errorf("%w: node %d is %d, want element or character data", ErrWrongNodeKind, id, node.Type)
+	}
 	document.version.Add(1)
 	return nil
 }

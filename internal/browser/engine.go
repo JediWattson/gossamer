@@ -48,6 +48,9 @@ type JSRealm interface {
 // Host is the execution-scoped browser API visible to an engine. Methods that
 // schedule work preserve the current task as the publication boundary.
 type Host interface {
+	GetElementByID(string) (NodeHandle, bool, error)
+	TextContent(NodeHandle) (string, error)
+	SetTextContent(NodeHandle, string) error
 	Text(NodeHandle) (string, error)
 	SetText(NodeHandle, string) error
 	QueueCallback(ValueHandle) error

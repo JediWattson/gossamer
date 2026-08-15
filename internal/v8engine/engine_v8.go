@@ -6,7 +6,7 @@ package v8engine
 #cgo LDFLAGS: -L${SRCDIR}/../../third_party/v8/v8/out.gn/gossamer-profile -lgossamer_v8_bridge
 #cgo LDFLAGS: -Wl,-rpath,${SRCDIR}/../../third_party/v8/v8/out.gn/gossamer-profile
 #include <stdlib.h>
-#include "bridge.h"
+#include "host_callbacks.h"
 */
 import "C"
 
@@ -139,7 +139,7 @@ func (engine *Engine) Close() error {
 	return result
 }
 
-func (realm *Realm) Evaluate(_ browser.Host, source browser.ScriptSource) error {
+func (realm *Realm) Evaluate(host browser.Host, source browser.ScriptSource) error {
 	if realm == nil {
 		return ErrRealmClosed
 	}
@@ -157,8 +157,11 @@ func (realm *Realm) Evaluate(_ browser.Host, source browser.ScriptSource) error 
 	if len(source.URL) != 0 {
 		urlPointer = (*C.char)(unsafe.Pointer(unsafe.StringData(source.URL)))
 	}
-	if C.gossamer_v8_realm_evaluate(
+	executionID := registerHostExecution(host)
+	defer unregisterHostExecution(executionID)
+	if C.gossamer_v8_go_realm_evaluate(
 		realm.pointer,
+		C.uint64_t(executionID),
 		sourcePointer,
 		C.size_t(len(source.Source)),
 		urlPointer,
@@ -170,15 +173,7 @@ func (realm *Realm) Evaluate(_ browser.Host, source browser.ScriptSource) error 
 	return nil
 }
 
-func (realm *Realm) DispatchEvent(browser.Host, browser.InputEvent) error {
-	return ErrBindingsUnavailable
-}
-
-func (realm *Realm) Invoke(browser.Host, browser.ValueHandle) error {
-	return ErrBindingsUnavailable
-}
-
-func (realm *Realm) DrainMicrotasks(browser.Host) error {
+func (realm *Realm) DispatchEvent(host browser.Host, event browser.InputEvent) error {
 	if realm == nil {
 		return ErrRealmClosed
 	}
@@ -187,8 +182,65 @@ func (realm *Realm) DrainMicrotasks(browser.Host) error {
 	if realm.isClosed || realm.pointer == nil {
 		return ErrRealmClosed
 	}
+	executionID := registerHostExecution(host)
+	defer unregisterHostExecution(executionID)
 	var failure *C.char
-	if C.gossamer_v8_realm_drain_microtasks(realm.pointer, &failure) == 0 {
+	if C.gossamer_v8_go_realm_dispatch_event(
+		realm.pointer,
+		C.uint64_t(executionID),
+		C.uint8_t(event.Type),
+		C.uint64_t(event.Target.Document),
+		C.uint32_t(event.Target.Node),
+		C.double(event.X),
+		C.double(event.Y),
+		C.int32_t(event.Button),
+		&failure,
+	) == 0 {
+		return takeError(failure)
+	}
+	return nil
+}
+
+func (realm *Realm) Invoke(host browser.Host, callback browser.ValueHandle) error {
+	if realm == nil {
+		return ErrRealmClosed
+	}
+	realm.mutex.Lock()
+	defer realm.mutex.Unlock()
+	if realm.isClosed || realm.pointer == nil {
+		return ErrRealmClosed
+	}
+	executionID := registerHostExecution(host)
+	defer unregisterHostExecution(executionID)
+	var failure *C.char
+	if C.gossamer_v8_go_realm_invoke(
+		realm.pointer,
+		C.uint64_t(executionID),
+		C.uint64_t(callback),
+		&failure,
+	) == 0 {
+		return takeError(failure)
+	}
+	return nil
+}
+
+func (realm *Realm) DrainMicrotasks(host browser.Host) error {
+	if realm == nil {
+		return ErrRealmClosed
+	}
+	realm.mutex.Lock()
+	defer realm.mutex.Unlock()
+	if realm.isClosed || realm.pointer == nil {
+		return ErrRealmClosed
+	}
+	executionID := registerHostExecution(host)
+	defer unregisterHostExecution(executionID)
+	var failure *C.char
+	if C.gossamer_v8_go_realm_drain_microtasks(
+		realm.pointer,
+		C.uint64_t(executionID),
+		&failure,
+	) == 0 {
 		return takeError(failure)
 	}
 	return nil
@@ -304,6 +356,15 @@ func profileFromC(native C.gossamer_v8_profile) RealmProfile {
 		MinorGCs:             uint64(native.minor_gcs),
 		MajorGCs:             uint64(native.major_gcs),
 		GCTime:               time.Duration(native.gc_nanos),
+		WrappersCreated:      uint64(native.wrappers_created),
+		WrapperCacheHits:     uint64(native.wrapper_cache_hits),
+		WrappersCollected:    uint64(native.wrappers_collected),
+		LiveWrappers:         uint64(native.live_wrappers),
+		CallbacksCreated:     uint64(native.callbacks_created),
+		CallbacksInvoked:     uint64(native.callbacks_invoked),
+		LiveCallbacks:        uint64(native.live_callbacks),
+		EventListeners:       uint64(native.event_listeners),
+		EventsDispatched:     uint64(native.events_dispatched),
 	}
 }
 

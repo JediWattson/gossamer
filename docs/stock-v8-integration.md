@@ -3,8 +3,8 @@
 Gossamer embeds an unmodified upstream V8 build behind the engine-neutral
 browser socket. The initial target is Apple Silicon and the initial purpose is
 measurement: execute real JavaScript, preserve Gossamer's explicit scheduling,
-observe V8's own heap, and prove isolate teardown before DOM wrappers are
-introduced.
+observe V8's own heap, and establish the first numeric DOM-wrapper and callback
+boundary without modifying V8.
 
 ## Ownership boundary
 
@@ -26,10 +26,10 @@ The heaps remain deliberately separate:
 - V8 allocates and traces JavaScript values, closures, promises, and wrapper
   objects. V8 handles are never exposed to Go.
 - Go owns documents, DOM nodes, resources, tasks, queues, and logical regions.
-- The future wrapper payload is numeric `(DocumentGeneration, NodeID)`
-  identity. It is not a Go pointer and ordinary JavaScript aliases do not
-  change ARC.
-- A `ValueHandle` will index a V8-owned persistent-function table. Publishing
+- Each node wrapper stores only numeric `(DocumentGeneration, NodeID)`
+  identity in two V8 internal fields. It is not a Go pointer and ordinary
+  JavaScript aliases do not change ARC.
+- A `ValueHandle` indexes a V8-owned persistent-function table. Publishing
   that handle to a Gossamer timer or queue is the semantic lifetime boundary.
 - Realm close resets the V8 context and persistent tables, notifies the V8
   platform, disposes the isolate, and then lets the Go Realm release its claims.
@@ -65,10 +65,9 @@ The V8 adapter is intentionally guarded by the `v8` build tag. Ordinary
 `go test ./...` and non-JavaScript builds do not require the 7+ GB source
 checkout or the generated monolith.
 
-## First checkpoint
+## Implemented checkpoints
 
-The adapter currently implements the engine-independent calls required before
-wrappers:
+The adapter implements the engine-independent runtime and profiling calls:
 
 - process-wide V8 platform and ICU initialization;
 - one isolate and context per `JSRealm`;
@@ -82,6 +81,28 @@ wrappers:
 - sampling heap profiles with live and collected allocation totals;
 - forced low-memory collection for repeatable profiling; and
 - context reset, platform isolate-shutdown notification, and isolate disposal.
+
+The first wrapper slice adds:
+
+- `window`, `self`, and `document` globals;
+- `document.getElementById()` over connected, generation-scoped Go nodes;
+- one weakly cached V8 object per numeric node identity;
+- `textContent` reads and replacement mutations;
+- `addEventListener("click", fn)` and `removeEventListener()`;
+- `queueMicrotask(fn)`, `setTimeout(fn, delay)`, and `clearTimeout()`;
+- execution-scoped C callback tables that carry a numeric registry ID, never a
+  Go pointer, into an engine entry; and
+- wrapper, callback, listener, and dispatch counts alongside V8 heap metrics.
+
+Listener functions remain in V8-owned persistent handles. Dispatch clones each
+listener into a one-shot callback entry and publishes only its numeric
+`ValueHandle` into Gossamer. Invocation consumes that entry before calling the
+function, so the Go queue is the explicit cross-owner retention point. Timer
+and Gossamer microtask callbacks use the same table.
+
+The wrapper cache is weak. A wrapper that is not reachable from JavaScript can
+be collected and removed from the cache without touching a Go ARC claim; a
+later lookup creates a new wrapper for the same still-valid numeric node.
 
 V8 platform initialization is process-wide. V8 documents `V8::Dispose()` as
 permanent and disallows reinitialization, so closing a Gossamer `Engine` closes
@@ -119,15 +140,31 @@ forces collection, verifies GC callbacks, verifies exception diagnostics, and
 closes the isolate. The engine profile records the closed Realm snapshot so
 teardown can be correlated with Gossamer's region ledger.
 
+The wrapper integration test proves the complete browser sequence:
+
+```text
+JavaScript document.getElementById
+  -> weak V8 wrapper with numeric Go identity
+  -> click hit test resolves the same NodeHandle
+  -> V8 listener becomes a one-shot ValueHandle
+  -> Gossamer queue publishes and transfers the callback claim
+  -> V8 invokes and consumes the callback
+  -> textContent mutates the Go Document
+  -> separate render task publishes the updated Frame
+```
+
+It also forces V8 collection and verifies that an unreferenced transient
+wrapper disappears while the listener-retained wrapper remains live.
+
 ## Next wrapper milestone
 
-DOM bindings remain intentionally absent from this checkpoint. `DispatchEvent`
-and `Invoke` report that bindings are unavailable. The next milestone adds:
+This is deliberately not enough DOM for React or general JSX output yet. The
+next slice should preserve the same ownership socket while adding the mutation
+surface a renderer needs:
 
-1. a V8 wrapper template containing numeric `NodeHandle` identity;
-2. wrapper identity caching per Realm;
-3. weak callbacks that remove cache entries without exposing Go pointers;
-4. `ValueHandle -> v8::Global<Function>` callback storage;
-5. execution-scoped host-call identifiers for text reads and writes; and
-6. paired V8 heap and Gossamer region telemetry for wrapper publication and
-   destruction.
+1. `document.createElement()` and `document.createTextNode()`;
+2. `appendChild()`, `insertBefore()`, `removeChild()`, and parent/child access;
+3. attributes plus the initial property reflection required by JSX;
+4. a style declaration wrapper that feeds the existing CSS pipeline;
+5. browser event objects and propagation; and
+6. a small framework-shaped render test before attempting a full React bundle.

@@ -16,6 +16,30 @@ extern "C" {
 
 typedef struct gossamer_v8_realm gossamer_v8_realm;
 
+// gossamer_v8_host is valid only for one engine entry. It contains numeric
+// execution identity and C callbacks; no Go pointer is stored in V8.
+typedef struct gossamer_v8_host {
+  uint64_t execution_id;
+  int (*get_element_by_id)(uint64_t execution_id, const char *value,
+                           size_t value_length, uint64_t *document_out,
+                           uint32_t *node_out, int *found_out,
+                           char **error_out);
+  int (*text_content)(uint64_t execution_id, uint64_t document, uint32_t node,
+                      char **value_out, size_t *value_length_out,
+                      char **error_out);
+  int (*set_text_content)(uint64_t execution_id, uint64_t document,
+                          uint32_t node, const char *value, size_t value_length,
+                          char **error_out);
+  int (*queue_callback)(uint64_t execution_id, uint64_t callback,
+                        char **error_out);
+  int (*queue_microtask)(uint64_t execution_id, uint64_t callback,
+                         char **error_out);
+  int (*set_timeout)(uint64_t execution_id, uint64_t callback,
+                     int64_t delay_milliseconds, uint64_t *timer_out,
+                     char **error_out);
+  int (*clear_timeout)(uint64_t execution_id, uint64_t timer, char **error_out);
+} gossamer_v8_host;
+
 typedef struct gossamer_v8_heap_statistics {
   uint64_t total_heap_size;
   uint64_t total_heap_executable;
@@ -48,6 +72,15 @@ typedef struct gossamer_v8_profile {
   uint64_t minor_gcs;
   uint64_t major_gcs;
   uint64_t gc_nanos;
+  uint64_t wrappers_created;
+  uint64_t wrapper_cache_hits;
+  uint64_t wrappers_collected;
+  uint64_t live_wrappers;
+  uint64_t callbacks_created;
+  uint64_t callbacks_invoked;
+  uint64_t live_callbacks;
+  uint64_t event_listeners;
+  uint64_t events_dispatched;
 } gossamer_v8_profile;
 
 GOSSAMER_V8_EXPORT int gossamer_v8_initialize(const char *icu_data_path,
@@ -57,11 +90,20 @@ GOSSAMER_V8_EXPORT const char *gossamer_v8_version(void);
 GOSSAMER_V8_EXPORT gossamer_v8_realm *
 gossamer_v8_realm_new(uint64_t sampling_interval, char **error_out);
 GOSSAMER_V8_EXPORT int
-gossamer_v8_realm_evaluate(gossamer_v8_realm *realm, const char *source,
+gossamer_v8_realm_evaluate(gossamer_v8_realm *realm,
+                           const gossamer_v8_host *host, const char *source,
                            size_t source_length, const char *source_url,
                            size_t source_url_length, char **error_out);
-GOSSAMER_V8_EXPORT int
-gossamer_v8_realm_drain_microtasks(gossamer_v8_realm *realm, char **error_out);
+GOSSAMER_V8_EXPORT int gossamer_v8_realm_dispatch_event(
+    gossamer_v8_realm *realm, const gossamer_v8_host *host, uint8_t event_type,
+    uint64_t document, uint32_t node, double x, double y, int32_t button,
+    char **error_out);
+GOSSAMER_V8_EXPORT int gossamer_v8_realm_invoke(gossamer_v8_realm *realm,
+                                                const gossamer_v8_host *host,
+                                                uint64_t callback,
+                                                char **error_out);
+GOSSAMER_V8_EXPORT int gossamer_v8_realm_drain_microtasks(
+    gossamer_v8_realm *realm, const gossamer_v8_host *host, char **error_out);
 GOSSAMER_V8_EXPORT int
 gossamer_v8_realm_collect_garbage(gossamer_v8_realm *realm, char **error_out);
 GOSSAMER_V8_EXPORT int

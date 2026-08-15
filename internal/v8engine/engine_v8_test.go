@@ -13,7 +13,9 @@ import (
 	"time"
 
 	"github.com/JediWattson/gossamer/internal/browser"
+	"github.com/JediWattson/gossamer/internal/dom"
 	"github.com/JediWattson/gossamer/internal/loader"
+	"github.com/JediWattson/gossamer/internal/render"
 )
 
 func TestStockV8EvaluationMicrotasksProfilingAndTeardown(t *testing.T) {
@@ -162,6 +164,186 @@ func TestStockV8RunsInBrowserScriptSequence(t *testing.T) {
 	}
 }
 
+func TestStockV8HostMicrotaskAndTimerBindingsUseOpaqueHandles(t *testing.T) {
+	engine := newTestEngine(t)
+	defer engine.Close()
+	realmValue, err := engine.NewRealm()
+	if err != nil {
+		t.Fatalf("NewRealm: %v", err)
+	}
+	realm := realmValue.(*Realm)
+	host := &capturingBindingHost{nextTimer: 40}
+	if err := realm.Evaluate(host, browser.ScriptSource{
+		URL: "host-bindings.js",
+		Source: `
+			queueMicrotask(() => { globalThis.__gossamerHostMicrotask = 42; });
+			const canceled = setTimeout(() => {
+				throw new Error("cleared timer callback ran");
+			}, 25);
+			clearTimeout(canceled);
+		`,
+	}); err != nil {
+		t.Fatalf("Evaluate host bindings: %v", err)
+	}
+	if len(host.microtasks) != 1 || len(host.timerCallbacks) != 1 {
+		t.Fatalf("published handles = microtasks:%v timers:%v", host.microtasks, host.timerCallbacks)
+	}
+	if host.timerDelay != 25*time.Millisecond || host.clearedTimer != 41 {
+		t.Fatalf("timer boundary = delay:%s cleared:%d", host.timerDelay, host.clearedTimer)
+	}
+	profile, err := realm.Profile()
+	if err != nil {
+		t.Fatalf("Profile after host bindings: %v", err)
+	}
+	if profile.CallbacksCreated != 2 || profile.CallbacksInvoked != 0 || profile.LiveCallbacks != 1 {
+		t.Fatalf("callback retention before invocation = %#v", profile)
+	}
+	if err := realm.Invoke(host, host.microtasks[0]); err != nil {
+		t.Fatalf("Invoke microtask handle: %v", err)
+	}
+	if err := realm.Evaluate(nil, browser.ScriptSource{
+		URL:    "host-bindings-check.js",
+		Source: `if (globalThis.__gossamerHostMicrotask !== 42) throw new Error("host microtask did not run");`,
+	}); err != nil {
+		t.Fatalf("Evaluate microtask check: %v", err)
+	}
+	afterInvoke, err := realm.Profile()
+	if err != nil {
+		t.Fatalf("Profile after host callback: %v", err)
+	}
+	if afterInvoke.CallbacksInvoked != 1 || afterInvoke.LiveCallbacks != 0 {
+		t.Fatalf("callback retention after invocation = %#v", afterInvoke)
+	}
+}
+
+func TestStockV8DOMWrapperClickMutatesThroughQueuedCallbackAndPaint(t *testing.T) {
+	engine := newTestEngine(t)
+	browserRuntime, err := browser.NewWithEngine(engine)
+	if err != nil {
+		t.Fatalf("NewWithEngine: %v", err)
+	}
+	defer func() {
+		if err := browserRuntime.Close(); err != nil {
+			t.Errorf("Close browser: %v", err)
+		}
+	}()
+
+	documentSource := `<!doctype html>
+		<html><body style="margin:0">
+		<button id="counter" style="display:block;width:120px;height:40px">0</button>
+		<span id="transient">transient wrapper</span>
+		<script>
+			const counter = document.getElementById("counter");
+			if (counter === null || counter !== document.getElementById("counter")) {
+				throw new Error("node wrapper identity is not stable");
+			}
+			document.getElementById("transient");
+			counter.addEventListener("click", () => {
+				counter.textContent = String(Number(counter.textContent) + 1);
+			});
+		</script>
+		</body></html>`
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	page, err := browserRuntime.LoadPage(
+		ctx,
+		"https://gossamer.test/wrappers",
+		staticDocumentLoader{document: documentSource},
+	)
+	if err != nil {
+		t.Fatalf("LoadPage: %v", err)
+	}
+	realm, ok := engine.LatestRealm()
+	if !ok {
+		t.Fatal("stock V8 engine has no live document realm")
+	}
+	profile, err := realm.Profile()
+	if err != nil {
+		t.Fatalf("Profile after navigation: %v", err)
+	}
+	if profile.WrappersCreated != 2 || profile.WrapperCacheHits == 0 || profile.EventListeners != 1 {
+		t.Fatalf("wrapper profile after navigation = %#v", profile)
+	}
+
+	ledgerBeforeGC := browserRuntime.Ledger().Stats()
+	if err := realm.CollectGarbage(); err != nil {
+		t.Fatalf("CollectGarbage: %v", err)
+	}
+	if ledgerAfterGC := browserRuntime.Ledger().Stats(); ledgerAfterGC != ledgerBeforeGC {
+		t.Fatalf("V8 wrapper collection changed Go ARC: before=%#v after=%#v", ledgerBeforeGC, ledgerAfterGC)
+	}
+	afterGC, err := realm.Profile()
+	if err != nil {
+		t.Fatalf("Profile after wrapper collection: %v", err)
+	}
+	if afterGC.WrappersCollected == 0 || afterGC.LiveWrappers != 1 {
+		t.Fatalf("weak wrapper cache after GC = %#v", afterGC)
+	}
+
+	document := page.Document()
+	counterID, found := document.ElementByID("counter")
+	if !found {
+		t.Fatal("parsed counter element is missing")
+	}
+	counter, ok := document.Resolve(counterID)
+	if !ok {
+		t.Fatal("counter stable identity does not resolve")
+	}
+	counterBox := findV8BoxForNode(page.Frame().Root, counter)
+	if counterBox == nil {
+		t.Fatal("rendered frame has no counter box")
+	}
+	x := counterBox.Bounds.X + 2
+	y := counterBox.Bounds.Y + 2
+	ledgerBeforeClick := browserRuntime.Ledger().Stats()
+	if _, err := page.QueueClick(x, y, 0); err != nil {
+		t.Fatalf("QueueClick: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("dispatch click: %v", err)
+	}
+	afterDispatch, err := realm.Profile()
+	if err != nil {
+		t.Fatalf("Profile after dispatch: %v", err)
+	}
+	if afterDispatch.EventsDispatched != 1 || afterDispatch.CallbacksCreated != 1 || afterDispatch.LiveCallbacks != 1 {
+		t.Fatalf("callback publication profile = %#v", afterDispatch)
+	}
+	if got, err := document.TextContent(counterID); err != nil || got != "0" {
+		t.Fatalf("counter before callback = %q, %v; want 0", got, err)
+	}
+
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("invoke click listener: %v", err)
+	}
+	afterInvoke, err := realm.Profile()
+	if err != nil {
+		t.Fatalf("Profile after invoke: %v", err)
+	}
+	if afterInvoke.CallbacksInvoked != 1 || afterInvoke.LiveCallbacks != 0 {
+		t.Fatalf("callback consumption profile = %#v", afterInvoke)
+	}
+	if got, err := document.TextContent(counterID); err != nil || got != "1" {
+		t.Fatalf("counter after callback = %q, %v; want 1", got, err)
+	}
+	if !page.Dirty() || v8FrameContainsText(page.Frame(), "1") {
+		t.Fatal("DOM mutation did not wait behind the queued render boundary")
+	}
+
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("render wrapper mutation: %v", err)
+	}
+	if page.Dirty() || !v8FrameContainsText(page.Frame(), "1") || v8FrameContainsText(page.Frame(), "0") {
+		t.Fatal("queued wrapper mutation did not reach paint")
+	}
+	ledgerAfterClick := browserRuntime.Ledger().Stats()
+	if ledgerAfterClick.LiveObjects != ledgerBeforeClick.LiveObjects ||
+		ledgerAfterClick.ObjectsCreated-ledgerBeforeClick.ObjectsCreated < 3 ||
+		ledgerAfterClick.ObjectsDestroyed-ledgerBeforeClick.ObjectsDestroyed < 3 {
+		t.Fatalf("click ownership boundary: before=%#v after=%#v", ledgerBeforeClick, ledgerAfterClick)
+	}
+}
+
 func newTestEngine(t *testing.T) *Engine {
 	t.Helper()
 	icuData := os.Getenv("GOSSAMER_V8_ICU_DATA")
@@ -187,6 +369,82 @@ func evaluate(t *testing.T, realm *Realm, sourceURL, source string) {
 
 type staticDocumentLoader struct {
 	document string
+}
+
+func findV8BoxForNode(box *render.Box, node *dom.Node) *render.Box {
+	if box == nil {
+		return nil
+	}
+	if box.Node == node {
+		return box
+	}
+	for _, child := range box.Children {
+		if found := findV8BoxForNode(child, node); found != nil {
+			return found
+		}
+	}
+	return nil
+}
+
+func v8FrameContainsText(frame *render.Frame, text string) bool {
+	if frame == nil {
+		return false
+	}
+	for _, command := range frame.DisplayList.Commands {
+		if command.Kind == render.DrawTextCommand && strings.Contains(command.Text, text) {
+			return true
+		}
+	}
+	return false
+}
+
+type capturingBindingHost struct {
+	nextTimer      browser.TimerID
+	microtasks     []browser.ValueHandle
+	timerCallbacks []browser.ValueHandle
+	timerDelay     time.Duration
+	clearedTimer   browser.TimerID
+}
+
+func (*capturingBindingHost) GetElementByID(string) (browser.NodeHandle, bool, error) {
+	return browser.NodeHandle{}, false, nil
+}
+
+func (*capturingBindingHost) TextContent(browser.NodeHandle) (string, error) {
+	return "", nil
+}
+
+func (*capturingBindingHost) SetTextContent(browser.NodeHandle, string) error {
+	return nil
+}
+
+func (*capturingBindingHost) Text(browser.NodeHandle) (string, error) {
+	return "", nil
+}
+
+func (*capturingBindingHost) SetText(browser.NodeHandle, string) error {
+	return nil
+}
+
+func (*capturingBindingHost) QueueCallback(browser.ValueHandle) error {
+	return nil
+}
+
+func (host *capturingBindingHost) QueueMicrotask(callback browser.ValueHandle) error {
+	host.microtasks = append(host.microtasks, callback)
+	return nil
+}
+
+func (host *capturingBindingHost) SetTimeout(callback browser.ValueHandle, delay time.Duration) (browser.TimerID, error) {
+	host.nextTimer++
+	host.timerCallbacks = append(host.timerCallbacks, callback)
+	host.timerDelay = delay
+	return host.nextTimer, nil
+}
+
+func (host *capturingBindingHost) ClearTimeout(timer browser.TimerID) error {
+	host.clearedTimer = timer
+	return nil
 }
 
 func (fixture staticDocumentLoader) Load(_ context.Context, rawURL string) (*loader.Response, error) {
