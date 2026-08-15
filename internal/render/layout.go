@@ -50,8 +50,9 @@ func layoutDocument(root *styledNode, viewport Viewport, images map[*dom.Node]im
 	context.indexStyles(root)
 
 	documentBox := &Box{
-		Node:   root.node,
-		Bounds: Rect{Width: float64(viewport.Width), Height: float64(viewport.Height)},
+		Node:          root.node,
+		Bounds:        Rect{Width: float64(viewport.Width), Height: float64(viewport.Height)},
+		ContentBounds: Rect{Width: float64(viewport.Width), Height: float64(viewport.Height)},
 	}
 	html := findStyledElement(root, "html")
 	if html == nil || html.style.display == displayNone {
@@ -59,8 +60,9 @@ func layoutDocument(root *styledNode, viewport Viewport, images map[*dom.Node]im
 	}
 
 	htmlBox := &Box{
-		Node:   html.node,
-		Bounds: Rect{Width: float64(viewport.Width), Height: float64(viewport.Height)},
+		Node:          html.node,
+		Bounds:        Rect{Width: float64(viewport.Width), Height: float64(viewport.Height)},
+		ContentBounds: Rect{Width: float64(viewport.Width), Height: float64(viewport.Height)},
 	}
 	documentBox.Children = append(documentBox.Children, htmlBox)
 
@@ -77,6 +79,7 @@ func layoutDocument(root *styledNode, viewport Viewport, images map[*dom.Node]im
 	bodyBottom := bodyBox.Bounds.Y + bodyBox.Bounds.Height + resolveLength(body.style.marginBottom, float64(viewport.Width), viewport, 0)
 	if bodyBottom > htmlBox.Bounds.Height {
 		htmlBox.Bounds.Height = bodyBottom
+		htmlBox.ContentBounds.Height = bodyBottom
 	}
 	return documentBox, context.styles, nil
 }
@@ -99,55 +102,70 @@ func (context *layoutContext) layoutBlock(node *styledNode, containingX, content
 	rightAuto := style.marginRight.unit == lengthAuto
 	left := resolveLength(style.marginLeft, availableWidth, context.viewport, 0)
 	right := resolveLength(style.marginRight, availableWidth, context.viewport, 0)
+	padding := context.resolvePadding(style, availableWidth)
 	if node.node.Type == dom.ElementNode && node.node.Data == "img" {
 		decoded := context.images[node.node]
 		imageWidth, imageHeight, ok := context.replacedDimensions(style, decoded, availableWidth)
 		if !ok {
-			return &Box{Node: node.node, Bounds: Rect{X: containingX + left, Y: contentY}}, nil
+			return &Box{
+				Node:          node.node,
+				Bounds:        Rect{X: containingX + left, Y: contentY, Width: padding.Left + padding.Right, Height: padding.Top + padding.Bottom},
+				ContentBounds: Rect{X: containingX + left + padding.Left, Y: contentY + padding.Top},
+				Padding:       padding,
+			}, nil
 		}
-		remaining := availableWidth - imageWidth
+		outerWidth := imageWidth + padding.Left + padding.Right
+		remaining := availableWidth - outerWidth - left - right
 		switch {
 		case leftAuto && rightAuto:
-			left = remaining / 2
+			left = math.Max(0, remaining/2)
 		case leftAuto:
-			left = remaining - right
+			left = math.Max(0, remaining)
 		}
-		bounds := Rect{X: containingX + left, Y: contentY, Width: imageWidth, Height: imageHeight}
+		bounds := Rect{X: containingX + left, Y: contentY, Width: outerWidth, Height: imageHeight + padding.Top + padding.Bottom}
+		contentBounds := Rect{X: bounds.X + padding.Left, Y: bounds.Y + padding.Top, Width: imageWidth, Height: imageHeight}
 		fragment := InlineFragment{
 			Kind:  ImageFragmentKind,
-			Image: ImageFragment{Node: node.node, Image: decoded, Bounds: bounds, Opacity: 1},
+			Image: ImageFragment{Node: node.node, Image: decoded, Bounds: contentBounds, Opacity: 1},
 		}
 		return &Box{
-			Node:      node.node,
-			Bounds:    bounds,
-			Fragments: []InlineFragment{fragment},
-			flow:      []flowItem{{fragment: fragment}},
+			Node:          node.node,
+			Bounds:        bounds,
+			ContentBounds: contentBounds,
+			Padding:       padding,
+			Fragments:     []InlineFragment{fragment},
+			flow:          []flowItem{{fragment: fragment}},
 		}, nil
 	}
 
-	width := availableWidth - left - right
+	width := availableWidth - left - right - padding.Left - padding.Right
 	if style.width.unit != lengthAuto {
 		width = resolveLength(style.width, availableWidth, context.viewport, availableWidth)
-		remaining := availableWidth - width
-		switch {
-		case leftAuto && rightAuto:
-			left = remaining / 2
-			right = remaining / 2
-		case leftAuto:
-			left = remaining - right
-		case rightAuto:
-			right = remaining - left
-		}
 	}
-	if width < 0 {
-		width = 0
+	width = context.constrainWidth(style, math.Max(0, width), availableWidth)
+	outerWidth := width + padding.Left + padding.Right
+	remaining := availableWidth - outerWidth - left - right
+	switch {
+	case leftAuto && rightAuto:
+		left = math.Max(0, remaining/2)
+		right = math.Max(0, remaining/2)
+	case leftAuto:
+		left = math.Max(0, remaining)
+	case rightAuto:
+		right = math.Max(0, remaining)
 	}
 
 	box := &Box{
-		Node:   node.node,
-		Bounds: Rect{X: containingX + left, Y: contentY, Width: width},
+		Node:    node.node,
+		Bounds:  Rect{X: containingX + left, Y: contentY, Width: outerWidth},
+		Padding: padding,
 	}
-	cursorY := contentY
+	box.ContentBounds = Rect{
+		X:     box.Bounds.X + padding.Left,
+		Y:     box.Bounds.Y + padding.Top,
+		Width: width,
+	}
+	cursorY := box.ContentBounds.Y
 	previousBottomMargin := 0.0
 	hasContent := false
 
@@ -162,10 +180,10 @@ func (context *layoutContext) layoutBlock(node *styledNode, containingX, content
 			gap := math.Max(previousBottomMargin, topMargin)
 			// A first block child's top margin collapses through an auto-height
 			// parent with no border or padding in this initial box model.
-			if !hasContent {
+			if !hasContent && padding.Top == 0 {
 				gap = 0
 			}
-			childBox, err := context.layoutBlock(child, box.Bounds.X, cursorY+gap, width)
+			childBox, err := context.layoutBlock(child, box.ContentBounds.X, cursorY+gap, width)
 			if err != nil {
 				return nil, err
 			}
@@ -182,7 +200,7 @@ func (context *layoutContext) layoutBlock(node *styledNode, containingX, content
 		for end < len(node.children) && node.children[end].style.display != displayBlock {
 			end++
 		}
-		fragments, height, err := context.layoutInline(node.children[index:end], box.Bounds.X, cursorY, width)
+		fragments, height, err := context.layoutInline(node.children[index:end], box.ContentBounds.X, cursorY, width, node.style.textAlign)
 		if err != nil {
 			return nil, err
 		}
@@ -213,11 +231,21 @@ func (context *layoutContext) layoutBlock(node *styledNode, containingX, content
 		index = end
 	}
 
-	box.Bounds.Height = math.Max(0, cursorY-contentY)
+	if hasContent && padding.Bottom > 0 {
+		cursorY += previousBottomMargin
+	}
+	contentHeight := math.Max(0, cursorY-box.ContentBounds.Y)
+	// Percentage heights remain auto until the containing-block height is
+	// definite. This layout slice does not yet pass definite heights downward.
+	if style.height.unit != lengthAuto && style.height.unit != lengthPercent {
+		contentHeight = math.Max(0, resolveLength(style.height, 0, context.viewport, contentHeight))
+	}
+	box.ContentBounds.Height = contentHeight
+	box.Bounds.Height = padding.Top + box.ContentBounds.Height + padding.Bottom
 	return box, nil
 }
 
-func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width float64) ([]InlineFragment, float64, error) {
+func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width float64, alignment textAlignment) ([]InlineFragment, float64, error) {
 	builder := inlineTokenBuilder{images: context.images}
 	for _, node := range nodes {
 		builder.add(node, 1)
@@ -240,11 +268,18 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 		for _, piece := range line {
 			lineAscent = math.Max(lineAscent, piece.metrics.ascent)
 			lineDescent = math.Max(lineDescent, piece.metrics.descent)
-			lineHeight = math.Max(lineHeight, piece.style.fontSize*piece.style.lineHeight)
+			lineHeight = math.Max(lineHeight, piece.style.lineHeight.pixels(piece.style.fontSize))
 		}
 		lineHeight = math.Max(lineHeight, lineAscent+lineDescent)
 		leading := math.Max(0, lineHeight-lineAscent-lineDescent)
 		baseline := cursorY + leading/2 + lineAscent
+		lineOffset := 0.0
+		switch alignment {
+		case alignCenter:
+			lineOffset = (width - lineWidth) / 2
+		case alignRight:
+			lineOffset = width - lineWidth
+		}
 		for _, piece := range line {
 			if piece.replaced {
 				fragments = append(fragments, InlineFragment{
@@ -252,7 +287,7 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 					Image: ImageFragment{
 						Node:    piece.node,
 						Image:   piece.image,
-						Bounds:  Rect{X: x + piece.x, Y: baseline - piece.height, Width: piece.width, Height: piece.height},
+						Bounds:  Rect{X: x + lineOffset + piece.x, Y: baseline - piece.height, Width: piece.width, Height: piece.height},
 						Opacity: piece.opacity,
 					},
 				})
@@ -263,7 +298,7 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 			text := TextFragment{
 				Node:       piece.node,
 				Text:       piece.text,
-				X:          x + piece.x,
+				X:          x + lineOffset + piece.x,
 				BaselineY:  baseline,
 				Width:      piece.width,
 				Height:     lineHeight,
@@ -386,10 +421,36 @@ func (context *layoutContext) replacedDimensions(style computedStyle, decoded im
 	case heightSpecified && !widthSpecified:
 		width = naturalWidth * height / naturalHeight
 	}
+	constrainedWidth := context.constrainWidth(style, width, availableWidth)
+	if constrainedWidth != width && !heightSpecified && width > 0 {
+		height *= constrainedWidth / width
+	}
+	width = constrainedWidth
 	if width < 0 || height < 0 || !isFinite(width) || !isFinite(height) {
 		return 0, 0, false
 	}
 	return width, height, true
+}
+
+func (context *layoutContext) resolvePadding(style computedStyle, availableWidth float64) Edges {
+	return Edges{
+		Top:    resolveLength(style.paddingTop, availableWidth, context.viewport, 0),
+		Right:  resolveLength(style.paddingRight, availableWidth, context.viewport, 0),
+		Bottom: resolveLength(style.paddingBottom, availableWidth, context.viewport, 0),
+		Left:   resolveLength(style.paddingLeft, availableWidth, context.viewport, 0),
+	}
+}
+
+func (context *layoutContext) constrainWidth(style computedStyle, width, availableWidth float64) float64 {
+	maximum := math.Inf(1)
+	if style.maxWidth.unit != lengthAuto {
+		maximum = math.Max(0, resolveLength(style.maxWidth, availableWidth, context.viewport, width))
+	}
+	minimum := 0.0
+	if style.minWidth.unit != lengthAuto {
+		minimum = math.Max(0, resolveLength(style.minWidth, availableWidth, context.viewport, 0))
+	}
+	return math.Max(minimum, math.Min(width, maximum))
 }
 
 type inlineTokenBuilder struct {

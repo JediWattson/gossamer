@@ -42,9 +42,11 @@ instructions, text elements, and basic implied end tags. Full script-data
 states, legacy character-reference edge cases, table foster parenting,
 formatting-element reconstruction, templates, SVG/MathML, encoding sniffing,
 and script execution are intentionally deferred while the engine is brought up
-in vertical slices. The renderer currently implements a focused CSS and layout
-subset: complex selectors, common colors and lengths, block flow, inline text
-and image wrapping, intrinsic and author-specified image dimensions, bundled
-regular/bold fonts, links, backgrounds, margins, and opacity. CSS imports,
-media-query evaluation, generated content, advanced box geometry, broken-image
-UI, SVG, and AVIF are not implemented yet.
+in vertical slices. Because no scripting engine is present, body `<noscript>`
+fallback content is rendered. The renderer currently implements a focused CSS
+and layout subset: complex selectors, common colors and lengths, block flow,
+inline text and image wrapping, intrinsic and author-specified image dimensions,
+content-box width and height constraints, margins, padding, text alignment,
+line height, bundled regular/bold fonts, links, backgrounds, and opacity. CSS
+imports, full media-query evaluation, generated content, borders, floats,
+advanced display modes, broken-image UI, SVG, and AVIF are not implemented yet.

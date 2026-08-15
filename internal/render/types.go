@@ -34,6 +34,15 @@ type Rect struct {
 	Height float64
 }
 
+// Edges contains the used top, right, bottom, and left CSS-pixel widths of a
+// box-model layer.
+type Edges struct {
+	Top    float64
+	Right  float64
+	Bottom float64
+	Left   float64
+}
+
 // FontWeight selects the initial supported font faces.
 type FontWeight uint8
 
@@ -44,12 +53,14 @@ const (
 
 // Box is retained layout geometry for painting and future hit testing.
 type Box struct {
-	Node      *dom.Node
-	Bounds    Rect
-	Children  []*Box
-	Fragments []InlineFragment
-	Text      []TextFragment
-	flow      []flowItem
+	Node          *dom.Node
+	Bounds        Rect
+	ContentBounds Rect
+	Padding       Edges
+	Children      []*Box
+	Fragments     []InlineFragment
+	Text          []TextFragment
+	flow          []flowItem
 }
 
 type flowItem struct {

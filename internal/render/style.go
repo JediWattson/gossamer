@@ -20,6 +20,26 @@ const (
 	displayNone
 )
 
+type textAlignment uint8
+
+const (
+	alignLeft textAlignment = iota
+	alignCenter
+	alignRight
+)
+
+type computedLineHeight struct {
+	value    float64
+	absolute bool
+}
+
+func (lineHeight computedLineHeight) pixels(fontSize float64) float64 {
+	if lineHeight.absolute {
+		return lineHeight.value
+	}
+	return fontSize * lineHeight.value
+}
+
 type lengthUnit uint8
 
 const (
@@ -42,11 +62,18 @@ type computedStyle struct {
 	hasBackground bool
 	fontSize      float64
 	fontWeight    FontWeight
-	lineHeight    float64
+	lineHeight    computedLineHeight
 	underline     bool
+	textAlign     textAlignment
 	opacity       float64
 	width         length
 	height        length
+	minWidth      length
+	maxWidth      length
+	paddingTop    length
+	paddingRight  length
+	paddingBottom length
+	paddingLeft   length
 	marginTop     length
 	marginRight   length
 	marginBottom  length
@@ -121,17 +148,23 @@ func styleNode(node *dom.Node, parent *styledNode, sheets []css.Stylesheet, view
 
 func initialStyle(node *dom.Node, parent *styledNode) computedStyle {
 	style := computedStyle{
-		display:      displayInline,
-		color:        color.NRGBA{A: 0xff},
-		fontSize:     16,
-		lineHeight:   1.2,
-		opacity:      1,
-		width:        length{unit: lengthAuto},
-		height:       length{unit: lengthAuto},
-		marginTop:    length{unit: lengthPX},
-		marginRight:  length{unit: lengthPX},
-		marginBottom: length{unit: lengthPX},
-		marginLeft:   length{unit: lengthPX},
+		display:       displayInline,
+		color:         color.NRGBA{A: 0xff},
+		fontSize:      16,
+		lineHeight:    computedLineHeight{value: 1.2},
+		opacity:       1,
+		width:         length{unit: lengthAuto},
+		height:        length{unit: lengthAuto},
+		minWidth:      px(0),
+		maxWidth:      length{unit: lengthAuto},
+		paddingTop:    px(0),
+		paddingRight:  px(0),
+		paddingBottom: px(0),
+		paddingLeft:   px(0),
+		marginTop:     length{unit: lengthPX},
+		marginRight:   length{unit: lengthPX},
+		marginBottom:  length{unit: lengthPX},
+		marginLeft:    length{unit: lengthPX},
 	}
 	if parent != nil {
 		style.color = parent.style.color
@@ -139,6 +172,7 @@ func initialStyle(node *dom.Node, parent *styledNode) computedStyle {
 		style.fontWeight = parent.style.fontWeight
 		style.lineHeight = parent.style.lineHeight
 		style.underline = parent.style.underline
+		style.textAlign = parent.style.textAlign
 	}
 	if node == nil {
 		return style
@@ -152,9 +186,14 @@ func initialStyle(node *dom.Node, parent *styledNode) computedStyle {
 	}
 
 	switch node.Data {
-	case "html", "body", "address", "article", "aside", "blockquote", "div", "dl", "fieldset", "figcaption", "figure", "footer", "form", "header", "hgroup", "main", "nav", "ol", "p", "pre", "section", "table", "ul", "h1", "h2", "h3", "h4", "h5", "h6":
+	case "html", "body", "address", "article", "aside", "blockquote", "div", "dl", "dt", "dd", "fieldset", "figcaption", "figure", "footer", "form", "header", "hgroup", "main", "nav", "ol", "li", "p", "pre", "section", "table", "ul", "h1", "h2", "h3", "h4", "h5", "h6":
 		style.display = displayBlock
-	case "head", "base", "link", "meta", "title", "style", "script", "template", "noscript":
+	case "noscript":
+		// Gossamer has no scripting engine, so body fallback content participates
+		// in normal flow. Treating the transparent element as a block keeps its
+		// block descendants visible until inline box splitting is implemented.
+		style.display = displayBlock
+	case "head", "base", "link", "meta", "title", "style", "script", "template":
 		style.display = displayNone
 	}
 
@@ -186,6 +225,17 @@ func initialStyle(node *dom.Node, parent *styledNode) computedStyle {
 	case "p":
 		style.marginTop = px(style.fontSize)
 		style.marginBottom = px(style.fontSize)
+	case "ul", "ol":
+		style.marginTop = px(style.fontSize)
+		style.marginBottom = px(style.fontSize)
+		style.paddingLeft = px(40)
+	case "blockquote":
+		style.marginTop = px(style.fontSize)
+		style.marginRight = px(40)
+		style.marginBottom = px(style.fontSize)
+		style.marginLeft = px(40)
+	case "dd":
+		style.marginLeft = px(40)
 	case "a":
 		if _, ok := attribute(node, "href"); ok {
 			style.color = color.NRGBA{R: 0, G: 0, B: 0xee, A: 0xff}
@@ -402,7 +452,12 @@ func applyDeclaration(style *computedStyle, property, source string, viewport Vi
 		}
 	case "line-height":
 		if numeric, err := strconv.ParseFloat(value, 64); err == nil && numeric > 0 && isFinite(numeric) {
-			style.lineHeight = numeric
+			style.lineHeight = computedLineHeight{value: numeric}
+		} else if parsed, ok := parseLength(value, style.fontSize, style.fontSize, viewport); ok && parsed.unit != lengthAuto {
+			resolved := resolveLength(parsed, style.fontSize, viewport, style.lineHeight.pixels(style.fontSize))
+			if resolved > 0 && isFinite(resolved) {
+				style.lineHeight = computedLineHeight{value: resolved, absolute: true}
+			}
 		}
 	case "text-decoration", "text-decoration-line":
 		if strings.Contains(value, "underline") {
@@ -421,6 +476,44 @@ func applyDeclaration(style *computedStyle, property, source string, viewport Vi
 	case "height":
 		if parsed, ok := parseLength(value, style.fontSize, style.fontSize, viewport); ok && nonNegativeLength(parsed) {
 			style.height = parsed
+		}
+	case "min-width":
+		if value == "auto" {
+			style.minWidth = px(0)
+		} else if parsed, ok := parseLength(value, style.fontSize, style.fontSize, viewport); ok && nonNegativeLength(parsed) {
+			style.minWidth = parsed
+		}
+	case "max-width":
+		if value == "none" {
+			style.maxWidth = length{unit: lengthAuto}
+		} else if parsed, ok := parseLength(value, style.fontSize, style.fontSize, viewport); ok && nonNegativeLength(parsed) {
+			style.maxWidth = parsed
+		}
+	case "padding":
+		if values, ok := parsePaddingLengths(value, style.fontSize, viewport); ok {
+			style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft = values[0], values[1], values[2], values[3]
+		}
+	case "padding-top", "padding-right", "padding-bottom", "padding-left":
+		if parsed, ok := parseLength(value, style.fontSize, style.fontSize, viewport); ok && parsed.unit != lengthAuto && nonNegativeLength(parsed) {
+			switch property {
+			case "padding-top":
+				style.paddingTop = parsed
+			case "padding-right":
+				style.paddingRight = parsed
+			case "padding-bottom":
+				style.paddingBottom = parsed
+			case "padding-left":
+				style.paddingLeft = parsed
+			}
+		}
+	case "text-align":
+		switch value {
+		case "center":
+			style.textAlign = alignCenter
+		case "right", "end":
+			style.textAlign = alignRight
+		case "left", "start", "justify":
+			style.textAlign = alignLeft
 		}
 	case "margin":
 		if values, ok := parseBoxLengths(value, style.fontSize, viewport); ok {
@@ -488,6 +581,19 @@ func parseBoxLengths(source string, fontSize float64, viewport Viewport) ([4]len
 		copy(result[:], parsed)
 	}
 	return result, true
+}
+
+func parsePaddingLengths(source string, fontSize float64, viewport Viewport) ([4]length, bool) {
+	values, ok := parseBoxLengths(source, fontSize, viewport)
+	if !ok {
+		return [4]length{}, false
+	}
+	for _, value := range values {
+		if value.unit == lengthAuto || !nonNegativeLength(value) {
+			return [4]length{}, false
+		}
+	}
+	return values, true
 }
 
 func parseLength(source string, emBase, percentBase float64, viewport Viewport) (length, bool) {
