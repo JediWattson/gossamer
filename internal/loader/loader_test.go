@@ -91,6 +91,44 @@ func TestLoadReturnsHTTPErrorDocument(t *testing.T) {
 	}
 }
 
+func TestLoadResourceNegotiatesForDestination(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		destination Destination
+		wantAccept  string
+	}{
+		{name: "document", destination: DocumentDestination, wantAccept: acceptDocument},
+		{name: "style", destination: StyleDestination, wantAccept: acceptStyle},
+		{name: "image", destination: ImageDestination, wantAccept: acceptImage},
+		{name: "font", destination: FontDestination, wantAccept: acceptFont},
+		{name: "script", destination: ScriptDestination, wantAccept: acceptScript},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			accept := make(chan string, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				accept <- request.Header.Get("Accept")
+				writer.WriteHeader(http.StatusNoContent)
+			}))
+			defer server.Close()
+
+			response, err := New(server.Client()).LoadResource(context.Background(), server.URL, test.destination)
+			if err != nil {
+				t.Fatalf("LoadResource() error = %v", err)
+			}
+			response.Body.Close()
+			if got := <-accept; got != test.wantAccept {
+				t.Errorf("Accept = %q, want %q", got, test.wantAccept)
+			}
+		})
+	}
+}
+
 func TestLoadFollowsRedirect(t *testing.T) {
 	t.Parallel()
 

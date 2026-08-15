@@ -18,10 +18,26 @@ const (
 
 	defaultTimeout = 30 * time.Second
 	acceptDocument = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+	acceptStyle    = "text/css,*/*;q=0.1"
+	acceptImage    = "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+	acceptFont     = "font/woff2,font/woff,*/*;q=0.1"
+	acceptScript   = "text/javascript,application/javascript,*/*;q=0.1"
 )
 
 // ErrInvalidURL marks URL input that cannot be loaded over HTTP or HTTPS.
 var ErrInvalidURL = errors.New("invalid URL")
+
+// Destination identifies how a fetched resource will be consumed. It controls
+// request negotiation without coupling the HTTP loader to DOM elements.
+type Destination uint8
+
+const (
+	DocumentDestination Destination = iota
+	StyleDestination
+	ImageDestination
+	FontDestination
+	ScriptDestination
+)
 
 // Response is a loaded resource. The caller must close Body.
 type Response struct {
@@ -49,6 +65,12 @@ func New(httpClient *http.Client) *Loader {
 // Load performs a document GET request. HTTP error statuses are returned as
 // responses so callers can consume the document supplied by the server.
 func (loader *Loader) Load(ctx context.Context, rawURL string) (*Response, error) {
+	return loader.LoadResource(ctx, rawURL, DocumentDestination)
+}
+
+// LoadResource performs a GET for a document subresource. HTTP error statuses
+// are returned as responses so the caller can decide whether they are usable.
+func (loader *Loader) LoadResource(ctx context.Context, rawURL string, destination Destination) (*Response, error) {
 	parsedURL, err := ParseHTTPURL(rawURL)
 	if err != nil {
 		return nil, err
@@ -58,7 +80,7 @@ func (loader *Loader) Load(ctx context.Context, rawURL string) (*Response, error
 	if err != nil {
 		return nil, fmt.Errorf("create request for %q: %w", rawURL, err)
 	}
-	request.Header.Set("Accept", acceptDocument)
+	request.Header.Set("Accept", destination.accept())
 	request.Header.Set("User-Agent", UserAgent)
 
 	httpResponse, err := loader.httpClient.Do(request)
@@ -72,6 +94,21 @@ func (loader *Loader) Load(ctx context.Context, rawURL string) (*Response, error
 		Header:     httpResponse.Header,
 		Body:       httpResponse.Body,
 	}, nil
+}
+
+func (destination Destination) accept() string {
+	switch destination {
+	case StyleDestination:
+		return acceptStyle
+	case ImageDestination:
+		return acceptImage
+	case FontDestination:
+		return acceptFont
+	case ScriptDestination:
+		return acceptScript
+	default:
+		return acceptDocument
+	}
 }
 
 // ParseHTTPURL validates a URL that can be loaded by the HTTP loader.
