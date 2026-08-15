@@ -8,6 +8,7 @@ import (
 	"math"
 
 	"github.com/JediWattson/gossamer/internal/dom"
+	computed "github.com/JediWattson/gossamer/internal/style"
 )
 
 var opaqueWhite = color.NRGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff}
@@ -28,6 +29,87 @@ func RenderWithResources(document *dom.Node, viewport Viewport, resources Resour
 	}
 	defer fonts.Close()
 	return renderWithFonts(document, viewport, resources, fonts)
+}
+
+// ComputeStyleSnapshot runs the style pipeline without performing layout or
+// paint. Browser pages can cache the returned immutable snapshot and reuse it
+// for synchronous computed-style reads and the next render.
+func ComputeStyleSnapshot(document *dom.Node, viewport Viewport, resources Resources) (*computed.Snapshot, error) {
+	if viewport.Width <= 0 || viewport.Height <= 0 {
+		return nil, fmt.Errorf("render: invalid viewport %dx%d", viewport.Width, viewport.Height)
+	}
+	if err := validateDocument(document); err != nil {
+		return nil, err
+	}
+	return computed.Compute(document, computed.Input{
+		Environment: styleEnvironment(viewport),
+		Stylesheets: resources.Stylesheets,
+	}), nil
+}
+
+// ComputeDocumentStyleSnapshot computes styles from one coherent stable-ID
+// document read. The returned snapshot records the document mutation version
+// and can be queried directly with dom.NodeID values.
+func ComputeDocumentStyleSnapshot(document *dom.Document, viewport Viewport, resources Resources) (*computed.Snapshot, error) {
+	if document == nil {
+		return nil, fmt.Errorf("render: nil document")
+	}
+	if viewport.Width <= 0 || viewport.Height <= 0 {
+		return nil, fmt.Errorf("render: invalid viewport %dx%d", viewport.Width, viewport.Height)
+	}
+	var snapshot *computed.Snapshot
+	err := document.WithReadView(func(view dom.ReadView) error {
+		var computeErr error
+		snapshot, computeErr = ComputeStyleSnapshotFromReadView(view, viewport, resources)
+		return computeErr
+	})
+	if err != nil {
+		return nil, err
+	}
+	return snapshot, nil
+}
+
+// ComputeStyleSnapshotFromReadView computes styles without reacquiring the
+// Document identity lock. It is intended for browser code that must validate a
+// NodeID and compute its style from the same coherent DOM read.
+func ComputeStyleSnapshotFromReadView(view dom.ReadView, viewport Viewport, resources Resources) (*computed.Snapshot, error) {
+	if viewport.Width <= 0 || viewport.Height <= 0 {
+		return nil, fmt.Errorf("render: invalid viewport %dx%d", viewport.Width, viewport.Height)
+	}
+	return computed.ComputeReadView(view, computed.Input{
+		Environment: styleEnvironment(viewport),
+		Stylesheets: resources.Stylesheets,
+	})
+}
+
+// RenderWithStyleSnapshot lays out and paints document using an already
+// computed immutable style snapshot. The snapshot must belong to document and
+// the supplied viewport; decoded images continue to come from resources.
+func RenderWithStyleSnapshot(document *dom.Node, viewport Viewport, resources Resources, snapshot *computed.Snapshot) (*Frame, error) {
+	fonts, err := newFontBook()
+	if err != nil {
+		return nil, err
+	}
+	defer fonts.Close()
+	return renderWithStyleSnapshotAndFonts(document, viewport, resources, snapshot, fonts)
+}
+
+// RenderReadViewWithStyleSnapshot lays out and paints one coherent stable-ID
+// DOM read using an ID-only Snapshot produced by ComputeStyleSnapshotFromReadView.
+// Neither the Snapshot nor the resulting Frame's computed-style data retains
+// callback-scoped DOM pointers.
+func RenderReadViewWithStyleSnapshot(view dom.ReadView, viewport Viewport, resources Resources, snapshot *computed.Snapshot) (*Frame, error) {
+	access, err := view.Acquire()
+	if err != nil {
+		return nil, err
+	}
+	defer access.Close()
+	fonts, err := newFontBook()
+	if err != nil {
+		return nil, err
+	}
+	defer fonts.Close()
+	return renderReadAccessWithStyleSnapshotAndFonts(access, viewport, resources, snapshot, fonts)
 }
 
 // RenderPNG lays out document and encodes the painted viewport as PNG.
@@ -59,23 +141,80 @@ func RenderPNGWithResources(writer io.Writer, document *dom.Node, viewport Viewp
 }
 
 func renderWithFonts(document *dom.Node, viewport Viewport, resources Resources, fonts *fontBook) (*Frame, error) {
+	snapshot, err := ComputeStyleSnapshot(document, viewport, resources)
+	if err != nil {
+		return nil, err
+	}
+	return renderWithStyleSnapshotAndFonts(document, viewport, resources, snapshot, fonts)
+}
+
+func renderWithStyleSnapshotAndFonts(document *dom.Node, viewport Viewport, resources Resources, snapshot *computed.Snapshot, fonts *fontBook) (*Frame, error) {
 	if viewport.Width <= 0 || viewport.Height <= 0 {
 		return nil, fmt.Errorf("render: invalid viewport %dx%d", viewport.Width, viewport.Height)
 	}
 	if err := validateDocument(document); err != nil {
 		return nil, err
 	}
+	if snapshot == nil {
+		return nil, fmt.Errorf("render: nil style snapshot")
+	}
+	if snapshot.Root() != document {
+		return nil, fmt.Errorf("render: style snapshot belongs to a different document")
+	}
+	environment := snapshot.Environment()
+	if environment.Width != viewport.Width || environment.Height != viewport.Height {
+		return nil, fmt.Errorf("render: style snapshot viewport is %dx%d, want %dx%d", environment.Width, environment.Height, viewport.Width, viewport.Height)
+	}
+	styledRoot := projectStyleTree(document, snapshot)
+	if styledRoot == nil {
+		return nil, fmt.Errorf("render: style snapshot does not contain the document root")
+	}
+	return renderProjectedStyles(document, styledRoot, viewport, resources, snapshot, fonts)
+}
 
-	styledRoot := buildStyleTree(document, viewport, resources.Stylesheets)
+func renderReadAccessWithStyleSnapshotAndFonts(access *dom.ReadAccess, viewport Viewport, resources Resources, snapshot *computed.Snapshot, fonts *fontBook) (*Frame, error) {
+	if viewport.Width <= 0 || viewport.Height <= 0 {
+		return nil, fmt.Errorf("render: invalid viewport %dx%d", viewport.Width, viewport.Height)
+	}
+	document := access.Root()
+	if err := validateDocument(document); err != nil {
+		return nil, err
+	}
+	if snapshot == nil {
+		return nil, fmt.Errorf("render: nil style snapshot")
+	}
+	if snapshot.DocumentIdentity() != access.Identity() {
+		return nil, fmt.Errorf("render: style snapshot belongs to a different document")
+	}
+	rootID, ok := access.ID(document)
+	if !ok || snapshot.RootID() != rootID {
+		return nil, fmt.Errorf("render: style snapshot belongs to a different document")
+	}
+	if snapshot.Version() != access.Version() {
+		return nil, fmt.Errorf("render: style snapshot version is %d, want %d", snapshot.Version(), access.Version())
+	}
+	environment := snapshot.Environment()
+	if environment.Width != viewport.Width || environment.Height != viewport.Height {
+		return nil, fmt.Errorf("render: style snapshot viewport is %dx%d, want %dx%d", environment.Width, environment.Height, viewport.Width, viewport.Height)
+	}
+	styledRoot := projectReadAccessStyleTree(document, access, snapshot)
+	if styledRoot == nil {
+		return nil, fmt.Errorf("render: style snapshot does not contain the document root")
+	}
+	return renderProjectedStyles(document, styledRoot, viewport, resources, snapshot, fonts)
+}
+
+func renderProjectedStyles(document *dom.Node, styledRoot *styledNode, viewport Viewport, resources Resources, snapshot *computed.Snapshot, fonts *fontBook) (*Frame, error) {
 	rootBox, styles, err := layoutDocument(styledRoot, viewport, resources.Images, fonts)
 	if err != nil {
 		return nil, fmt.Errorf("render: layout: %w", err)
 	}
 	displayList := buildDisplayList(document, rootBox, styles, viewport)
 	return &Frame{
-		Viewport:    viewport,
-		Root:        rootBox,
-		DisplayList: displayList,
+		Viewport:       viewport,
+		Root:           rootBox,
+		ComputedStyles: snapshot,
+		DisplayList:    displayList,
 	}, nil
 }
 
@@ -86,12 +225,20 @@ func buildDisplayList(document *dom.Node, root *Box, styles map[*dom.Node]comput
 
 	htmlNode := findElement(document, "html")
 	bodyNode := findElement(document, "body")
-	if htmlStyle, ok := styles[htmlNode]; ok && htmlStyle.hasBackground {
-		list.Commands = append(list.Commands, Command{Kind: FillRectCommand, Rect: canvas, Color: htmlStyle.background})
-	} else if bodyStyle, ok := styles[bodyNode]; ok && bodyStyle.hasBackground {
+	htmlBackground, htmlHasBackground := color.NRGBA{}, false
+	if htmlStyle, ok := styles[htmlNode]; ok {
+		htmlBackground, htmlHasBackground = htmlStyle.Background()
+	}
+	bodyBackground, bodyHasBackground := color.NRGBA{}, false
+	if bodyStyle, ok := styles[bodyNode]; ok {
+		bodyBackground, bodyHasBackground = bodyStyle.Background()
+	}
+	if htmlHasBackground {
+		list.Commands = append(list.Commands, Command{Kind: FillRectCommand, Rect: canvas, Color: htmlBackground})
+	} else if bodyHasBackground {
 		// HTML propagates the body background to the canvas when the root has
 		// no background of its own.
-		list.Commands = append(list.Commands, Command{Kind: FillRectCommand, Rect: canvas, Color: bodyStyle.background})
+		list.Commands = append(list.Commands, Command{Kind: FillRectCommand, Rect: canvas, Color: bodyBackground})
 	}
 
 	for _, child := range root.Children {
@@ -105,15 +252,16 @@ func paintBox(list *DisplayList, box *Box, styles map[*dom.Node]computedStyle) {
 		return
 	}
 	style, hasStyle := styles[box.Node]
-	grouped := hasStyle && style.opacity < 1
+	grouped := hasStyle && style.Opacity() < 1
 	if grouped {
-		list.Commands = append(list.Commands, Command{Kind: BeginOpacityCommand, Opacity: style.opacity})
+		list.Commands = append(list.Commands, Command{Kind: BeginOpacityCommand, Opacity: style.Opacity()})
 	}
-	if hasStyle && style.hasBackground && box.Bounds.Width > 0 && box.Bounds.Height > 0 {
+	background, hasBackground := style.Background()
+	if hasStyle && hasBackground && box.Bounds.Width > 0 && box.Bounds.Height > 0 {
 		list.Commands = append(list.Commands, Command{
 			Kind:  FillRectCommand,
 			Rect:  box.Bounds,
-			Color: style.background,
+			Color: background,
 		})
 	}
 	if hasStyle {
@@ -153,10 +301,10 @@ func paintBoxBorders(list *DisplayList, box *Box, style computedStyle) {
 	// Physical sides are painted in top/right/bottom/left order. Uniform solid
 	// borders are exact; diagonal corner splitting for differently colored
 	// adjacent sides is deferred with the remaining advanced border geometry.
-	paintBorderEdge(list, Rect{X: bounds.X, Y: bounds.Y, Width: bounds.Width, Height: borders.Top}, borderPaintColor(style.borderTop, style.color))
-	paintBorderEdge(list, Rect{X: bounds.X + bounds.Width - borders.Right, Y: bounds.Y, Width: borders.Right, Height: bounds.Height}, borderPaintColor(style.borderRight, style.color))
-	paintBorderEdge(list, Rect{X: bounds.X, Y: bounds.Y + bounds.Height - borders.Bottom, Width: bounds.Width, Height: borders.Bottom}, borderPaintColor(style.borderBottom, style.color))
-	paintBorderEdge(list, Rect{X: bounds.X, Y: bounds.Y, Width: borders.Left, Height: bounds.Height}, borderPaintColor(style.borderLeft, style.color))
+	paintBorderEdge(list, Rect{X: bounds.X, Y: bounds.Y, Width: bounds.Width, Height: borders.Top}, borderPaintColor(style.BorderTop(), style.Color()))
+	paintBorderEdge(list, Rect{X: bounds.X + bounds.Width - borders.Right, Y: bounds.Y, Width: borders.Right, Height: bounds.Height}, borderPaintColor(style.BorderRight(), style.Color()))
+	paintBorderEdge(list, Rect{X: bounds.X, Y: bounds.Y + bounds.Height - borders.Bottom, Width: bounds.Width, Height: borders.Bottom}, borderPaintColor(style.BorderBottom(), style.Color()))
+	paintBorderEdge(list, Rect{X: bounds.X, Y: bounds.Y, Width: borders.Left, Height: bounds.Height}, borderPaintColor(style.BorderLeft(), style.Color()))
 }
 
 func paintBorderEdge(list *DisplayList, rectangle Rect, edgeColor color.NRGBA) {
@@ -167,11 +315,11 @@ func paintBorderEdge(list *DisplayList, rectangle Rect, edgeColor color.NRGBA) {
 }
 
 func borderPaintColor(side borderSide, currentColor color.NRGBA) color.NRGBA {
-	if side.style != borderStyleSolid {
+	if side.Style() != borderStyleSolid {
 		return color.NRGBA{}
 	}
-	if side.hasColor {
-		return side.color
+	if borderColor, hasColor := side.Color(); hasColor {
+		return borderColor
 	}
 	return currentColor
 }
@@ -191,7 +339,7 @@ func paintTextFragment(list *DisplayList, fragment TextFragment, styles map[*dom
 		X: fragment.X, BaselineY: fragment.BaselineY,
 		FontSize: fragment.FontSize, FontWeight: fragment.FontWeight,
 	})
-	if fragmentStyle, ok := styles[fragment.Node]; ok && fragmentStyle.underline {
+	if fragmentStyle, ok := styles[fragment.Node]; ok && fragmentStyle.Underline() {
 		list.Commands = append(list.Commands, Command{
 			Kind:  FillRectCommand,
 			Rect:  Rect{X: fragment.X, Y: fragment.BaselineY + math.Max(1, fragment.FontSize/16), Width: fragment.Width, Height: math.Max(1, fragment.FontSize/16)},

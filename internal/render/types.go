@@ -7,6 +7,7 @@ import (
 
 	"github.com/JediWattson/gossamer/internal/css"
 	"github.com/JediWattson/gossamer/internal/dom"
+	computed "github.com/JediWattson/gossamer/internal/style"
 )
 
 // Viewport defines the CSS-pixel dimensions of a rendered page.
@@ -43,12 +44,13 @@ type Edges struct {
 	Left   float64
 }
 
-// FontWeight selects the initial supported font faces.
-type FontWeight uint8
+// FontWeight selects the initial supported font faces. The alias preserves the
+// renderer API while computed-value ownership lives in internal/style.
+type FontWeight = computed.FontWeight
 
 const (
-	FontWeightNormal FontWeight = iota
-	FontWeightBold
+	FontWeightNormal = computed.FontWeightNormal
+	FontWeightBold   = computed.FontWeightBold
 )
 
 // Box is retained layout geometry for painting and future hit testing.
@@ -141,7 +143,8 @@ type DisplayList struct {
 
 // Frame contains reusable layout geometry and its paint operations.
 type Frame struct {
-	Viewport    Viewport
-	Root        *Box
-	DisplayList DisplayList
+	Viewport       Viewport
+	Root           *Box
+	ComputedStyles *computed.Snapshot
+	DisplayList    DisplayList
 }

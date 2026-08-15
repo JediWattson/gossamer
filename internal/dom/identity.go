@@ -14,6 +14,15 @@ type NodeID uint32
 
 const InvalidNodeID NodeID = 0
 
+// DocumentIdentity is an opaque process-local token that distinguishes two
+// indexed Documents even when their NodeIDs and mutation versions coincide.
+// Its representation is private so callers can compare but not forge tokens.
+type DocumentIdentity struct {
+	value uint64
+}
+
+var nextDocumentIdentity atomic.Uint64
+
 var (
 	ErrInvalidDocument = errors.New("dom: invalid document")
 	ErrUnknownNode     = errors.New("dom: unknown node id")
@@ -21,14 +30,16 @@ var (
 	ErrWrongNodeKind   = errors.New("dom: wrong node kind")
 	ErrInvalidName     = errors.New("dom: invalid name")
 	ErrNamespace       = errors.New("dom: invalid namespace")
+	ErrExpiredReadView = errors.New("dom: read view has expired")
 )
 
 // Document adds stable identity and mutation versioning around the existing
 // pointer-backed DOM. The renderer may continue resolving IDs to *Node during
 // migration, while browser/runtime-facing APIs use NodeID.
 type Document struct {
-	root  NodeID
-	store *NodeStore
+	identity DocumentIdentity
+	root     NodeID
+	store    *NodeStore
 
 	version atomic.Uint64
 }
@@ -39,6 +50,188 @@ type NodeStore struct {
 	mutex sync.RWMutex
 	nodes []*Node
 	ids   map[*Node]NodeID
+}
+
+// ReadView is a callback-scoped capability for acquiring coherent raw DOM
+// access. WithReadView revokes the capability before releasing the NodeStore
+// read lock. An access acquired before revocation keeps that lock effective
+// until the access is closed, even if it is used by another goroutine.
+type ReadView struct {
+	lease *readViewLease
+}
+
+type readViewLease struct {
+	mutex    sync.RWMutex
+	active   bool
+	identity DocumentIdentity
+	store    *NodeStore
+	root     NodeID
+	version  uint64
+}
+
+// ReadAccess keeps one coherent raw-node read alive. Close is idempotent and
+// must be called; methods fail safely after Close. A separate method guard
+// makes Close safe to race with readers of the same access.
+type ReadAccess struct {
+	mutex  sync.RWMutex
+	lease  *readViewLease
+	closed bool
+}
+
+// Acquire starts one coherent raw-node access. It fails after the callback
+// supplied to WithReadView has returned or begun returning.
+func (view ReadView) Acquire() (*ReadAccess, error) {
+	if view.lease == nil {
+		return nil, ErrExpiredReadView
+	}
+	view.lease.mutex.RLock()
+	if !view.lease.active {
+		view.lease.mutex.RUnlock()
+		return nil, ErrExpiredReadView
+	}
+	return &ReadAccess{lease: view.lease}, nil
+}
+
+// Close ends access and permits WithReadView to release the document read
+// lock. It may be called more than once.
+func (access *ReadAccess) Close() {
+	if access == nil {
+		return
+	}
+	access.mutex.Lock()
+	if !access.closed {
+		access.closed = true
+		lease := access.lease
+		access.lease = nil
+		if lease != nil {
+			lease.mutex.RUnlock()
+		}
+	}
+	access.mutex.Unlock()
+}
+
+// Identity returns the opaque indexed-Document identity for this access.
+func (access *ReadAccess) Identity() DocumentIdentity {
+	if access == nil {
+		return DocumentIdentity{}
+	}
+	access.mutex.RLock()
+	defer access.mutex.RUnlock()
+	if access.closed || access.lease == nil {
+		return DocumentIdentity{}
+	}
+	return access.lease.identity
+}
+
+// Root returns the document node for this coherent access.
+func (access *ReadAccess) Root() *Node {
+	if access == nil {
+		return nil
+	}
+	access.mutex.RLock()
+	defer access.mutex.RUnlock()
+	if access.closed || access.lease == nil || access.lease.store == nil {
+		return nil
+	}
+	root, _ := access.lease.store.resolveLocked(access.lease.root)
+	return root
+}
+
+// Version returns the document mutation version captured for this access.
+func (access *ReadAccess) Version() uint64 {
+	if access == nil {
+		return 0
+	}
+	access.mutex.RLock()
+	defer access.mutex.RUnlock()
+	if access.closed || access.lease == nil {
+		return 0
+	}
+	return access.lease.version
+}
+
+// ID resolves a backing node to stable logical identity without reacquiring
+// the NodeStore read lock.
+func (access *ReadAccess) ID(node *Node) (NodeID, bool) {
+	if access == nil || node == nil {
+		return InvalidNodeID, false
+	}
+	access.mutex.RLock()
+	defer access.mutex.RUnlock()
+	if access.closed || access.lease == nil || access.lease.store == nil {
+		return InvalidNodeID, false
+	}
+	id, ok := access.lease.store.ids[node]
+	return id, ok
+}
+
+// Resolve resolves stable logical identity to its backing node without
+// reacquiring the NodeStore read lock.
+func (access *ReadAccess) Resolve(id NodeID) (*Node, bool) {
+	if access == nil {
+		return nil, false
+	}
+	access.mutex.RLock()
+	defer access.mutex.RUnlock()
+	if access.closed || access.lease == nil || access.lease.store == nil {
+		return nil, false
+	}
+	return access.lease.store.resolveLocked(id)
+}
+
+// Identity returns the opaque identity while this view remains active. It
+// returns the zero token after callback expiry.
+func (view ReadView) Identity() DocumentIdentity {
+	access, err := view.Acquire()
+	if err != nil {
+		return DocumentIdentity{}
+	}
+	defer access.Close()
+	return access.Identity()
+}
+
+// Root performs one callback-scoped root lookup. Callers that traverse or
+// retain the returned node must instead hold an explicit ReadAccess.
+func (view ReadView) Root() *Node {
+	access, err := view.Acquire()
+	if err != nil {
+		return nil
+	}
+	defer access.Close()
+	return access.Root()
+}
+
+// Version returns the captured version while this view remains active. It
+// returns zero after callback expiry.
+func (view ReadView) Version() uint64 {
+	access, err := view.Acquire()
+	if err != nil {
+		return 0
+	}
+	defer access.Close()
+	return access.Version()
+}
+
+// ID performs one callback-scoped stable-identity lookup. Callers that need a
+// sequence of raw-node operations must hold an explicit ReadAccess.
+func (view ReadView) ID(node *Node) (NodeID, bool) {
+	access, err := view.Acquire()
+	if err != nil {
+		return InvalidNodeID, false
+	}
+	defer access.Close()
+	return access.ID(node)
+}
+
+// Resolve performs one callback-scoped backing-node lookup. Callers that use
+// the returned node beyond this call must hold an explicit ReadAccess.
+func (view ReadView) Resolve(id NodeID) (*Node, bool) {
+	access, err := view.Acquire()
+	if err != nil {
+		return nil, false
+	}
+	defer access.Close()
+	return access.Resolve(id)
 }
 
 // IdentitySnapshot is the stable-ID graph shape needed by the browser's
@@ -62,9 +255,29 @@ func IndexDocument(root *Node) (*Document, error) {
 	for _, node := range ordered {
 		store.assignLocked(node)
 	}
-	document := &Document{root: store.ids[root], store: store}
+	document := &Document{
+		identity: newDocumentIdentity(),
+		root:     store.ids[root],
+		store:    store,
+	}
 	document.version.Store(1)
 	return document, nil
+}
+
+func newDocumentIdentity() DocumentIdentity {
+	value := nextDocumentIdentity.Add(1)
+	if value == 0 {
+		value = nextDocumentIdentity.Add(1)
+	}
+	return DocumentIdentity{value: value}
+}
+
+// Identity returns the opaque process-local identity of document.
+func (document *Document) Identity() DocumentIdentity {
+	if document == nil {
+		return DocumentIdentity{}
+	}
+	return document.identity
 }
 
 func (document *Document) RootID() NodeID {
@@ -82,6 +295,41 @@ func (document *Document) Root() *Node {
 	return node
 }
 
+// WithReadView holds the store's read lock while callback observes the current
+// pointer-backed tree, stable identities, and mutation version. The supplied
+// view is valid only for the duration of callback.
+func (document *Document) WithReadView(callback func(ReadView) error) error {
+	if document == nil || document.store == nil {
+		return ErrInvalidDocument
+	}
+	if callback == nil {
+		return fmt.Errorf("dom: nil document reader")
+	}
+	document.store.mutex.RLock()
+	_, ok := document.store.resolveLocked(document.root)
+	if !ok {
+		document.store.mutex.RUnlock()
+		return fmt.Errorf("%w: %d", ErrUnknownNode, document.root)
+	}
+	lease := &readViewLease{
+		active:   true,
+		identity: document.identity,
+		store:    document.store,
+		root:     document.root,
+		version:  document.version.Load(),
+	}
+	defer func() {
+		// Writer preference on this mutex also prevents a new Acquire from
+		// slipping in once callback return has begun. Existing accesses keep the
+		// NodeStore read lock effective until they close and release their reads.
+		lease.mutex.Lock()
+		lease.active = false
+		lease.mutex.Unlock()
+		document.store.mutex.RUnlock()
+	}()
+	return callback(ReadView{lease: lease})
+}
+
 // ReadRoot holds the store's read lock while callback traverses the current
 // pointer-backed tree. Page rendering uses this transitional guard so stable-ID
 // mutations cannot race the legacy renderer.
@@ -92,13 +340,9 @@ func (document *Document) ReadRoot(callback func(*Node) error) error {
 	if callback == nil {
 		return fmt.Errorf("dom: nil document reader")
 	}
-	document.store.mutex.RLock()
-	defer document.store.mutex.RUnlock()
-	root, ok := document.store.resolveLocked(document.root)
-	if !ok {
-		return fmt.Errorf("%w: %d", ErrUnknownNode, document.root)
-	}
-	return callback(root)
+	return document.WithReadView(func(view ReadView) error {
+		return callback(view.Root())
+	})
 }
 
 func (document *Document) Store() *NodeStore {

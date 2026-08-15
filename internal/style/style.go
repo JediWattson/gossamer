@@ -1,6 +1,10 @@
-package render
+// Package style computes immutable typed styles for DOM trees. It owns the
+// cascade, inheritance, custom-property resolution, and computed-value parsing;
+// layout and paint consume Snapshots without participating in the cascade.
+package style
 
 import (
+	"fmt"
 	"image/color"
 	"math"
 	"sort"
@@ -12,114 +16,388 @@ import (
 	"github.com/JediWattson/gossamer/internal/dom"
 )
 
-type displayMode uint8
-
-const (
-	displayInline displayMode = iota
-	displayBlock
-	displayListItem
-	displayNone
-)
-
-func (display displayMode) isBlockLevel() bool {
-	return display == displayBlock || display == displayListItem
+// Environment contains the CSS-pixel viewport and media state used while
+// computing styles. Browser code owns changes to this environment; a Snapshot
+// is valid only for the Environment with which it was computed.
+type Environment struct {
+	Width           int
+	Height          int
+	MediaType       string
+	InitialFontSize float64
 }
 
-type textAlignment uint8
+// Viewport is retained as a private implementation alias while the extracted
+// value parsers are split into focused files.
+type Viewport = Environment
+
+// Input contains the non-DOM inputs to one complete style computation.
+// Stylesheets are keyed by the link element that owns the external sheet.
+type Input struct {
+	Environment Environment
+	Stylesheets map[*dom.Node]css.Stylesheet
+}
+
+// DisplayMode is the computed outer display mode supported by the current
+// formatting model.
+type DisplayMode uint8
 
 const (
-	alignLeft textAlignment = iota
-	alignCenter
-	alignRight
+	DisplayInline DisplayMode = iota
+	DisplayBlock
+	DisplayListItem
+	DisplayNone
 )
 
-type computedLineHeight struct {
+type displayMode = DisplayMode
+
+const (
+	displayInline   = DisplayInline
+	displayBlock    = DisplayBlock
+	displayListItem = DisplayListItem
+	displayNone     = DisplayNone
+)
+
+type TextAlignment uint8
+
+const (
+	AlignLeft TextAlignment = iota
+	AlignCenter
+	AlignRight
+)
+
+type textAlignment = TextAlignment
+
+const (
+	alignLeft   = AlignLeft
+	alignCenter = AlignCenter
+	alignRight  = AlignRight
+)
+
+type LineHeight struct {
 	value    float64
 	absolute bool
 }
 
-type listStyleType uint8
+type computedLineHeight = LineHeight
+
+type ListStyleType uint8
 
 const (
-	listStyleDisc listStyleType = iota
-	listStyleCircle
-	listStyleSquare
-	listStyleDecimal
-	listStyleNone
+	ListStyleDisc ListStyleType = iota
+	ListStyleCircle
+	ListStyleSquare
+	ListStyleDecimal
+	ListStyleNone
 )
 
-type borderStyle uint8
+type listStyleType = ListStyleType
 
 const (
-	borderStyleNone borderStyle = iota
-	borderStyleSolid
-	borderStyleHidden
+	listStyleDisc    = ListStyleDisc
+	listStyleCircle  = ListStyleCircle
+	listStyleSquare  = ListStyleSquare
+	listStyleDecimal = ListStyleDecimal
+	listStyleNone    = ListStyleNone
 )
 
-type borderSide struct {
-	width    length
-	style    borderStyle
+type BorderStyle uint8
+
+const (
+	BorderStyleNone BorderStyle = iota
+	BorderStyleSolid
+	BorderStyleHidden
+)
+
+type borderStyle = BorderStyle
+
+const (
+	borderStyleNone   = BorderStyleNone
+	borderStyleSolid  = BorderStyleSolid
+	borderStyleHidden = BorderStyleHidden
+)
+
+type BorderSide struct {
+	width    Length
+	style    BorderStyle
 	color    color.NRGBA
 	hasColor bool
 }
 
-func (lineHeight computedLineHeight) pixels(fontSize float64) float64 {
+type borderSide = BorderSide
+
+func (lineHeight LineHeight) Pixels(fontSize float64) float64 {
 	if lineHeight.absolute {
 		return lineHeight.value
 	}
 	return fontSize * lineHeight.value
 }
 
-type lengthUnit uint8
+func (lineHeight LineHeight) pixels(fontSize float64) float64 { return lineHeight.Pixels(fontSize) }
+
+func (lineHeight LineHeight) Value() float64 { return lineHeight.value }
+
+func (lineHeight LineHeight) IsAbsolute() bool { return lineHeight.absolute }
+
+type LengthUnit uint8
 
 const (
-	lengthAuto lengthUnit = iota
-	lengthPX
-	lengthPercent
-	lengthVW
-	lengthVH
+	LengthAuto LengthUnit = iota
+	LengthPX
+	LengthPercent
+	LengthVW
+	LengthVH
 )
 
-type length struct {
+type lengthUnit = LengthUnit
+
+const (
+	lengthAuto    = LengthAuto
+	lengthPX      = LengthPX
+	lengthPercent = LengthPercent
+	lengthVW      = LengthVW
+	lengthVH      = LengthVH
+)
+
+type Length struct {
 	value float64
-	unit  lengthUnit
+	unit  LengthUnit
 }
 
-type computedStyle struct {
-	display          displayMode
+type length = Length
+
+func (length Length) Value() float64 { return length.value }
+
+func (length Length) Unit() LengthUnit { return length.unit }
+
+func (length Length) IsAuto() bool { return length.unit == LengthAuto }
+
+func (length Length) IsPercent() bool { return length.unit == LengthPercent }
+
+func (side BorderSide) Width() Length { return side.width }
+
+func (side BorderSide) Style() BorderStyle { return side.style }
+
+func (side BorderSide) Color() (color.NRGBA, bool) { return side.color, side.hasColor }
+
+// FontWeight selects the currently available normal and bold font faces.
+type FontWeight uint8
+
+const (
+	FontWeightNormal FontWeight = iota
+	FontWeightBold
+)
+
+// ComputedStyle is the typed, layout-independent result of cascade,
+// inheritance, and computed-value resolution for one DOM node. Snapshot
+// lookups return it by value, so callers cannot mutate stored styles.
+type ComputedStyle struct {
+	display          DisplayMode
 	color            color.NRGBA
 	background       color.NRGBA
 	hasBackground    bool
 	fontSize         float64
 	fontWeight       FontWeight
-	lineHeight       computedLineHeight
+	lineHeight       LineHeight
 	underline        bool
-	textAlign        textAlignment
-	listStyleType    listStyleType
+	textAlign        TextAlignment
+	listStyleType    ListStyleType
 	opacity          float64
-	width            length
-	height           length
-	minWidth         length
-	maxWidth         length
-	paddingTop       length
-	paddingRight     length
-	paddingBottom    length
-	paddingLeft      length
-	borderTop        borderSide
-	borderRight      borderSide
-	borderBottom     borderSide
-	borderLeft       borderSide
-	marginTop        length
-	marginRight      length
-	marginBottom     length
-	marginLeft       length
+	width            Length
+	height           Length
+	minWidth         Length
+	maxWidth         Length
+	paddingTop       Length
+	paddingRight     Length
+	paddingBottom    Length
+	paddingLeft      Length
+	borderTop        BorderSide
+	borderRight      BorderSide
+	borderBottom     BorderSide
+	borderLeft       BorderSide
+	marginTop        Length
+	marginRight      Length
+	marginBottom     Length
+	marginLeft       Length
 	customProperties css.CustomProperties
+}
+
+type computedStyle = ComputedStyle
+
+func (computed ComputedStyle) Display() DisplayMode { return computed.display }
+func (computed ComputedStyle) Color() color.NRGBA   { return computed.color }
+func (computed ComputedStyle) Background() (color.NRGBA, bool) {
+	return computed.background, computed.hasBackground
+}
+func (computed ComputedStyle) FontSize() float64            { return computed.fontSize }
+func (computed ComputedStyle) FontWeight() FontWeight       { return computed.fontWeight }
+func (computed ComputedStyle) LineHeight() LineHeight       { return computed.lineHeight }
+func (computed ComputedStyle) Underline() bool              { return computed.underline }
+func (computed ComputedStyle) TextAlignment() TextAlignment { return computed.textAlign }
+func (computed ComputedStyle) ListStyleType() ListStyleType { return computed.listStyleType }
+func (computed ComputedStyle) Opacity() float64             { return computed.opacity }
+func (computed ComputedStyle) Width() Length                { return computed.width }
+func (computed ComputedStyle) Height() Length               { return computed.height }
+func (computed ComputedStyle) MinWidth() Length             { return computed.minWidth }
+func (computed ComputedStyle) MaxWidth() Length             { return computed.maxWidth }
+func (computed ComputedStyle) PaddingTop() Length           { return computed.paddingTop }
+func (computed ComputedStyle) PaddingRight() Length         { return computed.paddingRight }
+func (computed ComputedStyle) PaddingBottom() Length        { return computed.paddingBottom }
+func (computed ComputedStyle) PaddingLeft() Length          { return computed.paddingLeft }
+func (computed ComputedStyle) BorderTop() BorderSide        { return computed.borderTop }
+func (computed ComputedStyle) BorderRight() BorderSide      { return computed.borderRight }
+func (computed ComputedStyle) BorderBottom() BorderSide     { return computed.borderBottom }
+func (computed ComputedStyle) BorderLeft() BorderSide       { return computed.borderLeft }
+func (computed ComputedStyle) MarginTop() Length            { return computed.marginTop }
+func (computed ComputedStyle) MarginRight() Length          { return computed.marginRight }
+func (computed ComputedStyle) MarginBottom() Length         { return computed.marginBottom }
+func (computed ComputedStyle) MarginLeft() Length           { return computed.marginLeft }
+func (computed ComputedStyle) CustomProperties() css.CustomProperties {
+	return computed.customProperties
 }
 
 type styledNode struct {
 	node     *dom.Node
-	style    computedStyle
+	style    ComputedStyle
 	children []*styledNode
+}
+
+// Snapshot is an immutable set of computed styles for one DOM tree and one
+// Environment. It deliberately does not own browser document generations or
+// invalidation state.
+type Snapshot struct {
+	root             *dom.Node
+	documentIdentity dom.DocumentIdentity
+	rootID           dom.NodeID
+	version          uint64
+	environment      Environment
+	byNode           map[*dom.Node]ComputedStyle
+	byID             map[dom.NodeID]ComputedStyle
+}
+
+// Compute performs a complete style pass over an unindexed DOM tree. Browser
+// code should prefer ComputeReadView so snapshots carry stable node identity
+// and the coherent document version from which they were built.
+func Compute(root *dom.Node, input Input) *Snapshot {
+	styledRoot := buildStyleTree(root, input.Environment, input.Stylesheets)
+	snapshot := &Snapshot{
+		root:        root,
+		environment: input.Environment,
+		byNode:      make(map[*dom.Node]ComputedStyle),
+	}
+	indexPointerStyles(styledRoot, snapshot.byNode)
+	return snapshot
+}
+
+// ComputeReadView performs a complete style pass over one coherent Document
+// read. One acquired access remains open across raw-tree traversal and stable
+// identity indexing. The returned Snapshot does not retain the ReadView,
+// ReadAccess, or backing node pointers.
+func ComputeReadView(view dom.ReadView, input Input) (*Snapshot, error) {
+	access, err := view.Acquire()
+	if err != nil {
+		return nil, err
+	}
+	defer access.Close()
+	root := access.Root()
+	if root == nil || root.Type != dom.DocumentNode {
+		return nil, fmt.Errorf("%w: read view root must be a document node", dom.ErrInvalidDocument)
+	}
+	styledRoot := buildStyleTree(root, input.Environment, input.Stylesheets)
+	snapshot := &Snapshot{
+		documentIdentity: access.Identity(),
+		version:          access.Version(),
+		environment:      input.Environment,
+		byID:             make(map[dom.NodeID]ComputedStyle),
+	}
+	indexStableStyles(styledRoot, snapshot.byID, access)
+	snapshot.rootID, _ = access.ID(root)
+	return snapshot, nil
+}
+
+func indexPointerStyles(node *styledNode, destination map[*dom.Node]ComputedStyle) {
+	if node == nil {
+		return
+	}
+	if node.node != nil {
+		destination[node.node] = node.style
+	}
+	for _, child := range node.children {
+		indexPointerStyles(child, destination)
+	}
+}
+
+func indexStableStyles(node *styledNode, destination map[dom.NodeID]ComputedStyle, access *dom.ReadAccess) {
+	if node == nil {
+		return
+	}
+	if node.node != nil {
+		if id, ok := access.ID(node.node); ok {
+			destination[id] = node.style
+		}
+	}
+	for _, child := range node.children {
+		indexStableStyles(child, destination, access)
+	}
+}
+
+func (snapshot *Snapshot) Root() *dom.Node {
+	if snapshot == nil {
+		return nil
+	}
+	return snapshot.root
+}
+
+// DocumentIdentity returns the opaque identity captured by ComputeReadView.
+// It is the zero token for a pointer-based Snapshot built with Compute.
+func (snapshot *Snapshot) DocumentIdentity() dom.DocumentIdentity {
+	if snapshot == nil {
+		return dom.DocumentIdentity{}
+	}
+	return snapshot.documentIdentity
+}
+
+// RootID returns the stable identity of the document root. It is zero for a
+// pointer-based Snapshot built with Compute.
+func (snapshot *Snapshot) RootID() dom.NodeID {
+	if snapshot == nil {
+		return dom.InvalidNodeID
+	}
+	return snapshot.rootID
+}
+
+// Version returns the DOM mutation version captured by ComputeReadView. It is
+// zero for a pointer-based Snapshot built with Compute.
+func (snapshot *Snapshot) Version() uint64 {
+	if snapshot == nil {
+		return 0
+	}
+	return snapshot.version
+}
+
+func (snapshot *Snapshot) Environment() Environment {
+	if snapshot == nil {
+		return Environment{}
+	}
+	return snapshot.environment
+}
+
+func (snapshot *Snapshot) Lookup(node *dom.Node) (ComputedStyle, bool) {
+	if snapshot == nil || node == nil {
+		return ComputedStyle{}, false
+	}
+	computed, ok := snapshot.byNode[node]
+	return computed, ok
+}
+
+// LookupID returns the computed value for one connected stable node identity.
+// Detached nodes are intentionally absent until they are reconnected and a
+// new Snapshot is computed.
+func (snapshot *Snapshot) LookupID(id dom.NodeID) (ComputedStyle, bool) {
+	if snapshot == nil || id == dom.InvalidNodeID {
+		return ComputedStyle{}, false
+	}
+	computed, ok := snapshot.byID[id]
+	return computed, ok
 }
 
 type authorStyleContext struct {
@@ -141,6 +419,9 @@ type winningDeclaration struct {
 }
 
 func buildStyleTree(document *dom.Node, viewport Viewport, external map[*dom.Node]css.Stylesheet) *styledNode {
+	if document == nil {
+		return nil
+	}
 	stylesheets := collectAuthorStyles(document, external, viewport)
 	author := authorStyleContext{
 		sheets:           stylesheets,
@@ -188,7 +469,7 @@ func collectAuthorStyles(root *dom.Node, external map[*dom.Node]css.Stylesheet, 
 }
 
 func styleNode(node *dom.Node, parent *styledNode, author authorStyleContext, viewport Viewport) *styledNode {
-	style := initialStyle(node, parent)
+	style := initialStyle(node, parent, viewport)
 	if node != nil && node.Type == dom.ElementNode {
 		applyAuthorStyles(&style, node, author, viewport, parent)
 	}
@@ -199,8 +480,8 @@ func styleNode(node *dom.Node, parent *styledNode, author authorStyleContext, vi
 	return styled
 }
 
-func initialStyle(node *dom.Node, parent *styledNode) computedStyle {
-	style := cssInitialStyle()
+func initialStyle(node *dom.Node, parent *styledNode, viewport Viewport) computedStyle {
+	style := cssInitialStyle(viewport)
 	if parent != nil {
 		style.color = parent.style.color
 		style.fontSize = parent.style.fontSize
@@ -226,11 +507,11 @@ func initialStyle(node *dom.Node, parent *styledNode) computedStyle {
 	return style
 }
 
-func cssInitialStyle() computedStyle {
+func cssInitialStyle(viewport Viewport) computedStyle {
 	return computedStyle{
 		display:       displayInline,
 		color:         color.NRGBA{A: 0xff},
-		fontSize:      16,
+		fontSize:      environmentInitialFontSize(viewport),
 		lineHeight:    computedLineHeight{value: 1.2},
 		opacity:       1,
 		width:         length{unit: lengthAuto},
@@ -667,7 +948,7 @@ func applyDeclarationCandidates(style *computedStyle, parent *styledNode, candid
 		if !ok {
 			// A winning declaration whose var() cannot be substituted is invalid at
 			// computed-value time. It computes as unset without reviving a loser.
-			applyCSSWideKeyword(style, parent, candidate.target, "unset")
+			applyCSSWideKeyword(style, parent, candidate.target, "unset", viewport)
 			return
 		}
 
@@ -680,7 +961,7 @@ func applyDeclarationCandidates(style *computedStyle, parent *styledNode, candid
 			position = nextCandidateAfterRevertLayer(candidates, position)
 			continue
 		case "inherit", "initial", "unset":
-			applyCSSWideKeyword(style, parent, candidate.target, keyword)
+			applyCSSWideKeyword(style, parent, candidate.target, keyword, viewport)
 			return
 		}
 
@@ -690,10 +971,10 @@ func applyDeclarationCandidates(style *computedStyle, parent *styledNode, candid
 			// A declaration containing var() participates in the cascade before its
 			// computed value is known. If substitution produces an invalid value, it
 			// computes as unset; a lower-priority declaration is not resurrected.
-			applyCSSWideKeyword(style, parent, candidate.target, "unset")
+			applyCSSWideKeyword(style, parent, candidate.target, "unset", viewport)
 			return
 		}
-		applyTargetDeclaration(style, parentFontSize(parent), candidate.target, declaration, viewport)
+		applyTargetDeclaration(style, parentFontSize(parent, viewport), candidate.target, declaration, viewport)
 		return
 	}
 }
@@ -774,8 +1055,8 @@ func applyTargetDeclaration(style *computedStyle, parentSize float64, target str
 	copyComputedProperty(style, temporary, target)
 }
 
-func applyCSSWideKeyword(style *computedStyle, parent *styledNode, target, keyword string) {
-	initial := cssInitialStyle()
+func applyCSSWideKeyword(style *computedStyle, parent *styledNode, target, keyword string, viewport Viewport) {
+	initial := cssInitialStyle(viewport)
 	source := initial
 	switch keyword {
 	case "inherit":
@@ -902,12 +1183,23 @@ func authorLayerRanks(sheets []css.Stylesheet) map[string]int {
 }
 
 func screenMediaEnvironment(viewport Viewport) css.MediaEnvironment {
+	mediaType := viewport.MediaType
+	if mediaType == "" {
+		mediaType = "screen"
+	}
 	return css.MediaEnvironment{
-		Type:            "screen",
+		Type:            mediaType,
 		Width:           float64(viewport.Width),
 		Height:          float64(viewport.Height),
-		InitialFontSize: 16,
+		InitialFontSize: environmentInitialFontSize(viewport),
 	}
+}
+
+func environmentInitialFontSize(environment Environment) float64 {
+	if environment.InitialFontSize > 0 && isFinite(environment.InitialFontSize) {
+		return environment.InitialFontSize
+	}
+	return 16
 }
 
 func validComputedDeclaration(declaration css.Declaration, viewport Viewport) bool {
@@ -1618,7 +1910,7 @@ func parseLength(source string, emBase, percentBase float64, viewport Viewport) 
 		unit   lengthUnit
 		scale  float64
 	}{
-		{"rem", lengthPX, 16},
+		{"rem", lengthPX, environmentInitialFontSize(viewport)},
 		{"px", lengthPX, 1},
 		{"em", lengthPX, emBase},
 		{"vw", lengthVW, 1},
@@ -1706,9 +1998,9 @@ func firstCSSValue(source string) string {
 	return source
 }
 
-func parentFontSize(parent *styledNode) float64 {
+func parentFontSize(parent *styledNode, viewport Viewport) float64 {
 	if parent == nil {
-		return 16
+		return environmentInitialFontSize(viewport)
 	}
 	return parent.style.fontSize
 }

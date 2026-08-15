@@ -349,6 +349,8 @@ func (page *Page) commitNavigationDocument(
 	page.document = prepared.document
 	page.documentGeneration = generation
 	page.activeElement = dom.InvalidNodeID
+	page.computedStyle = computedStyleState{}
+	page.styleRevision++
 	page.location = cloneURL(prepared.location)
 	page.resources = newPageResources()
 	page.dirty = true
@@ -437,7 +439,11 @@ func (page *Page) applyNavigationResource(
 		page.navigation.resourcesFailed++
 	} else {
 		page.resources.apply(result)
-		page.dirty = true
+		if result.kind == resource.Stylesheet {
+			page.invalidateStyleLocked()
+		} else {
+			page.dirty = true
+		}
 	}
 	if page.navigation.resourcesPending > 0 {
 		page.navigation.resourcesPending--

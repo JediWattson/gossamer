@@ -57,7 +57,7 @@ func layoutDocument(root *styledNode, viewport Viewport, images map[*dom.Node]im
 		ContentBounds: Rect{Width: float64(viewport.Width), Height: float64(viewport.Height)},
 	}
 	html := findStyledElement(root, "html")
-	if html == nil || html.style.display == displayNone {
+	if html == nil || html.style.Display() == displayNone {
 		return documentBox, context.styles, nil
 	}
 
@@ -69,16 +69,16 @@ func layoutDocument(root *styledNode, viewport Viewport, images map[*dom.Node]im
 	documentBox.Children = append(documentBox.Children, htmlBox)
 
 	body := directStyledElement(html, "body")
-	if body == nil || body.style.display == displayNone {
+	if body == nil || body.style.Display() == displayNone {
 		return documentBox, context.styles, nil
 	}
-	bodyY := resolveLength(body.style.marginTop, float64(viewport.Width), viewport, 0)
+	bodyY := resolveLength(body.style.MarginTop(), float64(viewport.Width), viewport, 0)
 	bodyBox, err := context.layoutBlock(body, 0, bodyY, float64(viewport.Width))
 	if err != nil {
 		return nil, nil, err
 	}
 	htmlBox.Children = append(htmlBox.Children, bodyBox)
-	bodyBottom := bodyBox.Bounds.Y + bodyBox.Bounds.Height + resolveLength(body.style.marginBottom, float64(viewport.Width), viewport, 0)
+	bodyBottom := bodyBox.Bounds.Y + bodyBox.Bounds.Height + resolveLength(body.style.MarginBottom(), float64(viewport.Width), viewport, 0)
 	if bodyBottom > htmlBox.Bounds.Height {
 		htmlBox.Bounds.Height = bodyBottom
 		htmlBox.ContentBounds.Height = bodyBottom
@@ -100,10 +100,10 @@ func (context *layoutContext) indexStyles(node *styledNode) {
 
 func (context *layoutContext) layoutBlock(node *styledNode, containingX, contentY, availableWidth float64) (*Box, error) {
 	style := node.style
-	leftAuto := style.marginLeft.unit == lengthAuto
-	rightAuto := style.marginRight.unit == lengthAuto
-	left := resolveLength(style.marginLeft, availableWidth, context.viewport, 0)
-	right := resolveLength(style.marginRight, availableWidth, context.viewport, 0)
+	leftAuto := style.MarginLeft().Unit() == lengthAuto
+	rightAuto := style.MarginRight().Unit() == lengthAuto
+	left := resolveLength(style.MarginLeft(), availableWidth, context.viewport, 0)
+	right := resolveLength(style.MarginRight(), availableWidth, context.viewport, 0)
 	padding := context.resolvePadding(style, availableWidth)
 	border := context.resolveBorder(style, availableWidth)
 	if node.node.Type == dom.ElementNode && node.node.Data == "img" {
@@ -146,8 +146,8 @@ func (context *layoutContext) layoutBlock(node *styledNode, containingX, content
 	}
 
 	width := availableWidth - left - right - padding.Left - padding.Right - border.Left - border.Right
-	if style.width.unit != lengthAuto {
-		width = resolveLength(style.width, availableWidth, context.viewport, availableWidth)
+	if style.Width().Unit() != lengthAuto {
+		width = resolveLength(style.Width(), availableWidth, context.viewport, availableWidth)
 	}
 	width = context.constrainWidth(style, math.Max(0, width), availableWidth)
 	outerWidth := width + padding.Left + padding.Right + border.Left + border.Right
@@ -179,12 +179,12 @@ func (context *layoutContext) layoutBlock(node *styledNode, containingX, content
 
 	for index := 0; index < len(node.children); {
 		child := node.children[index]
-		if child.style.display == displayNone {
+		if child.style.Display() == displayNone {
 			index++
 			continue
 		}
-		if child.style.display.isBlockLevel() {
-			topMargin := resolveLength(child.style.marginTop, width, context.viewport, 0)
+		if isBlockLevel(child.style.Display()) {
+			topMargin := resolveLength(child.style.MarginTop(), width, context.viewport, 0)
 			gap := math.Max(previousBottomMargin, topMargin)
 			// A first block child's top margin collapses through an auto-height
 			// parent with no border or padding in this initial box model.
@@ -198,17 +198,17 @@ func (context *layoutContext) layoutBlock(node *styledNode, containingX, content
 			box.Children = append(box.Children, childBox)
 			box.flow = append(box.flow, flowItem{box: childBox})
 			cursorY = childBox.Bounds.Y + childBox.Bounds.Height
-			previousBottomMargin = resolveLength(child.style.marginBottom, width, context.viewport, 0)
+			previousBottomMargin = resolveLength(child.style.MarginBottom(), width, context.viewport, 0)
 			hasContent = true
 			index++
 			continue
 		}
 
 		end := index
-		for end < len(node.children) && !node.children[end].style.display.isBlockLevel() {
+		for end < len(node.children) && !isBlockLevel(node.children[end].style.Display()) {
 			end++
 		}
-		fragments, height, err := context.layoutInline(node.children[index:end], box.ContentBounds.X, cursorY, width, node.style.textAlign)
+		fragments, height, err := context.layoutInline(node.children[index:end], box.ContentBounds.X, cursorY, width, node.style.TextAlignment())
 		if err != nil {
 			return nil, err
 		}
@@ -245,8 +245,8 @@ func (context *layoutContext) layoutBlock(node *styledNode, containingX, content
 	contentHeight := math.Max(0, cursorY-box.ContentBounds.Y)
 	// Percentage heights remain auto until the containing-block height is
 	// definite. This layout slice does not yet pass definite heights downward.
-	if style.height.unit != lengthAuto && style.height.unit != lengthPercent {
-		contentHeight = math.Max(0, resolveLength(style.height, 0, context.viewport, contentHeight))
+	if style.Height().Unit() != lengthAuto && style.Height().Unit() != lengthPercent {
+		contentHeight = math.Max(0, resolveLength(style.Height(), 0, context.viewport, contentHeight))
 	}
 	box.ContentBounds.Height = contentHeight
 	box.Bounds.Height = border.Top + padding.Top + box.ContentBounds.Height + padding.Bottom + border.Bottom
@@ -254,7 +254,7 @@ func (context *layoutContext) layoutBlock(node *styledNode, containingX, content
 }
 
 func (context *layoutContext) finalizeBlock(node *styledNode, box *Box) (*Box, error) {
-	if node.style.display == displayListItem && node.style.listStyleType != listStyleNone {
+	if node.style.Display() == displayListItem && node.style.ListStyleType() != listStyleNone {
 		if err := context.addListMarker(node, box); err != nil {
 			return nil, err
 		}
@@ -263,20 +263,20 @@ func (context *layoutContext) finalizeBlock(node *styledNode, box *Box) (*Box, e
 }
 
 func (context *layoutContext) addListMarker(node *styledNode, box *Box) error {
-	markerText := context.listMarkerText(node.node, node.style.listStyleType)
+	markerText := context.listMarkerText(node.node, node.style.ListStyleType())
 	if markerText == "" {
 		return nil
 	}
-	metrics, err := context.fonts.metrics(markerText, node.style.fontSize, node.style.fontWeight)
+	metrics, err := context.fonts.metrics(markerText, node.style.FontSize(), node.style.FontWeight())
 	if err != nil {
 		return err
 	}
 	baseline, hasBaseline := firstBoxBaseline(box)
 	if !hasBaseline {
-		lineHeight := math.Max(node.style.lineHeight.pixels(node.style.fontSize), metrics.ascent+metrics.descent)
+		lineHeight := math.Max(node.style.LineHeight().Pixels(node.style.FontSize()), metrics.ascent+metrics.descent)
 		leading := math.Max(0, lineHeight-metrics.ascent-metrics.descent)
 		baseline = box.ContentBounds.Y + leading/2 + metrics.ascent
-		if box.ContentBounds.Height < lineHeight && node.style.height.unit == lengthAuto {
+		if box.ContentBounds.Height < lineHeight && node.style.Height().Unit() == lengthAuto {
 			box.ContentBounds.Height = lineHeight
 			box.Bounds.Height = box.Border.Top + box.Padding.Top + lineHeight + box.Padding.Bottom + box.Border.Bottom
 		}
@@ -284,13 +284,13 @@ func (context *layoutContext) addListMarker(node *styledNode, box *Box) error {
 	marker := TextFragment{
 		Node:       node.node,
 		Text:       markerText,
-		X:          box.Bounds.X - node.style.fontSize*.5 - metrics.width,
+		X:          box.Bounds.X - node.style.FontSize()*.5 - metrics.width,
 		BaselineY:  baseline,
 		Width:      metrics.width,
-		Height:     node.style.lineHeight.pixels(node.style.fontSize),
-		FontSize:   node.style.fontSize,
-		FontWeight: node.style.fontWeight,
-		Color:      node.style.color,
+		Height:     node.style.LineHeight().Pixels(node.style.FontSize()),
+		FontSize:   node.style.FontSize(),
+		FontWeight: node.style.FontWeight(),
+		Color:      node.style.Color(),
 	}
 	fragment := InlineFragment{Kind: TextFragmentKind, Text: marker}
 	box.flow = append([]flowItem{{fragment: fragment}}, box.flow...)
@@ -359,7 +359,7 @@ func (context *layoutContext) generatedListItemValue(node *dom.Node) int {
 	value := start
 	for _, child := range container.Children {
 		childStyle, ok := context.styles[child]
-		if !ok || childStyle.display != displayListItem {
+		if !ok || childStyle.Display() != displayListItem {
 			continue
 		}
 		if container.Type == dom.ElementNode && container.Data == "ol" && child.Type == dom.ElementNode && child.Data == "li" {
@@ -380,7 +380,7 @@ func (context *layoutContext) generatedListItemValue(node *dom.Node) int {
 func (context *layoutContext) generatedListItemCount(container *dom.Node) int {
 	count := 0
 	for _, child := range container.Children {
-		if style, ok := context.styles[child]; ok && style.display == displayListItem {
+		if style, ok := context.styles[child]; ok && style.Display() == displayListItem {
 			count++
 		}
 	}
@@ -410,7 +410,7 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 		for _, piece := range line {
 			lineAscent = math.Max(lineAscent, piece.metrics.ascent)
 			lineDescent = math.Max(lineDescent, piece.metrics.descent)
-			lineHeight = math.Max(lineHeight, piece.style.lineHeight.pixels(piece.style.fontSize))
+			lineHeight = math.Max(lineHeight, piece.style.LineHeight().Pixels(piece.style.FontSize()))
 		}
 		lineHeight = math.Max(lineHeight, lineAscent+lineDescent)
 		leading := math.Max(0, lineHeight-lineAscent-lineDescent)
@@ -435,7 +435,7 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 				})
 				continue
 			}
-			textColor := piece.style.color
+			textColor := piece.style.Color()
 			textColor.A = uint8(math.Round(float64(textColor.A) * clamp(piece.opacity, 0, 1)))
 			text := TextFragment{
 				Node:       piece.node,
@@ -444,8 +444,8 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 				BaselineY:  baseline,
 				Width:      piece.width,
 				Height:     lineHeight,
-				FontSize:   piece.style.fontSize,
-				FontWeight: piece.style.fontWeight,
+				FontSize:   piece.style.FontSize(),
+				FontWeight: piece.style.FontWeight(),
 				Color:      textColor,
 			}
 			if len(fragments) != 0 && fragments[len(fragments)-1].Kind == TextFragmentKind {
@@ -484,7 +484,7 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 			wordMetrics = textMetrics{width: imageWidth, ascent: imageHeight}
 		} else {
 			var err error
-			wordMetrics, err = context.fonts.metrics(token.text, token.style.fontSize, token.style.fontWeight)
+			wordMetrics, err = context.fonts.metrics(token.text, token.style.FontSize(), token.style.FontWeight())
 			if err != nil {
 				return nil, 0, err
 			}
@@ -492,7 +492,7 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 		prefix := ""
 		prefixWidth := 0.0
 		if token.leadingSpace && len(line) != 0 {
-			spaceMetrics, err := context.fonts.metrics(" ", token.style.fontSize, token.style.fontWeight)
+			spaceMetrics, err := context.fonts.metrics(" ", token.style.FontSize(), token.style.FontWeight())
 			if err != nil {
 				return nil, 0, err
 			}
@@ -520,7 +520,7 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 			continue
 		}
 		pieceText := prefix + token.text
-		pieceMetrics, err := context.fonts.metrics(pieceText, token.style.fontSize, token.style.fontWeight)
+		pieceMetrics, err := context.fonts.metrics(pieceText, token.style.FontSize(), token.style.FontWeight())
 		if err != nil {
 			return nil, 0, err
 		}
@@ -542,20 +542,20 @@ func (context *layoutContext) replacedDimensions(style computedStyle, decoded im
 		hasNaturalSize = naturalWidth > 0 && naturalHeight > 0
 	}
 
-	widthSpecified := style.width.unit != lengthAuto
+	widthSpecified := style.Width().Unit() != lengthAuto
 	// Percentage heights resolve to auto while the containing block has the
 	// auto height used by this layout slice.
-	heightSpecified := style.height.unit != lengthAuto && style.height.unit != lengthPercent
+	heightSpecified := style.Height().Unit() != lengthAuto && style.Height().Unit() != lengthPercent
 	if !hasNaturalSize && !(widthSpecified && heightSpecified) {
 		return 0, 0, false
 	}
 	width := naturalWidth
 	height := naturalHeight
 	if widthSpecified {
-		width = resolveLength(style.width, availableWidth, context.viewport, naturalWidth)
+		width = resolveLength(style.Width(), availableWidth, context.viewport, naturalWidth)
 	}
 	if heightSpecified {
-		height = resolveLength(style.height, naturalHeight, context.viewport, naturalHeight)
+		height = resolveLength(style.Height(), naturalHeight, context.viewport, naturalHeight)
 	}
 	switch {
 	case widthSpecified && !heightSpecified:
@@ -576,37 +576,37 @@ func (context *layoutContext) replacedDimensions(style computedStyle, decoded im
 
 func (context *layoutContext) resolvePadding(style computedStyle, availableWidth float64) Edges {
 	return Edges{
-		Top:    resolveLength(style.paddingTop, availableWidth, context.viewport, 0),
-		Right:  resolveLength(style.paddingRight, availableWidth, context.viewport, 0),
-		Bottom: resolveLength(style.paddingBottom, availableWidth, context.viewport, 0),
-		Left:   resolveLength(style.paddingLeft, availableWidth, context.viewport, 0),
+		Top:    resolveLength(style.PaddingTop(), availableWidth, context.viewport, 0),
+		Right:  resolveLength(style.PaddingRight(), availableWidth, context.viewport, 0),
+		Bottom: resolveLength(style.PaddingBottom(), availableWidth, context.viewport, 0),
+		Left:   resolveLength(style.PaddingLeft(), availableWidth, context.viewport, 0),
 	}
 }
 
 func (context *layoutContext) resolveBorder(style computedStyle, availableWidth float64) Edges {
 	return Edges{
-		Top:    context.resolveBorderWidth(style.borderTop, availableWidth),
-		Right:  context.resolveBorderWidth(style.borderRight, availableWidth),
-		Bottom: context.resolveBorderWidth(style.borderBottom, availableWidth),
-		Left:   context.resolveBorderWidth(style.borderLeft, availableWidth),
+		Top:    context.resolveBorderWidth(style.BorderTop(), availableWidth),
+		Right:  context.resolveBorderWidth(style.BorderRight(), availableWidth),
+		Bottom: context.resolveBorderWidth(style.BorderBottom(), availableWidth),
+		Left:   context.resolveBorderWidth(style.BorderLeft(), availableWidth),
 	}
 }
 
 func (context *layoutContext) resolveBorderWidth(side borderSide, availableWidth float64) float64 {
-	if side.style == borderStyleNone || side.style == borderStyleHidden {
+	if side.Style() == borderStyleNone || side.Style() == borderStyleHidden {
 		return 0
 	}
-	return math.Max(0, resolveLength(side.width, availableWidth, context.viewport, 0))
+	return math.Max(0, resolveLength(side.Width(), availableWidth, context.viewport, 0))
 }
 
 func (context *layoutContext) constrainWidth(style computedStyle, width, availableWidth float64) float64 {
 	maximum := math.Inf(1)
-	if style.maxWidth.unit != lengthAuto {
-		maximum = math.Max(0, resolveLength(style.maxWidth, availableWidth, context.viewport, width))
+	if style.MaxWidth().Unit() != lengthAuto {
+		maximum = math.Max(0, resolveLength(style.MaxWidth(), availableWidth, context.viewport, width))
 	}
 	minimum := 0.0
-	if style.minWidth.unit != lengthAuto {
-		minimum = math.Max(0, resolveLength(style.minWidth, availableWidth, context.viewport, 0))
+	if style.MinWidth().Unit() != lengthAuto {
+		minimum = math.Max(0, resolveLength(style.MinWidth(), availableWidth, context.viewport, 0))
 	}
 	return math.Max(minimum, math.Min(width, maximum))
 }
@@ -619,10 +619,10 @@ type inlineTokenBuilder struct {
 }
 
 func (builder *inlineTokenBuilder) add(node *styledNode, inheritedOpacity float64) {
-	if node == nil || node.style.display == displayNone {
+	if node == nil || node.style.Display() == displayNone {
 		return
 	}
-	opacity := clamp(inheritedOpacity*node.style.opacity, 0, 1)
+	opacity := clamp(inheritedOpacity*node.style.Opacity(), 0, 1)
 	if node.node.Type == dom.ElementNode && node.node.Data == "br" {
 		builder.tokens = append(builder.tokens, inlineToken{lineBreak: true})
 		builder.pendingSpace = false
@@ -650,7 +650,7 @@ func (builder *inlineTokenBuilder) add(node *styledNode, inheritedOpacity float6
 		return
 	}
 	for _, child := range node.children {
-		if !child.style.display.isBlockLevel() {
+		if !isBlockLevel(child.style.Display()) {
 			builder.add(child, opacity)
 		}
 	}
@@ -689,7 +689,7 @@ func (builder *inlineTokenBuilder) addText(source string, node *dom.Node, style 
 }
 
 func hasExplicitImageDimensions(style computedStyle) bool {
-	return style.width.unit != lengthAuto && style.height.unit != lengthAuto && style.height.unit != lengthPercent
+	return style.Width().Unit() != lengthAuto && style.Height().Unit() != lengthAuto && style.Height().Unit() != lengthPercent
 }
 
 func findStyledElement(root *styledNode, name string) *styledNode {

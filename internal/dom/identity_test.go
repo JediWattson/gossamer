@@ -2,8 +2,10 @@ package dom
 
 import (
 	"errors"
+	"runtime"
 	"slices"
 	"testing"
+	"time"
 )
 
 func TestIndexDocumentAssignsDeterministicStableIDs(t *testing.T) {
@@ -27,6 +29,292 @@ func TestIndexDocumentAssignsDeterministicStableIDs(t *testing.T) {
 	}
 	if document.RootID() != 1 || document.Root() != root || document.Store().Len() != 5 {
 		t.Fatalf("document root/store = id:%d root:%p len:%d", document.RootID(), document.Root(), document.Store().Len())
+	}
+}
+
+func TestDocumentIdentityDistinguishesEquivalentIndexedDocuments(t *testing.T) {
+	t.Parallel()
+
+	firstRoot, _, _, _, _ := identityFixture()
+	secondRoot, _, _, _, _ := identityFixture()
+	first, err := IndexDocument(firstRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := IndexDocument(secondRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Identity() == (DocumentIdentity{}) || second.Identity() == (DocumentIdentity{}) {
+		t.Fatal("indexed document received a zero identity")
+	}
+	if first.Identity() == second.Identity() {
+		t.Fatal("separate indexed documents received the same identity")
+	}
+	if err := first.WithReadView(func(view ReadView) error {
+		if view.Identity() != first.Identity() {
+			t.Fatalf("ReadView.Identity() = %#v, want document identity %#v", view.Identity(), first.Identity())
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDocumentReadViewProvidesCoherentVersionAndIdentity(t *testing.T) {
+	t.Parallel()
+
+	root, html, body, paragraph, text := identityFixture()
+	document, err := IndexDocument(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantVersion := document.Version()
+	wantIDs := map[*Node]NodeID{root: 1, html: 2, body: 3, paragraph: 4, text: 5}
+
+	err = document.WithReadView(func(view ReadView) error {
+		if got := view.Root(); got != root {
+			t.Fatalf("ReadView.Root() = %p, want %p", got, root)
+		}
+		if got := view.Version(); got != wantVersion {
+			t.Fatalf("ReadView.Version() = %d, want %d", got, wantVersion)
+		}
+		for node, wantID := range wantIDs {
+			id, ok := view.ID(node)
+			if !ok || id != wantID {
+				t.Fatalf("ReadView.ID(%p) = %d, %t; want %d, true", node, id, ok, wantID)
+			}
+			resolved, ok := view.Resolve(id)
+			if !ok || resolved != node {
+				t.Fatalf("ReadView.Resolve(%d) = %p, %t; want %p, true", id, resolved, ok, node)
+			}
+		}
+		if id, ok := view.ID(nil); ok || id != InvalidNodeID {
+			t.Fatalf("ReadView.ID(nil) = %d, %t; want 0, false", id, ok)
+		}
+		if node, ok := view.Resolve(999); ok || node != nil {
+			t.Fatalf("ReadView.Resolve(999) = %p, %t; want nil, false", node, ok)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDocumentReadViewBlocksMutationWhileIdentityLookupsRemainAvailable(t *testing.T) {
+	t.Parallel()
+
+	root, _, _, paragraph, _ := identityFixture()
+	document, err := IndexDocument(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paragraphID, ok := document.ID(paragraph)
+	if !ok {
+		t.Fatal("paragraph has no stable ID")
+	}
+	writerStarted := make(chan struct{})
+	writerDone := make(chan error, 1)
+
+	err = document.WithReadView(func(view ReadView) error {
+		go func() {
+			close(writerStarted)
+			writerDone <- document.SetAttribute(paragraphID, "data-state", "after")
+		}()
+		<-writerStarted
+		for range 32 {
+			runtime.Gosched()
+		}
+
+		if id, found := view.ID(paragraph); !found || id != paragraphID {
+			t.Fatalf("ReadView.ID(paragraph) = %d, %t; want %d, true", id, found, paragraphID)
+		}
+		if resolved, found := view.Resolve(paragraphID); !found || resolved != paragraph {
+			t.Fatalf("ReadView.Resolve(%d) = %p, %t; want %p, true", paragraphID, resolved, found, paragraph)
+		}
+		select {
+		case mutationErr := <-writerDone:
+			t.Fatalf("mutation completed while ReadView callback held the read lock: %v", mutationErr)
+		default:
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case mutationErr := <-writerDone:
+		if mutationErr != nil {
+			t.Fatal(mutationErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("mutation remained blocked after ReadView callback returned")
+	}
+	if got := document.Version(); got != 2 {
+		t.Fatalf("document version after mutation = %d, want 2", got)
+	}
+}
+
+func TestDocumentReadViewRejectsInvalidReaders(t *testing.T) {
+	t.Parallel()
+
+	var nilDocument *Document
+	if err := nilDocument.WithReadView(func(ReadView) error { return nil }); !errors.Is(err, ErrInvalidDocument) {
+		t.Fatalf("nil Document.WithReadView() error = %v, want ErrInvalidDocument", err)
+	}
+
+	root, _, _, _, _ := identityFixture()
+	document, err := IndexDocument(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := document.WithReadView(nil); err == nil {
+		t.Fatal("Document.WithReadView(nil) unexpectedly succeeded")
+	}
+}
+
+func TestDocumentReadViewExpiresAfterCallbackAndPanic(t *testing.T) {
+	t.Parallel()
+
+	root, _, _, paragraph, _ := identityFixture()
+	document, err := IndexDocument(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paragraphID, ok := document.ID(paragraph)
+	if !ok {
+		t.Fatal("paragraph has no stable ID")
+	}
+
+	var returned ReadView
+	if err := document.WithReadView(func(view ReadView) error {
+		returned = view
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assertExpiredReadView(t, returned, root, paragraphID)
+
+	var panicked ReadView
+	func() {
+		defer func() {
+			if recovered := recover(); recovered == nil {
+				t.Fatal("WithReadView callback did not panic")
+			}
+		}()
+		_ = document.WithReadView(func(view ReadView) error {
+			panicked = view
+			panic("expire the view")
+		})
+	}()
+	assertExpiredReadView(t, panicked, root, paragraphID)
+}
+
+func TestAcquiredReadAccessKeepsDocumentLockedAcrossCallbackReturn(t *testing.T) {
+	t.Parallel()
+
+	root, _, _, paragraph, _ := identityFixture()
+	document, err := IndexDocument(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paragraphID, ok := document.ID(paragraph)
+	if !ok {
+		t.Fatal("paragraph has no stable ID")
+	}
+
+	accessReady := make(chan *ReadAccess, 1)
+	callbackReturning := make(chan struct{})
+	readDone := make(chan error, 1)
+	go func() {
+		readDone <- document.WithReadView(func(view ReadView) error {
+			access, acquireErr := view.Acquire()
+			if acquireErr != nil {
+				return acquireErr
+			}
+			accessReady <- access
+			close(callbackReturning)
+			return nil
+		})
+	}()
+
+	access := <-accessReady
+	<-callbackReturning
+	writerStarted := make(chan struct{})
+	writerDone := make(chan error, 1)
+	go func() {
+		close(writerStarted)
+		writerDone <- document.SetAttribute(paragraphID, "data-state", "after")
+	}()
+	<-writerStarted
+	for range 32 {
+		runtime.Gosched()
+	}
+
+	select {
+	case err := <-readDone:
+		t.Fatalf("WithReadView returned while an acquired access remained open: %v", err)
+	default:
+	}
+	select {
+	case err := <-writerDone:
+		t.Fatalf("writer completed while an acquired access remained open: %v", err)
+	default:
+	}
+	if resolved, found := access.Resolve(paragraphID); !found || resolved != paragraph {
+		t.Fatalf("ReadAccess.Resolve(%d) = %p, %t; want %p, true", paragraphID, resolved, found, paragraph)
+	}
+	if id, found := access.ID(paragraph); !found || id != paragraphID {
+		t.Fatalf("ReadAccess.ID(paragraph) = %d, %t; want %d, true", id, found, paragraphID)
+	}
+
+	access.Close()
+	access.Close()
+	if root := access.Root(); root != nil {
+		t.Fatalf("closed ReadAccess.Root() = %p, want nil", root)
+	}
+	if _, found := access.Resolve(paragraphID); found {
+		t.Fatal("closed ReadAccess.Resolve unexpectedly succeeded")
+	}
+	select {
+	case err := <-readDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("WithReadView remained blocked after ReadAccess.Close")
+	}
+	select {
+	case err := <-writerDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("writer remained blocked after ReadAccess.Close")
+	}
+}
+
+func assertExpiredReadView(t *testing.T, view ReadView, node *Node, id NodeID) {
+	t.Helper()
+	if access, err := view.Acquire(); !errors.Is(err, ErrExpiredReadView) || access != nil {
+		t.Fatalf("expired ReadView.Acquire() = %v, %v; want nil, ErrExpiredReadView", access, err)
+	}
+	if got := view.Identity(); got != (DocumentIdentity{}) {
+		t.Fatalf("expired ReadView.Identity() = %#v, want zero", got)
+	}
+	if got := view.Version(); got != 0 {
+		t.Fatalf("expired ReadView.Version() = %d, want 0", got)
+	}
+	if got := view.Root(); got != nil {
+		t.Fatalf("expired ReadView.Root() = %p, want nil", got)
+	}
+	if got, found := view.ID(node); found || got != InvalidNodeID {
+		t.Fatalf("expired ReadView.ID(node) = %d, %t; want 0, false", got, found)
+	}
+	if got, found := view.Resolve(id); found || got != nil {
+		t.Fatalf("expired ReadView.Resolve(%d) = %p, %t; want nil, false", id, got, found)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 	"github.com/JediWattson/gossamer/internal/dom"
 	"github.com/JediWattson/gossamer/internal/render"
 	browserruntime "github.com/JediWattson/gossamer/internal/runtime"
+	computed "github.com/JediWattson/gossamer/internal/style"
 )
 
 // Page is the owner that ties one Realm to its stable-identity Document,
@@ -30,6 +31,8 @@ type Page struct {
 	viewport               render.Viewport
 	frame                  *render.Frame
 	frameGeneration        DocumentGeneration
+	computedStyle          computedStyleState
+	styleRevision          uint64
 	dirty                  bool
 	renderedVersion        uint64
 	activeElement          dom.NodeID
@@ -38,6 +41,16 @@ type Page struct {
 	nextTimer              TimerID
 	timers                 map[TimerID]*pageTimer
 	closed                 bool
+}
+
+// computedStyleState records the browser-owned inputs that make one immutable
+// style snapshot current. Document generations remain a browser concern; the
+// style package deliberately owns neither navigation nor invalidation state.
+type computedStyleState struct {
+	snapshot        *computed.Snapshot
+	document        DocumentGeneration
+	documentVersion uint64
+	styleRevision   uint64
 }
 
 func newPage(
@@ -64,6 +77,7 @@ func newPage(
 		location:               cloneURL(location),
 		resources:              newPageResources(),
 		viewport:               render.DefaultViewport,
+		styleRevision:          1,
 		timers:                 make(map[TimerID]*pageTimer),
 		dirty:                  true,
 	}, nil
@@ -103,7 +117,7 @@ func (page *Page) SetResources(resources render.Resources) error {
 		return err
 	}
 	page.resources = stable
-	page.dirty = true
+	page.invalidateStyleLocked()
 	return nil
 }
 
@@ -121,7 +135,7 @@ func (page *Page) SetViewport(viewport render.Viewport) error {
 	}
 	if page.viewport != viewport {
 		page.viewport = viewport
-		page.dirty = true
+		page.invalidateStyleLocked()
 	}
 	return nil
 }
@@ -320,6 +334,7 @@ func (page *Page) Close() error {
 		page.navigation.cancel = nil
 	}
 	page.frame = nil
+	page.computedStyle = computedStyleState{}
 	timers := page.takeTimersLocked()
 	script := page.script
 	page.script = nil
@@ -342,15 +357,22 @@ func (page *Page) renderLocked(onlyIfDirty bool) error {
 	if page.closed {
 		return ErrPageClosed
 	}
-	version := page.document.Version()
-	if onlyIfDirty && !page.dirty && page.renderedVersion == version {
+	if onlyIfDirty && !page.dirty && page.renderedVersion == page.document.Version() {
 		return nil
 	}
 	var frame *render.Frame
 	resources := page.resources.rendererResources(page.document)
-	err := page.document.ReadRoot(func(root *dom.Node) error {
+	var renderedVersion uint64
+	err := page.document.WithReadView(func(view dom.ReadView) error {
+		snapshot, snapshotErr := page.styleSnapshotForViewLocked(view, resources)
+		if snapshotErr != nil {
+			return snapshotErr
+		}
 		var renderErr error
-		frame, renderErr = render.RenderWithResources(root, page.viewport, resources)
+		frame, renderErr = render.RenderReadViewWithStyleSnapshot(view, page.viewport, resources, snapshot)
+		if renderErr == nil {
+			renderedVersion = view.Version()
+		}
 		return renderErr
 	})
 	if err != nil {
@@ -358,12 +380,84 @@ func (page *Page) renderLocked(onlyIfDirty bool) error {
 	}
 	page.frame = frame
 	page.frameGeneration = page.documentGeneration
-	page.renderedVersion = version
+	page.renderedVersion = renderedVersion
 	page.dirty = false
 	return nil
 }
 
+// ComputedStyle synchronously flushes style computation for handle without
+// running layout or publishing a new Frame. The Page remains render-dirty so a
+// JavaScript task can observe its own style mutations immediately while the
+// normal task-boundary render stays coalesced.
+func (page *Page) ComputedStyle(handle NodeHandle) (computed.ComputedStyle, error) {
+	if page == nil {
+		return computed.ComputedStyle{}, fmt.Errorf("browser: nil page")
+	}
+	page.mutex.Lock()
+	defer page.mutex.Unlock()
+	if page.closed {
+		return computed.ComputedStyle{}, ErrPageClosed
+	}
+	if handle.Document == 0 || handle.Node == dom.InvalidNodeID || handle.Document != page.documentGeneration {
+		return computed.ComputedStyle{}, ErrStaleNodeHandle
+	}
+
+	resources := page.resources.rendererResources(page.document)
+	var result computed.ComputedStyle
+	err := page.document.WithReadView(func(view dom.ReadView) error {
+		node, ok := view.Resolve(handle.Node)
+		if !ok {
+			return fmt.Errorf("%w: %d", dom.ErrUnknownNode, handle.Node)
+		}
+		if node.Type != dom.ElementNode {
+			return fmt.Errorf("%w: node %d is %d, want element", dom.ErrWrongNodeKind, handle.Node, node.Type)
+		}
+		snapshot, snapshotErr := page.styleSnapshotForViewLocked(view, resources)
+		if snapshotErr != nil {
+			return snapshotErr
+		}
+		var found bool
+		result, found = snapshot.LookupID(handle.Node)
+		if !found {
+			return fmt.Errorf("%w: node %d", ErrComputedStyleUnavailable, handle.Node)
+		}
+		return nil
+	})
+	return result, err
+}
+
+// styleSnapshotForViewLocked returns the snapshot current for one coherent DOM
+// read. The caller must hold Page.mutex and invoke it from Document.WithReadView.
+func (page *Page) styleSnapshotForViewLocked(view dom.ReadView, resources render.Resources) (*computed.Snapshot, error) {
+	state := page.computedStyle
+	if state.snapshot != nil &&
+		state.document == page.documentGeneration &&
+		state.documentVersion == view.Version() &&
+		state.styleRevision == page.styleRevision {
+		return state.snapshot, nil
+	}
+
+	snapshot, err := render.ComputeStyleSnapshotFromReadView(view, page.viewport, resources)
+	if err != nil {
+		return nil, err
+	}
+	page.computedStyle = computedStyleState{
+		snapshot:        snapshot,
+		document:        page.documentGeneration,
+		documentVersion: view.Version(),
+		styleRevision:   page.styleRevision,
+	}
+	return snapshot, nil
+}
+
+func (page *Page) invalidateStyleLocked() {
+	page.styleRevision++
+	page.dirty = true
+}
+
 var ErrStaleNodeHandle = errors.New("browser: node handle belongs to a previous document")
+
+var ErrComputedStyleUnavailable = errors.New("browser: computed style is unavailable for node")
 
 func cloneURL(source *url.URL) *url.URL {
 	if source == nil {

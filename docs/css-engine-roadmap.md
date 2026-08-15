@@ -16,8 +16,9 @@ not.
 
 - `internal/css` owns CSS syntax, rules, selectors, media conditions,
   declaration lists, and reusable component-value operations.
-- A future `internal/style` package should own cascade origins, specified and
-  computed values, inheritance, and property metadata.
+- `internal/style` owns typed computed values, inheritance, and the immutable
+  snapshots produced by the current cascade. Cascade provenance, the remaining
+  origins, and centralized property metadata continue to move into it.
 - `internal/render` owns used-value resolution that depends on containing-block
   geometry, layout, display-list construction, and paint.
 - `internal/browser` owns stylesheet sets, viewport/environment changes,
@@ -62,6 +63,11 @@ fixtures and fuzzing, and existing selectors retain their behavior through the
 shared tokenizer.
 
 ### 3. Explicit cascade and computed style
+
+Current foundation: cascade and computed-value calculation live in
+`internal/style`; browser pages cache versioned, stable-ID snapshots; and
+render consumes the exact snapshot retained by each frame. Provenance,
+remaining origins, and complete CSS-wide/property metadata are still pending.
 
 - Move cascade and computed-value ownership out of `internal/render`.
 - Model user-agent, user, presentational-hint, author, and inline origins,
