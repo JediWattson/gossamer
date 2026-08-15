@@ -12,6 +12,7 @@ import (
 )
 
 var nextSharedOwner atomic.Uint64
+var nextSymbolID atomic.Uint64
 
 var (
 	ErrStoreClosed           = errors.New("memory: store is closed")
@@ -34,6 +35,7 @@ var (
 	ErrPromisePending        = errors.New("memory: promise is still pending")
 	ErrPromiseSelfResolution = errors.New("memory: promise cannot resolve to itself")
 	ErrInvalidBigInt         = errors.New("memory: invalid BigInt")
+	ErrInvalidSymbol         = errors.New("memory: invalid Symbol")
 	ErrObjectReferenced      = errors.New("memory: heap object still has incoming references")
 	ErrCellReferenced        = ErrObjectReferenced
 	ErrRegionReferenced      = errors.New("memory: region still has incoming references")
@@ -55,6 +57,7 @@ type Stats struct {
 	LiveFunctions      uint64
 	LivePromises       uint64
 	LiveBigInts        uint64
+	LiveSymbols        uint64
 	LiveBytes          uint64
 	LiveRegions        uint64
 	BulkRegionReleases uint64
@@ -87,6 +90,8 @@ func (kind HeapKind) String() string {
 		return "Promise"
 	case HeapBigInt:
 		return "BigInt"
+	case HeapSymbol:
+		return "Symbol"
 	default:
 		return fmt.Sprintf("HeapKind(%d)", kind)
 	}
@@ -216,7 +221,7 @@ func (store *Store) allocLocked(owner ownership.OwnerID, regionID RegionID, inte
 }
 
 func (store *Store) allocKindLocked(owner ownership.OwnerID, regionID RegionID, kind HeapKind, internal bool) (Ref, error) {
-	if kind < HeapCell || kind > HeapBigInt {
+	if kind < HeapCell || kind > HeapSymbol {
 		return Ref{}, fmt.Errorf("%w: heap kind %d", ErrTypeMismatch, kind)
 	}
 	region, err := store.mutableRegionLocked(owner, regionID, internal)
@@ -652,6 +657,8 @@ func (store *Store) recordKindAllocationLocked(kind HeapKind, bytes uint64) {
 		store.stats.LivePromises++
 	case HeapBigInt:
 		store.stats.LiveBigInts++
+	case HeapSymbol:
+		store.stats.LiveSymbols++
 	}
 	store.stats.LiveBytes += bytes
 }
@@ -680,6 +687,8 @@ func (store *Store) recordKindFreeLocked(slot *Slot) {
 	case HeapBigInt:
 		store.stats.LiveBigInts--
 		store.stats.LiveBytes -= uint64(len(slot.BigInt.Magnitude))
+	case HeapSymbol:
+		store.stats.LiveSymbols--
 	}
 }
 
@@ -1251,6 +1260,13 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 			}
 		case HeapBigInt:
 			// Immutable payload was cloned during allocation.
+		case HeapSymbol:
+			symbol := cloneSymbol(sourceSlot.Symbol)
+			symbol.Description = remapValue(symbol.Description, mapping)
+			if err := store.initializeSymbolLocked(to, copyRef, symbol, true); err != nil {
+				_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
+				return nil, err
+			}
 		default:
 			_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
 			return nil, fmt.Errorf("%w: cannot copy heap kind %d", ErrTypeMismatch, sourceSlot.Kind)

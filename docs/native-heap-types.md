@@ -91,6 +91,17 @@ through 36, and base 0 parsing for explicit prefixes.
 Copy and Promote clone magnitude bytes. Arithmetic and JavaScript coercion are
 interpreter responsibilities rather than RegionStore mutation.
 
+### Symbol
+
+Native Symbols carry a nonzero semantic `SymbolID` plus an optional native
+String description. Fresh Symbols are unequal even with equal descriptions.
+Copy and Promote allocate a new physical Ref but preserve `SymbolID`, so moving
+the payload does not change Symbol equality. Description refs remain ordinary
+counted edges.
+
+The global Symbol registry and property-key coercion remain language-runtime
+services above RegionStore.
+
 ## Deliberate boundaries
 
 These native payloads are not yet ECMAScript implementations. String

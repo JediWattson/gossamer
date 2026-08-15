@@ -295,6 +295,20 @@ func (context *TaskContext) DerefBigInt(ref memory.Ref) (memory.BigInt, error) {
 	return context.Realm.store.DerefBigInt(context.Owner, ref)
 }
 
+func (context *TaskContext) NewSymbol(description memory.Value) (memory.Ref, error) {
+	if context == nil || context.Realm == nil {
+		return memory.Ref{}, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.AllocSymbol(context.Owner, context.MemoryRegion, description)
+}
+
+func (context *TaskContext) DerefSymbol(ref memory.Ref) (memory.Symbol, error) {
+	if context == nil || context.Realm == nil {
+		return memory.Symbol{}, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.DerefSymbol(context.Owner, ref)
+}
+
 func (context *TaskContext) Set(ref memory.Ref, field int, value memory.Value) error {
 	if context == nil || context.Realm == nil {
 		return fmt.Errorf("runtime: nil task context")
