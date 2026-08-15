@@ -47,14 +47,11 @@ func parseSelectorListAtDepth(source string, nesting int) ([]Selector, bool) {
 	}
 }
 
-// parseForgivingSelectorList drops invalid members. A non-empty source whose
-// members are all invalid remains a valid, empty list and therefore never
-// matches. This is the Selectors 4 behavior used by :is() and :where().
+// parseForgivingSelectorList drops invalid members. An empty source, or one
+// whose members are all invalid, remains a valid, empty list and therefore
+// never matches. This is the Selectors 4 behavior used by :is() and :where().
 func parseForgivingSelectorList(source string, nesting int) ([]Selector, bool) {
 	if nesting > maxSelectorNesting {
-		return nil, false
-	}
-	if trimSelectorIgnorable(source) == "" {
 		return nil, false
 	}
 	parts := splitTopLevel(source, ',')
@@ -335,7 +332,7 @@ func (parser *selectorParser) parsePseudoClass() (pseudoClassSelector, Specifici
 }
 
 func parseNthArgument(source string, allowOf bool, nesting int) (nthExpression, []Selector, bool) {
-	position := skipCSSWhitespaceAt(source, 0)
+	position, _ := skipNthIgnorableAt(source, 0)
 	if position >= len(source) {
 		return nthExpression{}, nil, false
 	}
@@ -358,11 +355,11 @@ func parseNthArgument(source string, allowOf bool, nesting int) (nthExpression, 
 	}
 
 	formulaEnd := position
-	position = skipCSSWhitespaceAt(source, position)
+	position, separated := skipNthIgnorableAt(source, position)
 	if position == len(source) {
 		return expression, nil, true
 	}
-	if !allowOf || position == formulaEnd {
+	if !allowOf || !separated || position == formulaEnd {
 		return nthExpression{}, nil, false
 	}
 	if position+2 > len(source) || !equalASCIIFold(source[position:position+2], "of") ||
@@ -370,7 +367,7 @@ func parseNthArgument(source string, allowOf bool, nesting int) (nthExpression, 
 		return nthExpression{}, nil, false
 	}
 	position += 2
-	if next := skipCSSWhitespaceAt(source, position); next == position {
+	if next, separated := skipNthIgnorableAt(source, position); !separated {
 		return nthExpression{}, nil, false
 	} else {
 		position = next
@@ -385,12 +382,26 @@ func parseNthArgument(source string, allowOf bool, nesting int) (nthExpression, 
 func parseAnPlusB(source string, position int) (nthExpression, int, bool) {
 	sign := 1
 	if source[position] == '+' || source[position] == '-' {
+		signCharacter := source[position]
 		if source[position] == '-' {
 			sign = -1
 		}
 		position++
 		if position >= len(source) || isCSSWhitespace(source[position]) {
 			return nthExpression{}, 0, false
+		}
+		if source[position] == commentBoundary {
+			// A leading '+' and an n ident are separate CSS tokens, so comments
+			// may occur between them. A leading '-' is part of the -n ident, and
+			// comments would split that token. Comments likewise cannot split a
+			// signed integer token such as +2.
+			if signCharacter != '+' {
+				return nthExpression{}, 0, false
+			}
+			position = skipCommentBoundariesAt(source, position)
+			if position >= len(source) || source[position] != 'n' && source[position] != 'N' {
+				return nthExpression{}, 0, false
+			}
 		}
 	}
 
@@ -417,7 +428,7 @@ func parseAnPlusB(source string, position int) (nthExpression, int, bool) {
 func parseNthOffset(source string, position, coefficient int) (nthExpression, int, bool) {
 	expression := nthExpression{a: coefficient}
 	offsetStart := position
-	position = skipCSSWhitespaceAt(source, position)
+	position, _ = skipNthIgnorableAt(source, position)
 	if position >= len(source) || source[position] != '+' && source[position] != '-' {
 		return expression, offsetStart, true
 	}
@@ -426,7 +437,7 @@ func parseNthOffset(source string, position, coefficient int) (nthExpression, in
 		sign = -1
 	}
 	position++
-	position = skipCSSWhitespaceAt(source, position)
+	position, _ = skipNthIgnorableAt(source, position)
 	if position >= len(source) || source[position] < '0' || source[position] > '9' {
 		return nthExpression{}, 0, false
 	}
@@ -645,6 +656,25 @@ func skipCSSWhitespaceAt(source string, position int) int {
 		position++
 	}
 	return position
+}
+
+func skipCommentBoundariesAt(source string, position int) int {
+	for position < len(source) && source[position] == commentBoundary {
+		position++
+	}
+	return position
+}
+
+// skipNthIgnorableAt consumes comments and CSS whitespace between An+B tokens.
+// It reports whether either kind of separator was present. Comments remain
+// distinct from whitespace while tokens are formed, which matters for +n and
+// -n, but are otherwise ignorable inside an existing nth() function.
+func skipNthIgnorableAt(source string, position int) (int, bool) {
+	start := position
+	for position < len(source) && (source[position] == commentBoundary || isCSSWhitespace(source[position])) {
+		position++
+	}
+	return position, position != start
 }
 
 func trimSelectorIgnorable(source string) string {

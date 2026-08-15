@@ -66,6 +66,8 @@ func TestParsePreservesCDOAndCDCSequencesInsideDeclarationValues(t *testing.T) {
 	open-token: <!--;
 	close-token: -->;
 	paired-token: before<!--middle-->after;
+	--open-custom: <!--;
+	--paired-custom: before<!--middle-->after;
 }`)
 	if err != nil {
 		t.Fatalf("Parse() error = %v", err)
@@ -78,6 +80,8 @@ func TestParsePreservesCDOAndCDCSequencesInsideDeclarationValues(t *testing.T) {
 		{Property: "open-token", Value: "<!--"},
 		{Property: "close-token", Value: "-->"},
 		{Property: "paired-token", Value: "before<!--middle-->after"},
+		{Property: "--open-custom", Value: "<!--"},
+		{Property: "--paired-custom", Value: "before<!--middle-->after"},
 	}
 	if got := stylesheet.Rules[0].Declarations; !reflect.DeepEqual(got, want) {
 		t.Errorf("Declarations = %#v, want %#v", got, want)

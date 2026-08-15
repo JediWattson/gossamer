@@ -256,6 +256,7 @@ func TestImportantOnlyMatchesTopLevelTrailingMarker(t *testing.T) {
   image: fn(!important);
   custom: red ! urgent;
   color: red !ImPoRtAnT;
+  background: blue !\69mportant;
 }`)
 	if err != nil {
 		t.Fatalf("Parse() error = %v", err)
@@ -265,6 +266,7 @@ func TestImportantOnlyMatchesTopLevelTrailingMarker(t *testing.T) {
 		{Property: "image", Value: "fn(!important)"},
 		{Property: "custom", Value: "red ! urgent"},
 		{Property: "color", Value: "red", Important: true},
+		{Property: "background", Value: "blue", Important: true},
 	}
 	if got := stylesheet.Rules[0].Declarations; !reflect.DeepEqual(got, want) {
 		t.Errorf("Declarations = %#v, want %#v", got, want)
@@ -337,6 +339,32 @@ func TestParseRetainsEmptyQualifiedRulesAndTheirOrder(t *testing.T) {
 	}
 	if got := len(stylesheet.Rules[1].Declarations); got != 0 {
 		t.Errorf("invalid-only rule declarations = %d, want 0", got)
+	}
+}
+
+func TestParseEscapedStructuralCodePointsDoNotChangeRuleBoundaries(t *testing.T) {
+	t.Parallel()
+
+	stylesheet, err := css.Parse(`
+		p { --close: before\}after; color: red; }
+		.foo\{bar { color: green; }
+		div { color: blue; }
+	`)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	if got, want := len(stylesheet.Rules), 2; got != want {
+		t.Fatalf("len(Rules) = %d, want %d", got, want)
+	}
+	if len(stylesheet.Rules[1].Selectors) != 1 || !stylesheet.Rules[1].Selectors[0].Matches(dom.NewElement("div")) {
+		t.Fatal("escaped opening brace swallowed the following div rule")
+	}
+	want := []css.Declaration{
+		{Property: "--close", Value: `before\}after`},
+		{Property: "color", Value: "red"},
+	}
+	if got := stylesheet.Rules[0].Declarations; !reflect.DeepEqual(got, want) {
+		t.Fatalf("first rule declarations = %#v, want %#v", got, want)
 	}
 }
 

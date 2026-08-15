@@ -86,33 +86,34 @@ type length struct {
 }
 
 type computedStyle struct {
-	display       displayMode
-	color         color.NRGBA
-	background    color.NRGBA
-	hasBackground bool
-	fontSize      float64
-	fontWeight    FontWeight
-	lineHeight    computedLineHeight
-	underline     bool
-	textAlign     textAlignment
-	listStyleType listStyleType
-	opacity       float64
-	width         length
-	height        length
-	minWidth      length
-	maxWidth      length
-	paddingTop    length
-	paddingRight  length
-	paddingBottom length
-	paddingLeft   length
-	borderTop     borderSide
-	borderRight   borderSide
-	borderBottom  borderSide
-	borderLeft    borderSide
-	marginTop     length
-	marginRight   length
-	marginBottom  length
-	marginLeft    length
+	display          displayMode
+	color            color.NRGBA
+	background       color.NRGBA
+	hasBackground    bool
+	fontSize         float64
+	fontWeight       FontWeight
+	lineHeight       computedLineHeight
+	underline        bool
+	textAlign        textAlignment
+	listStyleType    listStyleType
+	opacity          float64
+	width            length
+	height           length
+	minWidth         length
+	maxWidth         length
+	paddingTop       length
+	paddingRight     length
+	paddingBottom    length
+	paddingLeft      length
+	borderTop        borderSide
+	borderRight      borderSide
+	borderBottom     borderSide
+	borderLeft       borderSide
+	marginTop        length
+	marginRight      length
+	marginBottom     length
+	marginLeft       length
+	customProperties css.CustomProperties
 }
 
 type styledNode struct {
@@ -127,8 +128,11 @@ type authorStyleContext struct {
 	mediaEnvironment css.MediaEnvironment
 }
 
+const maxCustomPropertyCascadePasses = 128
+
 type winningDeclaration struct {
 	declaration css.Declaration
+	target      string
 	specificity css.Specificity
 	order       int
 	layerRank   int
@@ -186,7 +190,7 @@ func collectAuthorStyles(root *dom.Node, external map[*dom.Node]css.Stylesheet, 
 func styleNode(node *dom.Node, parent *styledNode, author authorStyleContext, viewport Viewport) *styledNode {
 	style := initialStyle(node, parent)
 	if node != nil && node.Type == dom.ElementNode {
-		applyAuthorStyles(&style, node, author, viewport, parentFontSize(parent))
+		applyAuthorStyles(&style, node, author, viewport, parent)
 	}
 	styled := &styledNode{node: node, style: style}
 	for _, child := range node.Children {
@@ -196,7 +200,34 @@ func styleNode(node *dom.Node, parent *styledNode, author authorStyleContext, vi
 }
 
 func initialStyle(node *dom.Node, parent *styledNode) computedStyle {
-	style := computedStyle{
+	style := cssInitialStyle()
+	if parent != nil {
+		style.color = parent.style.color
+		style.fontSize = parent.style.fontSize
+		style.fontWeight = parent.style.fontWeight
+		style.lineHeight = parent.style.lineHeight
+		style.underline = parent.style.underline
+		style.textAlign = parent.style.textAlign
+		style.listStyleType = parent.style.listStyleType
+		style.customProperties = parent.style.customProperties
+	}
+	if node == nil {
+		return style
+	}
+	if node.Type == dom.DocumentNode {
+		style.display = displayBlock
+		return style
+	}
+	if node.Type != dom.ElementNode {
+		return style
+	}
+
+	applyUserAgentStyle(&style, node)
+	return style
+}
+
+func cssInitialStyle() computedStyle {
+	return computedStyle{
 		display:       displayInline,
 		color:         color.NRGBA{A: 0xff},
 		fontSize:      16,
@@ -219,26 +250,9 @@ func initialStyle(node *dom.Node, parent *styledNode) computedStyle {
 		marginBottom:  length{unit: lengthPX},
 		marginLeft:    length{unit: lengthPX},
 	}
-	if parent != nil {
-		style.color = parent.style.color
-		style.fontSize = parent.style.fontSize
-		style.fontWeight = parent.style.fontWeight
-		style.lineHeight = parent.style.lineHeight
-		style.underline = parent.style.underline
-		style.textAlign = parent.style.textAlign
-		style.listStyleType = parent.style.listStyleType
-	}
-	if node == nil {
-		return style
-	}
-	if node.Type == dom.DocumentNode {
-		style.display = displayBlock
-		return style
-	}
-	if node.Type != dom.ElementNode {
-		return style
-	}
+}
 
+func applyUserAgentStyle(style *computedStyle, node *dom.Node) {
 	switch node.Data {
 	case "html", "body", "address", "article", "aside", "blockquote", "div", "dl", "dt", "dd", "fieldset", "figcaption", "figure", "footer", "form", "header", "hgroup", "main", "nav", "ol", "p", "pre", "section", "table", "ul", "h1", "h2", "h3", "h4", "h5", "h6":
 		style.display = displayBlock
@@ -312,26 +326,45 @@ func initialStyle(node *dom.Node, parent *styledNode) computedStyle {
 			style.height = px(value)
 		}
 	}
-	return style
 }
 
-func applyAuthorStyles(style *computedStyle, node *dom.Node, author authorStyleContext, viewport Viewport, parentSize float64) {
-	winners := make(map[string]winningDeclaration)
+func applyAuthorStyles(style *computedStyle, node *dom.Node, author authorStyleContext, viewport Viewport, parent *styledNode) {
+	candidatesByTarget := make(map[string][]winningDeclaration)
 	sourceOrder := 0
 	record := func(declaration css.Declaration, specificity css.Specificity, order int, layer string, inline bool) {
+		targets := declarationTargets(declaration.Property)
+		if len(targets) == 0 {
+			return
+		}
+		custom := strings.HasPrefix(declaration.Property, "--")
+		deferred := css.ContainsVarFunction(declaration.Value)
+		if custom {
+			if !css.ValidCustomPropertyValue(declaration.Value) {
+				return
+			}
+		} else {
+			// Substitution defers the property's own grammar, but the declaration's
+			// component values and every var() fallback must still be syntactically
+			// valid before the declaration participates in the cascade.
+			if !css.ValidDeclarationValue(declaration.Value) {
+				return
+			}
+			if !deferred && cssWideKeyword(declaration.Value) == "" && !validCascadedDeclaration(declaration, viewport) {
+				return
+			}
+		}
 		layerRank, layered := author.layerRanks[layer]
-		for _, expanded := range expandDeclaration(declaration, viewport) {
+		for _, target := range targets {
 			candidate := winningDeclaration{
-				declaration: expanded,
+				declaration: declaration,
+				target:      target,
 				specificity: specificity,
 				order:       order,
 				layerRank:   layerRank,
 				layered:     layered && !inline,
 				inline:      inline,
 			}
-			if current, ok := winners[expanded.Property]; !ok || declarationWins(candidate, current) {
-				winners[expanded.Property] = candidate
-			}
+			candidatesByTarget[target] = append(candidatesByTarget[target], candidate)
 		}
 	}
 	for _, sheet := range author.sheets {
@@ -350,36 +383,497 @@ func applyAuthorStyles(style *computedStyle, node *dom.Node, author authorStyleC
 	}
 
 	if source, ok := attribute(node, "style"); ok {
-		inlineSheet, _ := css.Parse("*{" + source + "}")
-		if len(inlineSheet.Rules) != 0 {
-			for _, declaration := range inlineSheet.Rules[0].Declarations {
-				record(declaration, css.Specificity{}, sourceOrder, "", true)
-				sourceOrder++
-			}
+		declarations, _ := css.ParseRawDeclarationList(source)
+		for _, declaration := range declarations {
+			record(declaration, css.Specificity{}, sourceOrder, "", true)
+			sourceOrder++
 		}
 	}
 
-	// Font size must be computed before em lengths in the remaining properties.
-	if winner, ok := winners["font-size"]; ok {
-		if value, ok := parseLength(winner.declaration.Value, parentSize, parentSize, viewport); ok && value.unit != lengthAuto {
+	for target := range candidatesByTarget {
+		candidates := candidatesByTarget[target]
+		sort.SliceStable(candidates, func(left, right int) bool {
+			return declarationPrecedence(candidates[left], candidates[right]) > 0
+		})
+	}
+
+	customPropertyCandidates := make(map[string][]winningDeclaration)
+	for target, candidates := range candidatesByTarget {
+		if strings.HasPrefix(target, "--") {
+			customPropertyCandidates[target] = candidates
+			delete(candidatesByTarget, target)
+		}
+	}
+	style.customProperties = resolveCustomPropertyCandidates(style.customProperties, customPropertyCandidates)
+
+	// Font size computes before em lengths in every other supported property.
+	if candidates, ok := candidatesByTarget["font-size"]; ok {
+		applyDeclarationCandidates(style, parent, candidates, viewport)
+		delete(candidatesByTarget, "font-size")
+	}
+	targets := make([]string, 0, len(candidatesByTarget))
+	for target := range candidatesByTarget {
+		targets = append(targets, target)
+	}
+	sort.Strings(targets)
+	for _, target := range targets {
+		applyDeclarationCandidates(style, parent, candidatesByTarget[target], viewport)
+	}
+}
+
+func resolveCustomPropertyCandidates(parent css.CustomProperties, candidatesByName map[string][]winningDeclaration) css.CustomProperties {
+	if len(candidatesByName) == 0 {
+		return parent
+	}
+	names := make([]string, 0, len(candidatesByName))
+	positions := make(map[string]int, len(candidatesByName))
+	overrides := make(map[string]string, len(candidatesByName))
+	settled := make(map[string]bool, len(candidatesByName))
+	for name := range candidatesByName {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		positions[name] = normalizeCustomPropertyPosition(candidatesByName[name], 0)
+	}
+
+	for pass := 0; ; pass++ {
+		specified := make(map[string]string, len(names))
+		for _, name := range names {
+			if override, ok := overrides[name]; ok {
+				specified[name] = override
+				continue
+			}
+			position := positions[name]
+			if position < len(candidatesByName[name]) {
+				specified[name] = candidatesByName[name][position].declaration.Value
+			}
+		}
+
+		resolved := css.ResolveCustomProperties(parent, specified)
+		cssWideValues := make(map[string]string)
+		dependencies := make(map[string][]string)
+		for _, name := range names {
+			if settled[name] {
+				continue
+			}
+			position := positions[name]
+			if position >= len(candidatesByName[name]) {
+				continue
+			}
+			value, ok := resolved.Value(name)
+			if !ok {
+				continue
+			}
+			keyword := css.CSSWideKeyword(value)
+			if keyword == "" {
+				continue
+			}
+			cssWideValues[name] = keyword
+			references, valid := css.CustomPropertyReferences(candidatesByName[name][position].declaration.Value)
+			if valid {
+				dependencies[name] = references
+			}
+		}
+		if len(cssWideValues) == 0 {
+			return resolved
+		}
+		if pass >= maxCustomPropertyCascadePasses-1 {
+			// Resolution is monotone, but adversarial dependency ordering can force
+			// one CSS-wide property to settle per pass. Fail closed at the same order
+			// of magnitude as the variable nesting limit so hostile CSS cannot make
+			// cascade work quadratic without bound. A property that is not currently
+			// a keyword can become one after a dependency is removed, so fail closed
+			// over the complete reverse-reference closure, not just the current
+			// keyword values.
+			affected := customPropertyDependents(cssWideValues, names, settled, positions, candidatesByName)
+			for name := range affected {
+				specified[name] = "initial"
+			}
+			return css.ResolveCustomProperties(parent, specified)
+		}
+
+		// A CSS-wide keyword can flow through var() references. Apply it to the
+		// declaration that produced it before recomputing dependents. This makes
+		// --dependent:var(--source) observe the source's post-keyword value instead
+		// of applying the propagated keyword to --dependent too.
+		advanced := false
+		for _, name := range names {
+			keyword, hasCSSWideValue := cssWideValues[name]
+			if !hasCSSWideValue || dependsOnCSSWideValue(dependencies[name], cssWideValues) {
+				continue
+			}
+			candidates := candidatesByName[name]
+			position := positions[name]
+			switch keyword {
+			case "initial", "inherit", "unset":
+				// Re-feed the computed keyword as the specified value so the bounded
+				// custom-property resolver applies its native CSS-wide semantics.
+				overrides[name] = keyword
+				settled[name] = true
+			case "revert":
+				// Gossamer has no user-origin custom properties. Removing all author
+				// candidates leaves the inherited custom-property set in place.
+				position = len(candidates)
+				delete(overrides, name)
+				settled[name] = true
+			case "revert-layer":
+				position = nextCandidateAfterRevertLayer(candidates, position)
+				delete(overrides, name)
+				settled[name] = false
+			}
+			positions[name] = normalizeCustomPropertyPosition(candidates, position)
+			advanced = true
+		}
+		if !advanced {
+			// ResolveCustomProperties invalidates cyclic var() graphs, so a graph of
+			// resolved CSS-wide values always has a dependency leaf. Keep this guard
+			// as a deterministic fail-safe if that invariant changes.
+			return resolved
+		}
+	}
+}
+
+func customPropertyDependents(
+	seeds map[string]string,
+	names []string,
+	settled map[string]bool,
+	positions map[string]int,
+	candidatesByName map[string][]winningDeclaration,
+) map[string]bool {
+	affected := make(map[string]bool, len(seeds))
+	reverseReferences := make(map[string][]string)
+	queue := make([]string, 0, len(seeds))
+	for name := range seeds {
+		affected[name] = true
+		queue = append(queue, name)
+	}
+	for _, name := range names {
+		if settled[name] {
+			continue
+		}
+		position := positions[name]
+		candidates := candidatesByName[name]
+		if position >= len(candidates) {
+			continue
+		}
+		references, valid := css.CustomPropertyReferences(candidates[position].declaration.Value)
+		if !valid {
+			continue
+		}
+		for _, reference := range references {
+			reverseReferences[reference] = append(reverseReferences[reference], name)
+		}
+	}
+	for len(queue) > 0 {
+		dependency := queue[0]
+		queue = queue[1:]
+		for _, dependent := range reverseReferences[dependency] {
+			if affected[dependent] {
+				continue
+			}
+			affected[dependent] = true
+			queue = append(queue, dependent)
+		}
+	}
+	return affected
+}
+
+func normalizeCustomPropertyPosition(candidates []winningDeclaration, position int) int {
+	for position < len(candidates) {
+		switch css.CSSWideKeyword(candidates[position].declaration.Value) {
+		case "revert":
+			return len(candidates)
+		case "revert-layer":
+			position = nextCandidateAfterRevertLayer(candidates, position)
+		default:
+			return position
+		}
+	}
+	return len(candidates)
+}
+
+func dependsOnCSSWideValue(references []string, cssWideValues map[string]string) bool {
+	for _, reference := range references {
+		if _, ok := cssWideValues[reference]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func declarationTargets(property string) []string {
+	if strings.HasPrefix(property, "--") {
+		return []string{property}
+	}
+	switch property {
+	case "font":
+		return []string{"font-size", "font-weight", "line-height"}
+	case "background":
+		return []string{"background-color"}
+	case "margin":
+		return []string{"margin-top", "margin-right", "margin-bottom", "margin-left"}
+	case "padding":
+		return []string{"padding-top", "padding-right", "padding-bottom", "padding-left"}
+	case "border":
+		return []string{
+			"border-top-width", "border-right-width", "border-bottom-width", "border-left-width",
+			"border-top-style", "border-right-style", "border-bottom-style", "border-left-style",
+			"border-top-color", "border-right-color", "border-bottom-color", "border-left-color",
+		}
+	case "border-top", "border-right", "border-bottom", "border-left":
+		side := strings.TrimPrefix(property, "border-")
+		return []string{"border-" + side + "-width", "border-" + side + "-style", "border-" + side + "-color"}
+	case "border-width":
+		return []string{"border-top-width", "border-right-width", "border-bottom-width", "border-left-width"}
+	case "border-style":
+		return []string{"border-top-style", "border-right-style", "border-bottom-style", "border-left-style"}
+	case "border-color":
+		return []string{"border-top-color", "border-right-color", "border-bottom-color", "border-left-color"}
+	case "text-decoration":
+		return []string{"text-decoration-line"}
+	case "list-style":
+		return []string{"list-style-type"}
+	case "display", "color", "background-color", "font-size", "font-weight", "line-height",
+		"text-decoration-line", "opacity", "width", "height", "min-width", "max-width",
+		"padding-top", "padding-right", "padding-bottom", "padding-left",
+		"border-top-width", "border-right-width", "border-bottom-width", "border-left-width",
+		"border-top-style", "border-right-style", "border-bottom-style", "border-left-style",
+		"border-top-color", "border-right-color", "border-bottom-color", "border-left-color",
+		"text-align", "list-style-type", "margin-top", "margin-right", "margin-bottom", "margin-left":
+		return []string{property}
+	default:
+		return nil
+	}
+}
+
+func validCascadedDeclaration(declaration css.Declaration, viewport Viewport) bool {
+	if declaration.Property == "font" {
+		_, _, _, _, ok := parseFontShorthand(declaration.Value, viewport)
+		return ok
+	}
+	return validComputedDeclaration(declaration, viewport)
+}
+
+func cssWideKeyword(source string) string {
+	return css.CSSWideKeyword(source)
+}
+
+func applyDeclarationCandidates(style *computedStyle, parent *styledNode, candidates []winningDeclaration, viewport Viewport) {
+	for position := 0; position < len(candidates); {
+		candidate := candidates[position]
+		resolved, ok := style.customProperties.Substitute(candidate.declaration.Value)
+		if !ok {
+			// A winning declaration whose var() cannot be substituted is invalid at
+			// computed-value time. It computes as unset without reviving a loser.
+			applyCSSWideKeyword(style, parent, candidate.target, "unset")
+			return
+		}
+
+		switch keyword := cssWideKeyword(resolved); keyword {
+		case "revert":
+			// There is no user origin in this renderer. Leaving the pre-author
+			// style untouched exposes the inherited/UA result.
+			return
+		case "revert-layer":
+			position = nextCandidateAfterRevertLayer(candidates, position)
+			continue
+		case "inherit", "initial", "unset":
+			applyCSSWideKeyword(style, parent, candidate.target, keyword)
+			return
+		}
+
+		declaration := candidate.declaration
+		declaration.Value = resolved
+		if !validCascadedDeclaration(declaration, viewport) {
+			// A declaration containing var() participates in the cascade before its
+			// computed value is known. If substitution produces an invalid value, it
+			// computes as unset; a lower-priority declaration is not resurrected.
+			applyCSSWideKeyword(style, parent, candidate.target, "unset")
+			return
+		}
+		applyTargetDeclaration(style, parentFontSize(parent), candidate.target, declaration, viewport)
+		return
+	}
+}
+
+func nextCandidateAfterRevertLayer(candidates []winningDeclaration, position int) int {
+	current := candidates[position]
+	for position++; position < len(candidates); position++ {
+		if survivesRevertLayer(current, candidates[position]) {
+			return position
+		}
+	}
+	return len(candidates)
+}
+
+func survivesRevertLayer(current, candidate winningDeclaration) bool {
+	// Element-attached styles form their own cascade step. CSS Cascade 5 makes
+	// important inline revert-layer an explicit exception: it removes inline
+	// declarations but does not remove intervening author-important rules.
+	if current.inline {
+		return !candidate.inline
+	}
+	if !current.declaration.Important {
+		return !sameCascadeLayer(current, candidate)
+	}
+
+	// Important layer order mirrors normal layer order. Rolling back an
+	// important layer removes that layer and every cascade step between its
+	// important and normal halves, then resumes in the preceding normal layer.
+	if candidate.declaration.Important || candidate.inline || !candidate.layered {
+		return false
+	}
+	if !current.layered {
+		return true
+	}
+	return candidate.layerRank < current.layerRank
+}
+
+func sameCascadeLayer(left, right winningDeclaration) bool {
+	if left.inline || right.inline {
+		return left.inline && right.inline
+	}
+	if left.layered || right.layered {
+		return left.layered && right.layered && left.layerRank == right.layerRank
+	}
+	return true
+}
+
+func applyTargetDeclaration(style *computedStyle, parentSize float64, target string, declaration css.Declaration, viewport Viewport) {
+	if declaration.Property == "font" {
+		size, lineHeight, weight, _, ok := parseFontShorthand(declaration.Value, viewport)
+		if !ok {
+			return
+		}
+		switch target {
+		case "font-size":
+			declaration = css.Declaration{Property: target, Value: size, Important: declaration.Important}
+		case "font-weight":
+			declaration = css.Declaration{Property: target, Value: weight, Important: declaration.Important}
+		case "line-height":
+			declaration = css.Declaration{Property: target, Value: lineHeight, Important: declaration.Important}
+		}
+	}
+	if target == "font-size" {
+		if value, ok := parseLength(declaration.Value, parentSize, parentSize, viewport); ok && value.unit != lengthAuto {
 			resolved := resolveLength(value, parentSize, viewport, parentSize)
 			if resolved > 0 && isFinite(resolved) {
 				style.fontSize = resolved
 			}
 		}
+		return
 	}
-	orderedWinners := make([]winningDeclaration, 0, len(winners))
-	for property, winner := range winners {
-		if property == "font-size" {
-			continue
+	if declaration.Property == target {
+		applyDeclaration(style, target, declaration.Value, viewport)
+		return
+	}
+	temporary := *style
+	applyDeclaration(&temporary, declaration.Property, declaration.Value, viewport)
+	copyComputedProperty(style, temporary, target)
+}
+
+func applyCSSWideKeyword(style *computedStyle, parent *styledNode, target, keyword string) {
+	initial := cssInitialStyle()
+	source := initial
+	switch keyword {
+	case "inherit":
+		if parent != nil {
+			source = parent.style
 		}
-		orderedWinners = append(orderedWinners, winner)
+	case "unset":
+		if inheritedProperty(target) && parent != nil {
+			source = parent.style
+		}
 	}
-	sort.SliceStable(orderedWinners, func(left, right int) bool {
-		return declarationPrecedence(orderedWinners[left], orderedWinners[right]) < 0
-	})
-	for _, winner := range orderedWinners {
-		applyDeclaration(style, winner.declaration.Property, winner.declaration.Value, viewport)
+	copyComputedProperty(style, source, target)
+}
+
+func inheritedProperty(property string) bool {
+	switch property {
+	case "color", "font-size", "font-weight", "line-height", "text-align", "list-style-type":
+		return true
+	default:
+		return false
+	}
+}
+
+func copyComputedProperty(destination *computedStyle, source computedStyle, property string) {
+	switch property {
+	case "display":
+		destination.display = source.display
+	case "color":
+		destination.color = source.color
+	case "background-color":
+		destination.background = source.background
+		destination.hasBackground = source.hasBackground
+	case "font-size":
+		destination.fontSize = source.fontSize
+	case "font-weight":
+		destination.fontWeight = source.fontWeight
+	case "line-height":
+		destination.lineHeight = source.lineHeight
+	case "text-decoration-line":
+		destination.underline = source.underline
+	case "text-align":
+		destination.textAlign = source.textAlign
+	case "list-style-type":
+		destination.listStyleType = source.listStyleType
+	case "opacity":
+		destination.opacity = source.opacity
+	case "width":
+		destination.width = source.width
+	case "height":
+		destination.height = source.height
+	case "min-width":
+		destination.minWidth = source.minWidth
+	case "max-width":
+		destination.maxWidth = source.maxWidth
+	case "padding-top":
+		destination.paddingTop = source.paddingTop
+	case "padding-right":
+		destination.paddingRight = source.paddingRight
+	case "padding-bottom":
+		destination.paddingBottom = source.paddingBottom
+	case "padding-left":
+		destination.paddingLeft = source.paddingLeft
+	case "margin-top":
+		destination.marginTop = source.marginTop
+	case "margin-right":
+		destination.marginRight = source.marginRight
+	case "margin-bottom":
+		destination.marginBottom = source.marginBottom
+	case "margin-left":
+		destination.marginLeft = source.marginLeft
+	case "border-top-width":
+		destination.borderTop.width = source.borderTop.width
+	case "border-right-width":
+		destination.borderRight.width = source.borderRight.width
+	case "border-bottom-width":
+		destination.borderBottom.width = source.borderBottom.width
+	case "border-left-width":
+		destination.borderLeft.width = source.borderLeft.width
+	case "border-top-style":
+		destination.borderTop.style = source.borderTop.style
+	case "border-right-style":
+		destination.borderRight.style = source.borderRight.style
+	case "border-bottom-style":
+		destination.borderBottom.style = source.borderBottom.style
+	case "border-left-style":
+		destination.borderLeft.style = source.borderLeft.style
+	case "border-top-color":
+		destination.borderTop.color = source.borderTop.color
+		destination.borderTop.hasColor = source.borderTop.hasColor
+	case "border-right-color":
+		destination.borderRight.color = source.borderRight.color
+		destination.borderRight.hasColor = source.borderRight.hasColor
+	case "border-bottom-color":
+		destination.borderBottom.color = source.borderBottom.color
+		destination.borderBottom.hasColor = source.borderBottom.hasColor
+	case "border-left-color":
+		destination.borderLeft.color = source.borderLeft.color
+		destination.borderLeft.hasColor = source.borderLeft.hasColor
 	}
 }
 
@@ -414,32 +908,6 @@ func screenMediaEnvironment(viewport Viewport) css.MediaEnvironment {
 		Height:          float64(viewport.Height),
 		InitialFontSize: 16,
 	}
-}
-
-func expandDeclaration(declaration css.Declaration, viewport Viewport) []css.Declaration {
-	if declaration.Property != "font" {
-		if !validComputedDeclaration(declaration, viewport) {
-			return nil
-		}
-		return []css.Declaration{declaration}
-	}
-	size, lineHeight, weight, family, ok := parseFontShorthand(declaration.Value, viewport)
-	if !ok {
-		return nil
-	}
-	expanded := []css.Declaration{
-		{Property: "font-size", Value: size, Important: declaration.Important},
-		{Property: "line-height", Value: lineHeight, Important: declaration.Important},
-		{Property: "font-weight", Value: weight, Important: declaration.Important},
-		{Property: "font-family", Value: family, Important: declaration.Important},
-	}
-	validated := expanded[:0]
-	for _, candidate := range expanded {
-		if validComputedDeclaration(candidate, viewport) {
-			validated = append(validated, candidate)
-		}
-	}
-	return validated
 }
 
 func validComputedDeclaration(declaration css.Declaration, viewport Viewport) bool {
@@ -674,10 +1142,6 @@ func containsHTMLToken(source, token string) bool {
 		}
 	}
 	return false
-}
-
-func declarationWins(candidate, current winningDeclaration) bool {
-	return declarationPrecedence(candidate, current) >= 0
 }
 
 func declarationPrecedence(left, right winningDeclaration) int {

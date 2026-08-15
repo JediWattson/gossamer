@@ -150,6 +150,8 @@ queue ARC claims. See
   and logical pseudo-classes
 - Cascade ordering across `!important`, specificity, source order, inline
   styles, and named top-level `@layer` rules
+- Inherited custom properties and nested `var()` fallbacks with cycle
+  invalidation
 - Screen media queries for viewport width, height, orientation, media types,
   comma alternatives, `not`, and `only`
 - Common colors and `px`, `%`, `em`, `rem`, `vw`, and `vh` lengths
@@ -186,8 +188,8 @@ The following are intentionally still outside the current milestone:
   element reconstruction, templates, SVG/MathML, and encoding sniffing
 - Flexbox, Grid, table layout, floats, positioned layout, and retained inline
   boxes
-- Custom properties and `var()`, `calc()` and related functions, gradients,
-  background images, border radii, shadows, transforms, and generated content
+- `calc()` and related functions, gradients, background images, border radii,
+  shadows, transforms, and generated content
 - `@import`, `@supports`, anonymous, nested, or dotted cascade layers, and the
   remaining media-query syntax and features
 - SVG, AVIF, video, canvas, browser controls, and accessibility trees
@@ -224,3 +226,6 @@ The next broad milestones are richer CSS values and formatting contexts, deeper
 HTML tree-builder coverage, and an interactive window backend with navigation,
 hit testing, input, and scrolling. The existing renderer is structured so each
 of those capabilities can extend the pipeline instead of replacing it.
+
+The staged CSS architecture and its V8/DOM invalidation boundary are tracked in
+[`docs/css-engine-roadmap.md`](docs/css-engine-roadmap.md).
