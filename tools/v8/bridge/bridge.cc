@@ -58,6 +58,7 @@ constexpr int kIteratorIndexField = 1;
 constexpr int kIteratorSourceKindField = 2;
 constexpr int kIteratorModeField = 3;
 constexpr int kEventStateField = 0;
+constexpr int kMutationObserverStateField = 0;
 constexpr uint8_t kEventPhaseNone = 0;
 constexpr uint8_t kEventPhaseCapturing = 1;
 constexpr uint8_t kEventPhaseAtTarget = 2;
@@ -189,6 +190,47 @@ struct EventState {
 
 struct WrapperWeakData;
 struct EventWeakData;
+struct MutationObserverWeakData;
+
+struct MutationObserverOptions {
+  bool child_list = false;
+  bool attributes = false;
+  bool character_data = false;
+  bool subtree = false;
+  bool attribute_old_value = false;
+  bool character_data_old_value = false;
+  std::unordered_set<std::string> attribute_filter;
+};
+
+struct MutationObserverRegistration {
+  WrapperKey target;
+  MutationObserverOptions options;
+  v8::Global<v8::Object> target_object;
+};
+
+struct ObserverMutationRecord {
+  uint64_t sequence = 0;
+  uint8_t type = 0;
+  WrapperKey target;
+  std::vector<uint32_t> added_nodes;
+  std::vector<uint32_t> removed_nodes;
+  uint32_t previous_sibling = 0;
+  bool has_previous_sibling = false;
+  uint32_t next_sibling = 0;
+  bool has_next_sibling = false;
+  std::string attribute_name;
+  std::string old_value;
+  bool expose_old_value = false;
+};
+
+struct MutationObserverState {
+  gossamer_v8_realm *realm = nullptr;
+  MutationObserverWeakData *weak = nullptr;
+  v8::Global<v8::Function> callback;
+  std::vector<MutationObserverRegistration> registrations;
+  std::vector<ObserverMutationRecord> records;
+  uint64_t cursor = 0;
+};
 
 struct WrapperEntry {
   v8::Global<v8::Object> object;
@@ -333,6 +375,8 @@ struct gossamer_v8_realm {
   v8::Global<v8::FunctionTemplate> input_event_template;
   v8::Global<v8::FunctionTemplate> composition_event_template;
   v8::Global<v8::FunctionTemplate> focus_event_template;
+  v8::Global<v8::FunctionTemplate> mutation_observer_template;
+  v8::Global<v8::FunctionTemplate> mutation_record_template;
   v8::Global<v8::FunctionTemplate> node_list_template;
   v8::Global<v8::FunctionTemplate> html_collection_template;
   v8::Global<v8::FunctionTemplate> token_list_template;
@@ -353,6 +397,7 @@ struct gossamer_v8_realm {
                      ListenerKeyHash>
       listeners;
   std::unordered_set<EventWeakData *> events;
+  std::unordered_set<MutationObserverWeakData *> mutation_observers;
   uint64_t next_listener = 1;
   uint32_t dispatch_depth = 0;
   uint64_t event_listener_count = 0;
@@ -389,6 +434,12 @@ struct WrapperWeakData {
 struct EventWeakData {
   gossamer_v8_realm *realm;
   EventState *state;
+  v8::Global<v8::Object> object;
+};
+
+struct MutationObserverWeakData {
+  gossamer_v8_realm *realm;
+  MutationObserverState *state;
   v8::Global<v8::Object> object;
 };
 
@@ -5500,6 +5551,502 @@ void EventConstructor(const v8::FunctionCallbackInfo<v8::Value> &info) {
   info.GetReturnValue().Set(info.This());
 }
 
+MutationObserverState *ReadMutationObserverState(
+    v8::Isolate *isolate, v8::Local<v8::Object> receiver) {
+  if (receiver.IsEmpty() || receiver->InternalFieldCount() != 1) {
+    ThrowTypeError(isolate, "MutationObserver receiver is invalid");
+    return nullptr;
+  }
+  v8::Local<v8::Data> data =
+      receiver->GetInternalField(kMutationObserverStateField);
+  if (!data->IsValue() || !data.As<v8::Value>()->IsExternal()) {
+    ThrowTypeError(isolate, "MutationObserver lost its native state");
+    return nullptr;
+  }
+  return static_cast<MutationObserverState *>(
+      data.As<v8::Value>().As<v8::External>()->Value(
+          v8::kExternalPointerTypeTagDefault));
+}
+
+void MutationObserverCollected(
+    const v8::WeakCallbackInfo<MutationObserverWeakData> &info) {
+  MutationObserverWeakData *weak = info.GetParameter();
+  if (weak == nullptr)
+    return;
+  if (weak->realm != nullptr)
+    weak->realm->mutation_observers.erase(weak);
+  weak->object.Reset();
+  if (weak->state != nullptr) {
+    weak->state->callback.Reset();
+    weak->state->registrations.clear();
+    delete weak->state;
+  }
+  delete weak;
+}
+
+bool CurrentMutationSequence(gossamer_v8_realm *realm, uint64_t *sequence,
+                             std::string *error) {
+  if (!RequireHost(realm, error))
+    return false;
+  char *host_error = nullptr;
+  if (realm->active_host->mutation_sequence(
+          realm->active_host->execution_id, sequence, &host_error) == 0) {
+    *error = TakeCString(host_error);
+    if (error->empty())
+      *error = "reading mutation sequence failed";
+    return false;
+  }
+  std::free(host_error);
+  return true;
+}
+
+bool MutationTargetMatches(gossamer_v8_realm *realm,
+                           const MutationObserverRegistration &registration,
+                           const WrapperKey &target, std::string *error) {
+  if (registration.target == target)
+    return true;
+  if (!registration.options.subtree ||
+      registration.target.document != target.document)
+    return false;
+  int contains = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->contains(
+          realm->active_host->execution_id, registration.target.document,
+          registration.target.node, target.document, target.node, &contains,
+          &host_error) == 0) {
+    *error = TakeCString(host_error);
+    if (error->empty())
+      *error = "matching mutation observer subtree failed";
+    return false;
+  }
+  std::free(host_error);
+  return contains != 0;
+}
+
+void FreeHostMutationRecords(gossamer_v8_mutation_record *records,
+                             size_t count) {
+  if (records == nullptr)
+    return;
+  for (size_t index = 0; index < count; ++index) {
+    std::free(records[index].added_nodes);
+    std::free(records[index].removed_nodes);
+    std::free(records[index].attribute_name);
+    std::free(records[index].old_value);
+  }
+  std::free(records);
+}
+
+bool FetchMutationObserverRecords(MutationObserverState *state,
+                                  std::string *error) {
+  if (state == nullptr || state->realm == nullptr ||
+      state->registrations.empty())
+    return true;
+  gossamer_v8_realm *realm = state->realm;
+  if (!RequireHost(realm, error))
+    return false;
+  gossamer_v8_mutation_record *host_records = nullptr;
+  size_t count = 0;
+  uint64_t latest = state->cursor;
+  char *host_error = nullptr;
+  if (realm->active_host->mutation_records(
+          realm->active_host->execution_id, state->cursor, &host_records,
+          &count, &latest, &host_error) == 0) {
+    *error = TakeCString(host_error);
+    FreeHostMutationRecords(host_records, count);
+    if (error->empty())
+      *error = "reading native mutation records failed";
+    return false;
+  }
+  std::free(host_error);
+  state->cursor = latest;
+  for (size_t index = 0; index < count; ++index) {
+    const gossamer_v8_mutation_record &source = host_records[index];
+    WrapperKey target{state->registrations.front().target.document,
+                      source.target};
+    const MutationObserverRegistration *matched = nullptr;
+    for (const auto &registration : state->registrations) {
+      bool type_matches =
+          (source.type == 1 && registration.options.child_list) ||
+          (source.type == 2 && registration.options.attributes) ||
+          (source.type == 3 && registration.options.character_data);
+      if (!type_matches)
+        continue;
+      if (source.type == 2 &&
+          !registration.options.attribute_filter.empty()) {
+        std::string attribute(source.attribute_name == nullptr
+                                  ? ""
+                                  : source.attribute_name,
+                              source.attribute_name_length);
+        if (registration.options.attribute_filter.find(attribute) ==
+            registration.options.attribute_filter.end())
+          continue;
+      }
+      if (!MutationTargetMatches(realm, registration, target, error)) {
+        if (!error->empty()) {
+          FreeHostMutationRecords(host_records, count);
+          return false;
+        }
+        continue;
+      }
+      matched = &registration;
+      break;
+    }
+    if (matched == nullptr)
+      continue;
+    ObserverMutationRecord record;
+    record.sequence = source.sequence;
+    record.type = source.type;
+    record.target = target;
+    if (source.added_count != 0)
+      record.added_nodes.assign(source.added_nodes,
+                                source.added_nodes + source.added_count);
+    if (source.removed_count != 0)
+      record.removed_nodes.assign(source.removed_nodes,
+                                  source.removed_nodes + source.removed_count);
+    record.previous_sibling = source.previous_sibling;
+    record.has_previous_sibling = source.has_previous_sibling != 0;
+    record.next_sibling = source.next_sibling;
+    record.has_next_sibling = source.has_next_sibling != 0;
+    record.attribute_name.assign(source.attribute_name == nullptr
+                                     ? ""
+                                     : source.attribute_name,
+                                 source.attribute_name_length);
+    record.old_value.assign(source.old_value == nullptr ? "" : source.old_value,
+                            source.old_value_length);
+    record.expose_old_value =
+        source.old_value_present != 0 &&
+        ((source.type == 2 && matched->options.attribute_old_value) ||
+         (source.type == 3 && matched->options.character_data_old_value));
+    state->records.push_back(std::move(record));
+  }
+  FreeHostMutationRecords(host_records, count);
+  return true;
+}
+
+bool SetMutationRecordProperty(v8::Local<v8::Context> context,
+                               v8::Local<v8::Object> object,
+                               const char *name,
+                               v8::Local<v8::Value> value) {
+  return object
+      ->Set(context,
+            v8::String::NewFromUtf8(v8::Isolate::GetCurrent(), name)
+                .ToLocalChecked(),
+            value)
+      .FromMaybe(false);
+}
+
+v8::MaybeLocal<v8::Object> BuildMutationRecordObject(
+    gossamer_v8_realm *realm, v8::Local<v8::Context> context,
+    const ObserverMutationRecord &record, std::string *error) {
+  v8::Isolate *isolate = realm->isolate;
+  v8::Local<v8::Object> result;
+  if (!realm->mutation_record_template.Get(isolate)
+           ->InstanceTemplate()
+           ->NewInstance(context)
+           .ToLocal(&result)) {
+    *error = "V8 failed to allocate a MutationRecord";
+    return {};
+  }
+  const char *type = record.type == 1
+                         ? "childList"
+                         : (record.type == 2 ? "attributes"
+                                             : "characterData");
+  v8::Local<v8::Object> target;
+  v8::Local<v8::Object> added;
+  v8::Local<v8::Object> removed;
+  if (!GetOrCreateNodeWrapper(realm, context, record.target, error)
+           .ToLocal(&target) ||
+      !CreateStaticNodeList(realm, context, record.target, record.added_nodes,
+                            error)
+           .ToLocal(&added) ||
+      !CreateStaticNodeList(realm, context, record.target,
+                            record.removed_nodes, error)
+           .ToLocal(&removed))
+    return {};
+  v8::Local<v8::Value> previous = v8::Null(isolate);
+  v8::Local<v8::Value> next = v8::Null(isolate);
+  if (record.has_previous_sibling) {
+    v8::Local<v8::Object> wrapper;
+    if (!GetOrCreateNodeWrapper(
+             realm, context,
+             WrapperKey{record.target.document, record.previous_sibling},
+             error)
+             .ToLocal(&wrapper))
+      return {};
+    previous = wrapper;
+  }
+  if (record.has_next_sibling) {
+    v8::Local<v8::Object> wrapper;
+    if (!GetOrCreateNodeWrapper(
+             realm, context,
+             WrapperKey{record.target.document, record.next_sibling}, error)
+             .ToLocal(&wrapper))
+      return {};
+    next = wrapper;
+  }
+  v8::Local<v8::Value> attribute_name = v8::Null(isolate);
+  if (record.type == 2) {
+    v8::Local<v8::String> rendered;
+    if (!NewUTF8String(isolate, record.attribute_name.data(),
+                       record.attribute_name.size(), &rendered)) {
+      *error = "V8 failed to allocate a mutation attribute name";
+      return {};
+    }
+    attribute_name = rendered;
+  }
+  v8::Local<v8::Value> old_value = v8::Null(isolate);
+  if (record.expose_old_value) {
+    v8::Local<v8::String> rendered;
+    if (!NewUTF8String(isolate, record.old_value.data(),
+                       record.old_value.size(), &rendered)) {
+      *error = "V8 failed to allocate a mutation oldValue";
+      return {};
+    }
+    old_value = rendered;
+  }
+  if (!SetMutationRecordProperty(
+          context, result, "type",
+          v8::String::NewFromUtf8(isolate, type).ToLocalChecked()) ||
+      !SetMutationRecordProperty(context, result, "target", target) ||
+      !SetMutationRecordProperty(context, result, "addedNodes", added) ||
+      !SetMutationRecordProperty(context, result, "removedNodes", removed) ||
+      !SetMutationRecordProperty(context, result, "previousSibling", previous) ||
+      !SetMutationRecordProperty(context, result, "nextSibling", next) ||
+      !SetMutationRecordProperty(context, result, "attributeName",
+                                 attribute_name) ||
+      !SetMutationRecordProperty(context, result, "attributeNamespace",
+                                 v8::Null(isolate)) ||
+      !SetMutationRecordProperty(context, result, "oldValue", old_value)) {
+    *error = "V8 failed to populate a MutationRecord";
+    return {};
+  }
+  return result;
+}
+
+v8::MaybeLocal<v8::Array> TakeMutationObserverRecords(
+    MutationObserverState *state, v8::Local<v8::Context> context,
+    std::string *error) {
+  v8::Isolate *isolate = state->realm->isolate;
+  if (state->records.size() >
+      static_cast<size_t>(std::numeric_limits<int>::max())) {
+    *error = "MutationObserver record queue exceeds V8 limits";
+    return {};
+  }
+  v8::Local<v8::Array> records =
+      v8::Array::New(isolate, static_cast<int>(state->records.size()));
+  for (size_t index = 0; index < state->records.size(); ++index) {
+    v8::Local<v8::Object> record;
+    if (!BuildMutationRecordObject(state->realm, context,
+                                   state->records[index], error)
+             .ToLocal(&record) ||
+        !records->Set(context, static_cast<uint32_t>(index), record)
+             .FromMaybe(false)) {
+      if (error->empty())
+        *error = "V8 failed to populate MutationObserver records";
+      return {};
+    }
+  }
+  state->records.clear();
+  return records;
+}
+
+bool ParseMutationObserverOptions(v8::Local<v8::Context> context,
+                                  v8::Local<v8::Value> value,
+                                  MutationObserverOptions *options) {
+  if (value.IsEmpty() || !value->IsObject())
+    return false;
+  v8::Isolate *isolate = v8::Isolate::GetCurrent();
+  v8::Local<v8::Object> object = value.As<v8::Object>();
+  if (!ReadBooleanOption(context, object, "childList", false,
+                         &options->child_list) ||
+      !ReadBooleanOption(context, object, "attributes", false,
+                         &options->attributes) ||
+      !ReadBooleanOption(context, object, "characterData", false,
+                         &options->character_data) ||
+      !ReadBooleanOption(context, object, "subtree", false,
+                         &options->subtree) ||
+      !ReadBooleanOption(context, object, "attributeOldValue", false,
+                         &options->attribute_old_value) ||
+      !ReadBooleanOption(context, object, "characterDataOldValue", false,
+                         &options->character_data_old_value))
+    return false;
+  v8::Local<v8::Value> filter;
+  if (!object
+           ->Get(context,
+                 v8::String::NewFromUtf8Literal(isolate, "attributeFilter"))
+           .ToLocal(&filter))
+    return false;
+  if (!filter->IsUndefined()) {
+    if (!filter->IsArray())
+      return false;
+    v8::Local<v8::Array> values = filter.As<v8::Array>();
+    for (uint32_t index = 0; index < values->Length(); ++index) {
+      v8::Local<v8::Value> item;
+      std::string name;
+      if (!values->Get(context, index).ToLocal(&item) ||
+          !StringFromValue(isolate, item, &name))
+        return false;
+      options->attribute_filter.insert(name);
+    }
+    options->attributes = true;
+  }
+  if (options->attribute_old_value)
+    options->attributes = true;
+  if (options->character_data_old_value)
+    options->character_data = true;
+  return options->child_list || options->attributes ||
+         options->character_data;
+}
+
+void MutationObserverConstructor(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  if (!info.IsConstructCall() || info.Length() == 0 ||
+      !info[0]->IsFunction()) {
+    ThrowTypeError(isolate, "MutationObserver requires a callback");
+    return;
+  }
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  auto state = std::make_unique<MutationObserverState>();
+  state->realm = realm;
+  state->callback.Reset(isolate, info[0].As<v8::Function>());
+  auto weak = std::make_unique<MutationObserverWeakData>();
+  weak->realm = realm;
+  weak->state = state.get();
+  weak->object.Reset(isolate, info.This());
+  state->weak = weak.get();
+  info.This()->SetInternalField(
+      kMutationObserverStateField,
+      v8::External::New(isolate, state.get(),
+                        v8::kExternalPointerTypeTagDefault));
+  weak->object.SetWeak(weak.get(), MutationObserverCollected,
+                       v8::WeakCallbackType::kParameter);
+  realm->mutation_observers.insert(weak.get());
+  state.release();
+  weak.release();
+  info.GetReturnValue().Set(info.This());
+}
+
+void MutationObserverObserve(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  MutationObserverState *state =
+      ReadMutationObserverState(isolate, info.This());
+  if (state == nullptr)
+    return;
+  WrapperKey target;
+  if (info.Length() < 2 || !info[0]->IsObject() ||
+      !ReadWrapperKey(info[0].As<v8::Object>(), &target)) {
+    ThrowTypeError(isolate, "observe requires a native Node target");
+    return;
+  }
+  MutationObserverOptions options;
+  if (!ParseMutationObserverOptions(isolate->GetCurrentContext(), info[1],
+                                    &options)) {
+    ThrowTypeError(isolate, "observe requires at least one mutation type");
+    return;
+  }
+  std::string error;
+  if (!state->registrations.empty() &&
+      !FetchMutationObserverRecords(state, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  if (state->registrations.empty() &&
+      !CurrentMutationSequence(state->realm, &state->cursor, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  auto existing = std::find_if(
+      state->registrations.begin(), state->registrations.end(),
+      [&target](const MutationObserverRegistration &registration) {
+        return registration.target == target;
+      });
+  if (existing == state->registrations.end()) {
+    MutationObserverRegistration registration;
+    registration.target = target;
+    registration.options = std::move(options);
+    registration.target_object.Reset(isolate, info[0].As<v8::Object>());
+    state->registrations.push_back(std::move(registration));
+  } else {
+    existing->options = std::move(options);
+    existing->target_object.Reset(isolate, info[0].As<v8::Object>());
+  }
+}
+
+void MutationObserverDisconnect(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  MutationObserverState *state =
+      ReadMutationObserverState(info.GetIsolate(), info.This());
+  if (state == nullptr)
+    return;
+  state->registrations.clear();
+  state->records.clear();
+  std::string error;
+  if (!CurrentMutationSequence(state->realm, &state->cursor, &error))
+    ThrowError(info.GetIsolate(), error);
+}
+
+void MutationObserverTakeRecords(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  MutationObserverState *state =
+      ReadMutationObserverState(isolate, info.This());
+  if (state == nullptr)
+    return;
+  std::string error;
+  if (!FetchMutationObserverRecords(state, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  v8::Local<v8::Array> records;
+  if (!TakeMutationObserverRecords(state, isolate->GetCurrentContext(),
+                                   &error)
+           .ToLocal(&records)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  info.GetReturnValue().Set(records);
+}
+
+bool DeliverMutationObservers(gossamer_v8_realm *realm,
+                              v8::Local<v8::Context> context,
+                              std::string *error) {
+  for (size_t pass = 0; pass < 1024; ++pass) {
+    bool delivered = false;
+    std::vector<MutationObserverWeakData *> observers(
+        realm->mutation_observers.begin(), realm->mutation_observers.end());
+    for (MutationObserverWeakData *weak : observers) {
+      if (weak == nullptr || weak->state == nullptr ||
+          weak->state->registrations.empty())
+        continue;
+      MutationObserverState *state = weak->state;
+      if (!FetchMutationObserverRecords(state, error))
+        return false;
+      if (state->records.empty())
+        continue;
+      v8::Local<v8::Array> records;
+      if (!TakeMutationObserverRecords(state, context, error)
+               .ToLocal(&records))
+        return false;
+      v8::Local<v8::Object> observer = weak->object.Get(realm->isolate);
+      v8::Local<v8::Value> arguments[] = {records, observer};
+      v8::TryCatch caught(realm->isolate);
+      if (state->callback.Get(realm->isolate)
+              ->Call(context, v8::Undefined(realm->isolate), 2, arguments)
+              .IsEmpty()) {
+        *error = DescribeException(realm->isolate, context, caught);
+        return false;
+      }
+      delivered = true;
+    }
+    if (!delivered)
+      return true;
+  }
+  *error = "MutationObserver delivery did not quiesce";
+  return false;
+}
+
 void EventPropertyGetter(v8::Local<v8::Name> property,
                          const v8::PropertyCallbackInfo<v8::Value> &info) {
   v8::Isolate *isolate = info.GetIsolate();
@@ -6183,6 +6730,10 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
       v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
   v8::Local<v8::FunctionTemplate> document_fragment_template =
       v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
+  v8::Local<v8::FunctionTemplate> mutation_observer_template =
+      v8::FunctionTemplate::New(isolate, MutationObserverConstructor);
+  v8::Local<v8::FunctionTemplate> mutation_record_template =
+      v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
   v8::Local<v8::FunctionTemplate> node_list_template =
       v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
   v8::Local<v8::FunctionTemplate> html_collection_template =
@@ -6268,6 +6819,10 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
       v8::String::NewFromUtf8Literal(isolate, "Document"));
   document_fragment_template->SetClassName(
       v8::String::NewFromUtf8Literal(isolate, "DocumentFragment"));
+  mutation_observer_template->SetClassName(
+      v8::String::NewFromUtf8Literal(isolate, "MutationObserver"));
+  mutation_record_template->SetClassName(
+      v8::String::NewFromUtf8Literal(isolate, "MutationRecord"));
   node_list_template->SetClassName(
       v8::String::NewFromUtf8Literal(isolate, "NodeList"));
   html_collection_template->SetClassName(
@@ -6335,6 +6890,16 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
         composition_event_template, focus_event_template}) {
     interface_template->InstanceTemplate()->SetInternalFieldCount(1);
   }
+  mutation_observer_template->InstanceTemplate()->SetInternalFieldCount(1);
+  mutation_observer_template->PrototypeTemplate()->Set(
+      isolate, "observe",
+      v8::FunctionTemplate::New(isolate, MutationObserverObserve));
+  mutation_observer_template->PrototypeTemplate()->Set(
+      isolate, "disconnect",
+      v8::FunctionTemplate::New(isolate, MutationObserverDisconnect));
+  mutation_observer_template->PrototypeTemplate()->Set(
+      isolate, "takeRecords",
+      v8::FunctionTemplate::New(isolate, MutationObserverTakeRecords));
 
   auto facade_data = [isolate](FacadeKind kind) {
     return v8::Integer::New(isolate, static_cast<int>(kind));
@@ -7114,6 +7679,9 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   realm->composition_event_template.Reset(isolate,
                                             composition_event_template);
   realm->focus_event_template.Reset(isolate, focus_event_template);
+  realm->mutation_observer_template.Reset(isolate,
+                                           mutation_observer_template);
+  realm->mutation_record_template.Reset(isolate, mutation_record_template);
 
   v8::Local<v8::ObjectTemplate> style_prototype =
       style_template->PrototypeTemplate();
@@ -7207,6 +7775,8 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
          expose_interface("InputEvent", input_event_template) &&
          expose_interface("CompositionEvent", composition_event_template) &&
          expose_interface("FocusEvent", focus_event_template) &&
+         expose_interface("MutationObserver", mutation_observer_template) &&
+         expose_interface("MutationRecord", mutation_record_template) &&
          expose_interface("Node", node_template) &&
          expose_interface("Element", element_template) &&
          expose_interface("HTMLElement", html_element_template) &&
@@ -7433,6 +8003,18 @@ void ClearRealmHandles(gossamer_v8_realm *realm) {
     delete event;
   }
   realm->events.clear();
+  for (MutationObserverWeakData *observer : realm->mutation_observers) {
+    if (observer->object.IsWeak())
+      observer->object.ClearWeak<MutationObserverWeakData>();
+    observer->object.Reset();
+    if (observer->state != nullptr) {
+      observer->state->callback.Reset();
+      observer->state->registrations.clear();
+      delete observer->state;
+    }
+    delete observer;
+  }
+  realm->mutation_observers.clear();
   for (auto &callback : realm->callbacks)
     callback.second.Reset();
   realm->callbacks.clear();
@@ -7446,6 +8028,8 @@ void ClearRealmHandles(gossamer_v8_realm *realm) {
   realm->input_event_template.Reset();
   realm->composition_event_template.Reset();
   realm->focus_event_template.Reset();
+  realm->mutation_observer_template.Reset();
+  realm->mutation_record_template.Reset();
   realm->node_list_template.Reset();
   realm->html_collection_template.Reset();
   realm->token_list_template.Reset();
@@ -7730,6 +8314,11 @@ extern "C" int gossamer_v8_realm_drain_microtasks(gossamer_v8_realm *realm,
   std::string binding_error;
   if (!EnsureDocumentBinding(realm, context, &binding_error)) {
     SetError(error_out, binding_error);
+    return 0;
+  }
+  std::string observer_error;
+  if (!DeliverMutationObservers(realm, context, &observer_error)) {
+    SetError(error_out, observer_error);
     return 0;
   }
   realm->isolate->PerformMicrotaskCheckpoint();

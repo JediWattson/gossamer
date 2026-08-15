@@ -2769,6 +2769,146 @@ func TestStockV8TextSelectionBeforeInputEditingAndComposition(t *testing.T) {
 	}
 }
 
+func TestStockV8MutationObserverFiltersRecordsAndOwnsDetachedTargets(t *testing.T) {
+	engine := newTestEngine(t)
+	browserRuntime, err := browser.NewWithEngine(engine)
+	if err != nil {
+		t.Fatalf("NewWithEngine: %v", err)
+	}
+	defer func() {
+		if err := browserRuntime.Close(); err != nil {
+			t.Errorf("Close browser: %v", err)
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	page, err := browserRuntime.LoadPage(ctx, "https://gossamer.test/observer", staticDocumentLoader{
+		document: `<!doctype html><html><body><div id="root"><span id="old">before</span></div></body></html>`,
+	})
+	if err != nil {
+		t.Fatalf("LoadPage: %v", err)
+	}
+	realm, ok := engine.LatestRealm()
+	if !ok {
+		t.Fatal("stock V8 engine has no observer realm")
+	}
+	_, err = page.QueueScript(browser.ScriptSource{
+		URL: "https://gossamer.test/observer/mutate.js",
+		Source: `
+			(() => {
+				const root = document.getElementById("root");
+				const old = document.getElementById("old");
+				globalThis.__observerCallbacks = 0;
+				globalThis.__observerRecords = [];
+				const observer = new MutationObserver((records, deliveredObserver) => {
+					if (deliveredObserver !== observer) throw new Error("observer callback identity failed");
+					__observerCallbacks++;
+					for (const record of records) {
+						if (!(record instanceof MutationRecord) || !(record.addedNodes instanceof NodeList) ||
+							!(record.removedNodes instanceof NodeList)) {
+							throw new Error("MutationRecord interface failed");
+						}
+						__observerRecords.push({
+							type: record.type,
+							target: record.target,
+							added: Array.from(record.addedNodes),
+							removed: Array.from(record.removedNodes),
+							attributeName: record.attributeName,
+							oldValue: record.oldValue,
+						});
+					}
+				});
+				observer.observe(root, {
+					childList: true,
+					subtree: true,
+					attributes: true,
+					attributeOldValue: true,
+					attributeFilter: ["data-state"],
+					characterData: true,
+					characterDataOldValue: true,
+				});
+				old.setAttribute("ignored", "x");
+				old.setAttribute("data-state", "one");
+				old.setAttribute("data-state", "two");
+				old.firstChild.data = "after";
+				const added = document.createElement("b");
+				added.id = "added";
+				root.append(added);
+				old.remove();
+				root.append(old);
+
+				const manual = new MutationObserver(() => { throw new Error("takeRecords callback ran"); });
+				manual.observe(old, {attributes:true, attributeOldValue:true});
+				old.setAttribute("title", "manual");
+				const taken = manual.takeRecords();
+				if (taken.length !== 1 || taken[0].type !== "attributes" ||
+					taken[0].target !== old || taken[0].attributeName !== "title" || taken[0].oldValue !== null) {
+					throw new Error("takeRecords did not synchronously drain native records");
+				}
+				manual.disconnect();
+				old.setAttribute("title", "disconnected");
+				if (__observerCallbacks !== 0) throw new Error("observer delivered before the checkpoint");
+
+				const detached = document.createElement("aside");
+				detached.id = "detached-observed";
+				globalThis.__detachedObserver = new MutationObserver(records => {
+					globalThis.__detachedDelivery = records[0].target.id;
+				});
+				__detachedObserver.observe(detached, {attributes:true});
+				detached.setAttribute("data-held", "yes");
+			})();
+		`,
+	})
+	if err != nil {
+		t.Fatalf("QueueScript mutations: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("run observer mutations: %v", err)
+	}
+	if err := realm.CollectGarbage(page); err != nil {
+		t.Fatalf("CollectGarbage with observer-only detached target: %v", err)
+	}
+	_, err = page.QueueScript(browser.ScriptSource{
+		URL: "https://gossamer.test/observer/assert.js",
+		Source: `
+			if (__observerCallbacks !== 1) throw new Error("observer callback count: " + __observerCallbacks);
+			if (__detachedDelivery !== "detached-observed") throw new Error("detached observer target was not retained");
+			const attributes = __observerRecords.filter(record => record.type === "attributes");
+			const character = __observerRecords.filter(record => record.type === "characterData");
+			const children = __observerRecords.filter(record => record.type === "childList");
+			if (attributes.length !== 2 || attributes[0].attributeName !== "data-state" ||
+				attributes[0].oldValue !== null || attributes[1].oldValue !== "one") {
+				throw new Error("attribute filters or oldValue failed");
+			}
+			if (character.length !== 1 || character[0].oldValue !== "before" ||
+				character[0].target.data !== "after") {
+				throw new Error("characterData record failed");
+			}
+			if (children.length !== 3 || children[0].added[0].id !== "added" ||
+				children[1].removed[0].id !== "old" || children[2].added[0] !== document.getElementById("old")) {
+				throw new Error("childList records or wrapper identity failed");
+			}
+			__detachedObserver.disconnect();
+			globalThis.__detachedObserver = undefined;
+		`,
+	})
+	if err != nil {
+		t.Fatalf("QueueScript assertions: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("run observer assertions: %v", err)
+	}
+	if err := realm.CollectGarbage(page); err != nil {
+		t.Fatalf("CollectGarbage after observer disconnect: %v", err)
+	}
+	if err := page.Close(); err != nil {
+		t.Fatalf("Close page: %v", err)
+	}
+	if ledger := browserRuntime.Ledger().Stats(); ledger.LiveObjects != 0 || ledger.PersistentObjects != 0 {
+		t.Fatalf("Milestone 12 teardown ownership = %#v", ledger)
+	}
+}
+
 func newTestEngine(t *testing.T) *Engine {
 	t.Helper()
 	icuData := os.Getenv("GOSSAMER_V8_ICU_DATA")

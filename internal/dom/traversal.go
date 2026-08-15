@@ -256,7 +256,9 @@ func (document *Document) SetNodeValue(id NodeID, value string) error {
 	switch node.Type {
 	case TextNode, CommentNode, ProcessingInstructionNode:
 		if node.Data != value {
+			oldValue := node.Data
 			node.Data = value
+			document.recordCharacterMutationLocked(node, oldValue)
 			document.version.Add(1)
 		}
 	}

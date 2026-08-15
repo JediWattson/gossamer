@@ -189,6 +189,13 @@ extern int goGossamerV8HostFocusNode(uint64_t execution_id, uint64_t document,
 extern int goGossamerV8HostActiveElement(
     uint64_t execution_id, uint64_t *document_out, uint32_t *node_out,
     int *found_out, char **error_out);
+extern int goGossamerV8HostMutationSequence(uint64_t execution_id,
+                                            uint64_t *sequence_out,
+                                            char **error_out);
+extern int goGossamerV8HostMutationRecords(
+    uint64_t execution_id, uint64_t since_sequence,
+    gossamer_v8_mutation_record **records_out, size_t *count_out,
+    uint64_t *latest_sequence_out, char **error_out);
 extern int goGossamerV8HostStyleCSSText(uint64_t execution_id,
                                         uint64_t document, uint32_t node,
                                         char **value_out,
@@ -304,6 +311,8 @@ static gossamer_v8_host gossamer_v8_go_host(uint64_t execution_id) {
       .reset_form = goGossamerV8HostResetForm,
       .focus_node = goGossamerV8HostFocusNode,
       .active_element = goGossamerV8HostActiveElement,
+      .mutation_sequence = goGossamerV8HostMutationSequence,
+      .mutation_records = goGossamerV8HostMutationRecords,
       .style_css_text = goGossamerV8HostStyleCSSText,
       .set_style_css_text = goGossamerV8HostSetStyleCSSText,
       .style_property = goGossamerV8HostStyleProperty,

@@ -213,7 +213,20 @@ func (document *Document) placeNodesLocked(parent *Node, nodes []*Node, anchor *
 	if !changed {
 		return nil
 	}
+	destinationBefore := append([]*Node(nil), parent.Children...)
+	originBefore := make(map[*Node][]*Node)
+	for _, node := range group {
+		if node.Parent != nil && node.Parent != parent {
+			if _, captured := originBefore[node.Parent]; !captured {
+				originBefore[node.Parent] = append([]*Node(nil), node.Parent.Children...)
+			}
+		}
+	}
 	document.commitChildrenLocked(parent, final)
+	for origin, before := range originBefore {
+		document.recordChildMutationLocked(origin, before, origin.Children, group)
+	}
+	document.recordChildMutationLocked(parent, destinationBefore, parent.Children, group)
 	document.version.Add(1)
 	return nil
 }
@@ -248,8 +261,10 @@ func (document *Document) removeChildLocked(parent, child *Node) error {
 	if parent == nil || child == nil || child.Parent != parent {
 		return NewException(NotFoundError, ErrInvalidTree, "the node to remove is not a child of this node")
 	}
+	before := append([]*Node(nil), parent.Children...)
 	parent.removeChild(child)
 	child.Parent = nil
+	document.recordChildMutationLocked(parent, before, parent.Children, nil)
 	document.version.Add(1)
 	return nil
 }

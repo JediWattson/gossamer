@@ -16,6 +16,25 @@ extern "C" {
 
 typedef struct gossamer_v8_realm gossamer_v8_realm;
 
+typedef struct gossamer_v8_mutation_record {
+  uint64_t sequence;
+  uint8_t type;
+  uint32_t target;
+  uint32_t *added_nodes;
+  size_t added_count;
+  uint32_t *removed_nodes;
+  size_t removed_count;
+  uint32_t previous_sibling;
+  int has_previous_sibling;
+  uint32_t next_sibling;
+  int has_next_sibling;
+  char *attribute_name;
+  size_t attribute_name_length;
+  char *old_value;
+  size_t old_value_length;
+  int old_value_present;
+} gossamer_v8_mutation_record;
+
 // gossamer_v8_host is valid only for one engine entry. It contains numeric
 // execution identity and C callbacks; no Go pointer is stored in V8.
 typedef struct gossamer_v8_host {
@@ -176,6 +195,12 @@ typedef struct gossamer_v8_host {
   int (*active_element)(uint64_t execution_id, uint64_t *document_out,
                         uint32_t *node_out, int *found_out,
                         char **error_out);
+  int (*mutation_sequence)(uint64_t execution_id, uint64_t *sequence_out,
+                           char **error_out);
+  int (*mutation_records)(uint64_t execution_id, uint64_t since_sequence,
+                          gossamer_v8_mutation_record **records_out,
+                          size_t *count_out, uint64_t *latest_sequence_out,
+                          char **error_out);
   int (*style_css_text)(uint64_t execution_id, uint64_t document,
                         uint32_t node, char **value_out,
                         size_t *value_length_out, char **error_out);

@@ -42,6 +42,9 @@ type Document struct {
 	store    *NodeStore
 
 	version atomic.Uint64
+
+	mutationSequence uint64
+	mutations        []MutationRecord
 }
 
 // NodeStore resolves logical identity in both directions. Backing nodes may
@@ -685,7 +688,9 @@ func (document *Document) SetText(id NodeID, data string) error {
 	if node.Data == data {
 		return nil
 	}
+	oldValue := node.Data
 	node.Data = data
+	document.recordCharacterMutationLocked(node, oldValue)
 	document.version.Add(1)
 	return nil
 }
@@ -708,7 +713,9 @@ func (document *Document) SetTextContent(id NodeID, data string) error {
 		if node.Data == data {
 			return nil
 		}
+		oldValue := node.Data
 		node.Data = data
+		document.recordCharacterMutationLocked(node, oldValue)
 	case ElementNode, DocumentFragmentNode:
 		if len(node.Children) == 0 && data == "" {
 			return nil
@@ -716,6 +723,7 @@ func (document *Document) SetTextContent(id NodeID, data string) error {
 		if len(node.Children) == 1 && node.Children[0].Type == TextNode && node.Children[0].Data == data {
 			return nil
 		}
+		before := append([]*Node(nil), node.Children...)
 		for _, child := range node.Children {
 			child.Parent = nil
 		}
@@ -726,6 +734,7 @@ func (document *Document) SetTextContent(id NodeID, data string) error {
 			node.Children = []*Node{child}
 			document.store.assignLocked(child)
 		}
+		document.recordChildMutationLocked(node, before, node.Children, nil)
 	default:
 		return fmt.Errorf("%w: node %d is %d, want element or character data", ErrWrongNodeKind, id, node.Type)
 	}
@@ -961,11 +970,14 @@ func (document *Document) SetAttribute(id NodeID, name, value string) error {
 		if node.Attributes[index].Value == value {
 			return nil
 		}
+		oldValue := node.Attributes[index].Value
 		node.Attributes[index].Value = value
+		document.recordAttributeMutationLocked(node, name, oldValue, true)
 		document.version.Add(1)
 		return nil
 	}
 	node.Attributes = append(node.Attributes, Attribute{Name: name, Value: value})
+	document.recordAttributeMutationLocked(node, name, "", false)
 	document.version.Add(1)
 	return nil
 }
@@ -988,9 +1000,11 @@ func (document *Document) RemoveAttribute(id NodeID, name string) error {
 		if node.Attributes[index].Name != name {
 			continue
 		}
+		oldValue := node.Attributes[index].Value
 		copy(node.Attributes[index:], node.Attributes[index+1:])
 		node.Attributes[len(node.Attributes)-1] = Attribute{}
 		node.Attributes = node.Attributes[:len(node.Attributes)-1]
+		document.recordAttributeMutationLocked(node, name, oldValue, true)
 		document.version.Add(1)
 		return nil
 	}

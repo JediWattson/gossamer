@@ -285,6 +285,13 @@ type DOMComputedStyleHost interface {
 	ComputedStylePropertyNames(handle NodeHandle, pseudo string) ([]string, error)
 }
 
+// DOMMutationObserverHost exposes the document-owned mutation journal to a
+// script Realm without moving observer policy into the native DOM.
+type DOMMutationObserverHost interface {
+	MutationSequence() (uint64, error)
+	MutationRecordsSince(uint64) ([]dom.MutationRecord, uint64, error)
+}
+
 // DOMDocumentHost is the optional document interface needed to bind one
 // canonical JavaScript Document wrapper to a Page's native document root.
 type DOMDocumentHost interface {

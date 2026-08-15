@@ -289,6 +289,7 @@ type taskHost struct {
 }
 
 var _ DOMComputedStyleHost = (*taskHost)(nil)
+var _ DOMMutationObserverHost = (*taskHost)(nil)
 
 func (host *taskHost) GetElementByID(value string) (NodeHandle, bool, error) {
 	host.page.mutex.RLock()
@@ -918,6 +919,24 @@ func (host *taskHost) ResetForm(handle NodeHandle) error {
 	return host.mutateNodes(handle, NodeHandle{}, NodeHandle{}, func() error {
 		return host.page.document.ResetForm(handle.Node)
 	})
+}
+
+func (host *taskHost) MutationSequence() (uint64, error) {
+	host.page.mutex.RLock()
+	defer host.page.mutex.RUnlock()
+	if host.page.closed || host.page.documentGeneration != host.generation {
+		return 0, ErrPageClosed
+	}
+	return host.page.document.MutationSequence(), nil
+}
+
+func (host *taskHost) MutationRecordsSince(sequence uint64) ([]dom.MutationRecord, uint64, error) {
+	host.page.mutex.RLock()
+	defer host.page.mutex.RUnlock()
+	if host.page.closed || host.page.documentGeneration != host.generation {
+		return nil, sequence, ErrPageClosed
+	}
+	return host.page.document.MutationRecordsSince(sequence)
 }
 
 func (host *taskHost) Focus(handle NodeHandle) error {

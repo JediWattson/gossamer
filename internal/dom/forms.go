@@ -105,7 +105,11 @@ func (document *Document) SetFormValue(id NodeID, value string) error {
 			}
 		}
 	case "option", "button":
+		oldValue, oldValuePresent := attributeValue(node, "value")
 		changed = setContentAttributeLocked(node, "value", value)
+		if changed {
+			document.recordAttributeMutationLocked(node, "value", oldValue, oldValuePresent)
+		}
 	}
 	if changed {
 		document.version.Add(1)

@@ -117,6 +117,14 @@ func domElementHost(host browser.Host) (browser.DOMElementHost, error) {
 	return domHost, nil
 }
 
+func domMutationObserverHost(host browser.Host) (browser.DOMMutationObserverHost, error) {
+	mutationHost, ok := host.(browser.DOMMutationObserverHost)
+	if !ok {
+		return nil, fmt.Errorf("V8 host does not support DOM mutation observers")
+	}
+	return mutationHost, nil
+}
+
 func domDocumentHost(host browser.Host) (browser.DOMDocumentHost, bool) {
 	domHost, ok := host.(browser.DOMDocumentHost)
 	return domHost, ok
@@ -1391,6 +1399,136 @@ func goGossamerV8HostActiveElement(
 				*foundOut = 0
 			}
 		}
+		return nil
+	}, executionID)
+}
+
+//export goGossamerV8HostMutationSequence
+func goGossamerV8HostMutationSequence(
+	executionID C.uint64_t,
+	sequenceOut *C.uint64_t,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		mutationHost, err := domMutationObserverHost(host)
+		if err != nil {
+			return err
+		}
+		sequence, err := mutationHost.MutationSequence()
+		if err != nil {
+			return err
+		}
+		if sequenceOut != nil {
+			*sequenceOut = C.uint64_t(sequence)
+		}
+		return nil
+	}, executionID)
+}
+
+//export goGossamerV8HostMutationRecords
+func goGossamerV8HostMutationRecords(
+	executionID C.uint64_t,
+	sinceSequence C.uint64_t,
+	recordsOut **C.gossamer_v8_mutation_record,
+	countOut *C.size_t,
+	latestSequenceOut *C.uint64_t,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		mutationHost, err := domMutationObserverHost(host)
+		if err != nil {
+			return err
+		}
+		records, latest, err := mutationHost.MutationRecordsSince(uint64(sinceSequence))
+		if err != nil {
+			return err
+		}
+		if countOut != nil {
+			*countOut = C.size_t(len(records))
+		}
+		if latestSequenceOut != nil {
+			*latestSequenceOut = C.uint64_t(latest)
+		}
+		if recordsOut == nil {
+			return nil
+		}
+		*recordsOut = nil
+		if len(records) == 0 {
+			return nil
+		}
+		allocated := C.calloc(C.size_t(len(records)), C.size_t(C.sizeof_gossamer_v8_mutation_record))
+		if allocated == nil {
+			return fmt.Errorf("V8 host could not allocate mutation records")
+		}
+		output := unsafe.Slice((*C.gossamer_v8_mutation_record)(allocated), len(records))
+		cleanup := func() {
+			for index := range output {
+				C.free(unsafe.Pointer(output[index].added_nodes))
+				C.free(unsafe.Pointer(output[index].removed_nodes))
+				C.free(unsafe.Pointer(output[index].attribute_name))
+				C.free(unsafe.Pointer(output[index].old_value))
+			}
+			C.free(allocated)
+		}
+		writeNodes := func(ids []dom.NodeID, nodesOut **C.uint32_t, nodesCount *C.size_t) error {
+			*nodesOut = nil
+			*nodesCount = C.size_t(len(ids))
+			if len(ids) == 0 {
+				return nil
+			}
+			bytes := C.size_t(len(ids)) * C.size_t(unsafe.Sizeof(C.uint32_t(0)))
+			memory := C.malloc(bytes)
+			if memory == nil {
+				return fmt.Errorf("V8 host could not allocate mutation node IDs")
+			}
+			values := unsafe.Slice((*C.uint32_t)(memory), len(ids))
+			for index, id := range ids {
+				values[index] = C.uint32_t(id)
+			}
+			*nodesOut = (*C.uint32_t)(memory)
+			return nil
+		}
+		for index, record := range records {
+			output[index].sequence = C.uint64_t(record.Sequence)
+			output[index]._type = C.uint8_t(record.Type)
+			output[index].target = C.uint32_t(record.Target)
+			if err := writeNodes(record.AddedNodes, &output[index].added_nodes, &output[index].added_count); err != nil {
+				cleanup()
+				return err
+			}
+			if err := writeNodes(record.RemovedNodes, &output[index].removed_nodes, &output[index].removed_count); err != nil {
+				cleanup()
+				return err
+			}
+			if record.PreviousSibling != dom.InvalidNodeID {
+				output[index].previous_sibling = C.uint32_t(record.PreviousSibling)
+				output[index].has_previous_sibling = 1
+			}
+			if record.NextSibling != dom.InvalidNodeID {
+				output[index].next_sibling = C.uint32_t(record.NextSibling)
+				output[index].has_next_sibling = 1
+			}
+			if record.AttributeName != "" {
+				output[index].attribute_name = (*C.char)(C.CBytes([]byte(record.AttributeName)))
+				if output[index].attribute_name == nil {
+					cleanup()
+					return fmt.Errorf("V8 host could not allocate mutation attribute name")
+				}
+				output[index].attribute_name_length = C.size_t(len(record.AttributeName))
+			}
+			if record.OldValue != "" {
+				output[index].old_value = (*C.char)(C.CBytes([]byte(record.OldValue)))
+				if output[index].old_value == nil {
+					cleanup()
+					return fmt.Errorf("V8 host could not allocate mutation old value")
+				}
+				output[index].old_value_length = C.size_t(len(record.OldValue))
+			}
+			if record.OldValuePresent {
+				output[index].old_value_present = 1
+			}
+		}
+		*recordsOut = (*C.gossamer_v8_mutation_record)(allocated)
 		return nil
 	}, executionID)
 }
