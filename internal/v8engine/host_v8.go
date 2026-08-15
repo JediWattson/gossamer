@@ -1090,6 +1090,59 @@ func goGossamerV8HostSetFormValue(
 	}, executionID)
 }
 
+//export goGossamerV8HostFormSelection
+func goGossamerV8HostFormSelection(
+	executionID C.uint64_t,
+	document C.uint64_t,
+	node C.uint32_t,
+	startOut *C.int32_t,
+	endOut *C.int32_t,
+	directionOut **C.char,
+	directionLengthOut *C.size_t,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domElementHost(host)
+		if err != nil {
+			return err
+		}
+		start, end, direction, err := domHost.FormSelection(browserNodeHandle(document, node))
+		if err != nil {
+			return err
+		}
+		if startOut != nil {
+			*startOut = C.int32_t(start)
+		}
+		if endOut != nil {
+			*endOut = C.int32_t(end)
+		}
+		return writeHostString(direction, directionOut, directionLengthOut)
+	}, executionID)
+}
+
+//export goGossamerV8HostSetFormSelection
+func goGossamerV8HostSetFormSelection(
+	executionID C.uint64_t,
+	document C.uint64_t,
+	node C.uint32_t,
+	start C.int32_t,
+	end C.int32_t,
+	direction *C.char,
+	directionLength C.size_t,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domElementHost(host)
+		if err != nil {
+			return err
+		}
+		return domHost.SetFormSelection(
+			browserNodeHandle(document, node), int(start), int(end),
+			goString(direction, directionLength),
+		)
+	}, executionID)
+}
+
 //export goGossamerV8HostFormChecked
 func goGossamerV8HostFormChecked(
 	executionID C.uint64_t,

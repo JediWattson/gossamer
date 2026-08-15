@@ -105,6 +105,23 @@ func (page *Page) dispatchInput(context *browserruntime.TaskContext, event Input
 	}
 	event.Target = target
 	host := &taskHost{page: page, task: context, generation: generation, autoRender: true}
+	if event.Type == InputBeforeInput {
+		result, beforeInputErr := script.DispatchEvent(host, event)
+		var editErr error
+		var inputErr error
+		if !result.DefaultPrevented {
+			editErr = host.ReplaceFormSelection(event.Target, event.Data, event.InputType)
+			if errors.Is(editErr, dom.ErrWrongNodeKind) {
+				editErr = nil
+			} else if editErr == nil {
+				inputEvent := event
+				inputEvent.Type = InputInput
+				_, inputErr = script.DispatchEvent(host, inputEvent)
+			}
+		}
+		microtaskErr := script.DrainMicrotasks(host)
+		return errors.Join(beforeInputErr, editErr, inputErr, microtaskErr, host.finish())
+	}
 	rollback, defaultErr := host.applyInputStateBeforeDispatch(event)
 	result, dispatchErr := script.DispatchEvent(host, event)
 	if result.DefaultPrevented && rollback != nil {
@@ -123,17 +140,14 @@ func (host *taskHost) applyInputStateBeforeDispatch(event InputEvent) (func() er
 	case InputBlur, InputFocusOut:
 		return nil, host.Blur(event.Target)
 	case InputInput:
-		value, err := host.FormValue(event.Target)
+		err := host.ReplaceFormSelection(event.Target, event.Data, event.InputType)
 		if err != nil {
 			if errors.Is(err, dom.ErrWrongNodeKind) {
 				return nil, nil
 			}
 			return nil, err
 		}
-		if event.Data == "" {
-			return nil, nil
-		}
-		return nil, host.SetFormValue(event.Target, value+event.Data)
+		return nil, nil
 	case InputClick:
 		host.page.mutex.RLock()
 		if err := host.validateHandleLocked(event.Target); err != nil {
@@ -801,6 +815,27 @@ func (host *taskHost) FormValue(handle NodeHandle) (string, error) {
 func (host *taskHost) SetFormValue(handle NodeHandle, value string) error {
 	return host.mutateNodes(handle, NodeHandle{}, NodeHandle{}, func() error {
 		return host.page.document.SetFormValue(handle.Node, value)
+	})
+}
+
+func (host *taskHost) FormSelection(handle NodeHandle) (int, int, string, error) {
+	host.page.mutex.RLock()
+	defer host.page.mutex.RUnlock()
+	if err := host.validateHandleLocked(handle); err != nil {
+		return 0, 0, "none", err
+	}
+	return host.page.document.FormSelection(handle.Node)
+}
+
+func (host *taskHost) SetFormSelection(handle NodeHandle, start, end int, direction string) error {
+	return host.mutateNodes(handle, NodeHandle{}, NodeHandle{}, func() error {
+		return host.page.document.SetFormSelection(handle.Node, start, end, direction)
+	})
+}
+
+func (host *taskHost) ReplaceFormSelection(handle NodeHandle, data, inputType string) error {
+	return host.mutateNodes(handle, NodeHandle{}, NodeHandle{}, func() error {
+		return host.page.document.ReplaceFormSelection(handle.Node, data, inputType)
 	})
 }
 

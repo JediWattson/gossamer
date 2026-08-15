@@ -136,3 +136,53 @@ func TestFormControlStateCoordinatesRadioSelectOwnerAndReset(t *testing.T) {
 		t.Fatalf("select after reset = %q", value)
 	}
 }
+
+func TestTextControlSelectionAndEditingUseUTF16Offsets(t *testing.T) {
+	root := NewDocument()
+	input := NewElement("input", Attribute{Name: "value", Value: "A😀BC"})
+	root.AppendChild(input)
+	document, err := IndexDocument(root)
+	if err != nil {
+		t.Fatalf("IndexDocument: %v", err)
+	}
+	inputID := mustNodeID(t, document, input)
+	if err := document.SetFormSelection(inputID, 1, 3, "backward"); err != nil {
+		t.Fatalf("SetFormSelection: %v", err)
+	}
+	if start, end, direction, err := document.FormSelection(inputID); err != nil || start != 1 || end != 3 || direction != "backward" {
+		t.Fatalf("selection = %d:%d %q, %v", start, end, direction, err)
+	}
+	if err := document.ReplaceFormSelection(inputID, "Z", "insertText"); err != nil {
+		t.Fatalf("ReplaceFormSelection: %v", err)
+	}
+	if value, _ := document.FormValue(inputID); value != "AZBC" {
+		t.Fatalf("value after replacement = %q", value)
+	}
+	if start, end, direction, _ := document.FormSelection(inputID); start != 2 || end != 2 || direction != "none" {
+		t.Fatalf("selection after replacement = %d:%d %q", start, end, direction)
+	}
+	if err := document.ReplaceFormSelection(inputID, "", "deleteContentBackward"); err != nil {
+		t.Fatalf("deleteContentBackward: %v", err)
+	}
+	if value, _ := document.FormValue(inputID); value != "ABC" {
+		t.Fatalf("value after backward delete = %q", value)
+	}
+	if err := document.SetFormValue(inputID, "x😀y"); err != nil {
+		t.Fatalf("SetFormValue: %v", err)
+	}
+	if start, end, _, _ := document.FormSelection(inputID); start != 4 || end != 4 {
+		t.Fatalf("programmatic value selection = %d:%d", start, end)
+	}
+	if err := document.ReplaceFormSelection(inputID, "", "deleteContentBackward"); err != nil {
+		t.Fatalf("surrogate deleteContentBackward: %v", err)
+	}
+	if value, _ := document.FormValue(inputID); value != "x😀" {
+		t.Fatalf("value after ASCII backward delete = %q", value)
+	}
+	if err := document.ReplaceFormSelection(inputID, "", "deleteContentBackward"); err != nil {
+		t.Fatalf("emoji deleteContentBackward: %v", err)
+	}
+	if value, _ := document.FormValue(inputID); value != "x" {
+		t.Fatalf("value after surrogate-pair backward delete = %q", value)
+	}
+}

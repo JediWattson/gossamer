@@ -147,6 +147,14 @@ extern int goGossamerV8HostFormValue(
 extern int goGossamerV8HostSetFormValue(
     uint64_t execution_id, uint64_t document, uint32_t node,
     const char *value, size_t value_length, char **error_out);
+extern int goGossamerV8HostFormSelection(
+    uint64_t execution_id, uint64_t document, uint32_t node,
+    int32_t *start_out, int32_t *end_out, char **direction_out,
+    size_t *direction_length_out, char **error_out);
+extern int goGossamerV8HostSetFormSelection(
+    uint64_t execution_id, uint64_t document, uint32_t node, int32_t start,
+    int32_t end, const char *direction, size_t direction_length,
+    char **error_out);
 extern int goGossamerV8HostFormChecked(uint64_t execution_id,
                                        uint64_t document, uint32_t node,
                                        int *checked_out, char **error_out);
@@ -283,6 +291,8 @@ static gossamer_v8_host gossamer_v8_go_host(uint64_t execution_id) {
       .insert_adjacent_html = goGossamerV8HostInsertAdjacentHTML,
       .form_value = goGossamerV8HostFormValue,
       .set_form_value = goGossamerV8HostSetFormValue,
+      .form_selection = goGossamerV8HostFormSelection,
+      .set_form_selection = goGossamerV8HostSetFormSelection,
       .form_checked = goGossamerV8HostFormChecked,
       .set_form_checked = goGossamerV8HostSetFormChecked,
       .form_selected = goGossamerV8HostFormSelected,

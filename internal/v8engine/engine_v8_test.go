@@ -2632,6 +2632,143 @@ func TestStockV8CoordinatedFormStateAndLiveControlCollections(t *testing.T) {
 	}
 }
 
+func TestStockV8TextSelectionBeforeInputEditingAndComposition(t *testing.T) {
+	engine := newTestEngine(t)
+	browserRuntime, err := browser.NewWithEngine(engine)
+	if err != nil {
+		t.Fatalf("NewWithEngine: %v", err)
+	}
+	defer func() {
+		if err := browserRuntime.Close(); err != nil {
+			t.Errorf("Close browser: %v", err)
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	page, err := browserRuntime.LoadPage(ctx, "https://gossamer.test/editing", staticDocumentLoader{
+		document: `<!doctype html><html><body><input id="editor" value="A😀BC"><textarea id="area">line</textarea></body></html>`,
+	})
+	if err != nil {
+		t.Fatalf("LoadPage: %v", err)
+	}
+	_, err = page.QueueScript(browser.ScriptSource{
+		URL: "https://gossamer.test/editing/setup.js",
+		Source: `
+			(() => {
+				const editor = document.getElementById("editor");
+				const area = document.getElementById("area");
+				for (const name of ["selectionStart", "selectionEnd", "selectionDirection"]) {
+					const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, name);
+					if (!descriptor || typeof descriptor.get !== "function" || typeof descriptor.set !== "function") {
+						throw new Error(name + " descriptor is incomplete");
+					}
+				}
+				editor.setSelectionRange(1, 3, "backward");
+				if (editor.selectionStart !== 1 || editor.selectionEnd !== 3 ||
+					editor.selectionDirection !== "backward") {
+					throw new Error("UTF-16 selection range failed");
+				}
+				area.select();
+				if (area.selectionStart !== 0 || area.selectionEnd !== 4) {
+					throw new Error("textarea.select() failed");
+				}
+				globalThis.__editLog = [];
+				editor.addEventListener("beforeinput", event => {
+					if (!(event instanceof InputEvent) || !event.isTrusted) {
+						throw new Error("beforeinput interface failed");
+					}
+					__editLog.push("before:" + event.inputType + ":" + event.data + ":" + event.isComposing + ":" + editor.value + ":" + editor.selectionStart + "-" + editor.selectionEnd);
+					if (event.data === "NO") event.preventDefault();
+				});
+				editor.addEventListener("input", event => {
+					if (!(event instanceof InputEvent) || event.cancelable) {
+						throw new Error("input interface failed");
+					}
+					__editLog.push("input:" + event.inputType + ":" + event.data + ":" + event.isComposing + ":" + editor.value + ":" + editor.selectionStart + "-" + editor.selectionEnd);
+				});
+				for (const type of ["compositionstart", "compositionupdate", "compositionend"]) {
+					editor.addEventListener(type, event => {
+						if (!(event instanceof CompositionEvent) || !(event instanceof Event) || !event.isTrusted) {
+							throw new Error(type + " interface failed");
+						}
+						__editLog.push(type + ":" + event.data);
+					});
+				}
+				const synthetic = new CompositionEvent("compositionupdate", {data:"synthetic"});
+				if (synthetic.data !== "synthetic" || synthetic.isTrusted) {
+					throw new Error("CompositionEvent constructor failed");
+				}
+			})();
+		`,
+	})
+	if err != nil {
+		t.Fatalf("QueueScript setup: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("run editing setup: %v", err)
+	}
+	editorID, found := page.Document().ElementByID("editor")
+	if !found {
+		t.Fatal("editor input is missing")
+	}
+	target := browser.NodeHandle{Document: page.DocumentGeneration(), Node: editorID}
+	events := []browser.InputEvent{
+		{Type: browser.InputCompositionStart, Target: target, Data: "候"},
+		{Type: browser.InputBeforeInput, Target: target, Data: "Z", InputType: "insertText", IsComposing: true},
+		{Type: browser.InputBeforeInput, Target: target, Data: "NO", InputType: "insertText", IsComposing: true},
+		{Type: browser.InputBeforeInput, Target: target, InputType: "deleteContentBackward", IsComposing: true},
+		{Type: browser.InputCompositionUpdate, Target: target, Data: "候補"},
+		{Type: browser.InputBeforeInput, Target: target, Data: "候", InputType: "insertCompositionText", IsComposing: true},
+		{Type: browser.InputCompositionEnd, Target: target, Data: "候"},
+	}
+	for _, event := range events {
+		if _, err := page.QueueInputEvent(event); err != nil {
+			t.Fatalf("QueueInputEvent(%s): %v", event.Type, err)
+		}
+	}
+	for range events {
+		if err := page.Realm.RunOne(context.Background()); err != nil {
+			t.Fatalf("run editing input: %v", err)
+		}
+	}
+	_, err = page.QueueScript(browser.ScriptSource{
+		URL: "https://gossamer.test/editing/assert.js",
+		Source: `
+			const editor = document.getElementById("editor");
+			if (editor.value !== "A候BC" || editor.selectionStart !== 2 || editor.selectionEnd !== 2) {
+				throw new Error("native editing result: " + editor.value + " @ " + editor.selectionStart);
+			}
+			const expected = [
+				"compositionstart:候",
+				"before:insertText:Z:true:A😀BC:1-3",
+				"input:insertText:Z:true:AZBC:2-2",
+				"before:insertText:NO:true:AZBC:2-2",
+				"before:deleteContentBackward::true:AZBC:2-2",
+				"input:deleteContentBackward::true:ABC:1-1",
+				"compositionupdate:候補",
+				"before:insertCompositionText:候:true:ABC:1-1",
+				"input:insertCompositionText:候:true:A候BC:2-2",
+				"compositionend:候",
+			];
+			if (__editLog.join("|") !== expected.join("|")) {
+				throw new Error("editing event order: " + __editLog.join("|"));
+			}
+		`,
+	})
+	if err != nil {
+		t.Fatalf("QueueScript assertions: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("run editing assertions: %v", err)
+	}
+	if err := page.Close(); err != nil {
+		t.Fatalf("Close page: %v", err)
+	}
+	if ledger := browserRuntime.Ledger().Stats(); ledger.LiveObjects != 0 || ledger.PersistentObjects != 0 {
+		t.Fatalf("Milestone 11 teardown ownership = %#v", ledger)
+	}
+}
+
 func newTestEngine(t *testing.T) *Engine {
 	t.Helper()
 	icuData := os.Getenv("GOSSAMER_V8_ICU_DATA")

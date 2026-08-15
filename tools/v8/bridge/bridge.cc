@@ -119,6 +119,7 @@ enum class EventInterface : uint8_t {
   PointerEvent,
   KeyboardEvent,
   InputEvent,
+  CompositionEvent,
   FocusEvent,
 };
 
@@ -330,6 +331,7 @@ struct gossamer_v8_realm {
   v8::Global<v8::FunctionTemplate> pointer_event_template;
   v8::Global<v8::FunctionTemplate> keyboard_event_template;
   v8::Global<v8::FunctionTemplate> input_event_template;
+  v8::Global<v8::FunctionTemplate> composition_event_template;
   v8::Global<v8::FunctionTemplate> focus_event_template;
   v8::Global<v8::FunctionTemplate> node_list_template;
   v8::Global<v8::FunctionTemplate> html_collection_template;
@@ -3647,6 +3649,229 @@ void ElementFormSelectedIndexSetter(
   info.GetReturnValue().Set(true);
 }
 
+bool ReadHostFormSelection(gossamer_v8_realm *realm, const WrapperKey &key,
+                           int32_t *start, int32_t *end,
+                           std::string *direction, std::string *error) {
+  if (!RequireHost(realm, error))
+    return false;
+  char *host_direction = nullptr;
+  size_t direction_length = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->form_selection(
+          realm->active_host->execution_id, key.document, key.node, start,
+          end, &host_direction, &direction_length, &host_error) == 0) {
+    *error = TakeCString(host_error);
+    std::free(host_direction);
+    if (error->empty())
+      *error = "reading text selection failed";
+    return false;
+  }
+  std::free(host_error);
+  direction->assign(host_direction == nullptr ? "" : host_direction,
+                    direction_length);
+  std::free(host_direction);
+  return true;
+}
+
+bool WriteHostFormSelection(gossamer_v8_realm *realm, const WrapperKey &key,
+                            int32_t start, int32_t end,
+                            const std::string &direction,
+                            std::string *error) {
+  if (!RequireHost(realm, error))
+    return false;
+  char *host_error = nullptr;
+  if (realm->active_host->set_form_selection(
+          realm->active_host->execution_id, key.document, key.node, start,
+          end, direction.data(), direction.size(), &host_error) == 0) {
+    *error = TakeCString(host_error);
+    if (error->empty())
+      *error = "setting text selection failed";
+    return false;
+  }
+  std::free(host_error);
+  return true;
+}
+
+void ElementFormSelectionGetter(
+    v8::Local<v8::Name> property,
+    const v8::PropertyCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.Holder(), &key))
+    return;
+  int32_t start = 0;
+  int32_t end = 0;
+  std::string direction;
+  std::string error;
+  if (!ReadHostFormSelection(CurrentRealm(isolate), key, &start, &end,
+                             &direction, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  std::string name = UTF8Value(isolate, property.As<v8::Value>());
+  if (name == "selectionStart") {
+    info.GetReturnValue().Set(v8::Integer::New(isolate, start));
+  } else if (name == "selectionEnd") {
+    info.GetReturnValue().Set(v8::Integer::New(isolate, end));
+  } else {
+    v8::Local<v8::String> rendered;
+    if (!NewUTF8String(isolate, direction.data(), direction.size(),
+                       &rendered)) {
+      ThrowError(isolate, "V8 failed to allocate selectionDirection");
+      return;
+    }
+    info.GetReturnValue().Set(rendered);
+  }
+}
+
+void ElementFormSelectionSetter(
+    v8::Local<v8::Name> property, v8::Local<v8::Value> value,
+    const v8::PropertyCallbackInfo<v8::Boolean> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.Holder(), &key)) {
+    info.GetReturnValue().Set(false);
+    return;
+  }
+  int32_t start = 0;
+  int32_t end = 0;
+  std::string direction;
+  std::string error;
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  if (!ReadHostFormSelection(realm, key, &start, &end, &direction, &error)) {
+    ThrowError(isolate, error);
+    info.GetReturnValue().Set(false);
+    return;
+  }
+  std::string name = UTF8Value(isolate, property.As<v8::Value>());
+  if (name == "selectionDirection") {
+    if (!StringFromValue(isolate, value, &direction)) {
+      info.GetReturnValue().Set(false);
+      return;
+    }
+  } else {
+    int32_t offset = 0;
+    if (!value->Int32Value(isolate->GetCurrentContext()).To(&offset)) {
+      info.GetReturnValue().Set(false);
+      return;
+    }
+    if (name == "selectionStart") {
+      start = offset;
+      if (start > end)
+        end = start;
+    } else {
+      end = offset;
+      if (end < start)
+        start = end;
+    }
+  }
+  if (!WriteHostFormSelection(realm, key, start, end, direction, &error)) {
+    ThrowError(isolate, error);
+    info.GetReturnValue().Set(false);
+    return;
+  }
+  info.GetReturnValue().Set(true);
+}
+
+void ElementFormSelectionFunctionGetter(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.This(), &key))
+    return;
+  int32_t start = 0;
+  int32_t end = 0;
+  std::string direction;
+  std::string error;
+  if (!ReadHostFormSelection(CurrentRealm(isolate), key, &start, &end,
+                             &direction, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  int property = info.Data().As<v8::Int32>()->Value();
+  if (property == 1) {
+    info.GetReturnValue().Set(v8::Integer::New(isolate, start));
+  } else if (property == 2) {
+    info.GetReturnValue().Set(v8::Integer::New(isolate, end));
+  } else {
+    v8::Local<v8::String> rendered;
+    if (!NewUTF8String(isolate, direction.data(), direction.size(),
+                       &rendered)) {
+      ThrowError(isolate, "V8 failed to allocate selectionDirection");
+      return;
+    }
+    info.GetReturnValue().Set(rendered);
+  }
+}
+
+void ElementFormSelectionFunctionSetter(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.This(), &key) || info.Length() == 0)
+    return;
+  int32_t start = 0;
+  int32_t end = 0;
+  std::string direction;
+  std::string error;
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  if (!ReadHostFormSelection(realm, key, &start, &end, &direction, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  int property = info.Data().As<v8::Int32>()->Value();
+  if (property == 3) {
+    if (!StringFromValue(isolate, info[0], &direction))
+      return;
+  } else {
+    int32_t offset = 0;
+    if (!info[0]->Int32Value(isolate->GetCurrentContext()).To(&offset))
+      return;
+    if (property == 1) {
+      start = offset;
+      if (start > end)
+        end = start;
+    } else {
+      end = offset;
+      if (end < start)
+        start = end;
+    }
+  }
+  if (!WriteHostFormSelection(realm, key, start, end, direction, &error))
+    ThrowError(isolate, error);
+}
+
+void ElementSetSelectionRange(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  int32_t start = 0;
+  int32_t end = 0;
+  if (!ReadReceiverKey(isolate, info.This(), &key) || info.Length() < 2 ||
+      !info[0]->Int32Value(isolate->GetCurrentContext()).To(&start) ||
+      !info[1]->Int32Value(isolate->GetCurrentContext()).To(&end))
+    return;
+  std::string direction = "none";
+  if (info.Length() > 2 && !StringFromValue(isolate, info[2], &direction))
+    return;
+  std::string error;
+  if (!WriteHostFormSelection(CurrentRealm(isolate), key, start, end,
+                              direction, &error))
+    ThrowError(isolate, error);
+}
+
+void ElementSelectText(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.This(), &key))
+    return;
+  std::string error;
+  if (!WriteHostFormSelection(CurrentRealm(isolate), key, 0,
+                              std::numeric_limits<int32_t>::max(), "none",
+                              &error))
+    ThrowError(isolate, error);
+}
+
 void ElementFormOwnerGetter(
     v8::Local<v8::Name>, const v8::PropertyCallbackInfo<v8::Value> &info) {
   v8::Isolate *isolate = info.GetIsolate();
@@ -5798,6 +6023,8 @@ EventTemplateForInterface(gossamer_v8_realm *realm,
     return realm->keyboard_event_template.Get(realm->isolate);
   case EventInterface::InputEvent:
     return realm->input_event_template.Get(realm->isolate);
+  case EventInterface::CompositionEvent:
+    return realm->composition_event_template.Get(realm->isolate);
   case EventInterface::FocusEvent:
     return realm->focus_event_template.Get(realm->isolate);
   case EventInterface::Event:
@@ -5982,6 +6209,8 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
       new_event_template(EventInterface::KeyboardEvent);
   v8::Local<v8::FunctionTemplate> input_event_template =
       new_event_template(EventInterface::InputEvent);
+  v8::Local<v8::FunctionTemplate> composition_event_template =
+      new_event_template(EventInterface::CompositionEvent);
   v8::Local<v8::FunctionTemplate> focus_event_template =
       new_event_template(EventInterface::FocusEvent);
 
@@ -6059,6 +6288,8 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
       v8::String::NewFromUtf8Literal(isolate, "KeyboardEvent"));
   input_event_template->SetClassName(
       v8::String::NewFromUtf8Literal(isolate, "InputEvent"));
+  composition_event_template->SetClassName(
+      v8::String::NewFromUtf8Literal(isolate, "CompositionEvent"));
   focus_event_template->SetClassName(
       v8::String::NewFromUtf8Literal(isolate, "FocusEvent"));
   node_template->Inherit(event_target_template);
@@ -6078,6 +6309,7 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   pointer_event_template->Inherit(mouse_event_template);
   keyboard_event_template->Inherit(event_template);
   input_event_template->Inherit(event_template);
+  composition_event_template->Inherit(event_template);
   focus_event_template->Inherit(event_template);
   for (v8::Local<v8::FunctionTemplate> interface_template :
        {node_template, element_template, html_element_template, text_template,
@@ -6099,7 +6331,8 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
       kStyleInternalFieldCount);
   for (v8::Local<v8::FunctionTemplate> interface_template :
        {event_template, mouse_event_template, pointer_event_template,
-        keyboard_event_template, input_event_template, focus_event_template}) {
+        keyboard_event_template, input_event_template,
+        composition_event_template, focus_event_template}) {
     interface_template->InstanceTemplate()->SetInternalFieldCount(1);
   }
 
@@ -6289,9 +6522,12 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   install_pointer_event_surface(pointer_event_template->PrototypeTemplate());
   install_keyboard_event_surface(keyboard_event_template->PrototypeTemplate());
   install_input_event_surface(input_event_template->PrototypeTemplate());
+  composition_event_template->PrototypeTemplate()->SetNativeDataProperty(
+      v8::String::NewFromUtf8Literal(isolate, "data"), EventPropertyGetter);
   for (v8::Local<v8::FunctionTemplate> interface_template :
        {event_template, mouse_event_template, pointer_event_template,
-        keyboard_event_template, input_event_template, focus_event_template}) {
+        keyboard_event_template, input_event_template,
+        composition_event_template, focus_event_template}) {
     install_event_surface(interface_template->InstanceTemplate());
   }
   for (v8::Local<v8::FunctionTemplate> interface_template :
@@ -6301,6 +6537,8 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   install_pointer_event_surface(pointer_event_template->InstanceTemplate());
   install_keyboard_event_surface(keyboard_event_template->InstanceTemplate());
   install_input_event_surface(input_event_template->InstanceTemplate());
+  composition_event_template->InstanceTemplate()->SetNativeDataProperty(
+      v8::String::NewFromUtf8Literal(isolate, "data"), EventPropertyGetter);
   for (const auto &constant :
        {std::pair<const char *, int>{"NONE", kEventPhaseNone},
         {"CAPTURING_PHASE", kEventPhaseCapturing},
@@ -6502,6 +6740,27 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
       v8::FunctionTemplate::New(isolate, ElementFormCheckedFunctionGetter),
       v8::FunctionTemplate::New(isolate,
                                 ElementFormCheckedFunctionSetter));
+  for (v8::Local<v8::FunctionTemplate> interface_template :
+       {html_input_element_template, html_text_area_element_template}) {
+    for (const auto &property :
+         {std::pair<const char *, int>{"selectionStart", 1},
+          {"selectionEnd", 2}, {"selectionDirection", 3}}) {
+      interface_template->PrototypeTemplate()->SetAccessorProperty(
+          v8::String::NewFromUtf8(isolate, property.first).ToLocalChecked(),
+          v8::FunctionTemplate::New(
+              isolate, ElementFormSelectionFunctionGetter,
+              v8::Integer::New(isolate, property.second)),
+          v8::FunctionTemplate::New(
+              isolate, ElementFormSelectionFunctionSetter,
+              v8::Integer::New(isolate, property.second)));
+    }
+    interface_template->PrototypeTemplate()->Set(
+        isolate, "setSelectionRange",
+        v8::FunctionTemplate::New(isolate, ElementSetSelectionRange));
+    interface_template->PrototypeTemplate()->Set(
+        isolate, "select",
+        v8::FunctionTemplate::New(isolate, ElementSelectText));
+  }
   html_option_element_template->PrototypeTemplate()->SetNativeDataProperty(
       v8::String::NewFromUtf8Literal(isolate, "selected"),
       ElementFormSelectedGetter, ElementFormSelectedSetter);
@@ -6739,6 +6998,15 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   html_input_element_template->InstanceTemplate()->SetNativeDataProperty(
       v8::String::NewFromUtf8Literal(isolate, "checked"),
       ElementFormCheckedGetter, ElementFormCheckedSetter);
+  for (v8::Local<v8::FunctionTemplate> interface_template :
+       {html_input_element_template, html_text_area_element_template}) {
+    for (const char *name : {"selectionStart", "selectionEnd",
+                             "selectionDirection"}) {
+      interface_template->InstanceTemplate()->SetNativeDataProperty(
+          v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
+          ElementFormSelectionGetter, ElementFormSelectionSetter);
+    }
+  }
   html_option_element_template->InstanceTemplate()->SetNativeDataProperty(
       v8::String::NewFromUtf8Literal(isolate, "selected"),
       ElementFormSelectedGetter, ElementFormSelectedSetter);
@@ -6843,6 +7111,8 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   realm->pointer_event_template.Reset(isolate, pointer_event_template);
   realm->keyboard_event_template.Reset(isolate, keyboard_event_template);
   realm->input_event_template.Reset(isolate, input_event_template);
+  realm->composition_event_template.Reset(isolate,
+                                            composition_event_template);
   realm->focus_event_template.Reset(isolate, focus_event_template);
 
   v8::Local<v8::ObjectTemplate> style_prototype =
@@ -6935,6 +7205,7 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
          expose_interface("PointerEvent", pointer_event_template) &&
          expose_interface("KeyboardEvent", keyboard_event_template) &&
          expose_interface("InputEvent", input_event_template) &&
+         expose_interface("CompositionEvent", composition_event_template) &&
          expose_interface("FocusEvent", focus_event_template) &&
          expose_interface("Node", node_template) &&
          expose_interface("Element", element_template) &&
@@ -7087,6 +7358,21 @@ bool ConfigureNativeEvent(const gossamer_v8_input_event *input,
     state->interface = EventInterface::Event;
     state->bubbles = true;
     break;
+  case 19:
+    state->type = "compositionstart";
+    state->interface = EventInterface::CompositionEvent;
+    state->bubbles = state->composed = true;
+    break;
+  case 20:
+    state->type = "compositionupdate";
+    state->interface = EventInterface::CompositionEvent;
+    state->bubbles = state->composed = true;
+    break;
+  case 21:
+    state->type = "compositionend";
+    state->interface = EventInterface::CompositionEvent;
+    state->bubbles = state->composed = true;
+    break;
   default:
     *error = "V8 received an unsupported browser event type";
     return false;
@@ -7158,6 +7444,7 @@ void ClearRealmHandles(gossamer_v8_realm *realm) {
   realm->pointer_event_template.Reset();
   realm->keyboard_event_template.Reset();
   realm->input_event_template.Reset();
+  realm->composition_event_template.Reset();
   realm->focus_event_template.Reset();
   realm->node_list_template.Reset();
   realm->html_collection_template.Reset();

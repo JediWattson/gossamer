@@ -3,6 +3,7 @@ package dom
 import (
 	"fmt"
 	"strings"
+	"unicode/utf16"
 )
 
 // FormCollectionKind identifies the live element lists exposed by select and
@@ -84,6 +85,9 @@ func (document *Document) SetFormValue(id NodeID, value string) error {
 		changed = !state.ValueDirty || state.Value != value
 		state.Value = value
 		state.ValueDirty = true
+		state.SelectionStart = utf16Length(value)
+		state.SelectionEnd = state.SelectionStart
+		state.SelectionDirection = "none"
 	case "select":
 		options := optionNodes(node)
 		matched := false
@@ -106,6 +110,133 @@ func (document *Document) SetFormValue(id NodeID, value string) error {
 	if changed {
 		document.version.Add(1)
 	}
+	return nil
+}
+
+// FormSelection returns the UTF-16 selection range owned by a text control.
+func (document *Document) FormSelection(id NodeID) (int, int, string, error) {
+	if document == nil || document.store == nil {
+		return 0, 0, "none", ErrInvalidDocument
+	}
+	document.store.mutex.RLock()
+	defer document.store.mutex.RUnlock()
+	node, ok := document.store.resolveLocked(id)
+	if !ok {
+		return 0, 0, "none", fmt.Errorf("%w: %d", ErrUnknownNode, id)
+	}
+	if !isTextControl(node) {
+		return 0, 0, "none", fmt.Errorf("%w: node %d has no text selection", ErrWrongNodeKind, id)
+	}
+	state := node.Control
+	if state == nil {
+		return 0, 0, "none", nil
+	}
+	direction := normalizeSelectionDirection(state.SelectionDirection)
+	return state.SelectionStart, state.SelectionEnd, direction, nil
+}
+
+// SetFormSelection updates a text control selection using DOM UTF-16 offsets.
+func (document *Document) SetFormSelection(id NodeID, start, end int, direction string) error {
+	if document == nil || document.store == nil {
+		return ErrInvalidDocument
+	}
+	document.store.mutex.Lock()
+	defer document.store.mutex.Unlock()
+	node, ok := document.store.resolveLocked(id)
+	if !ok {
+		return fmt.Errorf("%w: %d", ErrUnknownNode, id)
+	}
+	if !isTextControl(node) {
+		return fmt.Errorf("%w: node %d has no text selection", ErrWrongNodeKind, id)
+	}
+	value, err := formValueLocked(node)
+	if err != nil {
+		return err
+	}
+	length := utf16Length(value)
+	start = clampSelectionOffset(start, length)
+	end = clampSelectionOffset(end, length)
+	if end < start {
+		start = end
+	}
+	direction = normalizeSelectionDirection(direction)
+	state := ensureControlState(node)
+	if state.SelectionStart == start && state.SelectionEnd == end && state.SelectionDirection == direction {
+		return nil
+	}
+	state.SelectionStart = start
+	state.SelectionEnd = end
+	state.SelectionDirection = direction
+	document.version.Add(1)
+	return nil
+}
+
+// ReplaceFormSelection performs the native edit associated with beforeinput.
+func (document *Document) ReplaceFormSelection(id NodeID, data, inputType string) error {
+	if document == nil || document.store == nil {
+		return ErrInvalidDocument
+	}
+	document.store.mutex.Lock()
+	defer document.store.mutex.Unlock()
+	node, ok := document.store.resolveLocked(id)
+	if !ok {
+		return fmt.Errorf("%w: %d", ErrUnknownNode, id)
+	}
+	if !isTextControl(node) {
+		return fmt.Errorf("%w: node %d has no editable selection", ErrWrongNodeKind, id)
+	}
+	value, err := formValueLocked(node)
+	if err != nil {
+		return err
+	}
+	state := ensureControlState(node)
+	units := utf16.Encode([]rune(value))
+	start := clampSelectionOffset(state.SelectionStart, len(units))
+	end := clampSelectionOffset(state.SelectionEnd, len(units))
+	if end < start {
+		start = end
+	}
+	replacement := data
+	switch inputType {
+	case "", "insertText", "insertCompositionText", "insertReplacementText", "insertFromPaste", "insertFromDrop":
+	case "insertLineBreak", "insertParagraph":
+		if node.Data == "textarea" {
+			replacement = "\n"
+		} else {
+			replacement = ""
+		}
+	case "deleteContentBackward":
+		replacement = ""
+		if start == end && start > 0 {
+			start--
+			if start > 0 && units[start] >= 0xdc00 && units[start] <= 0xdfff && units[start-1] >= 0xd800 && units[start-1] <= 0xdbff {
+				start--
+			}
+		}
+	case "deleteContentForward":
+		replacement = ""
+		if start == end && end < len(units) {
+			end++
+			if end < len(units) && units[end-1] >= 0xd800 && units[end-1] <= 0xdbff && units[end] >= 0xdc00 && units[end] <= 0xdfff {
+				end++
+			}
+		}
+	case "deleteByCut", "deleteByDrag", "deleteContent", "deleteEntireSoftLine":
+		replacement = ""
+	default:
+		return nil
+	}
+	replacementUnits := utf16.Encode([]rune(replacement))
+	updated := make([]uint16, 0, len(units)-(end-start)+len(replacementUnits))
+	updated = append(updated, units[:start]...)
+	updated = append(updated, replacementUnits...)
+	updated = append(updated, units[end:]...)
+	state.Value = string(utf16.Decode(updated))
+	state.ValueDirty = true
+	state.SelectionStart = start + len(replacementUnits)
+	state.SelectionEnd = state.SelectionStart
+	state.SelectionDirection = "none"
+	document.version.Add(1)
 	return nil
 }
 
@@ -469,6 +600,9 @@ func (document *Document) ResetForm(id NodeID) error {
 		candidate.Control.CheckedDirty = false
 		candidate.Control.Selected = false
 		candidate.Control.SelectedDirty = false
+		candidate.Control.SelectionStart = 0
+		candidate.Control.SelectionEnd = 0
+		candidate.Control.SelectionDirection = "none"
 	})
 	if changed {
 		document.version.Add(1)
@@ -563,6 +697,33 @@ func isValueControl(node *Node) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func isTextControl(node *Node) bool {
+	return isHTMLControl(node, "input") || isHTMLControl(node, "textarea")
+}
+
+func utf16Length(value string) int {
+	return len(utf16.Encode([]rune(value)))
+}
+
+func clampSelectionOffset(offset, length int) int {
+	if offset < 0 {
+		return 0
+	}
+	if offset > length {
+		return length
+	}
+	return offset
+}
+
+func normalizeSelectionDirection(direction string) string {
+	switch direction {
+	case "forward", "backward":
+		return direction
+	default:
+		return "none"
 	}
 }
 

@@ -140,6 +140,14 @@ typedef struct gossamer_v8_host {
   int (*set_form_value)(uint64_t execution_id, uint64_t document,
                         uint32_t node, const char *value,
                         size_t value_length, char **error_out);
+  int (*form_selection)(uint64_t execution_id, uint64_t document,
+                        uint32_t node, int32_t *start_out, int32_t *end_out,
+                        char **direction_out, size_t *direction_length_out,
+                        char **error_out);
+  int (*set_form_selection)(uint64_t execution_id, uint64_t document,
+                            uint32_t node, int32_t start, int32_t end,
+                            const char *direction, size_t direction_length,
+                            char **error_out);
   int (*form_checked)(uint64_t execution_id, uint64_t document, uint32_t node,
                       int *checked_out, char **error_out);
   int (*set_form_checked)(uint64_t execution_id, uint64_t document,

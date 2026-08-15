@@ -31,6 +31,9 @@ const (
 	InputFocusIn
 	InputFocusOut
 	InputChange
+	InputCompositionStart
+	InputCompositionUpdate
+	InputCompositionEnd
 )
 
 // InputEvent contains browser-normalized input and a generation-safe target.
@@ -95,6 +98,12 @@ func (eventType InputEventType) String() string {
 		return "focusout"
 	case InputChange:
 		return "change"
+	case InputCompositionStart:
+		return "compositionstart"
+	case InputCompositionUpdate:
+		return "compositionupdate"
+	case InputCompositionEnd:
+		return "compositionend"
 	default:
 		return ""
 	}
@@ -244,6 +253,9 @@ type DOMElementHost interface {
 	InsertAdjacentHTML(NodeHandle, string, string) error
 	FormValue(NodeHandle) (string, error)
 	SetFormValue(NodeHandle, string) error
+	FormSelection(NodeHandle) (int, int, string, error)
+	SetFormSelection(NodeHandle, int, int, string) error
+	ReplaceFormSelection(NodeHandle, string, string) error
 	FormChecked(NodeHandle) (bool, error)
 	SetFormChecked(NodeHandle, bool) error
 	FormSelected(NodeHandle) (bool, error)

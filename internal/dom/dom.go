@@ -45,12 +45,15 @@ type Node struct {
 // ControlState contains mutable state that is deliberately separate from
 // content attributes. It is allocated only for stateful HTML controls.
 type ControlState struct {
-	Value         string
-	ValueDirty    bool
-	Checked       bool
-	CheckedDirty  bool
-	Selected      bool
-	SelectedDirty bool
+	Value              string
+	ValueDirty         bool
+	Checked            bool
+	CheckedDirty       bool
+	Selected           bool
+	SelectedDirty      bool
+	SelectionStart     int
+	SelectionEnd       int
+	SelectionDirection string
 }
 
 // NewDocument creates an empty document node.
