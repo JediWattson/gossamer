@@ -28,6 +28,21 @@ func Parse(source string) (Stylesheet, error) {
 	return stylesheet, commentErr
 }
 
+// ParseRawDeclarationList parses the contents of a CSS declaration block, such
+// as an HTML style attribute, without collapsing duplicate properties. The raw
+// ordering is required by the cascade and is intentionally distinct from a
+// normalized CSSOM declaration-block view. Malformed declarations are skipped.
+// Safely parsed declarations are returned alongside an error when an
+// unterminated comment or string prevents further recovery.
+func ParseRawDeclarationList(source string) ([]Declaration, error) {
+	cleaned, commentErr := stripComments(source)
+	declarations, stringErr := parseCleanDeclarationList(cleaned)
+	if stringErr != nil {
+		return declarations, stringErr
+	}
+	return declarations, commentErr
+}
+
 type stylesheetParser struct {
 	source     string
 	pos        int
@@ -251,6 +266,10 @@ func (parser *stylesheetParser) readRulePrelude() (string, byte, error) {
 			}
 			continue
 		}
+		if character == '\\' && validCSSEscapeAt(parser.source, parser.pos) {
+			parser.pos = skipCSSEscape(parser.source, parser.pos)
+			continue
+		}
 
 		switch character {
 		case '\'', '"':
@@ -316,6 +335,10 @@ func (parser *stylesheetParser) readBlock() (string, error) {
 			}
 			continue
 		}
+		if character == '\\' && validCSSEscapeAt(parser.source, parser.pos) {
+			parser.pos = skipCSSEscape(parser.source, parser.pos)
+			continue
+		}
 
 		switch character {
 		case '\'', '"':
@@ -368,6 +391,10 @@ func (parser *stylesheetParser) skipAtRuleTail() error {
 			}
 			continue
 		}
+		if character == '\\' && validCSSEscapeAt(parser.source, parser.pos) {
+			parser.pos = skipCSSEscape(parser.source, parser.pos)
+			continue
+		}
 
 		switch character {
 		case '\'', '"':
@@ -413,7 +440,12 @@ func (parser *stylesheetParser) skipAtRuleTail() error {
 }
 
 func parseDeclarations(block string) []Declaration {
-	parts := splitTopLevel(block, ';')
+	declarations, _ := parseCleanDeclarationList(block)
+	return declarations
+}
+
+func parseCleanDeclarationList(source string) ([]Declaration, error) {
+	parts, err := splitDeclarationList(source)
 	declarations := make([]Declaration, 0, len(parts))
 	for _, part := range parts {
 		colon := indexTopLevel(part, ':')
@@ -425,14 +457,18 @@ func parseDeclarations(block string) []Declaration {
 		if !validPropertyName(property) {
 			continue
 		}
-		if !strings.HasPrefix(property, "--") {
+		custom := strings.HasPrefix(property, "--")
+		if !custom {
 			property = strings.ToLower(property)
 		}
 
 		value := normalizeCommentBoundaries(part[colon+1:])
 		value = strings.TrimSpace(value)
 		value, important := removeImportant(value)
-		if value == "" {
+		if value == "" && !custom {
+			continue
+		}
+		if custom && !ValidCustomPropertyValue(value) {
 			continue
 		}
 		declarations = append(declarations, Declaration{
@@ -441,7 +477,72 @@ func parseDeclarations(block string) []Declaration {
 			Important: important,
 		})
 	}
-	return declarations
+	return declarations, err
+}
+
+func splitDeclarationList(source string) ([]string, error) {
+	var parts []string
+	start := 0
+	quote := byte(0)
+	escaped := false
+	parenDepth := 0
+	bracketDepth := 0
+	braceDepth := 0
+
+	for position := 0; position < len(source); position++ {
+		character := source[position]
+		if quote != 0 {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if character == '\\' {
+				escaped = true
+				continue
+			}
+			if character == quote {
+				quote = 0
+			}
+			continue
+		}
+		if character == '\\' && validCSSEscapeAt(source, position) {
+			position = skipCSSEscape(source, position) - 1
+			continue
+		}
+
+		switch character {
+		case '\'', '"':
+			quote = character
+		case '(':
+			parenDepth++
+		case ')':
+			if parenDepth > 0 {
+				parenDepth--
+			}
+		case '[':
+			bracketDepth++
+		case ']':
+			if bracketDepth > 0 {
+				bracketDepth--
+			}
+		case '{':
+			braceDepth++
+		case '}':
+			if braceDepth > 0 {
+				braceDepth--
+			}
+		case ';':
+			if parenDepth == 0 && bracketDepth == 0 && braceDepth == 0 {
+				parts = append(parts, source[start:position])
+				start = position + 1
+			}
+		}
+	}
+
+	if quote != 0 {
+		return parts, fmt.Errorf("css: unterminated string in declaration list")
+	}
+	return append(parts, source[start:]), nil
 }
 
 func removeImportant(value string) (string, bool) {
@@ -466,6 +567,12 @@ func removeImportant(value string) (string, bool) {
 			if character == quote {
 				quote = 0
 			}
+			continue
+		}
+		if character == '\\' && validCSSEscapeAt(value, position) {
+			// An escaped exclamation mark is part of an identifier token, not
+			// the delimiter token that can begin an !important annotation.
+			position = skipCSSEscape(value, position) - 1
 			continue
 		}
 		switch character {
@@ -499,8 +606,8 @@ func removeImportant(value string) (string, bool) {
 	if importantAt < 0 {
 		return strings.TrimSpace(value), false
 	}
-	suffix := strings.TrimSpace(value[importantAt+1:])
-	if !strings.EqualFold(suffix, "important") {
+	suffix, ok := parseSingleCSSIdentifier(value[importantAt+1:])
+	if !ok || !equalASCIIFold(suffix, "important") {
 		return strings.TrimSpace(value), false
 	}
 	return strings.TrimSpace(value[:importantAt]), true
@@ -529,6 +636,10 @@ func splitTopLevel(source string, delimiter byte) []string {
 			if character == quote {
 				quote = 0
 			}
+			continue
+		}
+		if character == '\\' && validCSSEscapeAt(source, position) {
+			position = skipCSSEscape(source, position) - 1
 			continue
 		}
 		switch character {
@@ -590,6 +701,10 @@ func splitTopLevelWithOffsets(source string, delimiter byte) []int {
 			if character == quote {
 				quote = 0
 			}
+			continue
+		}
+		if character == '\\' && validCSSEscapeAt(source, position) {
+			position = skipCSSEscape(source, position) - 1
 			continue
 		}
 		switch character {
@@ -693,6 +808,12 @@ func stripComments(source string) (string, error) {
 			quote = character
 			cleaned.WriteByte(character)
 			position++
+			continue
+		}
+		if character == '\\' && validCSSEscapeAt(source, position) {
+			end := skipCSSEscape(source, position)
+			cleaned.WriteString(source[position:end])
+			position = end
 			continue
 		}
 		if character == '/' && position+1 < len(source) && source[position+1] == '*' {
