@@ -3079,6 +3079,289 @@ func TestStockV8TemplateConstructionRangeAndTraversalObjects(t *testing.T) {
 	}
 }
 
+func TestStockV8ReactDOMCompatibilityGate(t *testing.T) {
+	reactBundle, err := os.ReadFile("testdata/react-19.2.7.production.js")
+	if err != nil {
+		t.Fatalf("read React fixture: %v", err)
+	}
+	engine := newTestEngine(t)
+	browserRuntime, err := browser.NewWithEngine(engine)
+	if err != nil {
+		t.Fatalf("NewWithEngine: %v", err)
+	}
+	defer func() {
+		if err := browserRuntime.Close(); err != nil {
+			t.Errorf("Close browser: %v", err)
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	page, err := browserRuntime.LoadPage(ctx, "https://gossamer.test/react-dom-gate", staticDocumentLoader{
+		document: `<!doctype html><html><body><main id="root"></main></body></html>`,
+	})
+	if err != nil {
+		t.Fatalf("LoadPage: %v", err)
+	}
+	realm, ok := engine.LatestRealm()
+	if !ok {
+		t.Fatal("stock V8 engine has no React DOM gate realm")
+	}
+	initialLiveNodes := page.Document().Store().LiveLen()
+	runOne := func(label string) {
+		t.Helper()
+		if err := page.Realm.RunOne(context.Background()); err != nil {
+			t.Fatalf("%s: %v", label, err)
+		}
+	}
+	queueScript := func(label, source string) {
+		t.Helper()
+		if _, err := page.QueueScript(browser.ScriptSource{
+			URL:    "https://gossamer.test/react-dom-gate/" + label + ".js",
+			Source: source,
+		}); err != nil {
+			t.Fatalf("queue %s: %v", label, err)
+		}
+		runOne(label)
+	}
+	drain := func(label string) {
+		t.Helper()
+		for attempt := 0; attempt < 64 && page.Realm.Tasks.Len() != 0; attempt++ {
+			runOne(label)
+		}
+		if page.Realm.Tasks.Len() != 0 {
+			t.Fatalf("%s: task queue did not drain", label)
+		}
+	}
+
+	queueScript("react", string(reactBundle))
+	if err := realm.CollectGarbage(page); err != nil {
+		t.Fatalf("CollectGarbage after React load: %v", err)
+	}
+	frameworkBaselineLiveNodes := page.Document().Store().LiveLen()
+	if frameworkBaselineLiveNodes > initialLiveNodes+1 {
+		t.Fatalf("React bundle retained %d probe nodes, want at most one", frameworkBaselineLiveNodes-initialLiveNodes)
+	}
+
+	queueScript("mount", `
+		(() => {
+			const h = React.createElement;
+			const rootElement = document.getElementById("root");
+			globalThis.__reactGateRecords = [];
+			globalThis.__reactGateObserver = new MutationObserver(records => {
+				for (const record of records) __reactGateRecords.push(record.type + ":" + record.target.nodeName);
+			});
+			__reactGateObserver.observe(rootElement, {
+				childList: true,
+				subtree: true,
+				attributes: true,
+				characterData: true,
+			});
+			function App() {
+				const [model, setModel] = React.useState({
+					name: "Ada",
+					notes: "hello",
+					enabled: false,
+					choice: "alpha",
+					pick: "one",
+					order: ["a", "b", "c"],
+					tick: 0,
+				});
+				globalThis.__reactGateUpdate = update => ReactDOM.flushSync(() => {
+					setModel(current => typeof update === "function" ? update(current) : update);
+				});
+				return h("form", {id: "gate-form"},
+					h("input", {
+						id: "gate-name", name: "name", value: model.name,
+						onInput: event => __reactGateUpdate(current => ({...current, name: event.currentTarget.value})),
+					}),
+					h("textarea", {
+						id: "gate-notes", name: "notes", value: model.notes,
+						onInput: event => __reactGateUpdate(current => ({...current, notes: event.currentTarget.value})),
+					}),
+					h("input", {
+						id: "gate-enabled", name: "enabled", type: "checkbox", checked: model.enabled,
+						onChange: event => __reactGateUpdate(current => ({...current, enabled: event.currentTarget.checked})),
+					}),
+					h("input", {
+						id: "gate-alpha", name: "choice", type: "radio", value: "alpha",
+						checked: model.choice === "alpha",
+						onChange: event => event.currentTarget.checked && __reactGateUpdate(current => ({...current, choice: "alpha"})),
+					}),
+					h("input", {
+						id: "gate-beta", name: "choice", type: "radio", value: "beta",
+						checked: model.choice === "beta",
+						onChange: event => event.currentTarget.checked && __reactGateUpdate(current => ({...current, choice: "beta"})),
+					}),
+					h("select", {
+						id: "gate-pick", name: "pick", value: model.pick,
+						onChange: event => __reactGateUpdate(current => ({...current, pick: event.currentTarget.value})),
+					},
+						h("option", {value: "one"}, "One"),
+						h("option", {value: "two"}, "Two")),
+					h("output", {id: "gate-state"},
+						[model.name, model.notes, model.enabled, model.choice, model.pick].join("|")),
+					h("ul", {id: "gate-list"}, model.order.map(key =>
+						h("li", {id: "gate-item-" + key, key}, key))),
+					h("span", {id: "gate-ephemeral", key: "tick-" + model.tick}, String(model.tick))
+				);
+			}
+			globalThis.__reactGateErrors = [];
+			globalThis.__reactGateRoot = ReactDOM.createRoot(rootElement, {
+				onUncaughtError: error => __reactGateErrors.push(String(error)),
+				onRecoverableError: error => __reactGateErrors.push(String(error)),
+			});
+			ReactDOM.flushSync(() => __reactGateRoot.render(h(App)));
+			if (__reactGateErrors.length || document.getElementById("gate-state").textContent !== "Ada|hello|false|alpha|one" ||
+				document.getElementById("gate-form").elements.length !== 6) {
+				throw new Error("initial React DOM compatibility render failed: " + __reactGateErrors.join(";"));
+			}
+			globalThis.__reactGateA = document.getElementById("gate-item-a");
+			globalThis.__reactGateB = document.getElementById("gate-item-b");
+			globalThis.__reactGateC = document.getElementById("gate-item-c");
+		})();
+	`)
+	drain("initial React compatibility render")
+
+	queueScript("selection", `
+		document.getElementById("gate-name").setSelectionRange(3, 3);
+		document.getElementById("gate-notes").setSelectionRange(5, 5);
+	`)
+	for _, input := range []struct {
+		id   string
+		data string
+	}{
+		{id: "gate-name", data: "!"},
+		{id: "gate-notes", data: "!"},
+	} {
+		node, found := page.Document().ElementByID(input.id)
+		if !found {
+			t.Fatalf("React controlled field %s is missing", input.id)
+		}
+		if _, err := page.QueueInputEvent(browser.InputEvent{
+			Type:      browser.InputInput,
+			Target:    browser.NodeHandle{Document: page.DocumentGeneration(), Node: node},
+			Data:      input.data,
+			InputType: "insertText",
+		}); err != nil {
+			t.Fatalf("queue React input for %s: %v", input.id, err)
+		}
+		runOne("dispatch React input " + input.id)
+	}
+
+	for _, id := range []string{"gate-enabled", "gate-beta"} {
+		node, found := page.Document().ElementByID(id)
+		if !found {
+			t.Fatalf("React click control %s is missing", id)
+		}
+		if _, err := page.QueueInputEvent(browser.InputEvent{
+			Type:   browser.InputClick,
+			Target: browser.NodeHandle{Document: page.DocumentGeneration(), Node: node},
+		}); err != nil {
+			t.Fatalf("queue React click for %s: %v", id, err)
+		}
+		runOne("dispatch React click " + id)
+	}
+
+	queueScript("select-value", `document.getElementById("gate-pick").value = "two";`)
+	selectID, found := page.Document().ElementByID("gate-pick")
+	if !found {
+		t.Fatal("React controlled select is missing")
+	}
+	if _, err := page.QueueInputEvent(browser.InputEvent{
+		Type:   browser.InputChange,
+		Target: browser.NodeHandle{Document: page.DocumentGeneration(), Node: selectID},
+	}); err != nil {
+		t.Fatalf("queue React select change: %v", err)
+	}
+	runOne("dispatch React select change")
+
+	queueScript("controlled-assert", `
+		if (__reactGateErrors.length ||
+			document.getElementById("gate-state").textContent !== "Ada!|hello!|true|beta|two" ||
+			document.getElementById("gate-name").value !== "Ada!" ||
+			document.getElementById("gate-notes").value !== "hello!" ||
+			!document.getElementById("gate-enabled").checked ||
+			!document.getElementById("gate-beta").checked ||
+			document.getElementById("gate-alpha").checked ||
+			document.getElementById("gate-pick").value !== "two") {
+			throw new Error("controlled React form state diverged: " + document.getElementById("gate-state").textContent + ":" + __reactGateErrors.join(";"));
+		}
+		if (__reactGateRecords.length === 0) throw new Error("MutationObserver saw no React commits");
+		__reactGateRecords.length = 0;
+	`)
+
+	queueScript("keyed-reorder", `
+		__reactGateUpdate(current => ({...current, order: ["c", "a", "d"], tick: current.tick + 1}));
+		const list = document.getElementById("gate-list");
+		if (Array.from(list.children).map(node => node.id).join(",") !== "gate-item-c,gate-item-a,gate-item-d" ||
+			document.getElementById("gate-item-c") !== __reactGateC ||
+			document.getElementById("gate-item-a") !== __reactGateA ||
+			__reactGateB.parentNode !== null || document.getElementById("gate-item-b") !== null) {
+			throw new Error("keyed React reconciliation lost native identity");
+		}
+	`)
+	if err := realm.CollectGarbage(page); err != nil {
+		t.Fatalf("CollectGarbage with held detached keyed node: %v", err)
+	}
+	queueScript("churn", `
+		if (__reactGateB.textContent !== "b") throw new Error("held keyed wrapper lost detached native state");
+		globalThis.__reactGateB = undefined;
+		for (let tick = 2; tick <= 40; tick++) {
+			__reactGateUpdate(current => ({
+				...current,
+				tick,
+				order: tick % 2 === 0 ? ["a", "d", "c"] : ["c", "a", "d"],
+			}));
+		}
+		if (document.getElementById("gate-ephemeral").textContent !== "40" || __reactGateErrors.length) {
+			throw new Error("React churn failed: " + __reactGateErrors.join(";"));
+		}
+	`)
+	drain("React compatibility churn")
+	if err := realm.CollectGarbage(page); err != nil {
+		t.Fatalf("CollectGarbage after React churn: %v", err)
+	}
+
+	queueScript("unmount", `
+		__reactGateObserver.disconnect();
+		globalThis.__reactGateObserver = undefined;
+		globalThis.__reactGateRecords = undefined;
+		globalThis.__reactGateUpdate = undefined;
+		globalThis.__reactGateA = undefined;
+		globalThis.__reactGateC = undefined;
+		ReactDOM.flushSync(() => __reactGateRoot.unmount());
+		globalThis.__reactGateRoot = undefined;
+		if (document.getElementById("root").childNodes.length !== 0) {
+			throw new Error("React compatibility unmount left native children connected");
+		}
+	`)
+	drain("React compatibility unmount")
+	if err := realm.CollectGarbage(page); err != nil {
+		t.Fatalf("CollectGarbage after React compatibility unmount: %v", err)
+	}
+	// React retains one alternate component graph behind its delegated root
+	// surface after unmount. The important churn invariant is that forty keyed
+	// replacements remain bounded to that one graph; Realm teardown below is
+	// the hard zero-ownership boundary.
+	if got := page.Document().Store().LiveLen(); got > frameworkBaselineLiveNodes+24 {
+		t.Fatalf("React compatibility gate retained detached nodes: got %d, framework baseline %d", got, frameworkBaselineLiveNodes)
+	}
+	if profile, err := realm.Profile(); err != nil {
+		t.Fatalf("Profile after React compatibility unmount: %v", err)
+	} else if profile.LiveWrappers > 12 || profile.LiveCallbacks != 0 || profile.EventListeners == 0 {
+		t.Fatalf("React compatibility unmount retained unexpected V8 state: %#v", profile)
+	}
+	if err := page.Close(); err != nil {
+		t.Fatalf("Close React compatibility page: %v", err)
+	}
+	if _, live := engine.LatestRealm(); live {
+		t.Fatal("React compatibility Realm remained registered after teardown")
+	}
+	if ledger := browserRuntime.Ledger().Stats(); ledger.LiveObjects != 0 || ledger.PersistentObjects != 0 {
+		t.Fatalf("Milestone 14 teardown ownership = %#v", ledger)
+	}
+}
+
 func newTestEngine(t *testing.T) *Engine {
 	t.Helper()
 	icuData := os.Getenv("GOSSAMER_V8_ICU_DATA")
