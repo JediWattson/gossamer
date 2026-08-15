@@ -81,6 +81,16 @@ edges without invoking callbacks. Realm scheduling remains outside
 RegionStore. Copy and Promote preserve state, handled status, reactions, and
 shared handler/result aliases.
 
+### BigInt
+
+Native BigInts are immutable canonical sign/magnitude payloads. Magnitudes are
+owned big-endian bytes with no leading zero; zero has an empty magnitude and is
+never negative. The Store supports checked parsing and formatting for bases 2
+through 36, and base 0 parsing for explicit prefixes.
+
+Copy and Promote clone magnitude bytes. Arithmetic and JavaScript coercion are
+interpreter responsibilities rather than RegionStore mutation.
+
 ## Deliberate boundaries
 
 These native payloads are not yet ECMAScript implementations. String

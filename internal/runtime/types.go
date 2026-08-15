@@ -274,6 +274,27 @@ func (context *TaskContext) DrainPromiseReactions(promise memory.Ref) (memory.Pr
 	return context.Realm.store.DrainPromiseReactions(context.Owner, promise)
 }
 
+func (context *TaskContext) NewBigInt(negative bool, magnitude []byte) (memory.Ref, error) {
+	if context == nil || context.Realm == nil {
+		return memory.Ref{}, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.AllocBigInt(context.Owner, context.MemoryRegion, negative, magnitude)
+}
+
+func (context *TaskContext) ParseBigInt(text string, base int) (memory.Ref, error) {
+	if context == nil || context.Realm == nil {
+		return memory.Ref{}, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.ParseBigInt(context.Owner, context.MemoryRegion, text, base)
+}
+
+func (context *TaskContext) DerefBigInt(ref memory.Ref) (memory.BigInt, error) {
+	if context == nil || context.Realm == nil {
+		return memory.BigInt{}, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.DerefBigInt(context.Owner, ref)
+}
+
 func (context *TaskContext) Set(ref memory.Ref, field int, value memory.Value) error {
 	if context == nil || context.Realm == nil {
 		return fmt.Errorf("runtime: nil task context")

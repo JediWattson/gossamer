@@ -33,6 +33,7 @@ var (
 	ErrPromiseSettled        = errors.New("memory: promise is already settled")
 	ErrPromisePending        = errors.New("memory: promise is still pending")
 	ErrPromiseSelfResolution = errors.New("memory: promise cannot resolve to itself")
+	ErrInvalidBigInt         = errors.New("memory: invalid BigInt")
 	ErrObjectReferenced      = errors.New("memory: heap object still has incoming references")
 	ErrCellReferenced        = ErrObjectReferenced
 	ErrRegionReferenced      = errors.New("memory: region still has incoming references")
@@ -53,6 +54,7 @@ type Stats struct {
 	LiveContexts       uint64
 	LiveFunctions      uint64
 	LivePromises       uint64
+	LiveBigInts        uint64
 	LiveBytes          uint64
 	LiveRegions        uint64
 	BulkRegionReleases uint64
@@ -83,6 +85,8 @@ func (kind HeapKind) String() string {
 		return "Function"
 	case HeapPromise:
 		return "Promise"
+	case HeapBigInt:
+		return "BigInt"
 	default:
 		return fmt.Sprintf("HeapKind(%d)", kind)
 	}
@@ -212,7 +216,7 @@ func (store *Store) allocLocked(owner ownership.OwnerID, regionID RegionID, inte
 }
 
 func (store *Store) allocKindLocked(owner ownership.OwnerID, regionID RegionID, kind HeapKind, internal bool) (Ref, error) {
-	if kind < HeapCell || kind > HeapPromise {
+	if kind < HeapCell || kind > HeapBigInt {
 		return Ref{}, fmt.Errorf("%w: heap kind %d", ErrTypeMismatch, kind)
 	}
 	region, err := store.mutableRegionLocked(owner, regionID, internal)
@@ -646,6 +650,8 @@ func (store *Store) recordKindAllocationLocked(kind HeapKind, bytes uint64) {
 		store.stats.LiveFunctions++
 	case HeapPromise:
 		store.stats.LivePromises++
+	case HeapBigInt:
+		store.stats.LiveBigInts++
 	}
 	store.stats.LiveBytes += bytes
 }
@@ -671,6 +677,9 @@ func (store *Store) recordKindFreeLocked(slot *Slot) {
 		store.stats.LiveBytes -= uint64(len(slot.Function.Code))
 	case HeapPromise:
 		store.stats.LivePromises--
+	case HeapBigInt:
+		store.stats.LiveBigInts--
+		store.stats.LiveBytes -= uint64(len(slot.BigInt.Magnitude))
 	}
 }
 
@@ -1139,6 +1148,10 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 			_, copySlot, _ := store.slotLocked(copyRef)
 			copySlot.String = cloneString(sourceSlot.String)
 			store.stats.LiveBytes += uint64(len(copySlot.String.Text))
+		} else if sourceSlot.Kind == HeapBigInt {
+			_, copySlot, _ := store.slotLocked(copyRef)
+			copySlot.BigInt = cloneBigInt(sourceSlot.BigInt)
+			store.stats.LiveBytes += uint64(len(copySlot.BigInt.Magnitude))
 		}
 		mapping[source] = copyRef
 	}
@@ -1236,6 +1249,8 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 					return nil, err
 				}
 			}
+		case HeapBigInt:
+			// Immutable payload was cloned during allocation.
 		default:
 			_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
 			return nil, fmt.Errorf("%w: cannot copy heap kind %d", ErrTypeMismatch, sourceSlot.Kind)

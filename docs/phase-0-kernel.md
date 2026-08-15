@@ -43,7 +43,8 @@ claim(region, object) is either present or absent
 - `internal/runtime/memory` owns typed heap payloads in explicit regions and
   slots. Synthetic Cells exercise indexed mutation; native Strings, Objects,
   sparse Arrays, lexical Contexts, immutable Function descriptors, and
-  explicitly drained Promises are the first concrete payloads.
+  explicitly drained Promises, and canonical BigInts are the first concrete
+  payloads.
 - Freed slots advance their generation and exhausted generations are retired,
   so a stale Ref cannot become valid again.
 - Every mutable physical region has exactly one owner. Published regions are
