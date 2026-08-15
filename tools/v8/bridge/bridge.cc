@@ -6,6 +6,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -61,6 +62,7 @@ constexpr int kEventStateField = 0;
 constexpr int kMutationObserverStateField = 0;
 constexpr int kRangeStateField = 0;
 constexpr int kTraversalStateField = 0;
+constexpr int kSelectionStateField = 0;
 constexpr uint8_t kEventPhaseNone = 0;
 constexpr uint8_t kEventPhaseCapturing = 1;
 constexpr uint8_t kEventPhaseAtTarget = 2;
@@ -254,10 +256,17 @@ struct TraversalState {
   std::vector<WrapperKey> nodes;
   size_t index = 0;
   bool node_iterator = false;
+  bool root_accepted = true;
   uint32_t what_to_show = 0xffffffffu;
   bool pointer_before_reference = true;
+  uint64_t mutation_sequence = 0;
   v8::Global<v8::Object> root_object;
   v8::Global<v8::Value> filter;
+};
+
+struct SelectionState {
+  gossamer_v8_realm *realm = nullptr;
+  v8::Global<v8::Object> range_object;
 };
 
 struct WrapperEntry {
@@ -408,6 +417,7 @@ struct gossamer_v8_realm {
   v8::Global<v8::FunctionTemplate> range_template;
   v8::Global<v8::FunctionTemplate> tree_walker_template;
   v8::Global<v8::FunctionTemplate> node_iterator_template;
+  v8::Global<v8::FunctionTemplate> selection_template;
   v8::Global<v8::FunctionTemplate> node_list_template;
   v8::Global<v8::FunctionTemplate> html_collection_template;
   v8::Global<v8::FunctionTemplate> token_list_template;
@@ -415,6 +425,8 @@ struct gossamer_v8_realm {
   v8::Global<v8::FunctionTemplate> style_template;
   v8::Global<v8::ObjectTemplate> collection_iterator_template;
   v8::Global<v8::Object> document_wrapper;
+  v8::Global<v8::Object> selection_object;
+  SelectionState *selection_state = nullptr;
   const gossamer_v8_host *active_host = nullptr;
   bool sampling = false;
   bool closed = false;
@@ -538,18 +550,24 @@ gossamer_v8_realm *CurrentRealm(v8::Isolate *isolate) {
 constexpr const char *kDOMExceptionPrefix = "__GOSSAMER_DOM_EXCEPTION__:";
 
 int DOMExceptionLegacyCode(const std::string &name) {
+  if (name == "IndexSizeError")
+    return 1;
   if (name == "HierarchyRequestError")
     return 3;
   if (name == "InvalidCharacterError")
     return 5;
   if (name == "NotFoundError")
     return 8;
+  if (name == "NotSupportedError")
+    return 9;
   if (name == "NamespaceError")
     return 14;
   if (name == "InvalidStateError")
     return 11;
   if (name == "SyntaxError")
     return 12;
+  if (name == "InvalidNodeTypeError")
+    return 24;
   return 0;
 }
 
@@ -6343,9 +6361,18 @@ bool RangeBoundaryLimit(gossamer_v8_realm *realm, const WrapperKey &key,
       return false;
     }
     std::free(host_error);
+    v8::Local<v8::String> rendered;
+    if (!v8::String::NewFromUtf8(
+             realm->isolate, value, v8::NewStringType::kNormal,
+             static_cast<int>(std::min<size_t>(
+                 length, static_cast<size_t>(std::numeric_limits<int>::max()))))
+             .ToLocal(&rendered)) {
+      std::free(value);
+      *error = "decoding Range character data failed";
+      return false;
+    }
     std::free(value);
-    *limit = static_cast<uint32_t>(std::min(
-        length, static_cast<size_t>(std::numeric_limits<uint32_t>::max())));
+    *limit = static_cast<uint32_t>(rendered->Length());
     return true;
   }
   std::vector<uint32_t> children;
@@ -6604,65 +6631,29 @@ bool CreateRangeFragment(RangeState *state, bool clone, bool remove,
                          v8::Local<v8::Context> context,
                          v8::Local<v8::Object> *fragment_wrapper,
                          std::string *error) {
-  if (state->start != state->end) {
-    *error = "cross-container Range contents are not implemented";
-    return false;
-  }
-  std::vector<uint32_t> children;
-  if (!ReadChildNodes(state->realm, state->start, false, &children, error))
-    return false;
-  uint32_t start = std::min(state->start_offset,
-                            static_cast<uint32_t>(children.size()));
-  uint32_t end = std::min(state->end_offset,
-                          static_cast<uint32_t>(children.size()));
-  if (end < start)
-    end = start;
   uint64_t fragment_document = 0;
   uint32_t fragment_node = 0;
   char *host_error = nullptr;
-  if ((clone || !remove) &&
-      state->realm->active_host->create_document_fragment(
-          state->realm->active_host->execution_id, &fragment_document,
-          &fragment_node, &host_error) == 0) {
+  uint8_t operation = clone ? 1 : (remove ? 3 : 2);
+  if (state->realm->active_host->range_contents(
+          state->realm->active_host->execution_id, state->start.document,
+          state->start.node, static_cast<int32_t>(state->start_offset),
+          state->end.document, state->end.node,
+          static_cast<int32_t>(state->end_offset), operation,
+          &fragment_document, &fragment_node, &host_error) == 0) {
     *error = TakeCString(host_error);
     if (error->empty())
-      *error = "creating Range fragment failed";
+      *error = "applying Range contents failed";
     return false;
   }
   std::free(host_error);
-  for (uint32_t index = start; index < end; ++index) {
-    uint64_t node_document = state->start.document;
-    uint32_t node = children[index];
-    if (clone) {
-      host_error = nullptr;
-      if (state->realm->active_host->clone_node(
-              state->realm->active_host->execution_id, state->start.document,
-              node, 1, &node_document, &node, &host_error) == 0) {
-        *error = TakeCString(host_error);
-        return false;
-      }
-      std::free(host_error);
-    }
-    host_error = nullptr;
-    if (clone || !remove) {
-      if (state->realm->active_host->append_child(
-              state->realm->active_host->execution_id, fragment_document,
-              fragment_node, node_document, node, &host_error) == 0) {
-        *error = TakeCString(host_error);
-        return false;
-      }
-    } else if (state->realm->active_host->remove_child(
-                   state->realm->active_host->execution_id,
-                   state->start.document, state->start.node,
-                   state->start.document, node, &host_error) == 0) {
-      *error = TakeCString(host_error);
-      return false;
-    }
-    std::free(host_error);
-  }
-  if (!clone)
+  if (!clone) {
+    state->end = state->start;
     state->end_offset = state->start_offset;
-  if (clone || !remove) {
+    state->end_object.Reset(state->realm->isolate,
+                            state->start_object.Get(state->realm->isolate));
+  }
+  if (!remove) {
     if (!GetOrCreateNodeWrapper(
              state->realm, context,
              WrapperKey{fragment_document, fragment_node}, error)
@@ -6701,23 +6692,57 @@ void RangeInsertNode(const v8::FunctionCallbackInfo<v8::Value> &info) {
       ThrowTypeError(isolate, "insertNode requires a native Node");
     return;
   }
-  std::vector<uint32_t> children;
   std::string error;
-  if (!ReadChildNodes(state->realm, state->start, false, &children, &error)) {
+  NodeMetadata metadata;
+  if (!ReadNodeMetadata(state->realm, state->start, &metadata, &error)) {
     ThrowError(isolate, error);
     return;
   }
   char *host_error = nullptr;
-  int ok = state->start_offset < children.size()
-               ? state->realm->active_host->insert_before(
-                     state->realm->active_host->execution_id,
-                     state->start.document, state->start.node, node.document,
-                     node.node, state->start.document,
-                     children[state->start_offset], &host_error)
-               : state->realm->active_host->append_child(
-                     state->realm->active_host->execution_id,
-                     state->start.document, state->start.node, node.document,
-                     node.node, &host_error);
+  int ok = 0;
+  if (metadata.type == 3) {
+    uint64_t tail_document = 0;
+    uint32_t tail_node = 0;
+    if (state->realm->active_host->split_text(
+            state->realm->active_host->execution_id, state->start.document,
+            state->start.node, static_cast<int32_t>(state->start_offset),
+            &tail_document, &tail_node, &host_error) == 0) {
+      error = TakeCString(host_error);
+      ThrowError(isolate, error.empty() ? "Range text split failed" : error);
+      return;
+    }
+    std::free(host_error);
+    WrapperKey parent;
+    bool found = false;
+    if (!RangeParent(state->realm, WrapperKey{tail_document, tail_node},
+                     &parent, &found, &error) ||
+        !found) {
+      ThrowDOMException(isolate, "HierarchyRequestError",
+                        error.empty() ? "Range text boundary has no parent"
+                                      : error);
+      return;
+    }
+    host_error = nullptr;
+    ok = state->realm->active_host->insert_before(
+        state->realm->active_host->execution_id, parent.document, parent.node,
+        node.document, node.node, tail_document, tail_node, &host_error);
+  } else {
+    std::vector<uint32_t> children;
+    if (!ReadChildNodes(state->realm, state->start, false, &children, &error)) {
+      ThrowError(isolate, error);
+      return;
+    }
+    ok = state->start_offset < children.size()
+             ? state->realm->active_host->insert_before(
+                   state->realm->active_host->execution_id,
+                   state->start.document, state->start.node, node.document,
+                   node.node, state->start.document,
+                   children[state->start_offset], &host_error)
+             : state->realm->active_host->append_child(
+                   state->realm->active_host->execution_id,
+                   state->start.document, state->start.node, node.document,
+                   node.node, &host_error);
+  }
   if (ok == 0) {
     error = TakeCString(host_error);
     ThrowError(isolate, error.empty() ? "Range insertNode failed" : error);
@@ -6727,6 +6752,306 @@ void RangeInsertNode(const v8::FunctionCallbackInfo<v8::Value> &info) {
 }
 
 void RangeDetach(const v8::FunctionCallbackInfo<v8::Value> &) {}
+
+SelectionState *ReadSelectionState(v8::Isolate *isolate,
+                                   v8::Local<v8::Object> receiver) {
+  if (receiver.IsEmpty() || receiver->InternalFieldCount() != 1) {
+    ThrowTypeError(isolate, "Selection receiver is invalid");
+    return nullptr;
+  }
+  v8::Local<v8::Data> data = receiver->GetInternalField(kSelectionStateField);
+  if (!data->IsValue() || !data.As<v8::Value>()->IsExternal()) {
+    ThrowTypeError(isolate, "Selection lost its native state");
+    return nullptr;
+  }
+  return static_cast<SelectionState *>(
+      data.As<v8::Value>().As<v8::External>()->Value(
+          v8::kExternalPointerTypeTagDefault));
+}
+
+RangeState *SelectionRange(SelectionState *selection) {
+  if (selection == nullptr || selection->range_object.IsEmpty())
+    return nullptr;
+  v8::Local<v8::Object> object =
+      selection->range_object.Get(selection->realm->isolate);
+  if (object.IsEmpty() || object->InternalFieldCount() != 1)
+    return nullptr;
+  v8::Local<v8::Data> data = object->GetInternalField(kRangeStateField);
+  if (!data->IsValue() || !data.As<v8::Value>()->IsExternal())
+    return nullptr;
+  return static_cast<RangeState *>(
+      data.As<v8::Value>().As<v8::External>()->Value(
+          v8::kExternalPointerTypeTagDefault));
+}
+
+bool SetSelectionRange(SelectionState *selection, const RangeState &source,
+                       v8::Local<v8::Context> context, std::string *error) {
+  v8::Local<v8::Object> range;
+  if (!NewRangeObject(selection->realm, context, source, &range, error))
+    return false;
+  selection->range_object.Reset(selection->realm->isolate, range);
+  return true;
+}
+
+void SelectionPropertyFunctionGetter(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  SelectionState *selection = ReadSelectionState(isolate, info.This());
+  if (selection == nullptr)
+    return;
+  int property = info.Data().As<v8::Int32>()->Value();
+  RangeState *range = SelectionRange(selection);
+  if (property == 6) {
+    info.GetReturnValue().Set(range == nullptr ? 0 : 1);
+    return;
+  }
+  if (property == 5) {
+    info.GetReturnValue().Set(
+        range == nullptr ||
+        (range->start == range->end &&
+         range->start_offset == range->end_offset));
+    return;
+  }
+  if (property == 7) {
+    const char *type = range == nullptr
+                           ? "None"
+                           : (range->start == range->end &&
+                                      range->start_offset == range->end_offset
+                                  ? "Caret"
+                                  : "Range");
+    info.GetReturnValue().Set(
+        v8::String::NewFromUtf8(isolate, type).ToLocalChecked());
+    return;
+  }
+  if (property == 2 || property == 4) {
+    uint32_t offset =
+        range == nullptr ? 0
+                         : (property == 2 ? range->start_offset
+                                          : range->end_offset);
+    info.GetReturnValue().Set(v8::Integer::NewFromUnsigned(isolate, offset));
+    return;
+  }
+  if (range == nullptr) {
+    info.GetReturnValue().Set(v8::Null(isolate));
+    return;
+  }
+  WrapperKey key = property == 1 ? range->start : range->end;
+  std::string error;
+  v8::Local<v8::Object> wrapper;
+  if (!GetOrCreateNodeWrapper(selection->realm, isolate->GetCurrentContext(),
+                              key, &error)
+           .ToLocal(&wrapper)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  info.GetReturnValue().Set(wrapper);
+}
+
+void SelectionGetRangeAt(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  SelectionState *selection = ReadSelectionState(isolate, info.This());
+  uint32_t index = 0;
+  if (selection == nullptr || info.Length() == 0 ||
+      !info[0]->Uint32Value(isolate->GetCurrentContext()).To(&index))
+    return;
+  if (index != 0 || selection->range_object.IsEmpty()) {
+    ThrowDOMException(isolate, "IndexSizeError",
+                      "Selection range index is out of bounds");
+    return;
+  }
+  info.GetReturnValue().Set(selection->range_object.Get(isolate));
+}
+
+void SelectionAddRange(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  SelectionState *selection = ReadSelectionState(isolate, info.This());
+  if (selection == nullptr || info.Length() == 0 || !info[0]->IsObject()) {
+    if (selection != nullptr)
+      ThrowTypeError(isolate, "addRange requires a native Range");
+    return;
+  }
+  v8::Local<v8::Object> object = info[0].As<v8::Object>();
+  if (!selection->realm->range_template.Get(isolate)->HasInstance(object) ||
+      object->InternalFieldCount() != 1 ||
+      !object->GetInternalField(kRangeStateField)->IsValue() ||
+      !object->GetInternalField(kRangeStateField)
+           .As<v8::Value>()
+           ->IsExternal()) {
+    ThrowTypeError(isolate, "addRange requires a native Range");
+    return;
+  }
+  selection->range_object.Reset(isolate, object);
+}
+
+void SelectionRemoveAllRanges(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  SelectionState *selection =
+      ReadSelectionState(info.GetIsolate(), info.This());
+  if (selection != nullptr)
+    selection->range_object.Reset();
+}
+
+void SelectionCollapse(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  SelectionState *selection = ReadSelectionState(isolate, info.This());
+  if (selection == nullptr)
+    return;
+  if (info.Length() == 0 || info[0]->IsNull()) {
+    selection->range_object.Reset();
+    return;
+  }
+  WrapperKey key;
+  uint32_t offset = 0;
+  if (!info[0]->IsObject() ||
+      !ReadWrapperKey(info[0].As<v8::Object>(), &key) ||
+      (info.Length() > 1 &&
+       !info[1]->Uint32Value(isolate->GetCurrentContext()).To(&offset))) {
+    ThrowTypeError(isolate, "collapse requires a native Node and offset");
+    return;
+  }
+  RangeState source;
+  source.realm = selection->realm;
+  std::string error;
+  if (!SetRangeBoundary(&source, true, info[0].As<v8::Object>(), key, offset,
+                        &error) ||
+      !SetRangeBoundary(&source, false, info[0].As<v8::Object>(), key, offset,
+                        &error) ||
+      !SetSelectionRange(selection, source, isolate->GetCurrentContext(),
+                         &error)) {
+    ThrowDOMException(isolate, "IndexSizeError", error);
+  }
+}
+
+void SelectionCollapseToEdge(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  SelectionState *selection = ReadSelectionState(isolate, info.This());
+  RangeState *range = SelectionRange(selection);
+  if (selection == nullptr || range == nullptr) {
+    if (selection != nullptr)
+      ThrowDOMException(isolate, "InvalidStateError", "Selection is empty");
+    return;
+  }
+  bool to_start = info.Data()->IsTrue();
+  if (to_start) {
+    range->end = range->start;
+    range->end_offset = range->start_offset;
+    range->end_object.Reset(isolate, range->start_object.Get(isolate));
+  } else {
+    range->start = range->end;
+    range->start_offset = range->end_offset;
+    range->start_object.Reset(isolate, range->end_object.Get(isolate));
+  }
+}
+
+void SelectionSelectAllChildren(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  SelectionState *selection = ReadSelectionState(isolate, info.This());
+  WrapperKey key;
+  if (selection == nullptr || info.Length() == 0 || !info[0]->IsObject() ||
+      !ReadWrapperKey(info[0].As<v8::Object>(), &key)) {
+    if (selection != nullptr)
+      ThrowTypeError(isolate, "selectAllChildren requires a native Node");
+    return;
+  }
+  uint32_t limit = 0;
+  std::string error;
+  if (!RangeBoundaryLimit(selection->realm, key, &limit, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  RangeState source;
+  source.realm = selection->realm;
+  source.start = source.end = key;
+  source.start_offset = 0;
+  source.end_offset = limit;
+  source.start_object.Reset(isolate, info[0].As<v8::Object>());
+  source.end_object.Reset(isolate, info[0].As<v8::Object>());
+  if (!SetSelectionRange(selection, source, isolate->GetCurrentContext(),
+                         &error))
+    ThrowError(isolate, error);
+}
+
+void SelectionDeleteFromDocument(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  SelectionState *selection =
+      ReadSelectionState(info.GetIsolate(), info.This());
+  RangeState *range = SelectionRange(selection);
+  if (selection == nullptr || range == nullptr)
+    return;
+  v8::Local<v8::Object> unused;
+  std::string error;
+  if (!CreateRangeFragment(range, false, true,
+                           info.GetIsolate()->GetCurrentContext(), &unused,
+                           &error))
+    ThrowDOMException(info.GetIsolate(), "InvalidStateError", error);
+}
+
+void SelectionToString(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  SelectionState *selection = ReadSelectionState(isolate, info.This());
+  RangeState *range = SelectionRange(selection);
+  if (selection == nullptr || range == nullptr) {
+    info.GetReturnValue().Set(v8::String::Empty(isolate));
+    return;
+  }
+  v8::Local<v8::Object> fragment;
+  std::string error;
+  if (!CreateRangeFragment(range, true, false, isolate->GetCurrentContext(),
+                           &fragment, &error)) {
+    ThrowDOMException(isolate, "InvalidStateError", error);
+    return;
+  }
+  WrapperKey key;
+  if (!ReadWrapperKey(fragment, &key))
+    return;
+  char *value = nullptr;
+  size_t length = 0;
+  char *host_error = nullptr;
+  if (selection->realm->active_host->text_content(
+          selection->realm->active_host->execution_id, key.document, key.node,
+          &value, &length, &host_error) == 0) {
+    error = TakeCString(host_error);
+    std::free(value);
+    ThrowError(isolate, error.empty() ? "reading Selection text failed"
+                                      : error);
+    return;
+  }
+  std::free(host_error);
+  v8::Local<v8::String> rendered;
+  if (v8::String::NewFromUtf8(
+          isolate, value, v8::NewStringType::kNormal,
+          static_cast<int>(std::min<size_t>(
+              length, static_cast<size_t>(std::numeric_limits<int>::max()))))
+          .ToLocal(&rendered))
+    info.GetReturnValue().Set(rendered);
+  std::free(value);
+}
+
+void GetSelection(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  if (realm->selection_object.IsEmpty()) {
+    v8::Local<v8::Object> object;
+    if (!realm->selection_template.Get(isolate)
+             ->InstanceTemplate()
+             ->NewInstance(isolate->GetCurrentContext())
+             .ToLocal(&object)) {
+      ThrowError(isolate, "V8 failed to allocate a Selection");
+      return;
+    }
+    auto state = std::make_unique<SelectionState>();
+    state->realm = realm;
+    object->SetInternalField(
+        kSelectionStateField,
+        v8::External::New(isolate, state.get(),
+                          v8::kExternalPointerTypeTagDefault));
+    realm->selection_state = state.release();
+    realm->selection_object.Reset(isolate, object);
+  }
+  info.GetReturnValue().Set(realm->selection_object.Get(isolate));
+}
 
 void DocumentCreateRange(const v8::FunctionCallbackInfo<v8::Value> &info) {
   v8::Isolate *isolate = info.GetIsolate();
@@ -6777,20 +7102,20 @@ void TraversalCollected(const v8::WeakCallbackInfo<TraversalWeakData> &info) {
 }
 
 bool TraversalAccepts(TraversalState *state, const WrapperKey &key,
-                      v8::Local<v8::Context> context, bool *accept,
+                      v8::Local<v8::Context> context, int32_t *decision,
                       std::string *error) {
   NodeMetadata metadata;
   if (!ReadNodeMetadata(state->realm, key, &metadata, error))
     return false;
   if (metadata.type == 0 || metadata.type > 32 ||
       (state->what_to_show & (1u << (metadata.type - 1))) == 0) {
-    *accept = false;
+    *decision = 3;
     return true;
   }
   if (state->filter.IsEmpty() ||
       state->filter.Get(state->realm->isolate)->IsNull() ||
       state->filter.Get(state->realm->isolate)->IsUndefined()) {
-    *accept = true;
+    *decision = 1;
     return true;
   }
   v8::Local<v8::Value> filter = state->filter.Get(state->realm->isolate);
@@ -6822,10 +7147,13 @@ bool TraversalAccepts(TraversalState *state, const WrapperKey &key,
   v8::Local<v8::Value> result;
   if (!function->Call(context, receiver, 1, arguments).ToLocal(&result))
     return false;
-  int32_t decision = 0;
-  if (!result->Int32Value(context).To(&decision))
+  int32_t result_decision = 0;
+  if (!result->Int32Value(context).To(&result_decision))
     return false;
-  *accept = decision == 1;
+  *decision = result_decision == 1 || result_decision == 2 ||
+                      result_decision == 3
+                  ? result_decision
+                  : 3;
   return true;
 }
 
@@ -6834,29 +7162,74 @@ bool BuildTraversalNodes(TraversalState *state,
                          std::string *error) {
   state->nodes.clear();
   state->nodes.push_back(state->root);
-  std::vector<WrapperKey> stack;
+  state->root_accepted = true;
+  if (state->node_iterator) {
+    int32_t root_decision = 3;
+    if (!TraversalAccepts(state, state->root, context, &root_decision, error))
+      return false;
+    state->root_accepted = root_decision == 1;
+  }
+  std::function<bool(const WrapperKey &)> visit =
+      [&](const WrapperKey &current) {
+        int32_t decision = 3;
+        if (!TraversalAccepts(state, current, context, &decision, error))
+          return false;
+        if (decision == 1)
+          state->nodes.push_back(current);
+        if (decision == 2 && !state->node_iterator)
+          return true;
+        std::vector<uint32_t> children;
+        if (!ReadChildNodes(state->realm, current, false, &children, error))
+          return false;
+        for (uint32_t child : children) {
+          if (!visit(WrapperKey{current.document, child}))
+            return false;
+        }
+        return true;
+      };
   std::vector<uint32_t> root_children;
   if (!ReadChildNodes(state->realm, state->root, false, &root_children,
                       error))
     return false;
-  for (auto iterator = root_children.rbegin(); iterator != root_children.rend();
-       ++iterator)
-    stack.push_back(WrapperKey{state->root.document, *iterator});
-  while (!stack.empty()) {
-    WrapperKey current = stack.back();
-    stack.pop_back();
-    bool accept = false;
-    if (!TraversalAccepts(state, current, context, &accept, error))
+  for (uint32_t child : root_children) {
+    if (!visit(WrapperKey{state->root.document, child}))
       return false;
-    if (accept)
-      state->nodes.push_back(current);
-    std::vector<uint32_t> children;
-    if (!ReadChildNodes(state->realm, current, false, &children, error))
-      return false;
-    for (auto iterator = children.rbegin(); iterator != children.rend();
-         ++iterator)
-      stack.push_back(WrapperKey{current.document, *iterator});
   }
+  return CurrentMutationSequence(state->realm, &state->mutation_sequence,
+                                 error);
+}
+
+bool RefreshTraversalNodes(TraversalState *state,
+                           v8::Local<v8::Context> context,
+                           std::string *error) {
+  uint64_t sequence = 0;
+  if (!CurrentMutationSequence(state->realm, &sequence, error))
+    return false;
+  if (sequence == state->mutation_sequence)
+    return true;
+  std::vector<WrapperKey> old_nodes = state->nodes;
+  size_t old_index = state->index;
+  WrapperKey current = old_nodes.empty()
+                           ? state->root
+                           : old_nodes[std::min(old_index, old_nodes.size() - 1)];
+  if (!BuildTraversalNodes(state, context, error))
+    return false;
+  auto retained = std::find(state->nodes.begin(), state->nodes.end(), current);
+  if (retained != state->nodes.end()) {
+    state->index = static_cast<size_t>(retained - state->nodes.begin());
+    return true;
+  }
+  for (size_t cursor = std::min(old_index, old_nodes.size()); cursor > 0;
+       --cursor) {
+    retained = std::find(state->nodes.begin(), state->nodes.end(),
+                         old_nodes[cursor - 1]);
+    if (retained != state->nodes.end()) {
+      state->index = static_cast<size_t>(retained - state->nodes.begin());
+      return true;
+    }
+  }
+  state->index = 0;
+  state->pointer_before_reference = true;
   return true;
 }
 
@@ -6926,6 +7299,12 @@ void TraversalPropertyFunctionGetter(
   TraversalState *state = ReadTraversalState(isolate, info.This());
   if (state == nullptr)
     return;
+  std::string error;
+  if (!RefreshTraversalNodes(state, isolate->GetCurrentContext(), &error)) {
+    if (!isolate->HasPendingException())
+      ThrowError(isolate, error);
+    return;
+  }
   int property = info.Data().As<v8::Int32>()->Value();
   if (property == 3) {
     info.GetReturnValue().Set(state->what_to_show);
@@ -6942,7 +7321,6 @@ void TraversalPropertyFunctionGetter(
     return;
   }
   WrapperKey key = property == 1 ? state->root : state->nodes[state->index];
-  std::string error;
   v8::Local<v8::Object> wrapper;
   if (!GetOrCreateNodeWrapper(state->realm, isolate->GetCurrentContext(), key,
                               &error)
@@ -6961,6 +7339,12 @@ void TreeWalkerCurrentNodeSetter(
   if (state == nullptr || info.Length() == 0 || !info[0]->IsObject() ||
       !ReadWrapperKey(info[0].As<v8::Object>(), &key))
     return;
+  std::string error;
+  if (!RefreshTraversalNodes(state, isolate->GetCurrentContext(), &error)) {
+    if (!isolate->HasPendingException())
+      ThrowError(isolate, error);
+    return;
+  }
   auto found = std::find(state->nodes.begin(), state->nodes.end(), key);
   if (found == state->nodes.end()) {
     ThrowDOMException(isolate, "NotSupportedError",
@@ -6975,11 +7359,24 @@ void TraversalStep(const v8::FunctionCallbackInfo<v8::Value> &info) {
   TraversalState *state = ReadTraversalState(isolate, info.This());
   if (state == nullptr || state->nodes.empty())
     return;
+  std::string error;
+  if (!RefreshTraversalNodes(state, isolate->GetCurrentContext(), &error)) {
+    if (!isolate->HasPendingException())
+      ThrowError(isolate, error);
+    return;
+  }
   bool forward = info.Data()->IsTrue();
   if (state->node_iterator) {
     if (forward) {
       if (state->pointer_before_reference) {
         state->pointer_before_reference = false;
+        if (state->index == 0 && !state->root_accepted) {
+          if (state->nodes.size() == 1) {
+            info.GetReturnValue().Set(v8::Null(isolate));
+            return;
+          }
+          state->index = 1;
+        }
       } else if (state->index + 1 < state->nodes.size()) {
         state->index++;
       } else {
@@ -7009,7 +7406,6 @@ void TraversalStep(const v8::FunctionCallbackInfo<v8::Value> &info) {
     }
     state->index--;
   }
-  std::string error;
   v8::Local<v8::Object> wrapper;
   if (!GetOrCreateNodeWrapper(state->realm, isolate->GetCurrentContext(),
                               state->nodes[state->index], &error)
@@ -7020,74 +7416,129 @@ void TraversalStep(const v8::FunctionCallbackInfo<v8::Value> &info) {
   info.GetReturnValue().Set(wrapper);
 }
 
+bool LogicalTraversalParent(TraversalState *state, const WrapperKey &node,
+                            WrapperKey *parent, bool *found,
+                            std::string *error) {
+  *found = false;
+  if (node == state->root)
+    return true;
+  WrapperKey cursor = node;
+  for (;;) {
+    WrapperKey candidate;
+    bool parent_found = false;
+    if (!RangeParent(state->realm, cursor, &candidate, &parent_found, error))
+      return false;
+    if (!parent_found)
+      return true;
+    if (candidate == state->root ||
+        std::find(state->nodes.begin(), state->nodes.end(), candidate) !=
+            state->nodes.end()) {
+      *parent = candidate;
+      *found = true;
+      return true;
+    }
+    cursor = candidate;
+  }
+}
+
 void TreeWalkerRelation(const v8::FunctionCallbackInfo<v8::Value> &info) {
   v8::Isolate *isolate = info.GetIsolate();
   TraversalState *state = ReadTraversalState(isolate, info.This());
   if (state == nullptr)
     return;
+  std::string error;
+  if (!RefreshTraversalNodes(state, isolate->GetCurrentContext(), &error)) {
+    if (!isolate->HasPendingException())
+      ThrowError(isolate, error);
+    return;
+  }
   int relation = info.Data().As<v8::Int32>()->Value();
   WrapperKey current = state->nodes[state->index];
   WrapperKey candidate;
   bool found = false;
-  std::string error;
   if (relation == 1) {
-    if (!RangeParent(state->realm, current, &candidate, &found, &error)) {
+    if (!LogicalTraversalParent(state, current, &candidate, &found, &error)) {
       ThrowError(isolate, error);
       return;
+    }
+  } else if (relation == 2 || relation == 3) {
+    for (const WrapperKey &node : state->nodes) {
+      if (node == current)
+        continue;
+      WrapperKey logical_parent;
+      bool parent_found = false;
+      if (!LogicalTraversalParent(state, node, &logical_parent, &parent_found,
+                                  &error)) {
+        ThrowError(isolate, error);
+        return;
+      }
+      if (parent_found && logical_parent == current) {
+        candidate = node;
+        found = true;
+        if (relation == 2)
+          break;
+      }
     }
   } else {
-    WrapperKey parent;
+    WrapperKey logical_parent;
     bool parent_found = false;
-    if (!RangeParent(state->realm, current, &parent, &parent_found, &error)) {
+    if (!LogicalTraversalParent(state, current, &logical_parent, &parent_found,
+                                &error)) {
       ThrowError(isolate, error);
       return;
     }
-    WrapperKey scope = (relation == 2 || relation == 3) ? current : parent;
-    if ((relation == 4 || relation == 5) && !parent_found) {
-      info.GetReturnValue().Set(v8::Null(isolate));
-      return;
-    }
-    std::vector<uint32_t> children;
-    if (!ReadChildNodes(state->realm, scope, false, &children, &error)) {
-      ThrowError(isolate, error);
-      return;
-    }
-    if (relation == 2 || relation == 3) {
-      if (!children.empty()) {
-        candidate = WrapperKey{scope.document,
-                               relation == 2 ? children.front()
-                                             : children.back()};
-        found = true;
-      }
-    } else {
-      auto position = std::find(children.begin(), children.end(), current.node);
-      if (position != children.end()) {
-        if (relation == 4 && position != children.begin()) {
-          candidate = WrapperKey{parent.document, *(position - 1)};
+    WrapperKey previous;
+    bool previous_found = false;
+    bool saw_current = false;
+    if (parent_found) {
+      for (const WrapperKey &node : state->nodes) {
+        WrapperKey node_parent;
+        bool node_parent_found = false;
+        if (!LogicalTraversalParent(state, node, &node_parent,
+                                    &node_parent_found, &error)) {
+          ThrowError(isolate, error);
+          return;
+        }
+        if (!node_parent_found || node_parent != logical_parent)
+          continue;
+        if (node == current) {
+          if (relation == 4 && previous_found) {
+            candidate = previous;
+            found = true;
+          }
+          saw_current = true;
+          continue;
+        }
+        if (relation == 5 && saw_current) {
+          candidate = node;
           found = true;
-        } else if (relation == 5 && position + 1 != children.end()) {
-          candidate = WrapperKey{parent.document, *(position + 1)};
-          found = true;
+          break;
+        }
+        if (!saw_current) {
+          previous = node;
+          previous_found = true;
         }
       }
     }
   }
-  if (found) {
-    auto position = std::find(state->nodes.begin(), state->nodes.end(), candidate);
-    if (position != state->nodes.end()) {
-      state->index = static_cast<size_t>(position - state->nodes.begin());
-      v8::Local<v8::Object> wrapper;
-      if (!GetOrCreateNodeWrapper(state->realm, isolate->GetCurrentContext(),
-                                  candidate, &error)
-               .ToLocal(&wrapper)) {
-        ThrowError(isolate, error);
-        return;
-      }
-      info.GetReturnValue().Set(wrapper);
-      return;
-    }
+  if (!found) {
+    info.GetReturnValue().Set(v8::Null(isolate));
+    return;
   }
-  info.GetReturnValue().Set(v8::Null(isolate));
+  auto position = std::find(state->nodes.begin(), state->nodes.end(), candidate);
+  if (position == state->nodes.end()) {
+    info.GetReturnValue().Set(v8::Null(isolate));
+    return;
+  }
+  state->index = static_cast<size_t>(position - state->nodes.begin());
+  v8::Local<v8::Object> wrapper;
+  if (!GetOrCreateNodeWrapper(state->realm, isolate->GetCurrentContext(),
+                              candidate, &error)
+           .ToLocal(&wrapper)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  info.GetReturnValue().Set(wrapper);
 }
 
 void NodeIteratorDetach(const v8::FunctionCallbackInfo<v8::Value> &) {}
@@ -7785,6 +8236,8 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
       v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
   v8::Local<v8::FunctionTemplate> node_iterator_template =
       v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
+  v8::Local<v8::FunctionTemplate> selection_template =
+      v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
   v8::Local<v8::FunctionTemplate> node_list_template =
       v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
   v8::Local<v8::FunctionTemplate> html_collection_template =
@@ -7826,12 +8279,15 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
       v8::String::NewFromUtf8Literal(isolate, "DOMException"),
       static_cast<v8::PropertyAttribute>(v8::ReadOnly | v8::DontEnum));
   for (const auto &constant :
-       {std::pair<const char *, int>{"HIERARCHY_REQUEST_ERR", 3},
+       {std::pair<const char *, int>{"INDEX_SIZE_ERR", 1},
+        {"HIERARCHY_REQUEST_ERR", 3},
         {"INVALID_CHARACTER_ERR", 5},
         {"NOT_FOUND_ERR", 8},
+        {"NOT_SUPPORTED_ERR", 9},
         {"INVALID_STATE_ERR", 11},
         {"SYNTAX_ERR", 12},
-        {"NAMESPACE_ERR", 14}}) {
+        {"NAMESPACE_ERR", 14},
+        {"INVALID_NODE_TYPE_ERR", 24}}) {
     dom_exception_template->Set(
         v8::String::NewFromUtf8(isolate, constant.first).ToLocalChecked(),
         v8::Integer::New(isolate, constant.second),
@@ -7880,6 +8336,8 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
       v8::String::NewFromUtf8Literal(isolate, "TreeWalker"));
   node_iterator_template->SetClassName(
       v8::String::NewFromUtf8Literal(isolate, "NodeIterator"));
+  selection_template->SetClassName(
+      v8::String::NewFromUtf8Literal(isolate, "Selection"));
   node_list_template->SetClassName(
       v8::String::NewFromUtf8Literal(isolate, "NodeList"));
   html_collection_template->SetClassName(
@@ -8056,6 +8514,51 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   node_iterator_template->PrototypeTemplate()->Set(
       isolate, "detach",
       v8::FunctionTemplate::New(isolate, NodeIteratorDetach));
+  selection_template->InstanceTemplate()->SetInternalFieldCount(1);
+  for (const auto &property :
+       {std::pair<const char *, int>{"anchorNode", 1}, {"anchorOffset", 2},
+        {"focusNode", 3}, {"focusOffset", 4}, {"isCollapsed", 5},
+        {"rangeCount", 6}, {"type", 7}}) {
+    selection_template->PrototypeTemplate()->SetAccessorProperty(
+        v8::String::NewFromUtf8(isolate, property.first).ToLocalChecked(),
+        v8::FunctionTemplate::New(
+            isolate, SelectionPropertyFunctionGetter,
+            v8::Integer::New(isolate, property.second)));
+  }
+  selection_template->PrototypeTemplate()->Set(
+      isolate, "getRangeAt",
+      v8::FunctionTemplate::New(isolate, SelectionGetRangeAt));
+  selection_template->PrototypeTemplate()->Set(
+      isolate, "addRange",
+      v8::FunctionTemplate::New(isolate, SelectionAddRange));
+  selection_template->PrototypeTemplate()->Set(
+      isolate, "removeAllRanges",
+      v8::FunctionTemplate::New(isolate, SelectionRemoveAllRanges));
+  selection_template->PrototypeTemplate()->Set(
+      isolate, "empty",
+      v8::FunctionTemplate::New(isolate, SelectionRemoveAllRanges));
+  selection_template->PrototypeTemplate()->Set(
+      isolate, "collapse", v8::FunctionTemplate::New(isolate, SelectionCollapse));
+  selection_template->PrototypeTemplate()->Set(
+      isolate, "setPosition",
+      v8::FunctionTemplate::New(isolate, SelectionCollapse));
+  selection_template->PrototypeTemplate()->Set(
+      isolate, "collapseToStart",
+      v8::FunctionTemplate::New(isolate, SelectionCollapseToEdge,
+                                v8::True(isolate)));
+  selection_template->PrototypeTemplate()->Set(
+      isolate, "collapseToEnd",
+      v8::FunctionTemplate::New(isolate, SelectionCollapseToEdge,
+                                v8::False(isolate)));
+  selection_template->PrototypeTemplate()->Set(
+      isolate, "selectAllChildren",
+      v8::FunctionTemplate::New(isolate, SelectionSelectAllChildren));
+  selection_template->PrototypeTemplate()->Set(
+      isolate, "deleteFromDocument",
+      v8::FunctionTemplate::New(isolate, SelectionDeleteFromDocument));
+  selection_template->PrototypeTemplate()->Set(
+      isolate, "toString",
+      v8::FunctionTemplate::New(isolate, SelectionToString));
 
   auto facade_data = [isolate](FacadeKind kind) {
     return v8::Integer::New(isolate, static_cast<int>(kind));
@@ -8612,6 +9115,8 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
       isolate, "createNodeIterator",
       v8::FunctionTemplate::New(isolate, DocumentCreateTraversal,
                                 v8::True(isolate)));
+  document_prototype->Set(
+      isolate, "getSelection", v8::FunctionTemplate::New(isolate, GetSelection));
 
   install_parent_node_surface(
       document_fragment_template->PrototypeTemplate());
@@ -8871,6 +9376,7 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   realm->range_template.Reset(isolate, range_template);
   realm->tree_walker_template.Reset(isolate, tree_walker_template);
   realm->node_iterator_template.Reset(isolate, node_iterator_template);
+  realm->selection_template.Reset(isolate, selection_template);
 
   v8::Local<v8::ObjectTemplate> style_prototype =
       style_template->PrototypeTemplate();
@@ -8933,13 +9439,15 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   v8::Local<v8::Function> set_timeout;
   v8::Local<v8::Function> clear_timeout;
   v8::Local<v8::Function> get_computed_style;
+  v8::Local<v8::Function> get_selection;
   if (!v8::Function::New(context, QueueMicrotaskCallback)
            .ToLocal(&queue_microtask) ||
       !v8::Function::New(context, SetTimeoutCallback).ToLocal(&set_timeout) ||
       !v8::Function::New(context, ClearTimeoutCallback)
            .ToLocal(&clear_timeout) ||
       !v8::Function::New(context, GetComputedStyle)
-           .ToLocal(&get_computed_style)) {
+           .ToLocal(&get_computed_style) ||
+      !v8::Function::New(context, GetSelection).ToLocal(&get_selection)) {
     return false;
   }
   v8::Local<v8::Object> global = context->Global();
@@ -8999,6 +9507,7 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
          expose_interface("Range", range_template) &&
          expose_interface("TreeWalker", tree_walker_template) &&
          expose_interface("NodeIterator", node_iterator_template) &&
+         expose_interface("Selection", selection_template) &&
          expose_interface("Node", node_template) &&
          expose_interface("Element", element_template) &&
          expose_interface("HTMLElement", html_element_template) &&
@@ -9053,6 +9562,11 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
                    v8::String::NewFromUtf8Literal(isolate,
                                                   "getComputedStyle"),
                    get_computed_style)
+             .FromMaybe(false) &&
+         global
+             ->Set(context,
+                   v8::String::NewFromUtf8Literal(isolate, "getSelection"),
+                   get_selection)
              .FromMaybe(false);
 }
 
@@ -9242,6 +9756,12 @@ void ClearRealmHandles(gossamer_v8_realm *realm) {
     delete observer;
   }
   realm->mutation_observers.clear();
+  if (realm->selection_state != nullptr) {
+    realm->selection_state->range_object.Reset();
+    delete realm->selection_state;
+    realm->selection_state = nullptr;
+  }
+  realm->selection_object.Reset();
   for (RangeWeakData *range : realm->ranges) {
     if (range->object.IsWeak())
       range->object.ClearWeak<RangeWeakData>();
@@ -9284,6 +9804,7 @@ void ClearRealmHandles(gossamer_v8_realm *realm) {
   realm->range_template.Reset();
   realm->tree_walker_template.Reset();
   realm->node_iterator_template.Reset();
+  realm->selection_template.Reset();
   realm->node_list_template.Reset();
   realm->html_collection_template.Reset();
   realm->token_list_template.Reset();

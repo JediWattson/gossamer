@@ -131,7 +131,8 @@ queue ARC claims. A pinned real React 19.2.7 gate additionally proves initial
 render, delegated click and controlled-input updates, unmount, forced GC, and
 Realm teardown against the stock engine. See
 [`docs/stock-v8-integration.md`](docs/stock-v8-integration.md). The expanded
-DOM milestones and their precise compatibility limits are tracked in
+DOM milestones, including Range, Selection, and mutation-aware traversal, and
+their precise compatibility limits are tracked in
 [`docs/dom-compatibility.md`](docs/dom-compatibility.md).
 
 ## What works today

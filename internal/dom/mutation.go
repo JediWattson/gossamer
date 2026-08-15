@@ -18,6 +18,7 @@ const (
 	NamespaceError        ExceptionName = "NamespaceError"
 	SyntaxError           ExceptionName = "SyntaxError"
 	InvalidStateError     ExceptionName = "InvalidStateError"
+	IndexSizeError        ExceptionName = "IndexSizeError"
 )
 
 // Exception is a typed DOM failure. Cause preserves the lower-level package

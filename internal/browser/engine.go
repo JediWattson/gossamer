@@ -252,6 +252,7 @@ type DOMElementHost interface {
 	SplitText(NodeHandle, int) (NodeHandle, error)
 	Normalize(NodeHandle) error
 	AdoptNode(NodeHandle) (NodeHandle, error)
+	RangeContents(NodeHandle, int, NodeHandle, int, dom.RangeContentOperation) (NodeHandle, error)
 	InnerHTML(NodeHandle) (string, error)
 	SetInnerHTML(NodeHandle, string) error
 	InsertAdjacentHTML(NodeHandle, string, string) error

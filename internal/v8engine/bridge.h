@@ -154,6 +154,12 @@ typedef struct gossamer_v8_host {
   int (*adopt_node)(uint64_t execution_id, uint64_t document, uint32_t node,
                     uint64_t *adopted_document_out,
                     uint32_t *adopted_node_out, char **error_out);
+  int (*range_contents)(uint64_t execution_id, uint64_t start_document,
+                        uint32_t start_node, int32_t start_offset,
+                        uint64_t end_document, uint32_t end_node,
+                        int32_t end_offset, uint8_t operation,
+                        uint64_t *fragment_document_out,
+                        uint32_t *fragment_node_out, char **error_out);
   int (*inner_html)(uint64_t execution_id, uint64_t document, uint32_t node,
                     char **value_out, size_t *value_length_out,
                     char **error_out);

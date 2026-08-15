@@ -42,7 +42,7 @@ func (document *Document) SplitText(id NodeID, offset int) (NodeID, error) {
 	}
 	units := utf16.Encode([]rune(node.Data))
 	if offset < 0 || offset > len(units) {
-		return InvalidNodeID, NewException(InvalidStateError, ErrInvalidTree, "text split offset %d is outside 0..%d", offset, len(units))
+		return InvalidNodeID, NewException(IndexSizeError, ErrInvalidTree, "text split offset %d is outside 0..%d", offset, len(units))
 	}
 	oldValue := node.Data
 	node.Data = string(utf16.Decode(units[:offset]))

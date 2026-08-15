@@ -5,7 +5,7 @@ DOM compatibility gate verifies that this split remains observable as one DOM:
 canonical V8 wrappers carry numeric `NodeHandle` values, while Go owns node
 identity, mutation, form state, construction regions, and queue ARC.
 
-## Completed milestones 8-14
+## Completed milestones 8-15
 
 | Milestone | Native surface | Regression boundary |
 | --- | --- | --- |
@@ -16,6 +16,7 @@ identity, mutation, form state, construction regions, and queue ARC.
 | 12. Observation | `MutationObserver` and `MutationRecord`, subtree/filter/old-value options, `takeRecords`, `disconnect` | Records come from the Go mutation journal and observer-only detached targets survive collection |
 | 13. Construction | Inert `template.content`, deep template cloning, `splitText`, `normalize`, same-document import/adopt, `Range`, `TreeWalker`, `NodeIterator`, `NodeFilter` | Template ownership is a semantic lifetime edge rather than a DOM parent edge; facade-only roots survive forced GC |
 | 14. React gate | Pinned production React 19.2.7 render and reconciliation over the native DOM | Controlled text, textarea, checkbox, radio, and select state; delegated input; observer delivery; keyed identity; forty churn cycles; unmount; forced GC; zero ownership after Realm teardown |
+| 15. Range and selection | Cross-container partial cloning/extraction/deletion, UTF-16 character-data boundaries, text-boundary insertion, canonical document/window `Selection`, mutation-aware filtered traversal | Fully selected nodes preserve identity during extraction, selection-only detached roots survive GC, reject prunes while skip promotes descendants, and traversal cursors adjust through insertion/removal |
 
 Run the gate against the locally built stock V8:
 
@@ -34,15 +35,19 @@ and ownership barriers before a separate render task publishes a frame.
 - `MutationObserver` delivery occurs at Gossamer's explicit post-task
   checkpoint. Ordering relative to every browser-defined microtask source is
   not yet claimed.
-- Range boundary state, cloning, insertion, and same-container child content
-  operations are native. Cross-container contents and full character-data
-  surgery are not yet implemented.
-- `TreeWalker` and `NodeIterator` expose filtered pre-order traversal and
-  retain their roots, but use a construction-time node snapshot. Mutation
-  adjustment and the complete reject/skip traversal rules remain future work.
+- Range contents now cross nested containers and UTF-16 character data.
+  `surroundContents`, contextual fragments, point-comparison helpers, and full
+  live boundary adjustment after unrelated DOM mutations remain future work.
+- `TreeWalker` and `NodeIterator` refresh from the native mutation sequence,
+  prune rejected subtrees, and promote skipped descendants. Exact Web Platform
+  cursor adjustment for every complex reparenting case is not yet claimed.
+- Selection currently owns at most one forward Range and supports collapse,
+  select-all, deletion, string projection, and the standard range collection
+  methods. Backward selections, `extend`, `setBaseAndExtent`, `modify`, and
+  `containsNode` are not exposed yet.
 - `importNode` and `adoptNode` currently operate inside the active native
   document. Cross-document and cross-Realm adoption is not exposed yet.
-- This gate does not claim Shadow DOM, custom elements, Selection, full form
+- This gate does not claim Shadow DOM, custom elements, full form
   validation/submission, navigation globals, geometry, accessibility, or the
   complete Web Platform test surface.
 

@@ -3023,7 +3023,7 @@ func TestStockV8TemplateConstructionRangeAndTraversalObjects(t *testing.T) {
 				if (walked.join(",") !== "one,nested,kept") throw new Error("TreeWalker order: " + walked);
 				walker.currentNode = traversalRoot.firstElementChild;
 				if (walker.firstChild().id !== "nested" || walker.parentNode().id !== "one" ||
-					walker.nextSibling() !== null) {
+					walker.nextSibling().id !== "kept") {
 					throw new Error("TreeWalker relation methods failed");
 				}
 				const iterator = document.createNodeIterator(traversalRoot, NodeFilter.SHOW_ELEMENT);
@@ -3359,6 +3359,208 @@ func TestStockV8ReactDOMCompatibilityGate(t *testing.T) {
 	}
 	if ledger := browserRuntime.Ledger().Stats(); ledger.LiveObjects != 0 || ledger.PersistentObjects != 0 {
 		t.Fatalf("Milestone 14 teardown ownership = %#v", ledger)
+	}
+}
+
+func TestStockV8RangeSelectionAndMutationAwareTraversal(t *testing.T) {
+	engine := newTestEngine(t)
+	browserRuntime, err := browser.NewWithEngine(engine)
+	if err != nil {
+		t.Fatalf("NewWithEngine: %v", err)
+	}
+	defer func() {
+		if err := browserRuntime.Close(); err != nil {
+			t.Errorf("Close browser: %v", err)
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	page, err := browserRuntime.LoadPage(ctx, "https://gossamer.test/range-selection", staticDocumentLoader{
+		document: `<!doctype html><html><body><div id="fixture"></div></body></html>`,
+	})
+	if err != nil {
+		t.Fatalf("LoadPage: %v", err)
+	}
+	realm, ok := engine.LatestRealm()
+	if !ok {
+		t.Fatal("stock V8 engine has no Range/Selection realm")
+	}
+	_, err = page.QueueScript(browser.ScriptSource{
+		URL: "https://gossamer.test/range-selection/assert.js",
+		Source: `
+			(() => {
+				const fixture = document.getElementById("fixture");
+				fixture.innerHTML = '<div id="range-root"><p id="left">ab<strong id="strong">cd</strong></p><p id="right"><i id="italic">ef</i>gh</p></div>';
+				const rangeRoot = document.getElementById("range-root");
+				const left = document.getElementById("left");
+				const right = document.getElementById("right");
+				const strong = document.getElementById("strong");
+				const range = document.createRange();
+				range.setStart(left.firstChild, 1);
+				range.setEnd(right.lastChild, 1);
+				const cloned = range.cloneContents();
+				if (cloned.children.length !== 2 || cloned.textContent !== "bcdefg" ||
+					cloned.firstElementChild.localName !== "p" ||
+					cloned.firstElementChild.children[0].localName !== "strong" ||
+					cloned.firstElementChild.children[0] === strong ||
+					range.commonAncestorContainer !== rangeRoot) {
+					throw new Error("cross-container cloneContents failed");
+				}
+
+				const extractRoot = rangeRoot.cloneNode(true);
+				fixture.append(extractRoot);
+				const movedStrong = extractRoot.children[0].children[0];
+				const movedItalic = extractRoot.children[1].children[0];
+				const extractRange = document.createRange();
+				extractRange.setStart(extractRoot.children[0].firstChild, 1);
+				extractRange.setEnd(extractRoot.children[1].lastChild, 1);
+				const extracted = extractRange.extractContents();
+				if (extracted.textContent !== "bcdefg" ||
+					extracted.children[0].children[0] !== movedStrong ||
+					extracted.children[1].children[0] !== movedItalic ||
+					extractRoot.textContent !== "ah" || !extractRange.collapsed) {
+					throw new Error("cross-container extractContents lost structure or identity: " +
+						extracted.textContent + ":" +
+						(extracted.children[0].children[0] === movedStrong) + ":" +
+						(extracted.children[1].children[0] === movedItalic) + ":" +
+						extractRoot.textContent + ":" + extractRange.collapsed);
+				}
+
+				const insertionHost = document.createElement("div");
+				const insertionText = document.createTextNode("A😀B");
+				insertionHost.append(insertionText);
+				const insertionRange = document.createRange();
+				insertionRange.setStart(insertionText, 3);
+				insertionRange.collapse(true);
+				const mark = document.createElement("mark");
+				insertionRange.insertNode(mark);
+				if (insertionHost.childNodes.length !== 3 || insertionHost.childNodes[0].data !== "A😀" ||
+					insertionHost.childNodes[1] !== mark || insertionHost.childNodes[2].data !== "B") {
+					throw new Error("Range.insertNode did not split a UTF-16 text boundary");
+				}
+
+				const selection = getSelection();
+				if (!(selection instanceof Selection) || selection !== document.getSelection() ||
+					selection.rangeCount !== 0 || selection.type !== "None") {
+					throw new Error("canonical Selection facade failed");
+				}
+				const selectionRoot = document.createElement("div");
+				selectionRoot.innerHTML = "<span>start</span><b>end</b>";
+				const selectionRange = document.createRange();
+				selectionRange.setStart(selectionRoot.firstElementChild.firstChild, 1);
+				selectionRange.setEnd(selectionRoot.lastElementChild.firstChild, 2);
+				selection.addRange(selectionRange);
+				if (selection.rangeCount !== 1 || selection.getRangeAt(0) !== selectionRange ||
+					selection.anchorNode !== selectionRoot.firstElementChild.firstChild ||
+					selection.anchorOffset !== 1 || selection.focusOffset !== 2 ||
+					selection.toString() !== "tarten" || selection.type !== "Range") {
+					throw new Error("Selection Range projection failed: " + selection.toString());
+				}
+				let boundsFailure = false;
+				try { selection.getRangeAt(1); } catch (error) {
+					boundsFailure = error instanceof DOMException && error.name === "IndexSizeError";
+				}
+				if (!boundsFailure) throw new Error("Selection.getRangeAt bounds were not typed");
+				selection.collapse(selectionRoot.firstElementChild.firstChild, 2);
+				if (!selection.isCollapsed || selection.type !== "Caret" || selection.anchorOffset !== 2) {
+					throw new Error("Selection.collapse failed");
+				}
+				selection.selectAllChildren(selectionRoot);
+				if (selection.toString() !== "startend") throw new Error("Selection.selectAllChildren failed");
+
+				const deleteHost = document.createElement("div");
+				const deleteText = document.createTextNode("A😀BC");
+				deleteHost.append(deleteText);
+				const deleteRange = document.createRange();
+				deleteRange.setStart(deleteText, 1);
+				deleteRange.setEnd(deleteText, 3);
+				selection.removeAllRanges();
+				selection.addRange(deleteRange);
+				if (selection.toString() !== "😀") throw new Error("Selection UTF-16 text failed");
+				selection.deleteFromDocument();
+				if (deleteText.data !== "ABC" || !selection.isCollapsed) {
+					throw new Error("Selection.deleteFromDocument failed");
+				}
+
+				const traversalRoot = document.createElement("div");
+				traversalRoot.innerHTML = '<section id="reject"><b id="pruned">pruned</b></section><section id="skip"><i id="lifted">lifted</i></section><p id="keep">keep</p>';
+				const filter = {
+					acceptNode(node) {
+						if (node.id === "reject") return NodeFilter.FILTER_REJECT;
+						if (node.id === "skip") return NodeFilter.FILTER_SKIP;
+						return NodeFilter.FILTER_ACCEPT;
+					}
+				};
+				const walker = document.createTreeWalker(traversalRoot, NodeFilter.SHOW_ELEMENT, filter);
+				if (walker.firstChild().id !== "lifted" || walker.nextSibling().id !== "keep" ||
+					document.getElementById("pruned") !== null) {
+					throw new Error("TreeWalker reject/skip logical tree failed");
+				}
+				walker.currentNode = traversalRoot;
+				if (walker.nextNode().id !== "lifted") throw new Error("TreeWalker initial order failed");
+				const late = document.createElement("aside");
+				late.id = "late";
+				traversalRoot.append(late);
+				if (walker.nextNode().id !== "keep") throw new Error("TreeWalker lost cursor after insertion");
+				traversalRoot.querySelector("#keep").remove();
+				if (walker.nextNode() !== late) throw new Error("TreeWalker did not adjust a removed cursor");
+				const iterator = document.createNodeIterator(traversalRoot, NodeFilter.SHOW_ELEMENT, filter);
+				if (iterator.nextNode() !== traversalRoot || iterator.nextNode().id !== "pruned" ||
+					iterator.nextNode().id !== "lifted" ||
+					iterator.nextNode() !== late || iterator.nextNode() !== null) {
+					throw new Error("mutation-aware NodeIterator order failed");
+				}
+				const textIterator = document.createNodeIterator(traversalRoot, NodeFilter.SHOW_TEXT);
+				const firstText = textIterator.nextNode();
+				if (!firstText || firstText.nodeType !== 3) {
+					throw new Error("NodeIterator incorrectly exposed a filtered root");
+				}
+
+				const heldRoot = document.createElement("div");
+				heldRoot.textContent = "held";
+				const heldRange = document.createRange();
+				heldRange.selectNodeContents(heldRoot);
+				selection.removeAllRanges();
+				selection.addRange(heldRange);
+				globalThis.__milestone15Selection = selection;
+			})();
+		`,
+	})
+	if err != nil {
+		t.Fatalf("QueueScript milestone 15 assertions: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("run milestone 15 assertions: %v", err)
+	}
+	if err := realm.CollectGarbage(page); err != nil {
+		t.Fatalf("CollectGarbage with Selection-only detached root: %v", err)
+	}
+	_, err = page.QueueScript(browser.ScriptSource{
+		URL: "https://gossamer.test/range-selection/gc.js",
+		Source: `
+			const selection = getSelection();
+			if (selection !== __milestone15Selection || selection.toString() !== "held" ||
+				selection.anchorNode.parentNode.textContent !== "held") {
+				throw new Error("Selection did not retain its detached Range boundary across GC");
+			}
+			selection.removeAllRanges();
+			globalThis.__milestone15Selection = undefined;
+		`,
+	})
+	if err != nil {
+		t.Fatalf("QueueScript milestone 15 GC assertions: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("run milestone 15 GC assertions: %v", err)
+	}
+	if err := realm.CollectGarbage(page); err != nil {
+		t.Fatalf("CollectGarbage after Selection release: %v", err)
+	}
+	if err := page.Close(); err != nil {
+		t.Fatalf("Close milestone 15 page: %v", err)
+	}
+	if ledger := browserRuntime.Ledger().Stats(); ledger.LiveObjects != 0 || ledger.PersistentObjects != 0 {
+		t.Fatalf("Milestone 15 teardown ownership = %#v", ledger)
 	}
 }
 

@@ -725,6 +725,36 @@ func (host *taskHost) AdoptNode(handle NodeHandle) (NodeHandle, error) {
 	return NodeHandle{Document: host.generation, Node: adopted}, nil
 }
 
+func (host *taskHost) RangeContents(
+	start NodeHandle,
+	startOffset int,
+	end NodeHandle,
+	endOffset int,
+	operation dom.RangeContentOperation,
+) (NodeHandle, error) {
+	host.page.mutex.Lock()
+	defer host.page.mutex.Unlock()
+	if err := host.validateHandleLocked(start); err != nil {
+		return NodeHandle{}, err
+	}
+	if err := host.validateHandleLocked(end); err != nil {
+		return NodeHandle{}, err
+	}
+	before := host.page.document.Version()
+	fragment, err := host.page.document.RangeContents(start.Node, startOffset, end.Node, endOffset, operation)
+	if err != nil {
+		return NodeHandle{}, err
+	}
+	if host.page.document.Version() != before {
+		host.page.dirty = true
+		host.mutated = true
+	}
+	if err := host.page.nodeLifetimes.sync(host.task); err != nil {
+		return NodeHandle{}, err
+	}
+	return NodeHandle{Document: host.generation, Node: fragment}, nil
+}
+
 func (host *taskHost) InnerHTML(handle NodeHandle) (string, error) {
 	host.page.mutex.RLock()
 	defer host.page.mutex.RUnlock()

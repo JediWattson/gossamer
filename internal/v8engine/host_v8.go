@@ -1077,6 +1077,40 @@ func goGossamerV8HostAdoptNode(
 	}, executionID)
 }
 
+//export goGossamerV8HostRangeContents
+func goGossamerV8HostRangeContents(
+	executionID C.uint64_t,
+	startDocument C.uint64_t,
+	startNode C.uint32_t,
+	startOffset C.int32_t,
+	endDocument C.uint64_t,
+	endNode C.uint32_t,
+	endOffset C.int32_t,
+	operation C.uint8_t,
+	fragmentDocumentOut *C.uint64_t,
+	fragmentNodeOut *C.uint32_t,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domElementHost(host)
+		if err != nil {
+			return err
+		}
+		fragment, err := domHost.RangeContents(
+			browserNodeHandle(startDocument, startNode),
+			int(startOffset),
+			browserNodeHandle(endDocument, endNode),
+			int(endOffset),
+			dom.RangeContentOperation(operation),
+		)
+		if err != nil {
+			return err
+		}
+		writeNodeHandle(fragment, fragmentDocumentOut, fragmentNodeOut)
+		return nil
+	}, executionID)
+}
+
 //export goGossamerV8HostInnerHTML
 func goGossamerV8HostInnerHTML(
 	executionID C.uint64_t,
