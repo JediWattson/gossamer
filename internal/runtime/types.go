@@ -477,6 +477,27 @@ func (context *TaskContext) SetDateTime(ref memory.Ref, milliseconds float64) er
 	return context.Realm.store.SetDateTime(context.Owner, ref, milliseconds)
 }
 
+func (context *TaskContext) NewRegExp(pattern memory.Ref, flags string) (memory.Ref, error) {
+	if context == nil || context.Realm == nil {
+		return memory.Ref{}, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.AllocRegExp(context.Owner, context.MemoryRegion, pattern, flags)
+}
+
+func (context *TaskContext) DerefRegExp(ref memory.Ref) (memory.RegExp, error) {
+	if context == nil || context.Realm == nil {
+		return memory.RegExp{}, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.DerefRegExp(context.Owner, ref)
+}
+
+func (context *TaskContext) SetRegExpLastIndex(ref memory.Ref, index uint64) error {
+	if context == nil || context.Realm == nil {
+		return fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.SetRegExpLastIndex(context.Owner, ref, index)
+}
+
 func (context *TaskContext) Set(ref memory.Ref, field int, value memory.Value) error {
 	if context == nil || context.Realm == nil {
 		return fmt.Errorf("runtime: nil task context")

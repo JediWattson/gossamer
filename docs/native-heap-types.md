@@ -151,6 +151,16 @@ published Dates reject mutation.
 Calendar calculations, parsing, formatting, and time zones remain language and
 host-library concerns.
 
+### RegExp
+
+Native RegExps retain a native String pattern, validated `d/g/i/m/s/u/v/y`
+flags, and mutable `lastIndex`. Duplicate or unknown flags fail, and `u` and
+`v` are mutually exclusive. Pattern refs are counted edges; Copy and Promote
+clone the pattern graph and preserve flags and `lastIndex`.
+
+Pattern compilation, matching, match arrays, and Unicode set behavior remain a
+later interpreter/library layer.
+
 ## Deliberate boundaries
 
 These native payloads are not yet ECMAScript implementations. String

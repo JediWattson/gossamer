@@ -47,7 +47,7 @@ claim(region, object) is either present or absent
   payloads. Symbols keep semantic identity across physical graph copies, while
   ArrayBuffers own explicitly detachable bytes and typed numeric views; Maps
   and Sets provide insertion-ordered SameValueZero storage; Dates store clipped
-  mutable epoch milliseconds.
+  mutable epoch milliseconds; RegExps retain checked pattern descriptors.
 - Freed slots advance their generation and exhausted generations are retired,
   so a stale Ref cannot become valid again.
 - Every mutable physical region has exactly one owner. Published regions are
