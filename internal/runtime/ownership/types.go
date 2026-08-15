@@ -18,6 +18,8 @@ type OwnerKind uint8
 const (
 	OwnerTask OwnerKind = iota
 	OwnerQueue
+	OwnerWrapper
+	OwnerDocument
 	OwnerRealm
 	OwnerBrowser
 )
@@ -35,6 +37,10 @@ func (owner OwnerID) String() string {
 		kind = "task"
 	case OwnerQueue:
 		kind = "queue"
+	case OwnerWrapper:
+		kind = "wrapper"
+	case OwnerDocument:
+		kind = "document"
 	case OwnerRealm:
 		kind = "realm"
 	case OwnerBrowser:
@@ -59,6 +65,7 @@ const (
 	ObjectLinked
 	ObjectUnlinked
 	ObjectBarrierRetained
+	ObjectRootRetained
 )
 
 // Event is an immutable telemetry record ordered by Sequence.

@@ -38,7 +38,8 @@ claim(region, object) is either present or absent
 
 ## Implemented kernel slice
 
-- `internal/runtime/ownership` models task, queue, realm, and browser owners.
+- `internal/runtime/ownership` models task, queue, wrapper, document, realm,
+  and browser owners.
 - Every owner has a logical region.
 - Task-local fake objects receive an initial task reference.
 - Enqueue publishes carried objects to the destination queue.
@@ -73,8 +74,10 @@ microtask checkpoint.
 
 Stock V8 now occupies the proven adapter boundary for evaluation, explicit
 microtasks, profiling, isolate teardown, numeric DOM wrappers, and synchronous
-node mutation churn. Detached nodes currently remain document-retained while
-V8 wrapper collection stays independent of queue ARC; see
+node mutation churn. Task-created nodes begin in construction regions; the
+document and V8 wrapper cache maintain independent semantic root sets, and a
+weak-wrapper sweep can reclaim a detached Go subgraph without reusing its
+stable IDs. See
 [`stock-v8-integration.md`](stock-v8-integration.md).
 
 Physical allocation optimizations such as typed slabs or object pools should

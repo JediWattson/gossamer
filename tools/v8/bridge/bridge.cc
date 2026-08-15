@@ -208,6 +208,7 @@ struct gossamer_v8_realm {
   bool closed = false;
 
   std::unordered_map<WrapperKey, WrapperEntry, WrapperKeyHash> wrappers;
+  std::vector<WrapperKey> collected_wrappers;
   std::unordered_map<ListenerKey, std::vector<v8::Global<v8::Function>>,
                      ListenerKeyHash>
       listeners;
@@ -380,6 +381,7 @@ void WrapperCollected(const v8::WeakCallbackInfo<WrapperWeakData> &info) {
   if (entry != realm->wrappers.end() && entry->second.weak == weak) {
     entry->second.object.Reset();
     realm->wrappers.erase(entry);
+    realm->collected_wrappers.push_back(weak->key);
     realm->wrappers_collected.fetch_add(1, std::memory_order_relaxed);
   }
   delete weak;
@@ -387,7 +389,7 @@ void WrapperCollected(const v8::WeakCallbackInfo<WrapperWeakData> &info) {
 
 v8::MaybeLocal<v8::Object>
 GetOrCreateNodeWrapper(gossamer_v8_realm *realm, v8::Local<v8::Context> context,
-                       const WrapperKey &key) {
+                       const WrapperKey &key, std::string *error) {
   auto cached = realm->wrappers.find(key);
   if (cached != realm->wrappers.end()) {
     realm->wrapper_cache_hits.fetch_add(1, std::memory_order_relaxed);
@@ -404,6 +406,31 @@ GetOrCreateNodeWrapper(gossamer_v8_realm *realm, v8::Local<v8::Context> context,
       v8::BigInt::NewFromUnsigned(realm->isolate, key.document));
   object->SetInternalField(
       kNodeIDField, v8::Integer::NewFromUnsigned(realm->isolate, key.node));
+
+  if (!RequireHost(realm, error))
+    return {};
+  char *host_error = nullptr;
+  if (realm->active_host->retain_node_wrapper(
+          realm->active_host->execution_id, key.document, key.node,
+          &host_error) == 0) {
+    if (error != nullptr) {
+      *error = TakeCString(host_error);
+      if (error->empty())
+        *error = "Go host rejected the DOM wrapper lifetime";
+    } else {
+      std::free(host_error);
+    }
+    return {};
+  }
+  std::free(host_error);
+
+  // A wrapper can be collected and recreated during the same V8 entry before
+  // Go drains the weak-finalization queue. The successfully retained wrapper
+  // supersedes that pending release for the same numeric identity.
+  realm->collected_wrappers.erase(
+      std::remove(realm->collected_wrappers.begin(),
+                  realm->collected_wrappers.end(), key),
+      realm->collected_wrappers.end());
 
   auto inserted = realm->wrappers.try_emplace(key);
   WrapperEntry &entry = inserted.first->second;
@@ -494,9 +521,12 @@ void DocumentGetElementByID(const v8::FunctionCallbackInfo<v8::Value> &info) {
     return;
   }
   v8::Local<v8::Object> wrapper;
-  if (!GetOrCreateNodeWrapper(realm, context, WrapperKey{document, node})
+  if (!GetOrCreateNodeWrapper(realm, context, WrapperKey{document, node},
+                              &error)
            .ToLocal(&wrapper)) {
-    ThrowError(isolate, "V8 failed to allocate a DOM node wrapper");
+    ThrowError(isolate, error.empty()
+                            ? "V8 failed to allocate a DOM node wrapper"
+                            : error);
     return;
   }
   info.GetReturnValue().Set(wrapper);
@@ -539,9 +569,11 @@ void DocumentCreateNode(const v8::FunctionCallbackInfo<v8::Value> &info,
   std::free(host_error);
   v8::Local<v8::Object> wrapper;
   if (!GetOrCreateNodeWrapper(realm, isolate->GetCurrentContext(),
-                              WrapperKey{document, node})
+                              WrapperKey{document, node}, &error)
            .ToLocal(&wrapper)) {
-    ThrowError(isolate, "V8 failed to allocate a DOM node wrapper");
+    ThrowError(isolate, error.empty()
+                            ? "V8 failed to allocate a DOM node wrapper"
+                            : error);
     return;
   }
   info.GetReturnValue().Set(wrapper);
@@ -1355,6 +1387,24 @@ extern "C" int gossamer_v8_realm_collect_garbage(gossamer_v8_realm *realm,
   v8::Isolate::Scope isolate_scope(realm->isolate);
   realm->isolate->LowMemoryNotification();
   return 1;
+}
+
+extern "C" size_t gossamer_v8_realm_take_collected_wrappers(
+    gossamer_v8_realm *realm, gossamer_v8_node_handle *handles_out,
+    size_t capacity) {
+  if (realm == nullptr)
+    return 0;
+  std::lock_guard<std::mutex> guard(realm->mutex);
+  if (handles_out == nullptr || capacity == 0)
+    return realm->collected_wrappers.size();
+  size_t count = std::min(capacity, realm->collected_wrappers.size());
+  for (size_t index = 0; index < count; ++index) {
+    handles_out[index].document = realm->collected_wrappers[index].document;
+    handles_out[index].node = realm->collected_wrappers[index].node;
+  }
+  realm->collected_wrappers.erase(realm->collected_wrappers.begin(),
+                                  realm->collected_wrappers.begin() + count);
+  return count;
 }
 
 extern "C" int gossamer_v8_realm_profile(gossamer_v8_realm *realm,

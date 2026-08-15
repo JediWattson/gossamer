@@ -81,7 +81,14 @@ func (browser *Browser) NewPage(root *dom.Node, location *url.URL) (*Page, error
 		return nil, ErrBrowserClosed
 	}
 	browser.nextPage++
-	page := newPage(browser, browser.nextPage, realm, script, document, location)
+	page, err := newPage(browser, browser.nextPage, realm, script, document, location)
+	if err != nil {
+		if script != nil {
+			_ = script.Close()
+		}
+		_ = realm.Close()
+		return nil, err
+	}
 	browser.pages[page.ID] = page
 	return page, nil
 }

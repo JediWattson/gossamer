@@ -43,6 +43,7 @@ func TestPageSchedulesStableIDMutationThenRender(t *testing.T) {
 	if !frameContainsText(page.Frame(), "before") {
 		t.Fatal("initial frame does not contain before")
 	}
+	baselineStats := engine.Ledger().Stats()
 
 	textNode := findTextNode(root, "before")
 	textID, ok := page.Document().ID(textNode)
@@ -62,7 +63,8 @@ func TestPageSchedulesStableIDMutationThenRender(t *testing.T) {
 		t.Fatal("frame changed before queued render task executed")
 	}
 	queuedStats := engine.Ledger().Stats()
-	if queuedStats.LiveObjects != 1 || queuedStats.PublishOperations == 0 {
+	if queuedStats.LiveObjects != baselineStats.LiveObjects+1 ||
+		queuedStats.PublishOperations <= baselineStats.PublishOperations {
 		t.Fatalf("ownership after mutation task = %#v", queuedStats)
 	}
 
@@ -76,7 +78,9 @@ func TestPageSchedulesStableIDMutationThenRender(t *testing.T) {
 		t.Fatal("rendered frame did not observe stable-ID mutation")
 	}
 	finalStats := engine.Ledger().Stats()
-	if finalStats.LiveObjects != 0 || finalStats.ObjectsDestroyed != 1 || finalStats.TransferOperations == 0 {
+	if finalStats.LiveObjects != baselineStats.LiveObjects ||
+		finalStats.ObjectsDestroyed != baselineStats.ObjectsDestroyed+1 ||
+		finalStats.TransferOperations <= baselineStats.TransferOperations {
 		t.Fatalf("ownership after render task = %#v", finalStats)
 	}
 }

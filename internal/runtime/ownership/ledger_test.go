@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -354,6 +355,86 @@ func TestOwnershipOperationsRejectInvalidTransitionsAtomically(t *testing.T) {
 	}
 	assertObject(t, ledger, firstObject, true, firstRegion, map[OwnerID]int{first: 1})
 	assertObject(t, ledger, secondObject, true, firstRegion, map[OwnerID]int{first: 1})
+}
+
+func TestReconcileRegionCollectsUnreachableConstructionGraph(t *testing.T) {
+	ledger := NewLedger()
+	wrapper := OwnerID{Kind: OwnerWrapper, Value: 1}
+	task := OwnerID{Kind: OwnerTask, Value: 1}
+	wrapperRegion := mustCreateRegion(t, ledger, wrapper)
+	taskRegion := mustCreateRegion(t, ledger, task)
+	root, err := ledger.CreateObject(wrapperRegion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent, err := ledger.CreateObject(taskRegion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := ledger.CreateObject(taskRegion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ledger.AddReference(parent, child); err != nil {
+		t.Fatal(err)
+	}
+	if err := ledger.AddReference(root, parent); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ledger.ReconcileRegion(wrapper, []ObjectID{root}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ledger.CloseRegion(taskRegion); err != nil {
+		t.Fatal(err)
+	}
+	assertObject(t, ledger, parent, true, wrapperRegion, map[OwnerID]int{wrapper: 1})
+	assertObject(t, ledger, child, true, wrapperRegion, map[OwnerID]int{wrapper: 1})
+
+	if err := ledger.RemoveReference(root, parent); err != nil {
+		t.Fatal(err)
+	}
+	destroyed, err := ledger.ReconcileRegion(wrapper, []ObjectID{root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(destroyed, []ObjectID{parent, child}) {
+		t.Fatalf("destroyed = %v, want [%d %d]", destroyed, parent, child)
+	}
+	assertObject(t, ledger, parent, false, wrapperRegion, map[OwnerID]int{})
+	assertObject(t, ledger, child, false, wrapperRegion, map[OwnerID]int{})
+}
+
+func TestReconcileShorterRegionClaimsLongerLivedRoot(t *testing.T) {
+	ledger := NewLedger()
+	wrapper := OwnerID{Kind: OwnerWrapper, Value: 1}
+	document := OwnerID{Kind: OwnerDocument, Value: 1}
+	wrapperRegion := mustCreateRegion(t, ledger, wrapper)
+	documentRegion := mustCreateRegion(t, ledger, document)
+	root, err := ledger.CreateObject(wrapperRegion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, err := ledger.CreateObject(documentRegion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ledger.AddReference(root, node); err != nil {
+		t.Fatal(err)
+	}
+	before, err := ledger.Object(node)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.Owners[wrapper] != 0 {
+		t.Fatalf("shorter root unexpectedly retained by write barrier: %#v", before)
+	}
+	if _, err := ledger.ReconcileRegion(wrapper, []ObjectID{root}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ledger.CloseRegion(documentRegion); err != nil {
+		t.Fatal(err)
+	}
+	assertObject(t, ledger, node, true, wrapperRegion, map[OwnerID]int{wrapper: 1})
 }
 
 func mustCreateRegion(t *testing.T, ledger *Ledger, owner OwnerID) RegionID {

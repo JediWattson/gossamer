@@ -179,6 +179,9 @@ func (host *taskHost) CreateElement(name string) (NodeHandle, error) {
 	if err != nil {
 		return NodeHandle{}, err
 	}
+	if err := host.page.nodeLifetimes.sync(host.task); err != nil {
+		return NodeHandle{}, err
+	}
 	return NodeHandle{Document: host.generation, Node: node}, nil
 }
 
@@ -193,6 +196,9 @@ func (host *taskHost) CreateTextNode(data string) (NodeHandle, error) {
 	}
 	node, err := host.page.document.CreateTextNode(data)
 	if err != nil {
+		return NodeHandle{}, err
+	}
+	if err := host.page.nodeLifetimes.sync(host.task); err != nil {
 		return NodeHandle{}, err
 	}
 	return NodeHandle{Document: host.generation, Node: node}, nil
@@ -220,6 +226,9 @@ func (host *taskHost) SetTextContent(handle NodeHandle, data string) error {
 	if host.page.document.Version() != before {
 		host.page.dirty = true
 		host.mutated = true
+		if err := host.page.nodeLifetimes.sync(host.task); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -281,6 +290,9 @@ func (host *taskHost) mutateNodes(first, second, third NodeHandle, mutation func
 	if host.page.document.Version() != before {
 		host.page.dirty = true
 		host.mutated = true
+		if err := host.page.nodeLifetimes.sync(host.task); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -339,6 +351,14 @@ func (host *taskHost) SetTimeout(callback ValueHandle, delay time.Duration) (Tim
 
 func (host *taskHost) ClearTimeout(timer TimerID) error {
 	return host.page.clearTimeout(timer)
+}
+
+func (host *taskHost) RetainNodeWrapper(handle NodeHandle) error {
+	return host.page.RetainNodeWrapper(handle)
+}
+
+func (host *taskHost) ReleaseNodeWrappers(handles []NodeHandle) error {
+	return host.page.ReleaseNodeWrappers(handles)
 }
 
 func (host *taskHost) finish() error {

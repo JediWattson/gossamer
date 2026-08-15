@@ -113,9 +113,12 @@ objects remain under Go regions and queue ARC. Its first wrapper slice exposes
 stable numeric node identity, `getElementById`, `textContent`, click listeners,
 node creation, tree mutation, attributes, microtasks, and timers without
 passing Go pointers into V8. Profiling covers heap totals, sampled allocations,
-GC callbacks, weak-wrapper collection, callback publication, explicit Promise
-checkpoints, and isolate teardown. A framework-shaped churn test proves that
-synchronous node aliases and mutations do not create queue ARC claims. See
+GC callbacks, weak-wrapper collection, wrapper-root region sweeps, callback
+publication, explicit Promise checkpoints, and isolate teardown. Task-created
+DOM nodes now begin in short-lived construction regions; after task close they
+survive only through the connected document graph or live V8 wrappers. A
+framework-shaped churn test proves that synchronous node aliases do not create
+queue ARC claims. See
 [`docs/stock-v8-integration.md`](docs/stock-v8-integration.md).
 
 ## What works today

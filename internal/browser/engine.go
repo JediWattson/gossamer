@@ -66,3 +66,12 @@ type Host interface {
 	SetTimeout(ValueHandle, time.Duration) (TimerID, error)
 	ClearTimeout(TimerID) error
 }
+
+// NodeWrapperLifetimeHost is the optional lifetime seam used by engines with
+// garbage-collected numeric DOM wrappers. One detached weak wrapper is one
+// semantic root; connected wrappers rely on the document claim, and ordinary
+// aliases to either wrapper remain entirely inside the engine.
+type NodeWrapperLifetimeHost interface {
+	RetainNodeWrapper(NodeHandle) error
+	ReleaseNodeWrappers([]NodeHandle) error
+}

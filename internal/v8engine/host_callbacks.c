@@ -55,6 +55,9 @@ extern int goGossamerV8HostRemoveAttribute(uint64_t execution_id,
                                            uint64_t document, uint32_t node,
                                            const char *name, size_t name_length,
                                            char **error_out);
+extern int goGossamerV8HostRetainNodeWrapper(uint64_t execution_id,
+                                             uint64_t document, uint32_t node,
+                                             char **error_out);
 extern int goGossamerV8HostQueueCallback(uint64_t execution_id,
                                          uint64_t callback, char **error_out);
 extern int goGossamerV8HostQueueMicrotask(uint64_t execution_id,
@@ -79,6 +82,7 @@ static gossamer_v8_host gossamer_v8_go_host(uint64_t execution_id) {
       .get_attribute = goGossamerV8HostGetAttribute,
       .set_attribute = goGossamerV8HostSetAttribute,
       .remove_attribute = goGossamerV8HostRemoveAttribute,
+      .retain_node_wrapper = goGossamerV8HostRetainNodeWrapper,
       .queue_callback = goGossamerV8HostQueueCallback,
       .queue_microtask = goGossamerV8HostQueueMicrotask,
       .set_timeout = goGossamerV8HostSetTimeout,

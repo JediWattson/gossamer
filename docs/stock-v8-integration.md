@@ -87,7 +87,7 @@ The first wrapper slice adds:
 - `window`, `self`, and `document` globals;
 - `document.getElementById()` over connected, generation-scoped Go nodes;
 - `document.createElement()` and `document.createTextNode()` for detached,
-  document-lifetime nodes;
+  task-local construction nodes;
 - one weakly cached V8 object per numeric node identity;
 - `textContent` reads and replacement mutations;
 - `appendChild()`, `insertBefore()`, and `removeChild()` with stable identity;
@@ -104,9 +104,42 @@ listener into a one-shot callback entry and publishes only its numeric
 function, so the Go queue is the explicit cross-owner retention point. Timer
 and Gossamer microtask callbacks use the same table.
 
-The wrapper cache is weak. A wrapper that is not reachable from JavaScript can
-be collected and removed from the cache without touching a Go ARC claim; a
-later lookup creates a new wrapper for the same still-valid numeric node.
+The wrapper cache is weak. One cached wrapper for a detached node contributes
+one root to a wrapper-owned region, regardless of how many JavaScript aliases
+reference it. A connected wrapper needs no duplicate claim because the
+document already owns its graph; detachment activates its wrapper root before
+the document claim is released. V8 weak collection queues numeric identities
+back to Go, and the wrapper region is reconciled from its remaining roots. A
+detached subgraph whose final wrapper root disappeared is reclaimed from the
+`NodeStore` without reusing `NodeID`.
+
+## Short-lived DOM construction regions
+
+Every DOM node first observed during JavaScript execution receives its initial
+claim from the active task region. Gossamer mirrors both child and parent tree
+edges in the shadow ledger, so retaining any node in a detached tree preserves
+the complete navigable component, including cycles.
+
+```text
+document.createElement()
+  -> allocate NodeID + task-region object
+  -> create one weak V8 wrapper
+  -> add wrapper-region root
+  -> task close drops the construction claim
+
+appendChild() into connected document
+  -> document write barrier retains reachable component once
+
+V8 weak wrapper collection
+  -> remove numeric wrapper root
+  -> reconcile wrapper-region reachability
+  -> reclaim nodes with no document or wrapper claim
+```
+
+The connected DOM and live-wrapper cache are separate semantic owners.
+Ordinary tree edges and aliases do not themselves increment ARC. Root
+reconciliation is the explicit boundary that retains newly reachable nodes or
+releases an unreachable component after connectivity or wrapper roots change.
 
 V8 platform initialization is process-wide. V8 documents `V8::Dispose()` as
 permanent and disallows reinitialization, so closing a Gossamer `Engine` closes
@@ -166,20 +199,20 @@ reorders children, detaches and reinserts a child, briefly connects the
 subtree, and removes it. One final survivor reaches the renderer. The test
 separately verifies:
 
-- 322 new Go nodes stay in the current document's lifetime store;
+- 322 new Go nodes begin in the script task's construction region;
 - 322 V8 wrappers are reclaimed after JavaScript drops its aliases;
-- V8 collection produces no Gossamer ARC events;
-- the full churn produces exactly two shadow ownership objects, one for script
-  publication and one for render invalidation, independent of mutation count;
-  and
+- 320 detached Go nodes are reclaimed with those wrappers, while the connected
+  survivor element and its text keep their document claims;
+- ordinary JavaScript aliases create no additional claims, while each wrapper
+  and document region claims a reachable node at most once;
+- script publication and render invalidation still cross exactly two queue
+  boundaries, independent of mutation count; and
 - Realm teardown ends with no live wrappers, callback handles, or persistent
   shadow ownership objects.
 
-This makes the current reclamation boundary explicit. Detached Go nodes are
-document-retained until navigation or Page teardown; the shadow ledger does
-not yet assign a separate object record to each DOM node. A later construction
-region can shorten detached-node lifetime and exercise reachable-subgraph
-promotion without changing wrapper identity.
+This makes the reclamation boundary explicit. Stable numeric identity is
+unchanged by promotion, detachment, wrapper collection, or physical removal;
+reclaimed IDs become tombstones and are never reused within the document.
 
 ## Next wrapper milestone
 
@@ -190,5 +223,4 @@ surface a renderer needs:
 1. parent/child/sibling traversal and property reflection required by JSX;
 2. a style declaration wrapper that feeds the existing CSS pipeline;
 3. browser event objects and propagation;
-4. short-lived construction regions plus reachable-subgraph promotion; and
-5. a real React bundle after the framework-shaped churn harness remains stable.
+4. a real React bundle after the framework-shaped churn harness remains stable.

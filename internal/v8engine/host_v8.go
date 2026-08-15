@@ -351,6 +351,22 @@ func goGossamerV8HostRemoveAttribute(
 	}, executionID)
 }
 
+//export goGossamerV8HostRetainNodeWrapper
+func goGossamerV8HostRetainNodeWrapper(
+	executionID C.uint64_t,
+	document C.uint64_t,
+	node C.uint32_t,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		lifetimes, ok := host.(browser.NodeWrapperLifetimeHost)
+		if !ok {
+			return fmt.Errorf("V8 host does not support node wrapper lifetimes")
+		}
+		return lifetimes.RetainNodeWrapper(browserNodeHandle(document, node))
+	}, executionID)
+}
+
 //export goGossamerV8HostQueueCallback
 func goGossamerV8HostQueueCallback(executionID C.uint64_t, callback C.uint64_t, errorOut **C.char) C.int {
 	return runHostCall(errorOut, func(host browser.Host) error {

@@ -326,11 +326,26 @@ func (page *Page) commitNavigationDocument(
 		}
 		return nil
 	}
+	generation := page.nextDocumentGeneration + 1
+	replacementLifetimes, lifetimeErr := newNodeLifetimeState(
+		page.Realm.Ledger(),
+		prepared.document,
+		generation,
+	)
+	if lifetimeErr != nil {
+		page.failNavigationLocked(lifetimeErr)
+		page.mutex.Unlock()
+		if replacementScript != nil {
+			_ = replacementScript.Close()
+		}
+		return lifetimeErr
+	}
 	oldScript := page.script
+	oldLifetimes := page.nodeLifetimes
 	timers := page.takeTimersLocked()
 	page.script = replacementScript
-	page.nextDocumentGeneration++
-	generation := page.nextDocumentGeneration
+	page.nodeLifetimes = replacementLifetimes
+	page.nextDocumentGeneration = generation
 	page.document = prepared.document
 	page.documentGeneration = generation
 	page.location = cloneURL(prepared.location)
@@ -354,6 +369,9 @@ func (page *Page) commitNavigationDocument(
 	cleanupErr := page.releaseTimers(timers)
 	if oldScript != nil {
 		cleanupErr = errors.Join(cleanupErr, oldScript.Close())
+	}
+	if oldLifetimes != nil {
+		cleanupErr = errors.Join(cleanupErr, oldLifetimes.close())
 	}
 	if cleanupErr != nil {
 		page.mutex.Lock()

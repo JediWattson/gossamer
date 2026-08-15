@@ -22,6 +22,7 @@ type Page struct {
 
 	mutex                  sync.RWMutex
 	document               *dom.Document
+	nodeLifetimes          *nodeLifetimeState
 	documentGeneration     DocumentGeneration
 	nextDocumentGeneration DocumentGeneration
 	location               *url.URL
@@ -45,13 +46,18 @@ func newPage(
 	script JSRealm,
 	document *dom.Document,
 	location *url.URL,
-) *Page {
+) (*Page, error) {
+	lifetimes, err := newNodeLifetimeState(realm.Ledger(), document, 1)
+	if err != nil {
+		return nil, err
+	}
 	return &Page{
 		ID:                     id,
 		Realm:                  realm,
 		browser:                browser,
 		script:                 script,
 		document:               document,
+		nodeLifetimes:          lifetimes,
 		documentGeneration:     1,
 		nextDocumentGeneration: 1,
 		location:               cloneURL(location),
@@ -59,7 +65,7 @@ func newPage(
 		viewport:               render.DefaultViewport,
 		timers:                 make(map[TimerID]*pageTimer),
 		dirty:                  true,
-	}
+	}, nil
 }
 
 func (page *Page) Document() *dom.Document {
@@ -137,6 +143,44 @@ func (page *Page) Dirty() bool {
 	dirty := page.dirty || page.renderedVersion != page.document.Version()
 	page.mutex.RUnlock()
 	return dirty
+}
+
+// RetainNodeWrapper adds one numeric wrapper root to the current document's
+// wrapper region. Repeated retention is idempotent because the engine cache
+// creates at most one weak wrapper per NodeHandle.
+func (page *Page) RetainNodeWrapper(handle NodeHandle) error {
+	if page == nil {
+		return fmt.Errorf("browser: nil page")
+	}
+	page.mutex.Lock()
+	defer page.mutex.Unlock()
+	if page.closed {
+		return ErrPageClosed
+	}
+	if page.nodeLifetimes == nil || handle.Document != page.documentGeneration {
+		return ErrStaleNodeHandle
+	}
+	if _, ok := page.document.Resolve(handle.Node); !ok {
+		return dom.ErrUnknownNode
+	}
+	return page.nodeLifetimes.retainWrapper(handle)
+}
+
+// ReleaseNodeWrappers removes weak wrappers reported by an engine GC and
+// reclaims detached Go nodes whose wrapper claim was their final owner.
+func (page *Page) ReleaseNodeWrappers(handles []NodeHandle) error {
+	if page == nil {
+		return fmt.Errorf("browser: nil page")
+	}
+	page.mutex.Lock()
+	defer page.mutex.Unlock()
+	if page.closed {
+		return ErrPageClosed
+	}
+	if page.nodeLifetimes == nil {
+		return nil
+	}
+	return page.nodeLifetimes.releaseWrappers(handles)
 }
 
 // Render synchronously renders the current document through the existing
@@ -239,13 +283,19 @@ func (page *Page) Close() error {
 	timers := page.takeTimersLocked()
 	script := page.script
 	page.script = nil
+	lifetimes := page.nodeLifetimes
+	page.nodeLifetimes = nil
 	page.mutex.Unlock()
 	timerErr := page.releaseTimers(timers)
 	var scriptErr error
 	if script != nil {
 		scriptErr = script.Close()
 	}
-	return errors.Join(timerErr, scriptErr, page.Realm.Close())
+	var lifetimeErr error
+	if lifetimes != nil {
+		lifetimeErr = lifetimes.close()
+	}
+	return errors.Join(timerErr, scriptErr, lifetimeErr, page.Realm.Close())
 }
 
 func (page *Page) renderLocked(onlyIfDirty bool) error {

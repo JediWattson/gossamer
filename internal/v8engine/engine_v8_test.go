@@ -266,11 +266,11 @@ func TestStockV8DOMWrapperClickMutatesThroughQueuedCallbackAndPaint(t *testing.T
 	}
 
 	ledgerBeforeGC := browserRuntime.Ledger().Stats()
-	if err := realm.CollectGarbage(); err != nil {
+	if err := realm.CollectGarbage(page); err != nil {
 		t.Fatalf("CollectGarbage: %v", err)
 	}
 	if ledgerAfterGC := browserRuntime.Ledger().Stats(); ledgerAfterGC != ledgerBeforeGC {
-		t.Fatalf("V8 wrapper collection changed Go ARC: before=%#v after=%#v", ledgerBeforeGC, ledgerAfterGC)
+		t.Fatalf("connected wrapper collection boundary: before=%#v after=%#v", ledgerBeforeGC, ledgerAfterGC)
 	}
 	afterGC, err := realm.Profile()
 	if err != nil {
@@ -374,6 +374,7 @@ func TestStockV8NodeMutationChurnPreservesOwnershipBoundaries(t *testing.T) {
 	}
 	document := page.Document()
 	initialNodes := document.Store().Len()
+	initialLiveNodes := document.Store().LiveLen()
 	baselineLedger := browserRuntime.Ledger().Stats()
 	baselineProfile, err := realm.Profile()
 	if err != nil {
@@ -476,12 +477,13 @@ func TestStockV8NodeMutationChurnPreservesOwnershipBoundaries(t *testing.T) {
 	}
 
 	afterRenderLedger := browserRuntime.Ledger().Stats()
-	if afterRenderLedger.ObjectsCreated-baselineLedger.ObjectsCreated != 2 ||
+	if afterRenderLedger.ObjectsCreated-baselineLedger.ObjectsCreated != createdNodes+2 ||
 		afterRenderLedger.ObjectsDestroyed-baselineLedger.ObjectsDestroyed != 2 ||
-		afterRenderLedger.LiveObjects != baselineLedger.LiveObjects ||
-		afterRenderLedger.TaskLocalAllocations-baselineLedger.TaskLocalAllocations != 1 ||
+		afterRenderLedger.LiveObjects-baselineLedger.LiveObjects != createdNodes ||
+		afterRenderLedger.TaskLocalAllocations-baselineLedger.TaskLocalAllocations != createdNodes+1 ||
 		afterRenderLedger.PublishOperations-baselineLedger.PublishOperations != 2 ||
-		afterRenderLedger.TransferOperations-baselineLedger.TransferOperations != 2 {
+		afterRenderLedger.TransferOperations-baselineLedger.TransferOperations != 2 ||
+		afterRenderLedger.PersistentObjects-baselineLedger.PersistentObjects != createdNodes {
 		t.Fatalf("churn crossed unexpected ARC boundaries: before=%#v after=%#v", baselineLedger, afterRenderLedger)
 	}
 	afterRenderProfile, err := realm.Profile()
@@ -497,11 +499,18 @@ func TestStockV8NodeMutationChurnPreservesOwnershipBoundaries(t *testing.T) {
 	}
 
 	ledgerBeforeGC := browserRuntime.Ledger().Stats()
-	if err := realm.CollectGarbage(); err != nil {
+	if err := realm.CollectGarbage(page); err != nil {
 		t.Fatalf("CollectGarbage: %v", err)
 	}
-	if ledgerAfterGC := browserRuntime.Ledger().Stats(); ledgerAfterGC != ledgerBeforeGC {
-		t.Fatalf("V8 wrapper collection changed Go ARC: before=%#v after=%#v", ledgerBeforeGC, ledgerAfterGC)
+	ledgerAfterGC := browserRuntime.Ledger().Stats()
+	const connectedCreatedNodes = 2
+	const reclaimedDetachedNodes = createdNodes - connectedCreatedNodes
+	if ledgerAfterGC.ObjectsDestroyed-ledgerBeforeGC.ObjectsDestroyed != reclaimedDetachedNodes ||
+		ledgerAfterGC.LiveObjects-baselineLedger.LiveObjects != connectedCreatedNodes ||
+		ledgerAfterGC.PersistentObjects-baselineLedger.PersistentObjects != connectedCreatedNodes ||
+		document.Store().LiveLen()-initialLiveNodes != connectedCreatedNodes {
+		t.Fatalf("detached-node collection boundary: before=%#v after=%#v liveNodes=%d",
+			ledgerBeforeGC, ledgerAfterGC, document.Store().LiveLen()-initialLiveNodes)
 	}
 	afterGC, err := realm.Profile()
 	if err != nil {

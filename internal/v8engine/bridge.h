@@ -56,6 +56,8 @@ typedef struct gossamer_v8_host {
   int (*remove_attribute)(uint64_t execution_id, uint64_t document,
                           uint32_t node, const char *name, size_t name_length,
                           char **error_out);
+  int (*retain_node_wrapper)(uint64_t execution_id, uint64_t document,
+                             uint32_t node, char **error_out);
   int (*queue_callback)(uint64_t execution_id, uint64_t callback,
                         char **error_out);
   int (*queue_microtask)(uint64_t execution_id, uint64_t callback,
@@ -65,6 +67,11 @@ typedef struct gossamer_v8_host {
                      char **error_out);
   int (*clear_timeout)(uint64_t execution_id, uint64_t timer, char **error_out);
 } gossamer_v8_host;
+
+typedef struct gossamer_v8_node_handle {
+  uint64_t document;
+  uint32_t node;
+} gossamer_v8_node_handle;
 
 typedef struct gossamer_v8_heap_statistics {
   uint64_t total_heap_size;
@@ -132,6 +139,9 @@ GOSSAMER_V8_EXPORT int gossamer_v8_realm_drain_microtasks(
     gossamer_v8_realm *realm, const gossamer_v8_host *host, char **error_out);
 GOSSAMER_V8_EXPORT int
 gossamer_v8_realm_collect_garbage(gossamer_v8_realm *realm, char **error_out);
+GOSSAMER_V8_EXPORT size_t gossamer_v8_realm_take_collected_wrappers(
+    gossamer_v8_realm *realm, gossamer_v8_node_handle *handles_out,
+    size_t capacity);
 GOSSAMER_V8_EXPORT int
 gossamer_v8_realm_profile(gossamer_v8_realm *realm,
                           gossamer_v8_profile *profile_out, char **error_out);

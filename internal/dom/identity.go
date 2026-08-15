@@ -40,6 +40,14 @@ type NodeStore struct {
 	ids   map[*Node]NodeID
 }
 
+// IdentitySnapshot is the stable-ID graph shape needed by the browser's
+// semantic ownership ledger. Parent is zero for the document root and for
+// detached subtree roots.
+type IdentitySnapshot struct {
+	ID     NodeID
+	Parent NodeID
+}
+
 // IndexDocument assigns deterministic pre-order IDs to an existing DOM tree.
 func IndexDocument(root *Node) (*Document, error) {
 	if root == nil || root.Type != DocumentNode {
@@ -111,6 +119,87 @@ func (document *Document) ID(node *Node) (NodeID, bool) {
 		return InvalidNodeID, false
 	}
 	return document.store.ID(node)
+}
+
+// IdentitySnapshots returns every currently retained node in stable-ID order.
+// It exposes identity and tree edges without leaking backing pointers across
+// the browser/runtime ownership boundary.
+func (document *Document) IdentitySnapshots() []IdentitySnapshot {
+	if document == nil || document.store == nil {
+		return nil
+	}
+	document.store.mutex.RLock()
+	defer document.store.mutex.RUnlock()
+	result := make([]IdentitySnapshot, 0, len(document.store.nodes))
+	for index, node := range document.store.nodes {
+		if node == nil {
+			continue
+		}
+		parent := InvalidNodeID
+		if node.Parent != nil {
+			parent = document.store.ids[node.Parent]
+		}
+		result = append(result, IdentitySnapshot{ID: NodeID(index + 1), Parent: parent})
+	}
+	return result
+}
+
+// Reclaim removes detached nodes from the logical identity store without
+// reusing their IDs. Every supplied node must be outside the connected
+// document tree; callers normally derive this set from final region releases.
+func (document *Document) Reclaim(ids []NodeID) error {
+	if document == nil || document.store == nil {
+		return ErrInvalidDocument
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	document.store.mutex.Lock()
+	defer document.store.mutex.Unlock()
+
+	reclaiming := make(map[*Node]struct{}, len(ids))
+	nodes := make([]*Node, 0, len(ids))
+	root, rootOK := document.store.resolveLocked(document.root)
+	if !rootOK {
+		return fmt.Errorf("%w: %d", ErrUnknownNode, document.root)
+	}
+	for _, id := range ids {
+		node, ok := document.store.resolveLocked(id)
+		if !ok {
+			return fmt.Errorf("%w: %d", ErrUnknownNode, id)
+		}
+		for ancestor := node; ancestor != nil; ancestor = ancestor.Parent {
+			if ancestor == root {
+				return fmt.Errorf("%w: cannot reclaim connected node %d", ErrInvalidTree, id)
+			}
+		}
+		if _, exists := reclaiming[node]; exists {
+			continue
+		}
+		reclaiming[node] = struct{}{}
+		nodes = append(nodes, node)
+	}
+
+	for _, node := range nodes {
+		if node.Parent != nil {
+			if _, parentReclaimed := reclaiming[node.Parent]; !parentReclaimed {
+				node.Parent.removeChild(node)
+			}
+		}
+		for _, child := range node.Children {
+			if _, childReclaimed := reclaiming[child]; !childReclaimed {
+				child.Parent = nil
+			}
+		}
+	}
+	for _, node := range nodes {
+		id := document.store.ids[node]
+		delete(document.store.ids, node)
+		document.store.nodes[int(id)-1] = nil
+		node.Parent = nil
+		node.Children = nil
+	}
+	return nil
 }
 
 // ElementByID returns the first connected element whose id attribute exactly
@@ -570,6 +659,18 @@ func (store *NodeStore) Len() int {
 	}
 	store.mutex.RLock()
 	length := len(store.nodes)
+	store.mutex.RUnlock()
+	return length
+}
+
+// LiveLen reports retained nodes rather than the monotonic NodeID high-water
+// mark returned by Len.
+func (store *NodeStore) LiveLen() int {
+	if store == nil {
+		return 0
+	}
+	store.mutex.RLock()
+	length := len(store.ids)
 	store.mutex.RUnlock()
 	return length
 }

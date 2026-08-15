@@ -230,6 +230,45 @@ func TestDocumentIndexedNodeChurnPreservesIdentityAndOrder(t *testing.T) {
 	}
 }
 
+func TestDocumentReclaimDropsDetachedNodesWithoutReusingIDs(t *testing.T) {
+	document, err := IndexDocument(NewDocument())
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline := document.Store().LiveLen()
+	parent, err := document.CreateElement("div")
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := document.CreateTextNode("temporary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := document.AppendNode(parent, child); err != nil {
+		t.Fatal(err)
+	}
+	highWater := document.Store().Len()
+	if err := document.Reclaim([]NodeID{parent, child}); err != nil {
+		t.Fatal(err)
+	}
+	if document.Store().LiveLen() != baseline || document.Store().Len() != highWater {
+		t.Fatalf("store after reclaim = live:%d high-water:%d", document.Store().LiveLen(), document.Store().Len())
+	}
+	if _, ok := document.Resolve(parent); ok {
+		t.Fatal("reclaimed parent still resolves")
+	}
+	next, err := document.CreateElement("span")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next <= child {
+		t.Fatalf("NodeID was reused: next=%d child=%d", next, child)
+	}
+	if err := document.Reclaim([]NodeID{document.RootID()}); !errors.Is(err, ErrInvalidTree) {
+		t.Fatalf("connected root reclaim = %v, want %v", err, ErrInvalidTree)
+	}
+}
+
 func identityFixture() (root, html, body, paragraph, text *Node) {
 	root = NewDocument()
 	html = NewElement("html")

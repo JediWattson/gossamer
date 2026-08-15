@@ -371,6 +371,62 @@ func (ledger *Ledger) Release(objectID ObjectID, owner OwnerID) error {
 	return nil
 }
 
+// ReconcileRegion makes owner's claims exactly cover the graph reachable from
+// roots. It is the region-level counterpart to changing a semantic root set:
+// ordinary aliases and graph-edge churn remain ARC-free, while a wrapper cache
+// or document boundary can retain newly reachable objects and collect its
+// unreachable subgraph in one operation. The returned IDs are the objects
+// whose final claim disappeared.
+func (ledger *Ledger) ReconcileRegion(owner OwnerID, roots []ObjectID) ([]ObjectID, error) {
+	if ledger == nil {
+		return nil, fmt.Errorf("ownership: nil ledger")
+	}
+	ledger.mutex.Lock()
+	defer ledger.mutex.Unlock()
+	region, err := ledger.activeOwnerRegionLocked(owner)
+	if err != nil {
+		return nil, err
+	}
+	reachable, err := ledger.reachableLocked(roots)
+	if err != nil {
+		return nil, err
+	}
+	kept := make(map[ObjectID]struct{}, len(reachable))
+	for _, objectID := range reachable {
+		kept[objectID] = struct{}{}
+		object := ledger.objects[objectID]
+		if !ledger.addClaimLocked(object, region) {
+			continue
+		}
+		ledger.promoteStorageLocked(object, region)
+		ledger.stats.RetainOperations++
+		ledger.recordLocked(Event{
+			Kind:       ObjectRootRetained,
+			Object:     object.id,
+			Region:     object.region,
+			Owner:      region.owner,
+			References: referenceCount(object),
+		})
+	}
+
+	destroyed := make([]ObjectID, 0)
+	for _, objectID := range sortedObjectIDs(region.claims) {
+		if _, exists := kept[objectID]; exists {
+			continue
+		}
+		object := ledger.objects[objectID]
+		if object == nil || !object.alive {
+			delete(region.claims, objectID)
+			continue
+		}
+		ledger.releaseClaimLocked(object, region)
+		if !object.alive {
+			destroyed = append(destroyed, objectID)
+		}
+	}
+	return destroyed, nil
+}
+
 // CloseRegion performs one semantic bulk release of every claim held by the
 // region. Each object has at most one claim to remove.
 func (ledger *Ledger) CloseRegion(regionID RegionID) error {

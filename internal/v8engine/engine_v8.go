@@ -11,6 +11,7 @@ package v8engine
 import "C"
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -18,6 +19,7 @@ import (
 	"unsafe"
 
 	"github.com/JediWattson/gossamer/internal/browser"
+	"github.com/JediWattson/gossamer/internal/dom"
 )
 
 type Engine struct {
@@ -148,6 +150,9 @@ func (realm *Realm) Evaluate(host browser.Host, source browser.ScriptSource) err
 	if realm.isClosed || realm.pointer == nil {
 		return ErrRealmClosed
 	}
+	if err := realm.drainCollectedWrappersLocked(host); err != nil {
+		return err
+	}
 	var failure *C.char
 	var sourcePointer *C.char
 	if len(source.Source) != 0 {
@@ -159,6 +164,7 @@ func (realm *Realm) Evaluate(host browser.Host, source browser.ScriptSource) err
 	}
 	executionID := registerHostExecution(host)
 	defer unregisterHostExecution(executionID)
+	var operationErr error
 	if C.gossamer_v8_go_realm_evaluate(
 		realm.pointer,
 		C.uint64_t(executionID),
@@ -168,9 +174,9 @@ func (realm *Realm) Evaluate(host browser.Host, source browser.ScriptSource) err
 		C.size_t(len(source.URL)),
 		&failure,
 	) == 0 {
-		return takeError(failure)
+		operationErr = takeError(failure)
 	}
-	return nil
+	return errors.Join(operationErr, realm.drainCollectedWrappersLocked(host))
 }
 
 func (realm *Realm) DispatchEvent(host browser.Host, event browser.InputEvent) error {
@@ -182,9 +188,13 @@ func (realm *Realm) DispatchEvent(host browser.Host, event browser.InputEvent) e
 	if realm.isClosed || realm.pointer == nil {
 		return ErrRealmClosed
 	}
+	if err := realm.drainCollectedWrappersLocked(host); err != nil {
+		return err
+	}
 	executionID := registerHostExecution(host)
 	defer unregisterHostExecution(executionID)
 	var failure *C.char
+	var operationErr error
 	if C.gossamer_v8_go_realm_dispatch_event(
 		realm.pointer,
 		C.uint64_t(executionID),
@@ -196,9 +206,9 @@ func (realm *Realm) DispatchEvent(host browser.Host, event browser.InputEvent) e
 		C.int32_t(event.Button),
 		&failure,
 	) == 0 {
-		return takeError(failure)
+		operationErr = takeError(failure)
 	}
-	return nil
+	return errors.Join(operationErr, realm.drainCollectedWrappersLocked(host))
 }
 
 func (realm *Realm) Invoke(host browser.Host, callback browser.ValueHandle) error {
@@ -210,18 +220,22 @@ func (realm *Realm) Invoke(host browser.Host, callback browser.ValueHandle) erro
 	if realm.isClosed || realm.pointer == nil {
 		return ErrRealmClosed
 	}
+	if err := realm.drainCollectedWrappersLocked(host); err != nil {
+		return err
+	}
 	executionID := registerHostExecution(host)
 	defer unregisterHostExecution(executionID)
 	var failure *C.char
+	var operationErr error
 	if C.gossamer_v8_go_realm_invoke(
 		realm.pointer,
 		C.uint64_t(executionID),
 		C.uint64_t(callback),
 		&failure,
 	) == 0 {
-		return takeError(failure)
+		operationErr = takeError(failure)
 	}
-	return nil
+	return errors.Join(operationErr, realm.drainCollectedWrappersLocked(host))
 }
 
 func (realm *Realm) DrainMicrotasks(host browser.Host) error {
@@ -233,20 +247,24 @@ func (realm *Realm) DrainMicrotasks(host browser.Host) error {
 	if realm.isClosed || realm.pointer == nil {
 		return ErrRealmClosed
 	}
+	if err := realm.drainCollectedWrappersLocked(host); err != nil {
+		return err
+	}
 	executionID := registerHostExecution(host)
 	defer unregisterHostExecution(executionID)
 	var failure *C.char
+	var operationErr error
 	if C.gossamer_v8_go_realm_drain_microtasks(
 		realm.pointer,
 		C.uint64_t(executionID),
 		&failure,
 	) == 0 {
-		return takeError(failure)
+		operationErr = takeError(failure)
 	}
-	return nil
+	return errors.Join(operationErr, realm.drainCollectedWrappersLocked(host))
 }
 
-func (realm *Realm) CollectGarbage() error {
+func (realm *Realm) CollectGarbage(lifetimes ...browser.NodeWrapperLifetimeHost) error {
 	if realm == nil {
 		return ErrRealmClosed
 	}
@@ -259,7 +277,35 @@ func (realm *Realm) CollectGarbage() error {
 	if C.gossamer_v8_realm_collect_garbage(realm.pointer, &failure) == 0 {
 		return takeError(failure)
 	}
+	if len(lifetimes) != 0 {
+		return realm.drainCollectedWrappersLocked(lifetimes[0])
+	}
 	return nil
+}
+
+func (realm *Realm) drainCollectedWrappersLocked(host any) error {
+	count := int(C.gossamer_v8_realm_take_collected_wrappers(realm.pointer, nil, 0))
+	if count == 0 {
+		return nil
+	}
+	lifetimes, ok := host.(browser.NodeWrapperLifetimeHost)
+	if !ok {
+		return fmt.Errorf("v8engine: host cannot release %d collected DOM wrappers", count)
+	}
+	native := make([]C.gossamer_v8_node_handle, count)
+	taken := int(C.gossamer_v8_realm_take_collected_wrappers(
+		realm.pointer,
+		(*C.gossamer_v8_node_handle)(unsafe.Pointer(&native[0])),
+		C.size_t(len(native)),
+	))
+	handles := make([]browser.NodeHandle, 0, taken)
+	for _, handle := range native[:taken] {
+		handles = append(handles, browser.NodeHandle{
+			Document: browser.DocumentGeneration(handle.document),
+			Node:     dom.NodeID(handle.node),
+		})
+	}
+	return lifetimes.ReleaseNodeWrappers(handles)
 }
 
 func (realm *Realm) Profile() (RealmProfile, error) {

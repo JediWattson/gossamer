@@ -27,6 +27,8 @@ func (event Event) String() string {
 		return fmt.Sprintf("[ownership] unlink #%d -> #%d", event.Object, event.Target)
 	case ObjectBarrierRetained:
 		return fmt.Sprintf("[ownership] barrier retain #%d via #%d owner=%s region=%d refs=%d", event.Object, event.Target, event.Owner, event.Region, event.References)
+	case ObjectRootRetained:
+		return fmt.Sprintf("[ownership] root retain #%d owner=%s region=%d refs=%d", event.Object, event.Owner, event.Region, event.References)
 	default:
 		return fmt.Sprintf("[ownership] event:%d", event.Kind)
 	}
