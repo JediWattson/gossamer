@@ -17,8 +17,13 @@ type displayMode uint8
 const (
 	displayInline displayMode = iota
 	displayBlock
+	displayListItem
 	displayNone
 )
+
+func (display displayMode) isBlockLevel() bool {
+	return display == displayBlock || display == displayListItem
+}
 
 type textAlignment uint8
 
@@ -32,6 +37,16 @@ type computedLineHeight struct {
 	value    float64
 	absolute bool
 }
+
+type listStyleType uint8
+
+const (
+	listStyleDisc listStyleType = iota
+	listStyleCircle
+	listStyleSquare
+	listStyleDecimal
+	listStyleNone
+)
 
 func (lineHeight computedLineHeight) pixels(fontSize float64) float64 {
 	if lineHeight.absolute {
@@ -65,6 +80,7 @@ type computedStyle struct {
 	lineHeight    computedLineHeight
 	underline     bool
 	textAlign     textAlignment
+	listStyleType listStyleType
 	opacity       float64
 	width         length
 	height        length
@@ -173,6 +189,7 @@ func initialStyle(node *dom.Node, parent *styledNode) computedStyle {
 		style.lineHeight = parent.style.lineHeight
 		style.underline = parent.style.underline
 		style.textAlign = parent.style.textAlign
+		style.listStyleType = parent.style.listStyleType
 	}
 	if node == nil {
 		return style
@@ -186,8 +203,10 @@ func initialStyle(node *dom.Node, parent *styledNode) computedStyle {
 	}
 
 	switch node.Data {
-	case "html", "body", "address", "article", "aside", "blockquote", "div", "dl", "dt", "dd", "fieldset", "figcaption", "figure", "footer", "form", "header", "hgroup", "main", "nav", "ol", "li", "p", "pre", "section", "table", "ul", "h1", "h2", "h3", "h4", "h5", "h6":
+	case "html", "body", "address", "article", "aside", "blockquote", "div", "dl", "dt", "dd", "fieldset", "figcaption", "figure", "footer", "form", "header", "hgroup", "main", "nav", "ol", "p", "pre", "section", "table", "ul", "h1", "h2", "h3", "h4", "h5", "h6":
 		style.display = displayBlock
+	case "li":
+		style.display = displayListItem
 	case "noscript":
 		// Gossamer has no scripting engine, so body fallback content participates
 		// in normal flow. Treating the transparent element as a block keeps its
@@ -229,6 +248,11 @@ func initialStyle(node *dom.Node, parent *styledNode) computedStyle {
 		style.marginTop = px(style.fontSize)
 		style.marginBottom = px(style.fontSize)
 		style.paddingLeft = px(40)
+		if node.Data == "ol" {
+			style.listStyleType = listStyleDecimal
+		} else {
+			style.listStyleType = listStyleDisc
+		}
 	case "blockquote":
 		style.marginTop = px(style.fontSize)
 		style.marginRight = px(40)
@@ -430,6 +454,8 @@ func applyDeclaration(style *computedStyle, property, source string, viewport Vi
 			style.display = displayNone
 		case "block":
 			style.display = displayBlock
+		case "list-item":
+			style.display = displayListItem
 		case "inline", "inline-block":
 			style.display = displayInline
 		}
@@ -515,6 +541,10 @@ func applyDeclaration(style *computedStyle, property, source string, viewport Vi
 		case "left", "start", "justify":
 			style.textAlign = alignLeft
 		}
+	case "list-style", "list-style-type":
+		if parsed, ok := parseListStyleType(value); ok {
+			style.listStyleType = parsed
+		}
 	case "margin":
 		if values, ok := parseBoxLengths(value, style.fontSize, viewport); ok {
 			style.marginTop, style.marginRight, style.marginBottom, style.marginLeft = values[0], values[1], values[2], values[3]
@@ -533,6 +563,24 @@ func applyDeclaration(style *computedStyle, property, source string, viewport Vi
 			}
 		}
 	}
+}
+
+func parseListStyleType(source string) (listStyleType, bool) {
+	for _, token := range strings.Fields(source) {
+		switch token {
+		case "disc":
+			return listStyleDisc, true
+		case "circle":
+			return listStyleCircle, true
+		case "square":
+			return listStyleSquare, true
+		case "decimal":
+			return listStyleDecimal, true
+		case "none":
+			return listStyleNone, true
+		}
+	}
+	return listStyleDisc, false
 }
 
 func attribute(node *dom.Node, name string) (string, bool) {

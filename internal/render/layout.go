@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"image"
 	"math"
+	"strconv"
+	"strings"
 	"unicode"
 
 	"github.com/JediWattson/gossamer/internal/dom"
@@ -107,12 +109,13 @@ func (context *layoutContext) layoutBlock(node *styledNode, containingX, content
 		decoded := context.images[node.node]
 		imageWidth, imageHeight, ok := context.replacedDimensions(style, decoded, availableWidth)
 		if !ok {
-			return &Box{
+			box := &Box{
 				Node:          node.node,
 				Bounds:        Rect{X: containingX + left, Y: contentY, Width: padding.Left + padding.Right, Height: padding.Top + padding.Bottom},
 				ContentBounds: Rect{X: containingX + left + padding.Left, Y: contentY + padding.Top},
 				Padding:       padding,
-			}, nil
+			}
+			return context.finalizeBlock(node, box)
 		}
 		outerWidth := imageWidth + padding.Left + padding.Right
 		remaining := availableWidth - outerWidth - left - right
@@ -128,14 +131,15 @@ func (context *layoutContext) layoutBlock(node *styledNode, containingX, content
 			Kind:  ImageFragmentKind,
 			Image: ImageFragment{Node: node.node, Image: decoded, Bounds: contentBounds, Opacity: 1},
 		}
-		return &Box{
+		box := &Box{
 			Node:          node.node,
 			Bounds:        bounds,
 			ContentBounds: contentBounds,
 			Padding:       padding,
 			Fragments:     []InlineFragment{fragment},
 			flow:          []flowItem{{fragment: fragment}},
-		}, nil
+		}
+		return context.finalizeBlock(node, box)
 	}
 
 	width := availableWidth - left - right - padding.Left - padding.Right
@@ -175,7 +179,7 @@ func (context *layoutContext) layoutBlock(node *styledNode, containingX, content
 			index++
 			continue
 		}
-		if child.style.display == displayBlock {
+		if child.style.display.isBlockLevel() {
 			topMargin := resolveLength(child.style.marginTop, width, context.viewport, 0)
 			gap := math.Max(previousBottomMargin, topMargin)
 			// A first block child's top margin collapses through an auto-height
@@ -197,7 +201,7 @@ func (context *layoutContext) layoutBlock(node *styledNode, containingX, content
 		}
 
 		end := index
-		for end < len(node.children) && node.children[end].style.display != displayBlock {
+		for end < len(node.children) && !node.children[end].style.display.isBlockLevel() {
 			end++
 		}
 		fragments, height, err := context.layoutInline(node.children[index:end], box.ContentBounds.X, cursorY, width, node.style.textAlign)
@@ -242,7 +246,141 @@ func (context *layoutContext) layoutBlock(node *styledNode, containingX, content
 	}
 	box.ContentBounds.Height = contentHeight
 	box.Bounds.Height = padding.Top + box.ContentBounds.Height + padding.Bottom
+	return context.finalizeBlock(node, box)
+}
+
+func (context *layoutContext) finalizeBlock(node *styledNode, box *Box) (*Box, error) {
+	if node.style.display == displayListItem && node.style.listStyleType != listStyleNone {
+		if err := context.addListMarker(node, box); err != nil {
+			return nil, err
+		}
+	}
 	return box, nil
+}
+
+func (context *layoutContext) addListMarker(node *styledNode, box *Box) error {
+	markerText := context.listMarkerText(node.node, node.style.listStyleType)
+	if markerText == "" {
+		return nil
+	}
+	metrics, err := context.fonts.metrics(markerText, node.style.fontSize, node.style.fontWeight)
+	if err != nil {
+		return err
+	}
+	baseline, hasBaseline := firstBoxBaseline(box)
+	if !hasBaseline {
+		lineHeight := math.Max(node.style.lineHeight.pixels(node.style.fontSize), metrics.ascent+metrics.descent)
+		leading := math.Max(0, lineHeight-metrics.ascent-metrics.descent)
+		baseline = box.ContentBounds.Y + leading/2 + metrics.ascent
+		if box.ContentBounds.Height < lineHeight && node.style.height.unit == lengthAuto {
+			box.ContentBounds.Height = lineHeight
+			box.Bounds.Height = box.Padding.Top + lineHeight + box.Padding.Bottom
+		}
+	}
+	marker := TextFragment{
+		Node:       node.node,
+		Text:       markerText,
+		X:          box.Bounds.X - node.style.fontSize*.5 - metrics.width,
+		BaselineY:  baseline,
+		Width:      metrics.width,
+		Height:     node.style.lineHeight.pixels(node.style.fontSize),
+		FontSize:   node.style.fontSize,
+		FontWeight: node.style.fontWeight,
+		Color:      node.style.color,
+	}
+	fragment := InlineFragment{Kind: TextFragmentKind, Text: marker}
+	box.flow = append([]flowItem{{fragment: fragment}}, box.flow...)
+	return nil
+}
+
+func firstBoxBaseline(box *Box) (float64, bool) {
+	if box == nil {
+		return 0, false
+	}
+	for _, item := range box.flow {
+		if item.box != nil {
+			if baseline, ok := firstBoxBaseline(item.box); ok {
+				return baseline, true
+			}
+			continue
+		}
+		switch item.fragment.Kind {
+		case TextFragmentKind:
+			return item.fragment.Text.BaselineY, true
+		case ImageFragmentKind:
+			return item.fragment.Image.Bounds.Y + item.fragment.Image.Bounds.Height, true
+		}
+	}
+	for _, child := range box.Children {
+		if baseline, ok := firstBoxBaseline(child); ok {
+			return baseline, true
+		}
+	}
+	return 0, false
+}
+
+func (context *layoutContext) listMarkerText(node *dom.Node, marker listStyleType) string {
+	switch marker {
+	case listStyleDisc:
+		return "•"
+	case listStyleCircle:
+		return "◦"
+	case listStyleSquare:
+		return "▪"
+	case listStyleDecimal:
+		return strconv.Itoa(context.generatedListItemValue(node)) + "."
+	default:
+		return ""
+	}
+}
+
+func (context *layoutContext) generatedListItemValue(node *dom.Node) int {
+	if node == nil || node.Parent == nil {
+		return 1
+	}
+	container := node.Parent
+	step := 1
+	start := 1
+	if container.Type == dom.ElementNode && container.Data == "ol" {
+		if _, reversed := attribute(container, "reversed"); reversed {
+			step = -1
+			start = context.generatedListItemCount(container)
+		}
+		if source, ok := attribute(container, "start"); ok {
+			if parsed, err := strconv.Atoi(strings.TrimSpace(source)); err == nil {
+				start = parsed
+			}
+		}
+	}
+	value := start
+	for _, child := range container.Children {
+		childStyle, ok := context.styles[child]
+		if !ok || childStyle.display != displayListItem {
+			continue
+		}
+		if container.Type == dom.ElementNode && container.Data == "ol" && child.Type == dom.ElementNode && child.Data == "li" {
+			if source, ok := attribute(child, "value"); ok {
+				if parsed, err := strconv.Atoi(strings.TrimSpace(source)); err == nil {
+					value = parsed
+				}
+			}
+		}
+		if child == node {
+			return value
+		}
+		value += step
+	}
+	return value
+}
+
+func (context *layoutContext) generatedListItemCount(container *dom.Node) int {
+	count := 0
+	for _, child := range container.Children {
+		if style, ok := context.styles[child]; ok && style.display == displayListItem {
+			count++
+		}
+	}
+	return count
 }
 
 func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width float64, alignment textAlignment) ([]InlineFragment, float64, error) {
@@ -492,7 +630,7 @@ func (builder *inlineTokenBuilder) add(node *styledNode, inheritedOpacity float6
 		return
 	}
 	for _, child := range node.children {
-		if child.style.display != displayBlock {
+		if !child.style.display.isBlockLevel() {
 			builder.add(child, opacity)
 		}
 	}

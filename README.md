@@ -47,6 +47,7 @@ fallback content is rendered. The renderer currently implements a focused CSS
 and layout subset: complex selectors, common colors and lengths, block flow,
 inline text and image wrapping, intrinsic and author-specified image dimensions,
 content-box width and height constraints, margins, padding, text alignment,
-line height, bundled regular/bold fonts, links, backgrounds, and opacity. CSS
-imports, full media-query evaluation, generated content, borders, floats,
-advanced display modes, broken-image UI, SVG, and AVIF are not implemented yet.
+line height, unordered and decimal list markers, bundled regular/bold fonts,
+links, backgrounds, and opacity. CSS imports, full media-query evaluation,
+generated content, borders, floats, advanced display modes, broken-image UI,
+SVG, and AVIF are not implemented yet.
