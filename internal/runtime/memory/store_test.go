@@ -299,6 +299,72 @@ func TestPublishMakesOutgoingRegionGraphImmutableAndShared(t *testing.T) {
 	}
 }
 
+func TestPromoteCopiesOnlyReachableCellsIntoSharedRegion(t *testing.T) {
+	t.Parallel()
+
+	store := memory.NewStore(nil)
+	defer store.Close()
+	owner := realmOwner(91)
+	reader := realmOwner(92)
+	region := mustRegion(t, store, owner)
+	a := mustAlloc(t, store, owner, region)
+	b := mustAlloc(t, store, owner, region)
+	c := mustAlloc(t, store, owner, region)
+	if err := store.Set(owner, a, 0, memory.RefValue(b)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Set(owner, b, 0, memory.RefValue(c)); err != nil {
+		t.Fatal(err)
+	}
+
+	promoted, err := store.Promote(owner, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(promoted) != 1 || promoted[0] == b || promoted[0].Region == region {
+		t.Fatalf("Promote(B) = %#v", promoted)
+	}
+	promotedB := promoted[0]
+	promotedCell, err := store.Deref(reader, promotedB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(promotedCell.Fields) != 1 || !promotedCell.Fields[0].IsRef() {
+		t.Fatalf("promoted B = %#v", promotedCell)
+	}
+	promotedC := promotedCell.Fields[0].Ref()
+	if promotedC.Region != promotedB.Region || promotedC == c {
+		t.Fatalf("promoted C = %s, promoted B = %s, original C = %s", promotedC, promotedB, c)
+	}
+	if snapshot, err := store.Region(promotedB.Region); err != nil {
+		t.Fatal(err)
+	} else if snapshot.State != memory.RegionPublished || snapshot.Owner.Kind != ownership.OwnerShared {
+		t.Fatalf("promoted region = %#v", snapshot)
+	}
+	if err := store.CheckInvariants(); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.ReleaseOwner(owner); err != nil {
+		t.Fatal(err)
+	}
+	for _, original := range []memory.Ref{a, b, c} {
+		if _, err := store.Deref(owner, original); !errors.Is(err, memory.ErrStaleRef) {
+			t.Errorf("original %s after release = %v, want ErrStaleRef", original, err)
+		}
+	}
+	if _, err := store.Deref(reader, promotedB); err != nil {
+		t.Fatalf("promoted B did not survive source release: %v", err)
+	}
+	stats := store.Stats()
+	if stats.LiveCells != 2 || stats.LiveRegions != 1 {
+		t.Fatalf("Stats() after source release = %#v, want only B' and C'", stats)
+	}
+	if err := store.CheckInvariants(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestCopyClonesCyclesWithoutSharingMutableCells(t *testing.T) {
 	t.Parallel()
 

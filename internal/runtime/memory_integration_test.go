@@ -255,3 +255,112 @@ func TestMicrotaskCaptureIsBorrowedAndDoesNotEscapeTaskRegion(t *testing.T) {
 		t.Fatalf("implicit microtask escape error = %v, want ErrStaleRef", captureErr)
 	}
 }
+
+func TestMicrotaskTransferPromotesSubgraphAndReleasesOriginalRegion(t *testing.T) {
+	t.Parallel()
+
+	realm, err := browserruntime.NewRealm(101, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer realm.Close()
+	var a memory.Ref
+	var b memory.Ref
+	var c memory.Ref
+	var promotedB memory.Ref
+	var promotedC memory.Ref
+	var microtaskRan bool
+	if _, err := realm.EnqueueTask(func(task *browserruntime.TaskContext) error {
+		var allocErr error
+		a, allocErr = task.NewCell()
+		if allocErr != nil {
+			return allocErr
+		}
+		b, allocErr = task.NewCell()
+		if allocErr != nil {
+			return allocErr
+		}
+		c, allocErr = task.NewCell()
+		if allocErr != nil {
+			return allocErr
+		}
+		if err := task.Set(a, 0, memory.RefValue(b)); err != nil {
+			return err
+		}
+		if err := task.Set(b, 0, memory.RefValue(c)); err != nil {
+			return err
+		}
+		if _, err := task.QueueMicrotaskSend(func(*browserruntime.TaskContext) error {
+			t.Fatal("unqualified private microtask send executed")
+			return nil
+		}, b); !errors.Is(err, memory.ErrExplicitSendRequired) {
+			t.Fatalf("QueueMicrotaskSend(private) error = %v, want ErrExplicitSendRequired", err)
+		}
+		_, err := task.QueueMicrotaskTransfer(func(microtask *browserruntime.TaskContext) error {
+			microtaskRan = true
+			if len(microtask.Refs) != 1 || microtask.Refs[0] != b {
+				t.Fatalf("microtask refs = %#v, want [%s]", microtask.Refs, b)
+			}
+			if _, err := microtask.Deref(b); err != nil {
+				return err
+			}
+			var promoteErr error
+			promotedB, promoteErr = microtask.PromoteRef(b)
+			if promoteErr != nil {
+				return promoteErr
+			}
+			cell, err := microtask.Deref(promotedB)
+			if err != nil {
+				return err
+			}
+			if len(cell.Fields) != 1 || !cell.Fields[0].IsRef() {
+				t.Fatalf("promoted B = %#v", cell)
+			}
+			promotedC = cell.Fields[0].Ref()
+			return realm.Store().CheckInvariants()
+		}, b)
+		if err != nil {
+			return err
+		}
+		if _, err := task.Deref(a); !errors.Is(err, memory.ErrRegionInTransit) {
+			t.Fatalf("stack borrow after transfer = %v, want ErrRegionInTransit", err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !microtaskRan {
+		t.Fatal("transferred microtask did not run")
+	}
+	for _, original := range []memory.Ref{a, b, c} {
+		if _, err := realm.Store().Deref(realm.Owner(), original); !errors.Is(err, memory.ErrStaleRef) {
+			t.Errorf("original %s after microtask = %v, want ErrStaleRef", original, err)
+		}
+	}
+	if promotedB == (memory.Ref{}) || promotedC == (memory.Ref{}) {
+		t.Fatalf("promoted refs = B:%s C:%s", promotedB, promotedC)
+	}
+	for _, promoted := range []memory.Ref{promotedB, promotedC} {
+		if _, err := realm.Store().Deref(realm.Owner(), promoted); err != nil {
+			t.Errorf("published %s after microtask = %v", promoted, err)
+		}
+	}
+	region, err := realm.Store().Region(promotedB.Region)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if region.State != memory.RegionPublished || region.Owner.Kind != ownership.OwnerShared {
+		t.Fatalf("promoted region = %#v", region)
+	}
+	stats := realm.Store().Stats()
+	if stats.LiveCells != 2 || stats.LiveRegions != 1 {
+		t.Fatalf("Stats() = %#v, want only promoted B and C", stats)
+	}
+	if err := realm.Store().CheckInvariants(); err != nil {
+		t.Fatal(err)
+	}
+}

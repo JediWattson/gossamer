@@ -84,35 +84,96 @@ func (context *TaskContext) PublishRefs(refs ...memory.Ref) error {
 	return context.Realm.store.Publish(context.Owner, refs...)
 }
 
+// PromoteRef explicitly copies one reachable private graph into immutable
+// shared storage and returns the new root. The original Ref remains private.
+func (context *TaskContext) PromoteRef(ref memory.Ref) (memory.Ref, error) {
+	refs, err := context.PromoteRefs(ref)
+	if err != nil {
+		return memory.Ref{}, err
+	}
+	return refs[0], nil
+}
+
+// PromoteRefs is the multi-root form of PromoteRef. Shared subgraphs are
+// copied once and preserve aliasing across the returned roots.
+func (context *TaskContext) PromoteRefs(refs ...memory.Ref) ([]memory.Ref, error) {
+	if context == nil || context.Realm == nil {
+		return nil, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.Promote(context.Owner, refs...)
+}
+
 // Send enqueues already-published refs in another Realm. Private refs fail.
 func (context *TaskContext) Send(target *Realm, run TaskFunc, refs ...memory.Ref) (TaskID, error) {
-	return context.enqueueRefs(target, memorySend, run, refs)
+	return context.enqueueRefs(target, targetQueue(target), memorySend, run, refs)
 }
 
 // Transfer moves private regions through the target Realm's task queue.
 func (context *TaskContext) Transfer(target *Realm, run TaskFunc, refs ...memory.Ref) (TaskID, error) {
-	return context.enqueueRefs(target, memoryTransfer, run, refs)
+	return context.enqueueRefs(target, targetQueue(target), memoryTransfer, run, refs)
 }
 
 // Publish explicitly publishes refs before enqueueing them in target.
 func (context *TaskContext) Publish(target *Realm, run TaskFunc, refs ...memory.Ref) (TaskID, error) {
-	return context.enqueueRefs(target, memoryPublish, run, refs)
+	return context.enqueueRefs(target, targetQueue(target), memoryPublish, run, refs)
 }
 
 // Copy deep-copies the reachable Cell graph into queue-owned storage before
 // enqueueing it in target.
 func (context *TaskContext) Copy(target *Realm, run TaskFunc, refs ...memory.Ref) (TaskID, error) {
-	return context.enqueueRefs(target, memoryCopy, run, refs)
+	return context.enqueueRefs(target, targetQueue(target), memoryCopy, run, refs)
 }
 
-func (context *TaskContext) enqueueRefs(target *Realm, mode memorySendMode, run TaskFunc, refs []memory.Ref) (TaskID, error) {
-	if context == nil || context.Realm == nil || target == nil {
+// QueueMicrotaskSend enqueues already-published refs in this Realm's
+// microtask queue. Private refs fail before the microtask becomes visible.
+func (context *TaskContext) QueueMicrotaskSend(run TaskFunc, refs ...memory.Ref) (TaskID, error) {
+	return context.enqueueRefs(contextRealm(context), microtaskQueue(context), memorySend, run, refs)
+}
+
+// QueueMicrotaskTransfer moves private regions through the microtask queue.
+func (context *TaskContext) QueueMicrotaskTransfer(run TaskFunc, refs ...memory.Ref) (TaskID, error) {
+	return context.enqueueRefs(contextRealm(context), microtaskQueue(context), memoryTransfer, run, refs)
+}
+
+// QueueMicrotaskPublish publishes refs before enqueueing the microtask.
+func (context *TaskContext) QueueMicrotaskPublish(run TaskFunc, refs ...memory.Ref) (TaskID, error) {
+	return context.enqueueRefs(contextRealm(context), microtaskQueue(context), memoryPublish, run, refs)
+}
+
+// QueueMicrotaskCopy clones refs into queue-owned storage for the microtask.
+func (context *TaskContext) QueueMicrotaskCopy(run TaskFunc, refs ...memory.Ref) (TaskID, error) {
+	return context.enqueueRefs(contextRealm(context), microtaskQueue(context), memoryCopy, run, refs)
+}
+
+func (context *TaskContext) enqueueRefs(target *Realm, queue *TaskQueue, mode memorySendMode, run TaskFunc, refs []memory.Ref) (TaskID, error) {
+	if context == nil || context.Realm == nil || target == nil || queue == nil {
 		return 0, fmt.Errorf("runtime: nil task context or target realm")
 	}
 	if context.Realm.store != target.store {
 		return 0, fmt.Errorf("runtime: realms do not share a RegionStore")
 	}
-	return target.enqueueMemory(target.Tasks, run, context.Owner, mode, refs)
+	return target.enqueueMemory(queue, run, context.Owner, mode, refs)
+}
+
+func targetQueue(target *Realm) *TaskQueue {
+	if target == nil {
+		return nil
+	}
+	return target.Tasks
+}
+
+func contextRealm(context *TaskContext) *Realm {
+	if context == nil {
+		return nil
+	}
+	return context.Realm
+}
+
+func microtaskQueue(context *TaskContext) *TaskQueue {
+	if context == nil || context.Realm == nil {
+		return nil
+	}
+	return context.Realm.Microtasks
 }
 
 func (context *TaskContext) QueueTask(run TaskFunc, objects ...ownership.ObjectID) (TaskID, error) {

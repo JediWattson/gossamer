@@ -50,9 +50,15 @@ claim(region, object) is either present or absent
 - Destroying a referenced Cell or region fails before storage is reclaimed.
 - Unqualified queue sends accept only published refs. Private refs require an
   explicit Transfer, Publish, or Copy operation.
+- Task and microtask queues use the same explicit Ref-envelope boundary.
 - Transfer moves the complete connected private region component through the
   queue; Copy clones the reachable Cell graph; Publish makes the outgoing
   region graph immutable and shared.
+- Promote clones only the graph reachable from explicit roots into a new
+  published region. Original refs remain private and die with their owner.
+- `Store.CheckInvariants` independently derives slot, free-list, object-edge,
+  region-edge, owner, ledger, and live-counter state from Cell contents. A
+  deterministic state-machine test and Go fuzz target run it after every step.
 - Every owner has a logical region.
 - Task-local fake objects receive an initial task reference.
 - Enqueue publishes carried objects to the destination queue.
@@ -100,3 +106,13 @@ details, not the Phase 0 ownership model.
 The RegionStore intentionally does not implement JavaScript objects, tracing
 garbage collection, automatic escape promotion, packed refs, or V8 heap
 integration. Those remain later milestones.
+
+The explicit promotion lifecycle is now executable end to end:
+
+```text
+task R1: A -> B -> C
+    -> explicit transfer through the microtask queue
+    -> microtask promotes B -> C as B' -> C'
+    -> microtask region release destroys original A, B, and C
+    -> immutable B' and C' remain published
+```

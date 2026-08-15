@@ -486,6 +486,23 @@ func (store *Store) Copy(from, to ownership.OwnerID, roots ...Ref) ([]Ref, error
 	return store.copyLocked(from, to, append([]Ref(nil), roots...))
 }
 
+// Promote explicitly copies the complete Cell graph reachable from roots into
+// a new immutable shared region. The original refs remain private and are
+// released with their current owner; callers must use the returned refs for
+// the promoted graph.
+func (store *Store) Promote(from ownership.OwnerID, roots ...Ref) ([]Ref, error) {
+	if store == nil {
+		return nil, fmt.Errorf("memory: nil store")
+	}
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+	shared, err := store.ensureSharedLocked()
+	if err != nil {
+		return nil, err
+	}
+	return store.copyLocked(from, shared, append([]Ref(nil), roots...))
+}
+
 func (store *Store) Stats() Stats {
 	if store == nil {
 		return Stats{}
@@ -625,7 +642,7 @@ func (store *Store) writeSlotLocked(owner ownership.OwnerID, ref Ref, internal b
 	if err != nil {
 		return nil, nil, err
 	}
-	if region.State == RegionPublished {
+	if region.State == RegionPublished && !internal {
 		return nil, nil, fmt.Errorf("%w: R%d", ErrImmutableRegion, region.ID)
 	}
 	if region.State == RegionInTransit && !internal {
@@ -645,7 +662,7 @@ func (store *Store) mutableRegionLocked(owner ownership.OwnerID, id RegionID, in
 	if region.State == RegionDestroyed {
 		return nil, fmt.Errorf("%w: R%d", ErrRegionDestroyed, id)
 	}
-	if region.State == RegionPublished {
+	if region.State == RegionPublished && !internal {
 		return nil, fmt.Errorf("%w: R%d", ErrImmutableRegion, id)
 	}
 	if region.State == RegionInTransit && !internal {

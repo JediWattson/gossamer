@@ -85,8 +85,11 @@ when that task's logical region ends.
 The shadow ledger now backs a small native `RegionStore`. Its synthetic Cells
 live in generation-checked region slots, cross-region writes maintain counted
 region edges, and private refs can cross Realm queues only through explicit
-Transfer, Publish, or Copy operations. This is still independent from
-JavaScript values, garbage collection, and V8 internals. See
+Transfer, Publish, or Copy operations. Task and microtask queues use the same
+Ref boundary. Explicit promotion copies only a reachable subgraph into
+immutable shared storage, allowing the original temporary region to be
+released. This is still independent from JavaScript values, garbage
+collection, and V8 internals. See
 [`docs/phase-0-kernel.md`](docs/phase-0-kernel.md) for the invariants and exact
 scope.
 
