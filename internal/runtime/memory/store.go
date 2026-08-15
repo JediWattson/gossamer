@@ -14,28 +14,31 @@ import (
 var nextSharedOwner atomic.Uint64
 
 var (
-	ErrStoreClosed          = errors.New("memory: store is closed")
-	ErrUnknownRegion        = errors.New("memory: unknown region")
-	ErrRegionDestroyed      = errors.New("memory: region is destroyed")
-	ErrRegionInTransit      = errors.New("memory: region is in transit")
-	ErrImmutableRegion      = errors.New("memory: published region is immutable")
-	ErrAccessDenied         = errors.New("memory: private region access denied")
-	ErrStaleRef             = errors.New("memory: stale reference")
-	ErrTypeMismatch         = errors.New("memory: heap object type mismatch")
-	ErrInvalidField         = errors.New("memory: invalid field")
-	ErrInvalidIndex         = errors.New("memory: invalid array index")
-	ErrBindingExists        = errors.New("memory: binding already exists")
-	ErrBindingNotFound      = errors.New("memory: binding not found")
-	ErrBindingUninitialized = errors.New("memory: binding is uninitialized")
-	ErrImmutableBinding     = errors.New("memory: binding is immutable")
-	ErrContextCycle         = errors.New("memory: context parent cycle")
-	ErrInvalidFunction      = errors.New("memory: invalid function descriptor")
-	ErrObjectReferenced     = errors.New("memory: heap object still has incoming references")
-	ErrCellReferenced       = ErrObjectReferenced
-	ErrRegionReferenced     = errors.New("memory: region still has incoming references")
-	ErrExplicitSendRequired = errors.New("memory: private refs require Transfer, Publish, or Copy")
-	ErrInvalidTransfer      = errors.New("memory: transfer destination is not a queue")
-	ErrOwnerMismatch        = errors.New("memory: ownership claim does not match")
+	ErrStoreClosed           = errors.New("memory: store is closed")
+	ErrUnknownRegion         = errors.New("memory: unknown region")
+	ErrRegionDestroyed       = errors.New("memory: region is destroyed")
+	ErrRegionInTransit       = errors.New("memory: region is in transit")
+	ErrImmutableRegion       = errors.New("memory: published region is immutable")
+	ErrAccessDenied          = errors.New("memory: private region access denied")
+	ErrStaleRef              = errors.New("memory: stale reference")
+	ErrTypeMismatch          = errors.New("memory: heap object type mismatch")
+	ErrInvalidField          = errors.New("memory: invalid field")
+	ErrInvalidIndex          = errors.New("memory: invalid array index")
+	ErrBindingExists         = errors.New("memory: binding already exists")
+	ErrBindingNotFound       = errors.New("memory: binding not found")
+	ErrBindingUninitialized  = errors.New("memory: binding is uninitialized")
+	ErrImmutableBinding      = errors.New("memory: binding is immutable")
+	ErrContextCycle          = errors.New("memory: context parent cycle")
+	ErrInvalidFunction       = errors.New("memory: invalid function descriptor")
+	ErrPromiseSettled        = errors.New("memory: promise is already settled")
+	ErrPromisePending        = errors.New("memory: promise is still pending")
+	ErrPromiseSelfResolution = errors.New("memory: promise cannot resolve to itself")
+	ErrObjectReferenced      = errors.New("memory: heap object still has incoming references")
+	ErrCellReferenced        = ErrObjectReferenced
+	ErrRegionReferenced      = errors.New("memory: region still has incoming references")
+	ErrExplicitSendRequired  = errors.New("memory: private refs require Transfer, Publish, or Copy")
+	ErrInvalidTransfer       = errors.New("memory: transfer destination is not a queue")
+	ErrOwnerMismatch         = errors.New("memory: ownership claim does not match")
 )
 
 // Stats describes physical heap activity, independently from ledger telemetry.
@@ -49,6 +52,7 @@ type Stats struct {
 	LiveArrays         uint64
 	LiveContexts       uint64
 	LiveFunctions      uint64
+	LivePromises       uint64
 	LiveBytes          uint64
 	LiveRegions        uint64
 	BulkRegionReleases uint64
@@ -77,6 +81,8 @@ func (kind HeapKind) String() string {
 		return "Context"
 	case HeapFunction:
 		return "Function"
+	case HeapPromise:
+		return "Promise"
 	default:
 		return fmt.Sprintf("HeapKind(%d)", kind)
 	}
@@ -206,7 +212,7 @@ func (store *Store) allocLocked(owner ownership.OwnerID, regionID RegionID, inte
 }
 
 func (store *Store) allocKindLocked(owner ownership.OwnerID, regionID RegionID, kind HeapKind, internal bool) (Ref, error) {
-	if kind < HeapCell || kind > HeapFunction {
+	if kind < HeapCell || kind > HeapPromise {
 		return Ref{}, fmt.Errorf("%w: heap kind %d", ErrTypeMismatch, kind)
 	}
 	region, err := store.mutableRegionLocked(owner, regionID, internal)
@@ -638,6 +644,8 @@ func (store *Store) recordKindAllocationLocked(kind HeapKind, bytes uint64) {
 		store.stats.LiveContexts++
 	case HeapFunction:
 		store.stats.LiveFunctions++
+	case HeapPromise:
+		store.stats.LivePromises++
 	}
 	store.stats.LiveBytes += bytes
 }
@@ -661,6 +669,8 @@ func (store *Store) recordKindFreeLocked(slot *Slot) {
 	case HeapFunction:
 		store.stats.LiveFunctions--
 		store.stats.LiveBytes -= uint64(len(slot.Function.Code))
+	case HeapPromise:
+		store.stats.LivePromises--
 	}
 }
 
@@ -1201,6 +1211,30 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 			if err := store.initializeFunctionLocked(to, copyRef, function, true); err != nil {
 				_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
 				return nil, err
+			}
+		case HeapPromise:
+			for _, reaction := range sourceSlot.Promise.Reactions {
+				copyReaction := PromiseReaction{
+					OnFulfilled: remapValue(reaction.OnFulfilled, mapping),
+					OnRejected:  remapValue(reaction.OnRejected, mapping),
+					Downstream:  remapValue(reaction.Downstream, mapping),
+				}
+				if err := store.addPromiseReactionLocked(to, copyRef, copyReaction, true); err != nil {
+					_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
+					return nil, err
+				}
+			}
+			if sourceSlot.Promise.State != PromisePending {
+				if err := store.settlePromiseLocked(to, copyRef, sourceSlot.Promise.State, remapValue(sourceSlot.Promise.Result, mapping), true); err != nil {
+					_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
+					return nil, err
+				}
+			}
+			if sourceSlot.Promise.Handled {
+				if err := store.markPromiseHandledLocked(to, copyRef, true); err != nil {
+					_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
+					return nil, err
+				}
 			}
 		default:
 			_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})

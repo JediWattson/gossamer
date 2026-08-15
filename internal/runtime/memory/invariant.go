@@ -35,6 +35,7 @@ func (store *Store) CheckInvariants() error {
 	liveArrays := uint64(0)
 	liveContexts := uint64(0)
 	liveFunctions := uint64(0)
+	livePromises := uint64(0)
 	liveBytes := uint64(0)
 	liveRegions := uint64(0)
 	for owner, claim := range store.ownerClaims {
@@ -258,6 +259,28 @@ func (store *Store) CheckInvariants() error {
 				if err := store.checkOptionalTypedRefLocked(slot.Function.Environment, HeapContext, "Function environment"); err != nil {
 					return err
 				}
+			case HeapPromise:
+				livePromises++
+				if slotHasOtherPayload(slot, HeapPromise) {
+					return invariantError("Promise %s retains another typed payload", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
+				}
+				if slot.Promise.State > PromiseRejected {
+					return invariantError("Promise %s has invalid state %d", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot.Promise.State)
+				}
+				if slot.Promise.State == PromisePending && slot.Promise.Result != (Value{}) {
+					return invariantError("pending Promise %s retains a result", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
+				}
+				for reactionIndex, reaction := range slot.Promise.Reactions {
+					if err := store.checkOptionalTypedRefLocked(reaction.OnFulfilled, HeapFunction, fmt.Sprintf("Promise reaction %d fulfillment handler", reactionIndex)); err != nil {
+						return err
+					}
+					if err := store.checkOptionalTypedRefLocked(reaction.OnRejected, HeapFunction, fmt.Sprintf("Promise reaction %d rejection handler", reactionIndex)); err != nil {
+						return err
+					}
+					if err := store.checkOptionalTypedRefLocked(reaction.Downstream, HeapPromise, fmt.Sprintf("Promise reaction %d downstream", reactionIndex)); err != nil {
+						return err
+					}
+				}
 			default:
 				return invariantError("R%d occupied slot %d has unknown heap kind %d", id, index, slot.Kind)
 			}
@@ -328,8 +351,8 @@ func (store *Store) CheckInvariants() error {
 			return invariantError("ledger object %d edges %v, want %v", object, snapshot.Edges, wantTargets)
 		}
 	}
-	if store.stats.LiveSlots != liveSlots || store.stats.LiveCells != liveCells || store.stats.LiveStrings != liveStrings || store.stats.LiveObjects != liveObjects || store.stats.LiveArrays != liveArrays || store.stats.LiveContexts != liveContexts || store.stats.LiveFunctions != liveFunctions || store.stats.LiveBytes != liveBytes || store.stats.LiveRegions != liveRegions {
-		return invariantError("stats slots/cells/strings/objects/arrays/contexts/functions/bytes/regions = %d/%d/%d/%d/%d/%d/%d/%d/%d, derived %d/%d/%d/%d/%d/%d/%d/%d/%d", store.stats.LiveSlots, store.stats.LiveCells, store.stats.LiveStrings, store.stats.LiveObjects, store.stats.LiveArrays, store.stats.LiveContexts, store.stats.LiveFunctions, store.stats.LiveBytes, store.stats.LiveRegions, liveSlots, liveCells, liveStrings, liveObjects, liveArrays, liveContexts, liveFunctions, liveBytes, liveRegions)
+	if store.stats.LiveSlots != liveSlots || store.stats.LiveCells != liveCells || store.stats.LiveStrings != liveStrings || store.stats.LiveObjects != liveObjects || store.stats.LiveArrays != liveArrays || store.stats.LiveContexts != liveContexts || store.stats.LiveFunctions != liveFunctions || store.stats.LivePromises != livePromises || store.stats.LiveBytes != liveBytes || store.stats.LiveRegions != liveRegions {
+		return invariantError("stats slots/cells/strings/objects/arrays/contexts/functions/promises/bytes/regions = %d/%d/%d/%d/%d/%d/%d/%d/%d/%d, derived %d/%d/%d/%d/%d/%d/%d/%d/%d/%d", store.stats.LiveSlots, store.stats.LiveCells, store.stats.LiveStrings, store.stats.LiveObjects, store.stats.LiveArrays, store.stats.LiveContexts, store.stats.LiveFunctions, store.stats.LivePromises, store.stats.LiveBytes, store.stats.LiveRegions, liveSlots, liveCells, liveStrings, liveObjects, liveArrays, liveContexts, liveFunctions, livePromises, liveBytes, liveRegions)
 	}
 	if store.closed && (liveSlots != 0 || liveRegions != 0) {
 		return invariantError("closed store retains %d slots in %d regions", liveSlots, liveRegions)
@@ -410,6 +433,9 @@ func slotHasOtherPayload(slot *Slot, kind HeapKind) bool {
 		return true
 	}
 	if kind != HeapFunction && (slot.Function.Kind != 0 || slot.Function.Name != (Value{}) || slot.Function.Environment != (Value{}) || slot.Function.Arity != 0 || len(slot.Function.Code) != 0 || len(slot.Function.Constants) != 0 || slot.Function.NativeID != 0) {
+		return true
+	}
+	if kind != HeapPromise && (slot.Promise.State != PromisePending || slot.Promise.Result != (Value{}) || len(slot.Promise.Reactions) != 0 || slot.Promise.Handled) {
 		return true
 	}
 	return false

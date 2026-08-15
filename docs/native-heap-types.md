@@ -70,6 +70,17 @@ Function names, environments, and Ref constants are counted edges. Copy and
 Promote clone bytecode and preserve closure and constant aliasing. Execution is
 deliberately deferred to the interpreter layer.
 
+### Promise
+
+Native Promises move exactly once from pending to fulfilled or rejected and
+retain a scalar-or-Ref result. Reactions hold optional Function handlers and an
+optional downstream Promise. Self-resolution and repeated settlement fail.
+
+`DrainPromiseReactions` returns the settlement and removes retained reaction
+edges without invoking callbacks. Realm scheduling remains outside
+RegionStore. Copy and Promote preserve state, handled status, reactions, and
+shared handler/result aliases.
+
 ## Deliberate boundaries
 
 These native payloads are not yet ECMAScript implementations. String

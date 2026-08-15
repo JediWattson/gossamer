@@ -225,6 +225,55 @@ func (context *TaskContext) DerefFunction(ref memory.Ref) (memory.Function, erro
 	return context.Realm.store.DerefFunction(context.Owner, ref)
 }
 
+func (context *TaskContext) NewPromise() (memory.Ref, error) {
+	if context == nil || context.Realm == nil {
+		return memory.Ref{}, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.AllocPromise(context.Owner, context.MemoryRegion)
+}
+
+func (context *TaskContext) DerefPromise(ref memory.Ref) (memory.Promise, error) {
+	if context == nil || context.Realm == nil {
+		return memory.Promise{}, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.DerefPromise(context.Owner, ref)
+}
+
+func (context *TaskContext) AddPromiseReaction(promise memory.Ref, reaction memory.PromiseReaction) error {
+	if context == nil || context.Realm == nil {
+		return fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.AddPromiseReaction(context.Owner, promise, reaction)
+}
+
+func (context *TaskContext) ResolvePromise(promise memory.Ref, result memory.Value) error {
+	if context == nil || context.Realm == nil {
+		return fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.ResolvePromise(context.Owner, promise, result)
+}
+
+func (context *TaskContext) RejectPromise(promise memory.Ref, reason memory.Value) error {
+	if context == nil || context.Realm == nil {
+		return fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.RejectPromise(context.Owner, promise, reason)
+}
+
+func (context *TaskContext) MarkPromiseHandled(promise memory.Ref) error {
+	if context == nil || context.Realm == nil {
+		return fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.MarkPromiseHandled(context.Owner, promise)
+}
+
+func (context *TaskContext) DrainPromiseReactions(promise memory.Ref) (memory.PromiseSettlement, error) {
+	if context == nil || context.Realm == nil {
+		return memory.PromiseSettlement{}, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.DrainPromiseReactions(context.Owner, promise)
+}
+
 func (context *TaskContext) Set(ref memory.Ref, field int, value memory.Value) error {
 	if context == nil || context.Realm == nil {
 		return fmt.Errorf("runtime: nil task context")

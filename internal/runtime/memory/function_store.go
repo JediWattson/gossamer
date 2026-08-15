@@ -80,10 +80,10 @@ func (store *Store) initializeFunctionLocked(owner ownership.OwnerID, ref Ref, f
 	if function.Kind == FunctionNative && (function.NativeID == 0 || len(function.Code) != 0 || len(function.Constants) != 0) {
 		return fmt.Errorf("%w: native Function requires only a nonzero native ID", ErrInvalidFunction)
 	}
-	if err := store.validateFunctionTypedValueLocked(owner, function.Name, HeapString, "name", internal); err != nil {
+	if err := store.validateOptionalTypedValueLocked(owner, function.Name, HeapString, "Function name", internal); err != nil {
 		return err
 	}
-	if err := store.validateFunctionTypedValueLocked(owner, function.Environment, HeapContext, "environment", internal); err != nil {
+	if err := store.validateOptionalTypedValueLocked(owner, function.Environment, HeapContext, "Function environment", internal); err != nil {
 		return err
 	}
 	values := make([]Value, 0, 2+len(function.Constants))
@@ -101,25 +101,5 @@ func (store *Store) initializeFunctionLocked(owner ownership.OwnerID, ref Ref, f
 	}
 	slot.Function = cloneFunction(function)
 	store.stats.LiveBytes += uint64(len(slot.Function.Code))
-	return nil
-}
-
-func (store *Store) validateFunctionTypedValueLocked(owner ownership.OwnerID, value Value, kind HeapKind, label string, internal bool) error {
-	if value.Kind() == ValueNull {
-		return nil
-	}
-	if !value.IsRef() {
-		return fmt.Errorf("%w: Function %s must be null or a %s Ref", ErrInvalidFunction, label, kind)
-	}
-	_, slot, err := store.readSlotLocked(owner, value.Ref())
-	if err != nil && internal {
-		_, slot, err = store.slotLocked(value.Ref())
-	}
-	if err != nil {
-		return err
-	}
-	if slot.Kind != kind {
-		return typeError(value.Ref(), slot.Kind, kind)
-	}
 	return nil
 }
