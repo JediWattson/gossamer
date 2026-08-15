@@ -1309,8 +1309,8 @@ func TestStockV8FormStateFocusAndCancelableDefaultActions(t *testing.T) {
 				const text = document.getElementById("text");
 				const check = document.getElementById("check");
 				const cancel = document.getElementById("cancel");
-				const valueDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "value");
-				const checkedDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "checked");
+				const valueDescriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+				const checkedDescriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "checked");
 				if (!valueDescriptor || typeof valueDescriptor.get !== "function" ||
 					typeof valueDescriptor.set !== "function" || !checkedDescriptor ||
 					typeof checkedDescriptor.get !== "function" || typeof checkedDescriptor.set !== "function") {
@@ -2356,6 +2356,115 @@ func TestStockV8AtomicConvenienceMutationsAndDOMExceptions(t *testing.T) {
 	}
 	if ledger := browserRuntime.Ledger().Stats(); ledger.LiveObjects != 0 || ledger.PersistentObjects != 0 {
 		t.Fatalf("Milestone 8 teardown ownership = %#v", ledger)
+	}
+}
+
+func TestStockV8SpecializedHTMLElementInterfacesPreserveCanonicalIdentity(t *testing.T) {
+	engine := newTestEngine(t)
+	browserRuntime, err := browser.NewWithEngine(engine)
+	if err != nil {
+		t.Fatalf("NewWithEngine: %v", err)
+	}
+	defer func() {
+		if err := browserRuntime.Close(); err != nil {
+			t.Errorf("Close browser: %v", err)
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	page, err := browserRuntime.LoadPage(ctx, "https://gossamer.test/dom-interfaces", staticDocumentLoader{
+		document: `<!doctype html><html><body><form id="form"><input id="input"><textarea id="textarea"></textarea><select id="select"><option id="option">one</option></select><button id="button">go</button></form><template id="template"></template><iframe id="iframe"></iframe><div id="generic"></div></body></html>`,
+	})
+	if err != nil {
+		t.Fatalf("LoadPage: %v", err)
+	}
+	realm, ok := engine.LatestRealm()
+	if !ok {
+		t.Fatal("stock V8 engine has no live document realm")
+	}
+	baselineLiveNodes := page.Document().Store().LiveLen()
+
+	_, err = page.QueueScript(browser.ScriptSource{
+		URL: "https://gossamer.test/dom-interfaces/assert.js",
+		Source: `
+			(() => {
+				const cases = [
+					["form", HTMLFormElement],
+					["input", HTMLInputElement],
+					["textarea", HTMLTextAreaElement],
+					["select", HTMLSelectElement],
+					["option", HTMLOptionElement],
+					["button", HTMLButtonElement],
+					["template", HTMLTemplateElement],
+					["iframe", HTMLIFrameElement]
+				];
+				for (const [id, Interface] of cases) {
+					const node = document.getElementById(id);
+					if (!(node instanceof Interface) || !(node instanceof HTMLElement) ||
+						!(node instanceof Element) || !(node instanceof Node) ||
+						Object.getPrototypeOf(node) !== Interface.prototype ||
+						node.constructor !== Interface || document.querySelector("#" + id) !== node) {
+						throw new Error("specialized interface failed for " + id);
+					}
+				}
+				const input = document.getElementById("input");
+				if (input instanceof HTMLTextAreaElement ||
+					document.getElementById("generic").constructor !== HTMLElement ||
+					Object.getPrototypeOf(document.createElement("input")) !== HTMLInputElement.prototype ||
+					Object.getPrototypeOf(document.createElementNS("urn:test", "input")) !== Element.prototype) {
+					throw new Error("interface resolver crossed a namespace or local-name boundary");
+				}
+				const descriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
+				if (!descriptor || typeof descriptor.get !== "function" || typeof descriptor.set !== "function" ||
+					Object.prototype.hasOwnProperty.call(HTMLElement.prototype, "value")) {
+					throw new Error("form value descriptor is not specialized");
+				}
+				input.value = "typed";
+				if (descriptor.get.call(input) !== "typed" ||
+					document.getElementById("form").children[0] !== input) {
+					throw new Error("specialized accessor or canonical collection identity failed");
+				}
+				input.remove();
+				globalThis.__heldMilestone9Input = input;
+			})();
+		`,
+	})
+	if err != nil {
+		t.Fatalf("QueueScript: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("run interface assertions: %v", err)
+	}
+	if err := realm.CollectGarbage(page); err != nil {
+		t.Fatalf("CollectGarbage with held specialized wrapper: %v", err)
+	}
+	if got := page.Document().Store().LiveLen(); got < baselineLiveNodes {
+		t.Fatalf("held specialized wrapper lost its native node: got %d, baseline %d", got, baselineLiveNodes)
+	}
+	_, err = page.QueueScript(browser.ScriptSource{
+		URL: "https://gossamer.test/dom-interfaces/release.js",
+		Source: `
+			if (!(__heldMilestone9Input instanceof HTMLInputElement) || __heldMilestone9Input.value !== "typed") {
+				throw new Error("held specialized wrapper changed identity or state");
+			}
+			globalThis.__heldMilestone9Input = undefined;
+		`,
+	})
+	if err != nil {
+		t.Fatalf("QueueScript release: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("release specialized wrapper: %v", err)
+	}
+	if err := realm.CollectGarbage(page); err != nil {
+		t.Fatalf("CollectGarbage after specialized release: %v", err)
+	}
+	if err := page.Close(); err != nil {
+		t.Fatalf("Close page: %v", err)
+	}
+	if ledger := browserRuntime.Ledger().Stats(); ledger.LiveObjects != 0 || ledger.PersistentObjects != 0 {
+		t.Fatalf("Milestone 9 teardown ownership = %#v", ledger)
 	}
 }
 

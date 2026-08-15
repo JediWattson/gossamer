@@ -311,6 +311,14 @@ struct gossamer_v8_realm {
   v8::Global<v8::FunctionTemplate> node_template;
   v8::Global<v8::FunctionTemplate> element_template;
   v8::Global<v8::FunctionTemplate> html_element_template;
+  v8::Global<v8::FunctionTemplate> html_form_element_template;
+  v8::Global<v8::FunctionTemplate> html_input_element_template;
+  v8::Global<v8::FunctionTemplate> html_text_area_element_template;
+  v8::Global<v8::FunctionTemplate> html_select_element_template;
+  v8::Global<v8::FunctionTemplate> html_option_element_template;
+  v8::Global<v8::FunctionTemplate> html_button_element_template;
+  v8::Global<v8::FunctionTemplate> html_template_element_template;
+  v8::Global<v8::FunctionTemplate> html_iframe_element_template;
   v8::Global<v8::FunctionTemplate> text_template;
   v8::Global<v8::FunctionTemplate> document_template;
   v8::Global<v8::FunctionTemplate> document_fragment_template;
@@ -967,10 +975,30 @@ GetOrCreateNodeWrapper(gossamer_v8_realm *realm, v8::Local<v8::Context> context,
   } else if (metadata.type == 3) {
     node_template = realm->text_template.Get(realm->isolate);
   } else if (metadata.type == 1) {
-    node_template =
-        metadata.namespace_uri == "http://www.w3.org/1999/xhtml"
-            ? realm->html_element_template.Get(realm->isolate)
-            : realm->element_template.Get(realm->isolate);
+    if (metadata.namespace_uri != "http://www.w3.org/1999/xhtml") {
+      node_template = realm->element_template.Get(realm->isolate);
+    } else if (metadata.local_name == "form") {
+      node_template = realm->html_form_element_template.Get(realm->isolate);
+    } else if (metadata.local_name == "input") {
+      node_template = realm->html_input_element_template.Get(realm->isolate);
+    } else if (metadata.local_name == "textarea") {
+      node_template =
+          realm->html_text_area_element_template.Get(realm->isolate);
+    } else if (metadata.local_name == "select") {
+      node_template = realm->html_select_element_template.Get(realm->isolate);
+    } else if (metadata.local_name == "option") {
+      node_template = realm->html_option_element_template.Get(realm->isolate);
+    } else if (metadata.local_name == "button") {
+      node_template = realm->html_button_element_template.Get(realm->isolate);
+    } else if (metadata.local_name == "template") {
+      node_template =
+          realm->html_template_element_template.Get(realm->isolate);
+    } else if (metadata.local_name == "iframe") {
+      node_template =
+          realm->html_iframe_element_template.Get(realm->isolate);
+    } else {
+      node_template = realm->html_element_template.Get(realm->isolate);
+    }
   } else {
     node_template = realm->node_template.Get(realm->isolate);
   }
@@ -5627,6 +5655,20 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
       v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
   v8::Local<v8::FunctionTemplate> html_element_template =
       v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
+  v8::Local<v8::FunctionTemplate> html_form_element_template =
+      v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
+  v8::Local<v8::FunctionTemplate> html_input_element_template =
+      v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
+  v8::Local<v8::FunctionTemplate> html_text_area_element_template =
+      v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
+  v8::Local<v8::FunctionTemplate> html_select_element_template =
+      v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
+  v8::Local<v8::FunctionTemplate> html_option_element_template =
+      v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
+  v8::Local<v8::FunctionTemplate> html_button_element_template =
+      v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
+  v8::Local<v8::FunctionTemplate> html_template_element_template =
+      v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
   v8::Local<v8::FunctionTemplate> html_iframe_element_template =
       v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
   v8::Local<v8::FunctionTemplate> text_template =
@@ -5697,6 +5739,20 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
       v8::String::NewFromUtf8Literal(isolate, "Element"));
   html_element_template->SetClassName(
       v8::String::NewFromUtf8Literal(isolate, "HTMLElement"));
+  html_form_element_template->SetClassName(
+      v8::String::NewFromUtf8Literal(isolate, "HTMLFormElement"));
+  html_input_element_template->SetClassName(
+      v8::String::NewFromUtf8Literal(isolate, "HTMLInputElement"));
+  html_text_area_element_template->SetClassName(
+      v8::String::NewFromUtf8Literal(isolate, "HTMLTextAreaElement"));
+  html_select_element_template->SetClassName(
+      v8::String::NewFromUtf8Literal(isolate, "HTMLSelectElement"));
+  html_option_element_template->SetClassName(
+      v8::String::NewFromUtf8Literal(isolate, "HTMLOptionElement"));
+  html_button_element_template->SetClassName(
+      v8::String::NewFromUtf8Literal(isolate, "HTMLButtonElement"));
+  html_template_element_template->SetClassName(
+      v8::String::NewFromUtf8Literal(isolate, "HTMLTemplateElement"));
   html_iframe_element_template->SetClassName(
       v8::String::NewFromUtf8Literal(isolate, "HTMLIFrameElement"));
   text_template->SetClassName(v8::String::NewFromUtf8Literal(isolate, "Text"));
@@ -5729,7 +5785,13 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   node_template->Inherit(event_target_template);
   element_template->Inherit(node_template);
   html_element_template->Inherit(element_template);
-  html_iframe_element_template->Inherit(html_element_template);
+  for (v8::Local<v8::FunctionTemplate> specialized_template :
+       {html_form_element_template, html_input_element_template,
+        html_text_area_element_template, html_select_element_template,
+        html_option_element_template, html_button_element_template,
+        html_template_element_template, html_iframe_element_template}) {
+    specialized_template->Inherit(html_element_template);
+  }
   text_template->Inherit(node_template);
   document_template->Inherit(node_template);
   document_fragment_template->Inherit(node_template);
@@ -5740,7 +5802,11 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   focus_event_template->Inherit(event_template);
   for (v8::Local<v8::FunctionTemplate> interface_template :
        {node_template, element_template, html_element_template, text_template,
-        document_template, document_fragment_template}) {
+        document_template, document_fragment_template,
+        html_form_element_template, html_input_element_template,
+        html_text_area_element_template, html_select_element_template,
+        html_option_element_template, html_button_element_template,
+        html_template_element_template, html_iframe_element_template}) {
     interface_template->InstanceTemplate()->SetInternalFieldCount(
         kNodeInternalFieldCount);
   }
@@ -6120,27 +6186,14 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
 
   v8::Local<v8::ObjectTemplate> html_element_prototype =
       html_element_template->PrototypeTemplate();
-  html_element_prototype->SetAccessorProperty(
-      v8::String::NewFromUtf8Literal(isolate, "value"),
-      v8::FunctionTemplate::New(isolate, ElementFormValueFunctionGetter),
-      v8::FunctionTemplate::New(isolate, ElementFormValueFunctionSetter));
-  html_element_prototype->SetAccessorProperty(
-      v8::String::NewFromUtf8Literal(isolate, "checked"),
-      v8::FunctionTemplate::New(isolate, ElementFormCheckedFunctionGetter),
-      v8::FunctionTemplate::New(isolate,
-                                ElementFormCheckedFunctionSetter));
-  for (const char *name : {"defaultValue", "name", "type", "placeholder",
-                           "title", "lang", "dir", "htmlFor"}) {
+  for (const char *name : {"title", "lang", "dir", "htmlFor"}) {
     html_element_prototype->SetNativeDataProperty(
         v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
         NodeReflectedAttributeGetter, NodeReflectedAttributeSetter);
   }
-  for (const char *name : {"defaultChecked", "disabled", "multiple",
-                           "required", "readOnly"}) {
-    html_element_prototype->SetNativeDataProperty(
-        v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
-        NodeReflectedBooleanGetter, NodeReflectedBooleanSetter);
-  }
+  html_element_prototype->SetNativeDataProperty(
+      v8::String::NewFromUtf8Literal(isolate, "hidden"),
+      NodeReflectedBooleanGetter, NodeReflectedBooleanSetter);
   html_element_prototype->Set(
       isolate, "focus",
       v8::FunctionTemplate::New(isolate, HTMLElementFocus,
@@ -6149,6 +6202,62 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
       isolate, "blur",
       v8::FunctionTemplate::New(isolate, HTMLElementFocus,
                                 v8::False(isolate)));
+
+  auto install_form_value_prototype =
+      [isolate](v8::Local<v8::FunctionTemplate> interface_template) {
+        interface_template->PrototypeTemplate()->SetAccessorProperty(
+            v8::String::NewFromUtf8Literal(isolate, "value"),
+            v8::FunctionTemplate::New(isolate,
+                                      ElementFormValueFunctionGetter),
+            v8::FunctionTemplate::New(isolate,
+                                      ElementFormValueFunctionSetter));
+      };
+  for (v8::Local<v8::FunctionTemplate> interface_template :
+       {html_input_element_template, html_text_area_element_template,
+        html_select_element_template, html_option_element_template,
+        html_button_element_template}) {
+    install_form_value_prototype(interface_template);
+  }
+  html_input_element_template->PrototypeTemplate()->SetAccessorProperty(
+      v8::String::NewFromUtf8Literal(isolate, "checked"),
+      v8::FunctionTemplate::New(isolate, ElementFormCheckedFunctionGetter),
+      v8::FunctionTemplate::New(isolate,
+                                ElementFormCheckedFunctionSetter));
+
+  auto install_reflected_string =
+      [isolate](v8::Local<v8::FunctionTemplate> interface_template,
+                const char *name) {
+        interface_template->PrototypeTemplate()->SetNativeDataProperty(
+            v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
+            NodeReflectedAttributeGetter, NodeReflectedAttributeSetter);
+      };
+  auto install_reflected_boolean =
+      [isolate](v8::Local<v8::FunctionTemplate> interface_template,
+                const char *name) {
+        interface_template->PrototypeTemplate()->SetNativeDataProperty(
+            v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
+            NodeReflectedBooleanGetter, NodeReflectedBooleanSetter);
+      };
+  for (const char *name : {"defaultValue", "name", "type", "placeholder"})
+    install_reflected_string(html_input_element_template, name);
+  for (const char *name : {"defaultChecked", "disabled", "multiple",
+                           "required", "readOnly"})
+    install_reflected_boolean(html_input_element_template, name);
+  for (const char *name : {"defaultValue", "name", "placeholder"})
+    install_reflected_string(html_text_area_element_template, name);
+  for (const char *name : {"disabled", "required", "readOnly"})
+    install_reflected_boolean(html_text_area_element_template, name);
+  install_reflected_string(html_select_element_template, "name");
+  for (const char *name : {"disabled", "multiple", "required"})
+    install_reflected_boolean(html_select_element_template, name);
+  install_reflected_boolean(html_option_element_template, "disabled");
+  for (const char *name : {"name", "type"})
+    install_reflected_string(html_button_element_template, name);
+  install_reflected_boolean(html_button_element_template, "disabled");
+  for (const char *name : {"name", "action", "method"})
+    install_reflected_string(html_form_element_template, name);
+  for (const char *name : {"name", "src"})
+    install_reflected_string(html_iframe_element_template, name);
 
   install_child_node_surface(text_template->PrototypeTemplate());
   text_template->PrototypeTemplate()->SetNativeDataProperty(
@@ -6286,29 +6395,83 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
       };
   for (v8::Local<v8::FunctionTemplate> interface_template :
        {node_template, element_template, html_element_template, text_template,
-        document_template, document_fragment_template}) {
+        document_template, document_fragment_template,
+        html_form_element_template, html_input_element_template,
+        html_text_area_element_template, html_select_element_template,
+        html_option_element_template, html_button_element_template,
+        html_template_element_template, html_iframe_element_template}) {
     install_node_instance_surface(interface_template->InstanceTemplate());
   }
   install_element_instance_surface(element_template->InstanceTemplate());
-  install_element_instance_surface(html_element_template->InstanceTemplate());
-  html_element_template->InstanceTemplate()->SetNativeDataProperty(
-      v8::String::NewFromUtf8Literal(isolate, "value"),
-      ElementFormValueGetter, ElementFormValueSetter);
-  html_element_template->InstanceTemplate()->SetNativeDataProperty(
-      v8::String::NewFromUtf8Literal(isolate, "checked"),
-      ElementFormCheckedGetter, ElementFormCheckedSetter);
-  for (const char *name : {"defaultValue", "name", "type", "placeholder",
-                           "title", "lang", "dir", "htmlFor"}) {
-    html_element_template->InstanceTemplate()->SetNativeDataProperty(
-        v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
-        NodeReflectedAttributeGetter, NodeReflectedAttributeSetter);
-  }
-  for (const char *name : {"defaultChecked", "disabled", "multiple",
-                           "required", "readOnly"}) {
-    html_element_template->InstanceTemplate()->SetNativeDataProperty(
-        v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
+  for (v8::Local<v8::FunctionTemplate> interface_template :
+       {html_element_template, html_form_element_template,
+        html_input_element_template, html_text_area_element_template,
+        html_select_element_template, html_option_element_template,
+        html_button_element_template, html_template_element_template,
+        html_iframe_element_template}) {
+    install_element_instance_surface(interface_template->InstanceTemplate());
+    for (const char *name : {"title", "lang", "dir", "htmlFor"}) {
+      interface_template->InstanceTemplate()->SetNativeDataProperty(
+          v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
+          NodeReflectedAttributeGetter, NodeReflectedAttributeSetter);
+    }
+    interface_template->InstanceTemplate()->SetNativeDataProperty(
+        v8::String::NewFromUtf8Literal(isolate, "hidden"),
         NodeReflectedBooleanGetter, NodeReflectedBooleanSetter);
   }
+
+  auto install_form_value_instance =
+      [isolate](v8::Local<v8::FunctionTemplate> interface_template) {
+        interface_template->InstanceTemplate()->SetNativeDataProperty(
+            v8::String::NewFromUtf8Literal(isolate, "value"),
+            ElementFormValueGetter, ElementFormValueSetter);
+      };
+  for (v8::Local<v8::FunctionTemplate> interface_template :
+       {html_input_element_template, html_text_area_element_template,
+        html_select_element_template, html_option_element_template,
+        html_button_element_template}) {
+    install_form_value_instance(interface_template);
+  }
+  html_input_element_template->InstanceTemplate()->SetNativeDataProperty(
+      v8::String::NewFromUtf8Literal(isolate, "checked"),
+      ElementFormCheckedGetter, ElementFormCheckedSetter);
+
+  auto install_instance_reflected_string =
+      [isolate](v8::Local<v8::FunctionTemplate> interface_template,
+                const char *name) {
+        interface_template->InstanceTemplate()->SetNativeDataProperty(
+            v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
+            NodeReflectedAttributeGetter, NodeReflectedAttributeSetter);
+      };
+  auto install_instance_reflected_boolean =
+      [isolate](v8::Local<v8::FunctionTemplate> interface_template,
+                const char *name) {
+        interface_template->InstanceTemplate()->SetNativeDataProperty(
+            v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
+            NodeReflectedBooleanGetter, NodeReflectedBooleanSetter);
+      };
+  for (const char *name : {"defaultValue", "name", "type", "placeholder"})
+    install_instance_reflected_string(html_input_element_template, name);
+  for (const char *name : {"defaultChecked", "disabled", "multiple",
+                           "required", "readOnly"})
+    install_instance_reflected_boolean(html_input_element_template, name);
+  for (const char *name : {"defaultValue", "name", "placeholder"})
+    install_instance_reflected_string(html_text_area_element_template, name);
+  for (const char *name : {"disabled", "required", "readOnly"})
+    install_instance_reflected_boolean(html_text_area_element_template, name);
+  install_instance_reflected_string(html_select_element_template, "name");
+  for (const char *name : {"disabled", "multiple", "required"})
+    install_instance_reflected_boolean(html_select_element_template, name);
+  install_instance_reflected_boolean(html_option_element_template,
+                                     "disabled");
+  for (const char *name : {"name", "type"})
+    install_instance_reflected_string(html_button_element_template, name);
+  install_instance_reflected_boolean(html_button_element_template,
+                                     "disabled");
+  for (const char *name : {"name", "action", "method"})
+    install_instance_reflected_string(html_form_element_template, name);
+  for (const char *name : {"name", "src"})
+    install_instance_reflected_string(html_iframe_element_template, name);
   text_template->InstanceTemplate()->SetNativeDataProperty(
       v8::String::NewFromUtf8Literal(isolate, "data"), NodeValueGetter,
       NodeValueSetter);
@@ -6331,6 +6494,21 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   realm->node_template.Reset(isolate, node_template);
   realm->element_template.Reset(isolate, element_template);
   realm->html_element_template.Reset(isolate, html_element_template);
+  realm->html_form_element_template.Reset(isolate, html_form_element_template);
+  realm->html_input_element_template.Reset(isolate,
+                                            html_input_element_template);
+  realm->html_text_area_element_template.Reset(
+      isolate, html_text_area_element_template);
+  realm->html_select_element_template.Reset(isolate,
+                                             html_select_element_template);
+  realm->html_option_element_template.Reset(isolate,
+                                             html_option_element_template);
+  realm->html_button_element_template.Reset(isolate,
+                                             html_button_element_template);
+  realm->html_template_element_template.Reset(
+      isolate, html_template_element_template);
+  realm->html_iframe_element_template.Reset(isolate,
+                                             html_iframe_element_template);
   realm->text_template.Reset(isolate, text_template);
   realm->document_template.Reset(isolate, document_template);
   realm->document_fragment_template.Reset(isolate,
@@ -6436,6 +6614,15 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
          expose_interface("Node", node_template) &&
          expose_interface("Element", element_template) &&
          expose_interface("HTMLElement", html_element_template) &&
+         expose_interface("HTMLFormElement", html_form_element_template) &&
+         expose_interface("HTMLInputElement", html_input_element_template) &&
+         expose_interface("HTMLTextAreaElement",
+                          html_text_area_element_template) &&
+         expose_interface("HTMLSelectElement", html_select_element_template) &&
+         expose_interface("HTMLOptionElement", html_option_element_template) &&
+         expose_interface("HTMLButtonElement", html_button_element_template) &&
+         expose_interface("HTMLTemplateElement",
+                          html_template_element_template) &&
          expose_interface("HTMLIFrameElement", html_iframe_element_template) &&
          expose_interface("Text", text_template) &&
          expose_interface("Document", document_template) &&
@@ -6654,6 +6841,14 @@ void ClearRealmHandles(gossamer_v8_realm *realm) {
   realm->node_template.Reset();
   realm->element_template.Reset();
   realm->html_element_template.Reset();
+  realm->html_form_element_template.Reset();
+  realm->html_input_element_template.Reset();
+  realm->html_text_area_element_template.Reset();
+  realm->html_select_element_template.Reset();
+  realm->html_option_element_template.Reset();
+  realm->html_button_element_template.Reset();
+  realm->html_template_element_template.Reset();
+  realm->html_iframe_element_template.Reset();
   realm->text_template.Reset();
   realm->document_template.Reset();
   realm->document_fragment_template.Reset();
