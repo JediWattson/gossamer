@@ -1,0 +1,4 @@
+# Stable V8 15.2 branch tip selected on 2026-08-15.
+V8_BRANCH=15.2
+V8_REVISION=b379cb574a4ab63675b73decd2cef8c7dde100e8
+DEPOT_TOOLS_REVISION=13febbee9ece9e03df923f69d540afc63c6db93e

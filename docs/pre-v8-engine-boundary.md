@@ -1,12 +1,14 @@
 # Pre-V8 engine boundary
 
-Gossamer now has the complete engine-independent socket required before a
-stock V8 adapter is introduced. Gossamer owns page order, external completion,
+This document freezes the complete engine-independent socket Gossamer built
+before the stock V8 adapter. Gossamer owns page order, external completion,
 input, timers, engine entry, microtask checkpoints, DOM identity, invalidation,
 and rendering. An engine supplies source evaluation and opaque callback
 execution; it does not supply the browser event loop.
 
-No V8 dependency, C++ bridge, isolate, or V8 heap integration exists yet.
+At the checkpoint described by the sections below, no V8 dependency, C++
+bridge, isolate, or V8 heap integration existed. The final section records the
+stock adapter subsequently added behind this boundary.
 
 ## Engine contracts
 
@@ -129,12 +131,14 @@ prove that the browser can:
 - retain and fire timers; and
 - render the resulting document with a complete ownership trace.
 
-## The next step is V8
+## Stock V8 checkpoint
 
-The next implementation step requires setting up stock V8 behind this socket:
+The first stock V8 checkpoint is now implemented behind this socket on Apple
+Silicon:
 
-1. Choose and pin the V8 distribution/build for supported platforms.
-2. Add a thin C++/C ABI implementing `Engine` and `JSRealm`.
+1. V8 15.2 and depot_tools are pinned by exact upstream commits.
+2. A thin C++/C ABI implements `Engine` and `JSRealm` evaluation, explicit
+   microtasks, profiling, and isolate teardown.
 3. Keep C ABI values numeric or owned byte buffers; never retain Go pointers
    in V8 or pass raw V8 pointers into Go.
 4. Start with one isolate per Page `JSRealm` so independent Gossamer Realms can
@@ -143,7 +147,9 @@ The next implementation step requires setting up stock V8 behind this socket:
    `JSRealm.DrainMicrotasks`.
 6. Keep JavaScript objects and callback handles in the V8 heap under V8 GC.
    Keep Go browser objects under Gossamer queue/region ownership.
-7. Map wrapper identity with stable `NodeHandle` and opaque `ValueHandle`
-   tables, then add weak-wrapper telemetry without changing ownership rules.
+7. The next milestone maps wrapper identity with stable `NodeHandle` and opaque
+   `ValueHandle` tables, then adds weak-wrapper telemetry without changing
+   ownership rules.
 
-That adapter setup is deliberately not part of the current implementation.
+See [`stock-v8-integration.md`](stock-v8-integration.md) for the pinned build,
+measurement surfaces, and wrapper sequence.

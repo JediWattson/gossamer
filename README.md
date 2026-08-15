@@ -107,6 +107,13 @@ opaque callback scheduling, and render invalidation. A replaceable fake engine
 proves the full click-to-paint flow without a JavaScript parser. See
 [`docs/pre-v8-engine-boundary.md`](docs/pre-v8-engine-boundary.md).
 
+An optional stock V8 15.2 adapter now occupies that socket on Apple Silicon.
+The pinned, symbolized build keeps JavaScript values under V8 GC while browser
+objects remain under Go regions and queue ARC. Initial profiling covers heap
+totals, sampled allocations, GC callbacks, explicit Promise checkpoints, and
+isolate teardown before DOM wrappers are added. See
+[`docs/stock-v8-integration.md`](docs/stock-v8-integration.md).
+
 ## What works today
 
 ### Loading and resources
@@ -165,8 +172,8 @@ proves the full click-to-paint flow without a JavaScript parser. See
 
 The following are intentionally still outside the current milestone:
 
-- JavaScript, navigation history, forms, input, selection, scrolling, and a
-  windowed UI
+- General JavaScript/DOM APIs, navigation history, forms, text input,
+  selection, scrolling, and a windowed UI
 - Full HTML error recovery, including table foster parenting, formatting
   element reconstruction, templates, SVG/MathML, and encoding sniffing
 - Flexbox, Grid, table layout, floats, positioned layout, and retained inline

@@ -71,9 +71,10 @@ and click-to-paint stages are implemented. Initial inline and external classic
 scripts also enter through Page evaluation tasks with an explicit engine
 microtask checkpoint.
 
-The next implementation step is V8 itself, isolated behind the proven adapter
-boundary documented in
-[`pre-v8-engine-boundary.md`](pre-v8-engine-boundary.md).
+Stock V8 now occupies the proven adapter boundary for evaluation, explicit
+microtasks, profiling, and isolate teardown. DOM wrappers are the next
+ownership milestone; see
+[`stock-v8-integration.md`](stock-v8-integration.md).
 
 Physical allocation optimizations such as typed slabs or object pools should
 be evaluated later against the semantic telemetry. They are implementation

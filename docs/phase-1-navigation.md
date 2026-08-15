@@ -96,4 +96,6 @@ engine-neutral contracts, initial classic-script evaluation, and the fake
 engine demo are now implemented. See
 [`pre-v8-engine-boundary.md`](pre-v8-engine-boundary.md).
 
-The next implementation step is the stock V8 adapter behind that boundary.
+The stock V8 adapter now executes and profiles scripts behind that boundary.
+The next implementation step is the stable-handle DOM wrapper table described
+in [`stock-v8-integration.md`](stock-v8-integration.md).

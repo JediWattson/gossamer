@@ -1,0 +1,5 @@
+# Stock V8 is fetched and built locally. Only Gossamer's workspace README,
+# exact pin, and build tooling are versioned.
+/third_party/v8/*
+!/third_party/v8/README.md
+/.cache/

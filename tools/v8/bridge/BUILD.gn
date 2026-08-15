@@ -1,0 +1,21 @@
+import("//gni/v8.gni")
+
+# This target is copied into the ignored V8 workspace. It compiles Gossamer's
+# C ABI with the exact compiler, defines, and hardened libc++ used by the pinned
+# stock V8 build.
+shared_library("gossamer_v8_bridge") {
+  sources = [ "bridge.cc" ]
+
+  configs -= [ "//build/config/clang:find_bad_constructs" ]
+  configs += [ "//:internal_config_base" ]
+  deps = [
+    "//:v8",
+    "//:v8_libbase",
+    "//:v8_libplatform",
+    "//:v8_monolith",
+  ]
+}
+
+group("gossamer_profile") {
+  deps = [ ":gossamer_v8_bridge" ]
+}
