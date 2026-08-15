@@ -188,6 +188,19 @@ extern int goGossamerV8HostStylePropertyName(
     uint64_t execution_id, uint64_t document, uint32_t node, size_t index,
     char **name_out, size_t *name_length_out, int *found_out,
     char **error_out);
+extern int goGossamerV8HostComputedStyleProperty(
+    uint64_t execution_id, uint64_t document, uint32_t node,
+    const char *pseudo, size_t pseudo_length, const char *name,
+    size_t name_length, char **value_out, size_t *value_length_out,
+    int *found_out, char **error_out);
+extern int goGossamerV8HostComputedStylePropertyCount(
+    uint64_t execution_id, uint64_t document, uint32_t node,
+    const char *pseudo, size_t pseudo_length, size_t *count_out,
+    char **error_out);
+extern int goGossamerV8HostComputedStylePropertyName(
+    uint64_t execution_id, uint64_t document, uint32_t node,
+    const char *pseudo, size_t pseudo_length, size_t index, char **name_out,
+    size_t *name_length_out, int *found_out, char **error_out);
 extern int goGossamerV8HostRetainNodeWrapper(uint64_t execution_id,
                                              uint64_t document, uint32_t node,
                                              char **error_out);
@@ -261,6 +274,10 @@ static gossamer_v8_host gossamer_v8_go_host(uint64_t execution_id) {
       .queue_microtask = goGossamerV8HostQueueMicrotask,
       .set_timeout = goGossamerV8HostSetTimeout,
       .clear_timeout = goGossamerV8HostClearTimeout,
+      .computed_style_property = goGossamerV8HostComputedStyleProperty,
+      .computed_style_property_count =
+          goGossamerV8HostComputedStylePropertyCount,
+      .computed_style_property_name = goGossamerV8HostComputedStylePropertyName,
   };
   return host;
 }

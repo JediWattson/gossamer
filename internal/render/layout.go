@@ -419,8 +419,12 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 		switch alignment {
 		case alignCenter:
 			lineOffset = (width - lineWidth) / 2
-		case alignRight:
+		case alignRight, alignEnd:
 			lineOffset = width - lineWidth
+		case alignLeft, alignStart, alignJustify:
+			// The current formatter has no bidi or justification pass. Preserve
+			// its existing left-aligned used behavior without collapsing the
+			// distinct computed values.
 		}
 		for _, piece := range line {
 			if piece.replaced {

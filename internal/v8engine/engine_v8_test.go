@@ -526,6 +526,204 @@ func TestStockV8ElementTraversalReflectionInlineStyleAndLifetime(t *testing.T) {
 	}
 }
 
+func TestStockV8GetComputedStyleIsFreshLiveAndReadOnly(t *testing.T) {
+	engine := newTestEngine(t)
+	browserRuntime, err := browser.NewWithEngine(engine)
+	if err != nil {
+		t.Fatalf("NewWithEngine: %v", err)
+	}
+	defer func() {
+		if err := browserRuntime.Close(); err != nil {
+			t.Errorf("Close browser: %v", err)
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	page, err := browserRuntime.LoadPage(
+		ctx,
+		"https://gossamer.test/computed-style",
+		staticDocumentLoader{document: `<!doctype html><html><head><style>
+			.parent { color: #123456; }
+			.target { display: block; width: 25%; background-color: #010203; --accent: ready; }
+		</style></head><body class="parent"><div id="target" class="target">text</div></body></html>`},
+	)
+	if err != nil {
+		t.Fatalf("LoadPage: %v", err)
+	}
+
+	_, err = page.QueueScript(browser.ScriptSource{
+		URL: "https://gossamer.test/computed-style.js",
+		Source: `
+			(() => {
+				const target = document.getElementById("target");
+				const computed = getComputedStyle(target);
+				if (!(computed instanceof CSSStyleDeclaration) ||
+					!(target.style instanceof CSSStyleDeclaration) ||
+					Object.getPrototypeOf(computed) !== CSSStyleDeclaration.prototype) {
+					throw new Error("CSSStyleDeclaration prototype identity is incorrect");
+				}
+				if (computed === getComputedStyle(target)) {
+					throw new Error("getComputedStyle did not return a fresh declaration");
+				}
+				if (computed.display !== "block" || computed.color !== "rgb(18, 52, 86)" ||
+					computed.width !== "25%" || computed.getPropertyValue("--accent") !== "ready" ||
+					computed["background-color"] !== "rgb(1, 2, 3)" || computed["--accent"] !== "ready" ||
+					computed.getPropertyValue("not-a-property") !== "" ||
+					computed.getPropertyPriority("color") !== "" || computed.cssText !== "") {
+					throw new Error("computed cascade or serialization is incorrect");
+				}
+				if (computed.length < 30 || computed.item(computed.length) !== "") {
+					throw new Error("computed property enumeration is incomplete");
+				}
+				if (computed[0] !== computed.item(0) || computed[computed.length] !== undefined ||
+					!(0 in computed) || !Object.keys(computed).includes("0") ||
+					!("background-color" in computed) || !("--accent" in computed)) {
+					throw new Error("computed indexed or dashed-name access is incomplete");
+				}
+				let foundColor = false;
+				let foundAccent = false;
+				for (let index = 0; index < computed.length; index++) {
+					foundColor ||= computed.item(index) === "color";
+					foundAccent ||= computed.item(index) === "--accent";
+				}
+				if (!foundColor || !foundAccent) {
+					throw new Error("computed property names are not exposed");
+				}
+
+				target.style["margin-top"] = "3px";
+				if (target.style["margin-top"] !== "3px" || computed["margin-top"] !== "3px") {
+					throw new Error("dashed inline style access is not live");
+				}
+				target.style.color = "#abcdef";
+				target.style.setProperty("--accent", "updated");
+				if (computed.color !== "rgb(171, 205, 239)" ||
+					computed.getPropertyValue("--accent") !== "updated") {
+					throw new Error("retained computed declaration is not live");
+				}
+
+				const mustReject = (operation) => {
+					let rejected = false;
+					try {
+						operation();
+					} catch (error) {
+						rejected = error instanceof TypeError && /read-only/.test(error.message);
+					}
+					if (!rejected) throw new Error("computed style mutation was not clearly rejected");
+				};
+				mustReject(() => { computed.color = "red"; });
+				mustReject(() => { computed[0] = "replacement"; });
+				mustReject(() => { computed["background-color"] = "red"; });
+				mustReject(() => { computed["--accent"] = "blocked"; });
+				mustReject(() => { computed.cssText = "color: red"; });
+				mustReject(() => computed.setProperty("color", "red"));
+				mustReject(() => computed.removeProperty("color"));
+				if (computed.color !== "rgb(171, 205, 239)" || computed[0] !== computed.item(0)) {
+					throw new Error("rejected mutation changed computed style");
+				}
+
+				const pseudo = getComputedStyle(target, "::before");
+				if (!(pseudo instanceof CSSStyleDeclaration) || pseudo.length !== 0 ||
+					pseudo.getPropertyValue("color") !== "") {
+					throw new Error("unsupported pseudo computed style is not an empty live declaration");
+				}
+				if (getComputedStyle(target, null).color !== "rgb(171, 205, 239)" ||
+					getComputedStyle(target, "").color !== "rgb(171, 205, 239)" ||
+					getComputedStyle(target, "::gossamer-unsupported").length !== 0 ||
+					getComputedStyle(target, ":before").length !== 0) {
+					throw new Error("valid computed-style pseudo boundary is incorrect");
+				}
+				for (const invalidPseudo of [
+					"before", ":hover", "::", "::1before", " ::before",
+					"::before:hover", "::before trailing", "::part", "::part(icon)",
+					"::slotted", "::slotted(*)",
+				]) {
+					let invalidPseudoRejected = false;
+					try {
+						getComputedStyle(target, invalidPseudo);
+					} catch (error) {
+						invalidPseudoRejected = error instanceof TypeError;
+					}
+					if (!invalidPseudoRejected) {
+						throw new Error("getComputedStyle accepted invalid pseudo: " + invalidPseudo);
+					}
+				}
+				let wrongTargetRejected = false;
+				try {
+					getComputedStyle(document);
+				} catch (error) {
+					wrongTargetRejected = error instanceof TypeError;
+				}
+				if (!wrongTargetRejected) throw new Error("getComputedStyle accepted a non-Element");
+				globalThis.__heldComputedStyle = computed;
+			})();
+		`,
+	})
+	if err != nil {
+		t.Fatalf("QueueScript: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("run computed-style script: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("render computed-style mutations: %v", err)
+	}
+	realm, ok := engine.LatestRealm()
+	if !ok {
+		t.Fatal("computed-style realm is unavailable")
+	}
+	if err := realm.CollectGarbage(page); err != nil {
+		t.Fatalf("CollectGarbage with held computed style: %v", err)
+	}
+
+	_, err = page.QueueScript(browser.ScriptSource{
+		URL: "https://gossamer.test/computed-style-later-task.js",
+		Source: `
+			(() => {
+				const target = document.getElementById("target");
+				target.style["background-color"] = "#040506";
+				if (__heldComputedStyle["background-color"] !== "rgb(4, 5, 6)" ||
+					__heldComputedStyle[0] !== __heldComputedStyle.item(0)) {
+					throw new Error("held computed declaration is not live across Page tasks");
+				}
+				target.remove();
+			})();
+		`,
+	})
+	if err != nil {
+		t.Fatalf("QueueScript later computed-style task: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("run later computed-style task: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("render computed-style detach: %v", err)
+	}
+	if err := realm.CollectGarbage(page); err != nil {
+		t.Fatalf("CollectGarbage with held detached computed style: %v", err)
+	}
+
+	_, err = page.QueueScript(browser.ScriptSource{
+		URL: "https://gossamer.test/computed-style-detached.js",
+		Source: `
+			if (__heldComputedStyle.length !== 0 || __heldComputedStyle.cssText !== "" ||
+				__heldComputedStyle.getPropertyValue("background-color") !== "") {
+				throw new Error("held computed declaration lost its detached-node anchor");
+			}
+			globalThis.__heldComputedStyle = undefined;
+		`,
+	})
+	if err != nil {
+		t.Fatalf("QueueScript detached computed-style task: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("run detached computed-style task: %v", err)
+	}
+	if err := realm.CollectGarbage(page); err != nil {
+		t.Fatalf("CollectGarbage after computed-style release: %v", err)
+	}
+}
+
 func TestStockV8LiveDOMFacadesReflectionIterationAndLifetime(t *testing.T) {
 	engine := newTestEngine(t)
 	browserRuntime, err := browser.NewWithEngine(engine)

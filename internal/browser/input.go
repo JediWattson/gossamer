@@ -12,6 +12,7 @@ import (
 	htmlparser "github.com/JediWattson/gossamer/internal/html"
 	"github.com/JediWattson/gossamer/internal/render"
 	browserruntime "github.com/JediWattson/gossamer/internal/runtime"
+	computed "github.com/JediWattson/gossamer/internal/style"
 )
 
 // HitTest converts the renderer's transitional pointer result into stable
@@ -235,6 +236,8 @@ type taskHost struct {
 	mutated    bool
 	autoRender bool
 }
+
+var _ DOMComputedStyleHost = (*taskHost)(nil)
 
 func (host *taskHost) GetElementByID(value string) (NodeHandle, bool, error) {
 	host.page.mutex.RLock()
@@ -925,6 +928,35 @@ func (host *taskHost) StylePropertyNames(handle NodeHandle) ([]string, error) {
 		return nil, err
 	}
 	return css.DeclarationPropertyNames(css.ParseDeclarationList(source)), nil
+}
+
+func (host *taskHost) ComputedStyleProperty(handle NodeHandle, pseudo, property string) (string, bool, error) {
+	computedStyle, err := host.page.ComputedStyle(handle)
+	if err != nil {
+		if errors.Is(err, ErrComputedStyleUnavailable) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	if pseudo != "" {
+		return "", false, nil
+	}
+	value, found := computed.ComputedPropertyValue(computedStyle, property)
+	return value, found, nil
+}
+
+func (host *taskHost) ComputedStylePropertyNames(handle NodeHandle, pseudo string) ([]string, error) {
+	computedStyle, err := host.page.ComputedStyle(handle)
+	if err != nil {
+		if errors.Is(err, ErrComputedStyleUnavailable) {
+			return []string{}, nil
+		}
+		return nil, err
+	}
+	if pseudo != "" {
+		return []string{}, nil
+	}
+	return computed.ComputedPropertyNames(computedStyle), nil
 }
 
 func (host *taskHost) setInlineStyleLocked(node dom.NodeID, declarations []css.Declaration) error {

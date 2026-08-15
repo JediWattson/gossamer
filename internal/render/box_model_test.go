@@ -63,6 +63,27 @@ func TestRenderTextAlignPositionsLinesWithinContentBox(t *testing.T) {
 				return content.X + content.Width - fragment.Width
 			},
 		},
+		{
+			name:      "end",
+			alignment: "end",
+			wantX: func(content render.Rect, fragment render.TextFragment) float64 {
+				return content.X + content.Width - fragment.Width
+			},
+		},
+		{
+			name:      "start",
+			alignment: "start",
+			wantX: func(content render.Rect, _ render.TextFragment) float64 {
+				return content.X
+			},
+		},
+		{
+			name:      "justify fallback",
+			alignment: "justify",
+			wantX: func(content render.Rect, _ render.TextFragment) float64 {
+				return content.X
+			},
+		},
 	}
 
 	for _, test := range tests {
@@ -89,6 +110,34 @@ func TestRenderTextAlignPositionsLinesWithinContentBox(t *testing.T) {
 			}
 			assertNear(t, "aligned text x", fragment.X, test.wantX(box.ContentBounds, *fragment))
 		})
+	}
+}
+
+func TestRenderInlineBlockUsesCurrentInlineFlow(t *testing.T) {
+	t.Parallel()
+
+	document, body := boxModelDocument()
+	container := dom.NewElement("div", dom.Attribute{Name: "style", Value: "width: 200px"})
+	inlineBlock := dom.NewElement("span", dom.Attribute{Name: "style", Value: "display: inline-block"})
+	inlineBlock.AppendChild(dom.NewText("First "))
+	inline := dom.NewElement("span")
+	inline.AppendChild(dom.NewText("Second"))
+	container.AppendChild(inlineBlock)
+	container.AppendChild(inline)
+	body.AppendChild(container)
+
+	frame, err := render.Render(document, render.Viewport{Width: 320, Height: 120})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := findTextFragment(collectTextFragments(frame.Root), "First")
+	second := findTextFragment(collectTextFragments(frame.Root), "Second")
+	if first == nil || second == nil {
+		t.Fatalf("inline fragments = First:%v Second:%v", first, second)
+	}
+	assertNear(t, "inline-block baseline", first.BaselineY, second.BaselineY)
+	if second.X <= first.X {
+		t.Errorf("second inline x = %.2f, want after inline-block x %.2f", second.X, first.X)
 	}
 }
 

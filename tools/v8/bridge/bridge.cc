@@ -46,6 +46,9 @@ constexpr int kNodeClassListField = 5;
 constexpr int kNodeDatasetField = 6;
 constexpr int kNodeInternalFieldCount = 7;
 constexpr int kStyleNodeField = 0;
+constexpr int kStyleComputedField = 1;
+constexpr int kStylePseudoField = 2;
+constexpr int kStyleInternalFieldCount = 3;
 constexpr int kFacadeNodeField = 0;
 constexpr int kFacadeBackingField = 1;
 constexpr int kFacadeInternalFieldCount = 2;
@@ -311,7 +314,7 @@ struct gossamer_v8_realm {
   v8::Global<v8::FunctionTemplate> html_collection_template;
   v8::Global<v8::FunctionTemplate> token_list_template;
   v8::Global<v8::FunctionTemplate> dataset_template;
-  v8::Global<v8::ObjectTemplate> style_template;
+  v8::Global<v8::FunctionTemplate> style_template;
   v8::Global<v8::ObjectTemplate> collection_iterator_template;
   v8::Global<v8::Object> document_wrapper;
   const gossamer_v8_host *active_host = nullptr;
@@ -425,6 +428,18 @@ void ThrowError(v8::Isolate *isolate, const std::string &message) {
   isolate->ThrowException(v8::Exception::Error(rendered));
 }
 
+void ThrowTypeError(v8::Isolate *isolate, const std::string &message) {
+  v8::Local<v8::String> rendered;
+  if (!v8::String::NewFromUtf8(
+           isolate, message.data(), v8::NewStringType::kNormal,
+           static_cast<int>(std::min<size_t>(message.size(),
+                                             std::numeric_limits<int>::max())))
+           .ToLocal(&rendered)) {
+    rendered = v8::String::NewFromUtf8Literal(isolate, "invalid operation");
+  }
+  isolate->ThrowException(v8::Exception::TypeError(rendered));
+}
+
 bool RequireHost(gossamer_v8_realm *realm, std::string *error) {
   if (realm == nullptr || realm->active_host == nullptr ||
       realm->active_host->execution_id == 0) {
@@ -490,9 +505,18 @@ bool NewUTF8String(v8::Isolate *isolate, const char *bytes, size_t length,
       .ToLocal(output);
 }
 
-bool ReadStyleKey(v8::Isolate *isolate, v8::Local<v8::Object> receiver,
-                  WrapperKey *key) {
-  if (receiver.IsEmpty() || receiver->InternalFieldCount() != 1) {
+struct StyleReference {
+  WrapperKey key;
+  bool computed = false;
+  std::string pseudo;
+};
+
+bool ReadStyleReference(v8::Isolate *isolate,
+                        v8::Local<v8::Object> receiver,
+                        StyleReference *reference) {
+  if (receiver.IsEmpty() ||
+      receiver->InternalFieldCount() != kStyleInternalFieldCount ||
+      reference == nullptr) {
     ThrowError(isolate,
                "CSS method receiver is not a Gossamer style declaration");
     return false;
@@ -504,10 +528,26 @@ bool ReadStyleKey(v8::Isolate *isolate, v8::Local<v8::Object> receiver,
   }
   v8::Local<v8::Value> node_value = node_data.As<v8::Value>();
   if (!node_value->IsObject() ||
-      !ReadWrapperKey(node_value.As<v8::Object>(), key)) {
+      !ReadWrapperKey(node_value.As<v8::Object>(), &reference->key)) {
     ThrowError(isolate, "Gossamer style declaration lost its element");
     return false;
   }
+  v8::Local<v8::Data> computed_data =
+      receiver->GetInternalField(kStyleComputedField);
+  v8::Local<v8::Data> pseudo_data =
+      receiver->GetInternalField(kStylePseudoField);
+  if (!computed_data->IsValue() || !pseudo_data->IsValue()) {
+    ThrowError(isolate, "Gossamer style declaration lost its state");
+    return false;
+  }
+  v8::Local<v8::Value> computed_value = computed_data.As<v8::Value>();
+  v8::Local<v8::Value> pseudo_value = pseudo_data.As<v8::Value>();
+  if (!computed_value->IsBoolean() || !pseudo_value->IsString()) {
+    ThrowError(isolate, "Gossamer style declaration has invalid state");
+    return false;
+  }
+  reference->computed = computed_value->BooleanValue(isolate);
+  reference->pseudo = UTF8Value(isolate, pseudo_value);
   return true;
 }
 
@@ -602,6 +642,127 @@ std::string CSSPropertyNameFromJS(const std::string &name) {
     }
   }
   return result;
+}
+
+bool IsDashedStylePropertyName(const std::string &name) {
+  return name.find('-') != std::string::npos;
+}
+
+bool IsSupportedDashedStylePropertyName(const std::string &name) {
+  for (const char *supported : {
+           "background-color",    "font-size",           "font-weight",
+           "line-height",         "text-decoration",     "text-decoration-line",
+           "text-align",          "min-width",           "max-width",
+           "padding-top",         "padding-right",       "padding-bottom",
+           "padding-left",        "margin-top",          "margin-right",
+           "margin-bottom",       "margin-left",         "border-top",
+           "border-right",        "border-bottom",       "border-left",
+           "border-width",        "border-style",        "border-color",
+           "border-top-width",    "border-right-width",  "border-bottom-width",
+           "border-left-width",   "border-top-style",    "border-right-style",
+           "border-bottom-style", "border-left-style",   "border-top-color",
+           "border-right-color",  "border-bottom-color", "border-left-color",
+           "list-style",          "list-style-type",
+       }) {
+    if (name == supported)
+      return true;
+  }
+  return false;
+}
+
+bool IsASCIILetter(unsigned char character) {
+  return (character >= 'a' && character <= 'z') ||
+         (character >= 'A' && character <= 'Z');
+}
+
+bool IsCSSNameStart(unsigned char character) {
+  return IsASCIILetter(character) || character == '_' || character >= 0x80;
+}
+
+bool IsCSSNameCharacter(unsigned char character) {
+  return IsCSSNameStart(character) ||
+         (character >= '0' && character <= '9') || character == '-';
+}
+
+std::string ASCIILower(const std::string &source) {
+  std::string result = source;
+  for (char &character : result) {
+    if (character >= 'A' && character <= 'Z')
+      character = static_cast<char>(character + ('a' - 'A'));
+  }
+  return result;
+}
+
+// This slice intentionally accepts only simple pseudo-element selectors. It
+// recognizes the four legacy single-colon spellings but does not attempt to
+// embed a selector parser in the V8 bridge. Functional ::part() and
+// ::slotted() are called out separately because CSSOM requires their rejection
+// even when a future parser accepts other functional pseudo-elements.
+bool ValidateComputedStylePseudo(const std::string &pseudo,
+                                 std::string *error) {
+  if (pseudo.empty())
+    return true;
+
+  size_t name_start = 0;
+  bool legacy = false;
+  if (pseudo.size() >= 2 && pseudo[0] == ':' && pseudo[1] == ':') {
+    name_start = 2;
+  } else if (pseudo[0] == ':') {
+    legacy = true;
+    name_start = 1;
+  } else {
+    *error = "getComputedStyle pseudo-element must be empty or a valid simple "
+             "pseudo-element selector";
+    return false;
+  }
+
+  if (name_start >= pseudo.size()) {
+    *error = "getComputedStyle pseudo-element must be empty or a valid simple "
+             "pseudo-element selector";
+    return false;
+  }
+  size_t index = name_start;
+  unsigned char first = static_cast<unsigned char>(pseudo[index]);
+  if (first == '-') {
+    ++index;
+    if (index >= pseudo.size()) {
+      *error = "getComputedStyle pseudo-element must be empty or a valid simple "
+               "pseudo-element selector";
+      return false;
+    }
+    unsigned char second = static_cast<unsigned char>(pseudo[index]);
+    if (second != '-' && !IsCSSNameStart(second)) {
+      *error = "getComputedStyle pseudo-element must be empty or a valid simple "
+               "pseudo-element selector";
+      return false;
+    }
+  } else if (!IsCSSNameStart(first)) {
+    *error = "getComputedStyle pseudo-element must be empty or a valid simple "
+             "pseudo-element selector";
+    return false;
+  }
+  while (index < pseudo.size() &&
+         IsCSSNameCharacter(static_cast<unsigned char>(pseudo[index]))) {
+    ++index;
+  }
+
+  std::string name = ASCIILower(pseudo.substr(name_start, index - name_start));
+  if (name == "part" || name == "slotted") {
+    *error = "getComputedStyle does not support ::part() or ::slotted()";
+    return false;
+  }
+  if (index != pseudo.size()) {
+    *error = "getComputedStyle pseudo-element must be empty or a valid simple "
+             "pseudo-element selector";
+    return false;
+  }
+  if (legacy && name != "before" && name != "after" &&
+      name != "first-line" && name != "first-letter") {
+    *error = "getComputedStyle pseudo-element must be empty or a valid simple "
+             "pseudo-element selector";
+    return false;
+  }
+  return true;
 }
 
 bool EventTypeFromValue(v8::Isolate *isolate, v8::Local<v8::Value> value,
@@ -3688,27 +3849,173 @@ void NodeStyleGetter(v8::Local<v8::Name>,
       return;
     }
   }
-  v8::Local<v8::ObjectTemplate> style_template =
+  v8::Local<v8::FunctionTemplate> style_template =
       realm->style_template.Get(isolate);
   v8::Local<v8::Object> style;
-  if (!style_template->NewInstance(isolate->GetCurrentContext()).ToLocal(
-          &style)) {
+  if (!style_template->InstanceTemplate()
+           ->NewInstance(isolate->GetCurrentContext())
+           .ToLocal(&style)) {
     ThrowError(isolate, "V8 failed to allocate element.style");
     return;
   }
   style->SetInternalField(kStyleNodeField, node);
+  style->SetInternalField(kStyleComputedField, v8::False(isolate));
+  style->SetInternalField(kStylePseudoField, v8::String::Empty(isolate));
   node->SetInternalField(kNodeStyleField, style);
   info.GetReturnValue().Set(style);
+}
+
+bool ReadComputedStyleProperty(gossamer_v8_realm *realm,
+                               const StyleReference &reference,
+                               const std::string &name, std::string *value,
+                               bool *found, std::string *error) {
+  if (!RequireHost(realm, error))
+    return false;
+  char *host_value = nullptr;
+  size_t value_length = 0;
+  int host_found = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->computed_style_property(
+          realm->active_host->execution_id, reference.key.document,
+          reference.key.node, reference.pseudo.data(), reference.pseudo.size(),
+          name.data(), name.size(), &host_value, &value_length, &host_found,
+          &host_error) == 0) {
+    *error = TakeCString(host_error);
+    std::free(host_value);
+    if (error->empty())
+      *error = "reading computed style property failed";
+    return false;
+  }
+  std::free(host_error);
+  value->assign(host_value == nullptr ? "" : host_value, value_length);
+  *found = host_found != 0;
+  std::free(host_value);
+  return true;
+}
+
+bool ReadComputedStyleCount(gossamer_v8_realm *realm,
+                            const StyleReference &reference, size_t *count,
+                            std::string *error) {
+  if (!RequireHost(realm, error))
+    return false;
+  char *host_error = nullptr;
+  if (realm->active_host->computed_style_property_count(
+          realm->active_host->execution_id, reference.key.document,
+          reference.key.node, reference.pseudo.data(), reference.pseudo.size(),
+          count, &host_error) == 0) {
+    *error = TakeCString(host_error);
+    if (error->empty())
+      *error = "reading computed style length failed";
+    return false;
+  }
+  std::free(host_error);
+  return true;
+}
+
+bool ReadComputedStyleName(gossamer_v8_realm *realm,
+                           const StyleReference &reference, size_t index,
+                           std::string *name, bool *found,
+                           std::string *error) {
+  if (!RequireHost(realm, error))
+    return false;
+  char *host_name = nullptr;
+  size_t name_length = 0;
+  int host_found = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->computed_style_property_name(
+          realm->active_host->execution_id, reference.key.document,
+          reference.key.node, reference.pseudo.data(), reference.pseudo.size(),
+          index, &host_name, &name_length, &host_found, &host_error) == 0) {
+    *error = TakeCString(host_error);
+    std::free(host_name);
+    if (error->empty())
+      *error = "reading computed style item failed";
+    return false;
+  }
+  std::free(host_error);
+  name->assign(host_name == nullptr ? "" : host_name, name_length);
+  *found = host_found != 0;
+  std::free(host_name);
+  return true;
+}
+
+bool ReadStylePropertyCount(gossamer_v8_realm *realm,
+                            const StyleReference &reference, size_t *count,
+                            std::string *error) {
+  if (reference.computed)
+    return ReadComputedStyleCount(realm, reference, count, error);
+  if (!RequireHost(realm, error))
+    return false;
+  char *host_error = nullptr;
+  if (realm->active_host->style_property_count(
+          realm->active_host->execution_id, reference.key.document,
+          reference.key.node, count, &host_error) == 0) {
+    *error = TakeCString(host_error);
+    if (error->empty())
+      *error = "reading style length failed";
+    return false;
+  }
+  std::free(host_error);
+  return true;
+}
+
+bool ReadStylePropertyName(gossamer_v8_realm *realm,
+                           const StyleReference &reference, size_t index,
+                           std::string *name, bool *found,
+                           std::string *error) {
+  if (reference.computed)
+    return ReadComputedStyleName(realm, reference, index, name, found, error);
+  if (!RequireHost(realm, error))
+    return false;
+  char *host_name = nullptr;
+  size_t name_length = 0;
+  int host_found = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->style_property_name(
+          realm->active_host->execution_id, reference.key.document,
+          reference.key.node, index, &host_name, &name_length, &host_found,
+          &host_error) == 0) {
+    *error = TakeCString(host_error);
+    std::free(host_name);
+    if (error->empty())
+      *error = "reading style item failed";
+    return false;
+  }
+  std::free(host_error);
+  name->assign(host_name == nullptr ? "" : host_name, name_length);
+  *found = host_found != 0;
+  std::free(host_name);
+  return true;
+}
+
+bool RequireMutableStyle(v8::Isolate *isolate,
+                         const StyleReference &reference) {
+  if (!reference.computed)
+    return true;
+  ThrowTypeError(isolate, "Computed style declarations are read-only");
+  return false;
 }
 
 void StyleCSSTextGetter(v8::Local<v8::Name>,
                         const v8::PropertyCallbackInfo<v8::Value> &info) {
   v8::Isolate *isolate = info.GetIsolate();
   gossamer_v8_realm *realm = CurrentRealm(isolate);
-  WrapperKey key;
-  if (!ReadStyleKey(isolate, info.Holder(), &key))
+  StyleReference reference;
+  if (!ReadStyleReference(isolate, info.Holder(), &reference))
     return;
   std::string error;
+  if (reference.computed) {
+    // CSSOM exposes an empty cssText for computed declarations. Still consult
+    // the host so a retained declaration observes stale handles and document
+    // lifecycle failures rather than becoming a detached snapshot.
+    size_t ignored = 0;
+    if (!ReadComputedStyleCount(realm, reference, &ignored, &error)) {
+      ThrowError(isolate, error);
+      return;
+    }
+    info.GetReturnValue().Set(v8::String::Empty(isolate));
+    return;
+  }
   if (!RequireHost(realm, &error)) {
     ThrowError(isolate, error);
     return;
@@ -3717,8 +4024,8 @@ void StyleCSSTextGetter(v8::Local<v8::Name>,
   size_t value_length = 0;
   char *host_error = nullptr;
   if (realm->active_host->style_css_text(
-          realm->active_host->execution_id, key.document, key.node, &value,
-          &value_length, &host_error) == 0) {
+          realm->active_host->execution_id, reference.key.document,
+          reference.key.node, &value, &value_length, &host_error) == 0) {
     error = TakeCString(host_error);
     std::free(value);
     ThrowError(isolate, error.empty() ? "reading cssText failed" : error);
@@ -3739,8 +4046,9 @@ void StyleCSSTextSetter(v8::Local<v8::Name>, v8::Local<v8::Value> value,
                         const v8::PropertyCallbackInfo<v8::Boolean> &info) {
   v8::Isolate *isolate = info.GetIsolate();
   gossamer_v8_realm *realm = CurrentRealm(isolate);
-  WrapperKey key;
-  if (!ReadStyleKey(isolate, info.Holder(), &key)) {
+  StyleReference reference;
+  if (!ReadStyleReference(isolate, info.Holder(), &reference) ||
+      !RequireMutableStyle(isolate, reference)) {
     info.GetReturnValue().Set(false);
     return;
   }
@@ -3757,8 +4065,9 @@ void StyleCSSTextSetter(v8::Local<v8::Name>, v8::Local<v8::Value> value,
   }
   char *host_error = nullptr;
   if (realm->active_host->set_style_css_text(
-          realm->active_host->execution_id, key.document, key.node,
-          rendered.data(), rendered.size(), &host_error) == 0) {
+          realm->active_host->execution_id, reference.key.document,
+          reference.key.node, rendered.data(), rendered.size(),
+          &host_error) == 0) {
     error = TakeCString(host_error);
     ThrowError(isolate, error.empty() ? "setting cssText failed" : error);
     info.GetReturnValue().Set(false);
@@ -3768,10 +4077,16 @@ void StyleCSSTextSetter(v8::Local<v8::Name>, v8::Local<v8::Value> value,
   info.GetReturnValue().Set(true);
 }
 
-bool ReadStyleProperty(gossamer_v8_realm *realm, const WrapperKey &key,
+bool ReadStyleProperty(gossamer_v8_realm *realm,
+                       const StyleReference &reference,
                        const std::string &name, std::string *value,
                        std::string *priority, bool *found,
                        std::string *error) {
+  if (reference.computed) {
+    priority->clear();
+    return ReadComputedStyleProperty(realm, reference, name, value, found,
+                                     error);
+  }
   if (!RequireHost(realm, error))
     return false;
   char *host_value = nullptr;
@@ -3781,9 +4096,10 @@ bool ReadStyleProperty(gossamer_v8_realm *realm, const WrapperKey &key,
   int host_found = 0;
   char *host_error = nullptr;
   if (realm->active_host->style_property(
-          realm->active_host->execution_id, key.document, key.node, name.data(),
-          name.size(), &host_value, &value_length, &host_priority,
-          &priority_length, &host_found, &host_error) == 0) {
+          realm->active_host->execution_id, reference.key.document,
+          reference.key.node, name.data(), name.size(), &host_value,
+          &value_length, &host_priority, &priority_length, &host_found,
+          &host_error) == 0) {
     *error = TakeCString(host_error);
     std::free(host_value);
     std::free(host_priority);
@@ -3824,24 +4140,15 @@ void StyleLengthGetter(v8::Local<v8::Name>,
                        const v8::PropertyCallbackInfo<v8::Value> &info) {
   v8::Isolate *isolate = info.GetIsolate();
   gossamer_v8_realm *realm = CurrentRealm(isolate);
-  WrapperKey key;
-  if (!ReadStyleKey(isolate, info.Holder(), &key))
+  StyleReference reference;
+  if (!ReadStyleReference(isolate, info.Holder(), &reference))
     return;
   std::string error;
-  if (!RequireHost(realm, &error)) {
+  size_t count = 0;
+  if (!ReadStylePropertyCount(realm, reference, &count, &error)) {
     ThrowError(isolate, error);
     return;
   }
-  size_t count = 0;
-  char *host_error = nullptr;
-  if (realm->active_host->style_property_count(
-          realm->active_host->execution_id, key.document, key.node, &count,
-          &host_error) == 0) {
-    error = TakeCString(host_error);
-    ThrowError(isolate, error.empty() ? "reading style length failed" : error);
-    return;
-  }
-  std::free(host_error);
   info.GetReturnValue().Set(
       v8::Number::New(isolate, static_cast<double>(count)));
 }
@@ -3849,8 +4156,8 @@ void StyleLengthGetter(v8::Local<v8::Name>,
 void StyleItem(const v8::FunctionCallbackInfo<v8::Value> &info) {
   v8::Isolate *isolate = info.GetIsolate();
   gossamer_v8_realm *realm = CurrentRealm(isolate);
-  WrapperKey key;
-  if (!ReadStyleKey(isolate, info.This(), &key))
+  StyleReference reference;
+  if (!ReadStyleReference(isolate, info.This(), &reference))
     return;
   uint64_t index = 0;
   if (info.Length() != 0) {
@@ -3861,34 +4168,15 @@ void StyleItem(const v8::FunctionCallbackInfo<v8::Value> &info) {
     index = converted.FromJust();
   }
   std::string error;
-  if (!RequireHost(realm, &error)) {
+  std::string name;
+  bool found = false;
+  if (!ReadStylePropertyName(realm, reference, static_cast<size_t>(index),
+                             &name, &found, &error)) {
     ThrowError(isolate, error);
     return;
   }
-  char *name = nullptr;
-  size_t name_length = 0;
-  int found = 0;
-  char *host_error = nullptr;
-  if (realm->active_host->style_property_name(
-          realm->active_host->execution_id, key.document, key.node,
-          static_cast<size_t>(index), &name, &name_length, &found,
-          &host_error) == 0) {
-    error = TakeCString(host_error);
-    std::free(name);
-    ThrowError(isolate, error.empty() ? "reading style item failed" : error);
-    return;
-  }
-  std::free(host_error);
-  if (found == 0) {
-    std::free(name);
-    v8::Local<v8::String> empty = v8::String::Empty(isolate);
-    info.GetReturnValue().Set(empty);
-    return;
-  }
   v8::Local<v8::String> result;
-  bool allocated = NewUTF8String(isolate, name, name_length, &result);
-  std::free(name);
-  if (!allocated) {
+  if (!NewUTF8String(isolate, name.data(), found ? name.size() : 0, &result)) {
     ThrowError(isolate, "V8 failed to allocate style item");
     return;
   }
@@ -3899,8 +4187,8 @@ void StyleGetPropertyValue(
     const v8::FunctionCallbackInfo<v8::Value> &info) {
   v8::Isolate *isolate = info.GetIsolate();
   gossamer_v8_realm *realm = CurrentRealm(isolate);
-  WrapperKey key;
-  if (!ReadStyleKey(isolate, info.This(), &key))
+  StyleReference reference;
+  if (!ReadStyleReference(isolate, info.This(), &reference))
     return;
   std::string name;
   if (info.Length() == 0 || !StringFromValue(isolate, info[0], &name))
@@ -3909,7 +4197,8 @@ void StyleGetPropertyValue(
   std::string priority;
   std::string error;
   bool found = false;
-  if (!ReadStyleProperty(realm, key, name, &value, &priority, &found, &error)) {
+  if (!ReadStyleProperty(realm, reference, name, &value, &priority, &found,
+                         &error)) {
     ThrowError(isolate, error);
     return;
   }
@@ -3926,8 +4215,8 @@ void StyleGetPropertyPriority(
     const v8::FunctionCallbackInfo<v8::Value> &info) {
   v8::Isolate *isolate = info.GetIsolate();
   gossamer_v8_realm *realm = CurrentRealm(isolate);
-  WrapperKey key;
-  if (!ReadStyleKey(isolate, info.This(), &key))
+  StyleReference reference;
+  if (!ReadStyleReference(isolate, info.This(), &reference))
     return;
   std::string name;
   if (info.Length() == 0 || !StringFromValue(isolate, info[0], &name))
@@ -3936,7 +4225,8 @@ void StyleGetPropertyPriority(
   std::string priority;
   std::string error;
   bool found = false;
-  if (!ReadStyleProperty(realm, key, name, &value, &priority, &found, &error)) {
+  if (!ReadStyleProperty(realm, reference, name, &value, &priority, &found,
+                         &error)) {
     ThrowError(isolate, error);
     return;
   }
@@ -3952,8 +4242,9 @@ void StyleGetPropertyPriority(
 void StyleSetProperty(const v8::FunctionCallbackInfo<v8::Value> &info) {
   v8::Isolate *isolate = info.GetIsolate();
   gossamer_v8_realm *realm = CurrentRealm(isolate);
-  WrapperKey key;
-  if (!ReadStyleKey(isolate, info.This(), &key))
+  StyleReference reference;
+  if (!ReadStyleReference(isolate, info.This(), &reference) ||
+      !RequireMutableStyle(isolate, reference))
     return;
   std::string name;
   std::string value;
@@ -3964,15 +4255,16 @@ void StyleSetProperty(const v8::FunctionCallbackInfo<v8::Value> &info) {
        !StringFromValue(isolate, info[2], &priority)))
     return;
   std::string error;
-  if (!SetStyleProperty(realm, key, name, value, priority, &error))
+  if (!SetStyleProperty(realm, reference.key, name, value, priority, &error))
     ThrowError(isolate, error);
 }
 
 void StyleRemoveProperty(const v8::FunctionCallbackInfo<v8::Value> &info) {
   v8::Isolate *isolate = info.GetIsolate();
   gossamer_v8_realm *realm = CurrentRealm(isolate);
-  WrapperKey key;
-  if (!ReadStyleKey(isolate, info.This(), &key))
+  StyleReference reference;
+  if (!ReadStyleReference(isolate, info.This(), &reference) ||
+      !RequireMutableStyle(isolate, reference))
     return;
   std::string name;
   if (info.Length() == 0 || !StringFromValue(isolate, info[0], &name))
@@ -3986,8 +4278,9 @@ void StyleRemoveProperty(const v8::FunctionCallbackInfo<v8::Value> &info) {
   size_t value_length = 0;
   char *host_error = nullptr;
   if (realm->active_host->remove_style_property(
-          realm->active_host->execution_id, key.document, key.node, name.data(),
-          name.size(), &value, &value_length, &host_error) == 0) {
+          realm->active_host->execution_id, reference.key.document,
+          reference.key.node, name.data(), name.size(), &value, &value_length,
+          &host_error) == 0) {
     error = TakeCString(host_error);
     std::free(value);
     ThrowError(isolate, error.empty() ? "removeProperty failed" : error);
@@ -4009,8 +4302,8 @@ void StyleDirectPropertyGetter(
     const v8::PropertyCallbackInfo<v8::Value> &info) {
   v8::Isolate *isolate = info.GetIsolate();
   gossamer_v8_realm *realm = CurrentRealm(isolate);
-  WrapperKey key;
-  if (!ReadStyleKey(isolate, info.Holder(), &key))
+  StyleReference reference;
+  if (!ReadStyleReference(isolate, info.Holder(), &reference))
     return;
   std::string name =
       CSSPropertyNameFromJS(UTF8Value(isolate, property.As<v8::Value>()));
@@ -4018,7 +4311,8 @@ void StyleDirectPropertyGetter(
   std::string priority;
   std::string error;
   bool found = false;
-  if (!ReadStyleProperty(realm, key, name, &value, &priority, &found, &error)) {
+  if (!ReadStyleProperty(realm, reference, name, &value, &priority, &found,
+                         &error)) {
     ThrowError(isolate, error);
     return;
   }
@@ -4036,8 +4330,9 @@ void StyleDirectPropertySetter(
     const v8::PropertyCallbackInfo<v8::Boolean> &info) {
   v8::Isolate *isolate = info.GetIsolate();
   gossamer_v8_realm *realm = CurrentRealm(isolate);
-  WrapperKey key;
-  if (!ReadStyleKey(isolate, info.Holder(), &key)) {
+  StyleReference reference;
+  if (!ReadStyleReference(isolate, info.Holder(), &reference) ||
+      !RequireMutableStyle(isolate, reference)) {
     info.GetReturnValue().Set(false);
     return;
   }
@@ -4049,12 +4344,257 @@ void StyleDirectPropertySetter(
     return;
   }
   std::string error;
-  if (!SetStyleProperty(realm, key, name, rendered, "", &error)) {
+  if (!SetStyleProperty(realm, reference.key, name, rendered, "", &error)) {
     ThrowError(isolate, error);
     info.GetReturnValue().Set(false);
     return;
   }
   info.GetReturnValue().Set(true);
+}
+
+v8::Intercepted StyleIndexedGetter(
+    uint32_t index, const v8::PropertyCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  StyleReference reference;
+  if (!ReadStyleReference(isolate, info.Holder(), &reference))
+    return v8::Intercepted::kYes;
+  std::string name;
+  bool found = false;
+  std::string error;
+  if (!ReadStylePropertyName(CurrentRealm(isolate), reference, index, &name,
+                             &found, &error)) {
+    ThrowError(isolate, error);
+    return v8::Intercepted::kYes;
+  }
+  if (!found)
+    return v8::Intercepted::kNo;
+  v8::Local<v8::String> result;
+  if (!NewUTF8String(isolate, name.data(), name.size(), &result)) {
+    ThrowError(isolate, "V8 failed to allocate a style index");
+    return v8::Intercepted::kYes;
+  }
+  info.GetReturnValue().Set(result);
+  return v8::Intercepted::kYes;
+}
+
+v8::Intercepted StyleIndexedSetter(
+    uint32_t index, v8::Local<v8::Value>,
+    const v8::PropertyCallbackInfo<v8::Boolean> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  StyleReference reference;
+  if (!ReadStyleReference(isolate, info.Holder(), &reference)) {
+    info.GetReturnValue().Set(false);
+    return v8::Intercepted::kYes;
+  }
+  size_t count = 0;
+  std::string error;
+  if (!ReadStylePropertyCount(CurrentRealm(isolate), reference, &count,
+                              &error)) {
+    ThrowError(isolate, error);
+    info.GetReturnValue().Set(false);
+    return v8::Intercepted::kYes;
+  }
+  if (index >= count)
+    return v8::Intercepted::kNo;
+  if (reference.computed)
+    RequireMutableStyle(isolate, reference);
+  info.GetReturnValue().Set(false);
+  return v8::Intercepted::kYes;
+}
+
+v8::Intercepted StyleIndexedQuery(
+    uint32_t index, const v8::PropertyCallbackInfo<v8::Integer> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  StyleReference reference;
+  if (!ReadStyleReference(isolate, info.Holder(), &reference))
+    return v8::Intercepted::kYes;
+  size_t count = 0;
+  std::string error;
+  if (!ReadStylePropertyCount(CurrentRealm(isolate), reference, &count,
+                              &error)) {
+    ThrowError(isolate, error);
+    return v8::Intercepted::kYes;
+  }
+  if (index >= count)
+    return v8::Intercepted::kNo;
+  info.GetReturnValue().Set(v8::None);
+  return v8::Intercepted::kYes;
+}
+
+void StyleIndexedEnumerator(
+    const v8::PropertyCallbackInfo<v8::Array> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  StyleReference reference;
+  if (!ReadStyleReference(isolate, info.Holder(), &reference))
+    return;
+  size_t count = 0;
+  std::string error;
+  if (!ReadStylePropertyCount(CurrentRealm(isolate), reference, &count,
+                              &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  if (count > static_cast<size_t>(std::numeric_limits<int>::max())) {
+    ThrowError(isolate, "style declaration exceeds V8's enumeration limit");
+    return;
+  }
+  v8::Local<v8::Array> indices =
+      v8::Array::New(isolate, static_cast<int>(count));
+  v8::Local<v8::Context> context = isolate->GetCurrentContext();
+  for (size_t index = 0; index < count; ++index) {
+    if (!indices
+             ->Set(context, static_cast<uint32_t>(index),
+                   v8::Integer::NewFromUnsigned(isolate,
+                                                static_cast<uint32_t>(index)))
+             .FromMaybe(false)) {
+      ThrowError(isolate, "V8 failed to enumerate style indices");
+      return;
+    }
+  }
+  info.GetReturnValue().Set(indices);
+}
+
+v8::Intercepted StyleNamedGetter(
+    v8::Local<v8::Name> property,
+    const v8::PropertyCallbackInfo<v8::Value> &info) {
+  if (!property->IsString())
+    return v8::Intercepted::kNo;
+  v8::Isolate *isolate = info.GetIsolate();
+  std::string name = UTF8Value(isolate, property.As<v8::Value>());
+  if (!IsDashedStylePropertyName(name))
+    return v8::Intercepted::kNo;
+  StyleReference reference;
+  if (!ReadStyleReference(isolate, info.Holder(), &reference))
+    return v8::Intercepted::kYes;
+  std::string value;
+  std::string priority;
+  bool found = false;
+  std::string error;
+  if (!ReadStyleProperty(CurrentRealm(isolate), reference, name, &value,
+                         &priority, &found, &error)) {
+    ThrowError(isolate, error);
+    return v8::Intercepted::kYes;
+  }
+  if (!found && !IsSupportedDashedStylePropertyName(name))
+    return v8::Intercepted::kNo;
+  v8::Local<v8::String> result;
+  if (!NewUTF8String(isolate, value.data(), value.size(), &result)) {
+    ThrowError(isolate, "V8 failed to allocate a named style property");
+    return v8::Intercepted::kYes;
+  }
+  info.GetReturnValue().Set(result);
+  return v8::Intercepted::kYes;
+}
+
+v8::Intercepted StyleNamedSetter(
+    v8::Local<v8::Name> property, v8::Local<v8::Value> value,
+    const v8::PropertyCallbackInfo<v8::Boolean> &info) {
+  if (!property->IsString())
+    return v8::Intercepted::kNo;
+  v8::Isolate *isolate = info.GetIsolate();
+  std::string name = UTF8Value(isolate, property.As<v8::Value>());
+  if (!IsDashedStylePropertyName(name))
+    return v8::Intercepted::kNo;
+  StyleReference reference;
+  if (!ReadStyleReference(isolate, info.Holder(), &reference) ||
+      !RequireMutableStyle(isolate, reference)) {
+    info.GetReturnValue().Set(false);
+    return v8::Intercepted::kYes;
+  }
+  std::string rendered;
+  if (!StringFromValue(isolate, value, &rendered)) {
+    info.GetReturnValue().Set(false);
+    return v8::Intercepted::kYes;
+  }
+  std::string error;
+  if (!SetStyleProperty(CurrentRealm(isolate), reference.key, name, rendered,
+                        "", &error)) {
+    ThrowError(isolate, error);
+    info.GetReturnValue().Set(false);
+    return v8::Intercepted::kYes;
+  }
+  info.GetReturnValue().Set(true);
+  return v8::Intercepted::kYes;
+}
+
+v8::Intercepted StyleNamedQuery(
+    v8::Local<v8::Name> property,
+    const v8::PropertyCallbackInfo<v8::Integer> &info) {
+  if (!property->IsString())
+    return v8::Intercepted::kNo;
+  v8::Isolate *isolate = info.GetIsolate();
+  std::string name = UTF8Value(isolate, property.As<v8::Value>());
+  if (!IsDashedStylePropertyName(name))
+    return v8::Intercepted::kNo;
+  StyleReference reference;
+  if (!ReadStyleReference(isolate, info.Holder(), &reference))
+    return v8::Intercepted::kYes;
+  std::string value;
+  std::string priority;
+  bool found = false;
+  std::string error;
+  if (!ReadStyleProperty(CurrentRealm(isolate), reference, name, &value,
+                         &priority, &found, &error)) {
+    ThrowError(isolate, error);
+    return v8::Intercepted::kYes;
+  }
+  if (!found && !IsSupportedDashedStylePropertyName(name))
+    return v8::Intercepted::kNo;
+  info.GetReturnValue().Set(v8::None);
+  return v8::Intercepted::kYes;
+}
+
+void GetComputedStyle(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  if (info.Length() == 0 || !info[0]->IsObject()) {
+    ThrowTypeError(isolate, "getComputedStyle requires an Element");
+    return;
+  }
+  v8::Local<v8::Object> node = info[0].As<v8::Object>();
+  WrapperKey key;
+  if (!ReadWrapperKey(node, &key)) {
+    ThrowTypeError(isolate, "getComputedStyle requires an Element");
+    return;
+  }
+  NodeMetadata metadata;
+  std::string error;
+  if (!ReadNodeMetadata(realm, key, &metadata, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  if (metadata.type != 1) {
+    ThrowTypeError(isolate, "getComputedStyle requires an Element");
+    return;
+  }
+  std::string pseudo;
+  if (info.Length() > 1 && !info[1]->IsUndefined() && !info[1]->IsNull() &&
+      !StringFromValue(isolate, info[1], &pseudo)) {
+    return;
+  }
+  std::string pseudo_error;
+  if (!ValidateComputedStylePseudo(pseudo, &pseudo_error)) {
+    ThrowTypeError(isolate, pseudo_error);
+    return;
+  }
+  v8::Local<v8::String> pseudo_value;
+  if (!NewUTF8String(isolate, pseudo.data(), pseudo.size(), &pseudo_value)) {
+    ThrowError(isolate, "V8 failed to allocate computed style pseudo value");
+    return;
+  }
+  v8::Local<v8::FunctionTemplate> style_template =
+      realm->style_template.Get(isolate);
+  v8::Local<v8::Object> declaration;
+  if (!style_template->InstanceTemplate()
+           ->NewInstance(isolate->GetCurrentContext())
+           .ToLocal(&declaration)) {
+    ThrowError(isolate, "V8 failed to allocate computed style declaration");
+    return;
+  }
+  declaration->SetInternalField(kStyleNodeField, node);
+  declaration->SetInternalField(kStyleComputedField, v8::True(isolate));
+  declaration->SetInternalField(kStylePseudoField, pseudo_value);
+  info.GetReturnValue().Set(declaration);
 }
 
 bool ReadBooleanOption(v8::Local<v8::Context> context,
@@ -4918,6 +5458,8 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
       v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
   v8::Local<v8::FunctionTemplate> dataset_template =
       v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
+  v8::Local<v8::FunctionTemplate> style_template =
+      v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
   auto new_event_template =
       [isolate](EventInterface interface) {
         return v8::FunctionTemplate::New(
@@ -4959,6 +5501,8 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
       v8::String::NewFromUtf8Literal(isolate, "DOMTokenList"));
   dataset_template->SetClassName(
       v8::String::NewFromUtf8Literal(isolate, "DOMStringMap"));
+  style_template->SetClassName(
+      v8::String::NewFromUtf8Literal(isolate, "CSSStyleDeclaration"));
   event_template->SetClassName(
       v8::String::NewFromUtf8Literal(isolate, "Event"));
   mouse_event_template->SetClassName(
@@ -4995,6 +5539,8 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
     facade_template->InstanceTemplate()->SetInternalFieldCount(
         kFacadeInternalFieldCount);
   }
+  style_template->InstanceTemplate()->SetInternalFieldCount(
+      kStyleInternalFieldCount);
   for (v8::Local<v8::FunctionTemplate> interface_template :
        {event_template, mouse_event_template, pointer_event_template,
         keyboard_event_template, input_event_template, focus_event_template}) {
@@ -5556,25 +6102,29 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   realm->input_event_template.Reset(isolate, input_event_template);
   realm->focus_event_template.Reset(isolate, focus_event_template);
 
-  v8::Local<v8::ObjectTemplate> style_template =
-      v8::ObjectTemplate::New(isolate);
-  style_template->SetInternalFieldCount(1);
-  style_template->SetNativeDataProperty(
-      v8::String::NewFromUtf8Literal(isolate, "cssText"), StyleCSSTextGetter,
-      StyleCSSTextSetter);
-  style_template->SetNativeDataProperty(
-      v8::String::NewFromUtf8Literal(isolate, "length"), StyleLengthGetter);
-  style_template->Set(isolate, "item",
-                      v8::FunctionTemplate::New(isolate, StyleItem));
-  style_template->Set(
+  v8::Local<v8::ObjectTemplate> style_prototype =
+      style_template->PrototypeTemplate();
+  v8::Local<v8::ObjectTemplate> style_instance =
+      style_template->InstanceTemplate();
+  for (v8::Local<v8::ObjectTemplate> surface : {style_prototype,
+                                                 style_instance}) {
+    surface->SetNativeDataProperty(
+        v8::String::NewFromUtf8Literal(isolate, "cssText"), StyleCSSTextGetter,
+        StyleCSSTextSetter);
+    surface->SetNativeDataProperty(
+        v8::String::NewFromUtf8Literal(isolate, "length"), StyleLengthGetter);
+  }
+  style_prototype->Set(isolate, "item",
+                       v8::FunctionTemplate::New(isolate, StyleItem));
+  style_prototype->Set(
       isolate, "getPropertyValue",
       v8::FunctionTemplate::New(isolate, StyleGetPropertyValue));
-  style_template->Set(
+  style_prototype->Set(
       isolate, "getPropertyPriority",
       v8::FunctionTemplate::New(isolate, StyleGetPropertyPriority));
-  style_template->Set(isolate, "setProperty",
-                      v8::FunctionTemplate::New(isolate, StyleSetProperty));
-  style_template->Set(
+  style_prototype->Set(isolate, "setProperty",
+                       v8::FunctionTemplate::New(isolate, StyleSetProperty));
+  style_prototype->Set(
       isolate, "removeProperty",
       v8::FunctionTemplate::New(isolate, StyleRemoveProperty));
   for (const char *name : {
@@ -5594,20 +6144,32 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
            "borderBottomStyle", "borderLeftStyle",    "borderTopColor",
            "borderRightColor", "borderBottomColor",  "borderLeftColor",
            "listStyle",        "listStyleType",      "cssFloat"}) {
-    style_template->SetNativeDataProperty(
-        v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
-        StyleDirectPropertyGetter, StyleDirectPropertySetter);
+    for (v8::Local<v8::ObjectTemplate> surface : {style_prototype,
+                                                   style_instance}) {
+      surface->SetNativeDataProperty(
+          v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
+          StyleDirectPropertyGetter, StyleDirectPropertySetter);
+    }
   }
+  style_instance->SetHandler(v8::IndexedPropertyHandlerConfiguration(
+      StyleIndexedGetter, StyleIndexedSetter, StyleIndexedQuery, nullptr,
+      StyleIndexedEnumerator));
+  style_instance->SetHandler(v8::NamedPropertyHandlerConfiguration(
+      StyleNamedGetter, StyleNamedSetter, StyleNamedQuery, nullptr, nullptr,
+      v8::Local<v8::Value>(), v8::PropertyHandlerFlags::kOnlyInterceptStrings));
   realm->style_template.Reset(isolate, style_template);
 
   v8::Local<v8::Function> queue_microtask;
   v8::Local<v8::Function> set_timeout;
   v8::Local<v8::Function> clear_timeout;
+  v8::Local<v8::Function> get_computed_style;
   if (!v8::Function::New(context, QueueMicrotaskCallback)
            .ToLocal(&queue_microtask) ||
       !v8::Function::New(context, SetTimeoutCallback).ToLocal(&set_timeout) ||
       !v8::Function::New(context, ClearTimeoutCallback)
-           .ToLocal(&clear_timeout)) {
+           .ToLocal(&clear_timeout) ||
+      !v8::Function::New(context, GetComputedStyle)
+           .ToLocal(&get_computed_style)) {
     return false;
   }
   v8::Local<v8::Object> global = context->Global();
@@ -5641,6 +6203,7 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
          expose_interface("HTMLCollection", html_collection_template) &&
          expose_interface("DOMTokenList", token_list_template) &&
          expose_interface("DOMStringMap", dataset_template) &&
+         expose_interface("CSSStyleDeclaration", style_template) &&
          global
              ->Set(context, v8::String::NewFromUtf8Literal(isolate, "window"),
                    global)
@@ -5663,6 +6226,12 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
              ->Set(context,
                    v8::String::NewFromUtf8Literal(isolate, "clearTimeout"),
                    clear_timeout)
+             .FromMaybe(false) &&
+         global
+             ->Set(context,
+                   v8::String::NewFromUtf8Literal(isolate,
+                                                  "getComputedStyle"),
+                   get_computed_style)
              .FromMaybe(false);
 }
 

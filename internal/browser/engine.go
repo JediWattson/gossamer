@@ -256,6 +256,15 @@ type DOMElementHost interface {
 	StylePropertyNames(NodeHandle) ([]string, error)
 }
 
+// DOMComputedStyleHost is an optional extension implemented by browser hosts
+// that expose layout-independent computed style. Computed declarations are
+// read-only and live: each property or name read asks the Page for its current
+// style snapshot instead of retaining a stale declaration value.
+type DOMComputedStyleHost interface {
+	ComputedStyleProperty(handle NodeHandle, pseudo, property string) (string, bool, error)
+	ComputedStylePropertyNames(handle NodeHandle, pseudo string) ([]string, error)
+}
+
 // DOMDocumentHost is the optional document interface needed to bind one
 // canonical JavaScript Document wrapper to a Page's native document root.
 type DOMDocumentHost interface {

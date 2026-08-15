@@ -43,6 +43,7 @@ type DisplayMode uint8
 
 const (
 	DisplayInline DisplayMode = iota
+	DisplayInlineBlock
 	DisplayBlock
 	DisplayListItem
 	DisplayNone
@@ -51,10 +52,11 @@ const (
 type displayMode = DisplayMode
 
 const (
-	displayInline   = DisplayInline
-	displayBlock    = DisplayBlock
-	displayListItem = DisplayListItem
-	displayNone     = DisplayNone
+	displayInline      = DisplayInline
+	displayInlineBlock = DisplayInlineBlock
+	displayBlock       = DisplayBlock
+	displayListItem    = DisplayListItem
+	displayNone        = DisplayNone
 )
 
 type TextAlignment uint8
@@ -63,19 +65,26 @@ const (
 	AlignLeft TextAlignment = iota
 	AlignCenter
 	AlignRight
+	AlignStart
+	AlignEnd
+	AlignJustify
 )
 
 type textAlignment = TextAlignment
 
 const (
-	alignLeft   = AlignLeft
-	alignCenter = AlignCenter
-	alignRight  = AlignRight
+	alignLeft    = AlignLeft
+	alignCenter  = AlignCenter
+	alignRight   = AlignRight
+	alignStart   = AlignStart
+	alignEnd     = AlignEnd
+	alignJustify = AlignJustify
 )
 
 type LineHeight struct {
 	value    float64
 	absolute bool
+	normal   bool
 }
 
 type computedLineHeight = LineHeight
@@ -126,6 +135,9 @@ type BorderSide struct {
 type borderSide = BorderSide
 
 func (lineHeight LineHeight) Pixels(fontSize float64) float64 {
+	if lineHeight.normal {
+		return fontSize * 1.2
+	}
 	if lineHeight.absolute {
 		return lineHeight.value
 	}
@@ -137,6 +149,8 @@ func (lineHeight LineHeight) pixels(fontSize float64) float64 { return lineHeigh
 func (lineHeight LineHeight) Value() float64 { return lineHeight.value }
 
 func (lineHeight LineHeight) IsAbsolute() bool { return lineHeight.absolute }
+
+func (lineHeight LineHeight) IsNormal() bool { return lineHeight.normal }
 
 type LengthUnit uint8
 
@@ -187,38 +201,47 @@ const (
 	FontWeightBold
 )
 
+type TextDecorationLine uint8
+
+const (
+	TextDecorationNone TextDecorationLine = iota
+	TextDecorationUnderline
+)
+
 // ComputedStyle is the typed, layout-independent result of cascade,
 // inheritance, and computed-value resolution for one DOM node. Snapshot
 // lookups return it by value, so callers cannot mutate stored styles.
 type ComputedStyle struct {
-	display          DisplayMode
-	color            color.NRGBA
-	background       color.NRGBA
-	hasBackground    bool
-	fontSize         float64
-	fontWeight       FontWeight
-	lineHeight       LineHeight
-	underline        bool
-	textAlign        TextAlignment
-	listStyleType    ListStyleType
-	opacity          float64
-	width            Length
-	height           Length
-	minWidth         Length
-	maxWidth         Length
-	paddingTop       Length
-	paddingRight     Length
-	paddingBottom    Length
-	paddingLeft      Length
-	borderTop        BorderSide
-	borderRight      BorderSide
-	borderBottom     BorderSide
-	borderLeft       BorderSide
-	marginTop        Length
-	marginRight      Length
-	marginBottom     Length
-	marginLeft       Length
-	customProperties css.CustomProperties
+	display           DisplayMode
+	color             color.NRGBA
+	background        color.NRGBA
+	hasBackground     bool
+	fontSize          float64
+	fontWeightValue   int
+	lineHeight        LineHeight
+	textDecoration    TextDecorationLine
+	ancestorUnderline bool
+	underline         bool
+	textAlign         TextAlignment
+	listStyleType     ListStyleType
+	opacity           float64
+	width             Length
+	height            Length
+	minWidth          Length
+	maxWidth          Length
+	paddingTop        Length
+	paddingRight      Length
+	paddingBottom     Length
+	paddingLeft       Length
+	borderTop         BorderSide
+	borderRight       BorderSide
+	borderBottom      BorderSide
+	borderLeft        BorderSide
+	marginTop         Length
+	marginRight       Length
+	marginBottom      Length
+	marginLeft        Length
+	customProperties  css.CustomProperties
 }
 
 type computedStyle = ComputedStyle
@@ -228,29 +251,36 @@ func (computed ComputedStyle) Color() color.NRGBA   { return computed.color }
 func (computed ComputedStyle) Background() (color.NRGBA, bool) {
 	return computed.background, computed.hasBackground
 }
-func (computed ComputedStyle) FontSize() float64            { return computed.fontSize }
-func (computed ComputedStyle) FontWeight() FontWeight       { return computed.fontWeight }
-func (computed ComputedStyle) LineHeight() LineHeight       { return computed.lineHeight }
-func (computed ComputedStyle) Underline() bool              { return computed.underline }
-func (computed ComputedStyle) TextAlignment() TextAlignment { return computed.textAlign }
-func (computed ComputedStyle) ListStyleType() ListStyleType { return computed.listStyleType }
-func (computed ComputedStyle) Opacity() float64             { return computed.opacity }
-func (computed ComputedStyle) Width() Length                { return computed.width }
-func (computed ComputedStyle) Height() Length               { return computed.height }
-func (computed ComputedStyle) MinWidth() Length             { return computed.minWidth }
-func (computed ComputedStyle) MaxWidth() Length             { return computed.maxWidth }
-func (computed ComputedStyle) PaddingTop() Length           { return computed.paddingTop }
-func (computed ComputedStyle) PaddingRight() Length         { return computed.paddingRight }
-func (computed ComputedStyle) PaddingBottom() Length        { return computed.paddingBottom }
-func (computed ComputedStyle) PaddingLeft() Length          { return computed.paddingLeft }
-func (computed ComputedStyle) BorderTop() BorderSide        { return computed.borderTop }
-func (computed ComputedStyle) BorderRight() BorderSide      { return computed.borderRight }
-func (computed ComputedStyle) BorderBottom() BorderSide     { return computed.borderBottom }
-func (computed ComputedStyle) BorderLeft() BorderSide       { return computed.borderLeft }
-func (computed ComputedStyle) MarginTop() Length            { return computed.marginTop }
-func (computed ComputedStyle) MarginRight() Length          { return computed.marginRight }
-func (computed ComputedStyle) MarginBottom() Length         { return computed.marginBottom }
-func (computed ComputedStyle) MarginLeft() Length           { return computed.marginLeft }
+func (computed ComputedStyle) FontSize() float64 { return computed.fontSize }
+func (computed ComputedStyle) FontWeight() FontWeight {
+	if computed.fontWeightValue >= 600 {
+		return FontWeightBold
+	}
+	return FontWeightNormal
+}
+func (computed ComputedStyle) FontWeightValue() int                   { return computed.fontWeightValue }
+func (computed ComputedStyle) LineHeight() LineHeight                 { return computed.lineHeight }
+func (computed ComputedStyle) TextDecorationLine() TextDecorationLine { return computed.textDecoration }
+func (computed ComputedStyle) Underline() bool                        { return computed.underline }
+func (computed ComputedStyle) TextAlignment() TextAlignment           { return computed.textAlign }
+func (computed ComputedStyle) ListStyleType() ListStyleType           { return computed.listStyleType }
+func (computed ComputedStyle) Opacity() float64                       { return computed.opacity }
+func (computed ComputedStyle) Width() Length                          { return computed.width }
+func (computed ComputedStyle) Height() Length                         { return computed.height }
+func (computed ComputedStyle) MinWidth() Length                       { return computed.minWidth }
+func (computed ComputedStyle) MaxWidth() Length                       { return computed.maxWidth }
+func (computed ComputedStyle) PaddingTop() Length                     { return computed.paddingTop }
+func (computed ComputedStyle) PaddingRight() Length                   { return computed.paddingRight }
+func (computed ComputedStyle) PaddingBottom() Length                  { return computed.paddingBottom }
+func (computed ComputedStyle) PaddingLeft() Length                    { return computed.paddingLeft }
+func (computed ComputedStyle) BorderTop() BorderSide                  { return computed.borderTop }
+func (computed ComputedStyle) BorderRight() BorderSide                { return computed.borderRight }
+func (computed ComputedStyle) BorderBottom() BorderSide               { return computed.borderBottom }
+func (computed ComputedStyle) BorderLeft() BorderSide                 { return computed.borderLeft }
+func (computed ComputedStyle) MarginTop() Length                      { return computed.marginTop }
+func (computed ComputedStyle) MarginRight() Length                    { return computed.marginRight }
+func (computed ComputedStyle) MarginBottom() Length                   { return computed.marginBottom }
+func (computed ComputedStyle) MarginLeft() Length                     { return computed.marginLeft }
 func (computed ComputedStyle) CustomProperties() css.CustomProperties {
 	return computed.customProperties
 }
@@ -485,8 +515,9 @@ func initialStyle(node *dom.Node, parent *styledNode, viewport Viewport) compute
 	if parent != nil {
 		style.color = parent.style.color
 		style.fontSize = parent.style.fontSize
-		style.fontWeight = parent.style.fontWeight
+		style.fontWeightValue = parent.style.fontWeightValue
 		style.lineHeight = parent.style.lineHeight
+		style.ancestorUnderline = parent.style.underline
 		style.underline = parent.style.underline
 		style.textAlign = parent.style.textAlign
 		style.listStyleType = parent.style.listStyleType
@@ -509,27 +540,29 @@ func initialStyle(node *dom.Node, parent *styledNode, viewport Viewport) compute
 
 func cssInitialStyle(viewport Viewport) computedStyle {
 	return computedStyle{
-		display:       displayInline,
-		color:         color.NRGBA{A: 0xff},
-		fontSize:      environmentInitialFontSize(viewport),
-		lineHeight:    computedLineHeight{value: 1.2},
-		opacity:       1,
-		width:         length{unit: lengthAuto},
-		height:        length{unit: lengthAuto},
-		minWidth:      px(0),
-		maxWidth:      length{unit: lengthAuto},
-		paddingTop:    px(0),
-		paddingRight:  px(0),
-		paddingBottom: px(0),
-		paddingLeft:   px(0),
-		borderTop:     initialBorderSide(),
-		borderRight:   initialBorderSide(),
-		borderBottom:  initialBorderSide(),
-		borderLeft:    initialBorderSide(),
-		marginTop:     length{unit: lengthPX},
-		marginRight:   length{unit: lengthPX},
-		marginBottom:  length{unit: lengthPX},
-		marginLeft:    length{unit: lengthPX},
+		display:         displayInline,
+		color:           color.NRGBA{A: 0xff},
+		fontSize:        environmentInitialFontSize(viewport),
+		fontWeightValue: 400,
+		lineHeight:      computedLineHeight{value: 1.2, normal: true},
+		textAlign:       alignStart,
+		opacity:         1,
+		width:           length{unit: lengthAuto},
+		height:          length{unit: lengthAuto},
+		minWidth:        px(0),
+		maxWidth:        length{unit: lengthAuto},
+		paddingTop:      px(0),
+		paddingRight:    px(0),
+		paddingBottom:   px(0),
+		paddingLeft:     px(0),
+		borderTop:       initialBorderSide(),
+		borderRight:     initialBorderSide(),
+		borderBottom:    initialBorderSide(),
+		borderLeft:      initialBorderSide(),
+		marginTop:       length{unit: lengthPX},
+		marginRight:     length{unit: lengthPX},
+		marginBottom:    length{unit: lengthPX},
+		marginLeft:      length{unit: lengthPX},
 	}
 }
 
@@ -556,21 +589,21 @@ func applyUserAgentStyle(style *computedStyle, node *dom.Node) {
 		style.marginLeft = px(8)
 	case "h1":
 		style.fontSize *= 2
-		style.fontWeight = FontWeightBold
+		style.fontWeightValue = 700
 		style.marginTop = px(style.fontSize * .67)
 		style.marginBottom = px(style.fontSize * .67)
 	case "h2":
 		style.fontSize *= 1.5
-		style.fontWeight = FontWeightBold
+		style.fontWeightValue = 700
 		style.marginTop = px(style.fontSize * .83)
 		style.marginBottom = px(style.fontSize * .83)
 	case "h3":
 		style.fontSize *= 1.17
-		style.fontWeight = FontWeightBold
+		style.fontWeightValue = 700
 		style.marginTop = px(style.fontSize)
 		style.marginBottom = px(style.fontSize)
 	case "h4", "h5", "h6":
-		style.fontWeight = FontWeightBold
+		style.fontWeightValue = 700
 		style.marginTop = px(style.fontSize * 1.33)
 		style.marginBottom = px(style.fontSize * 1.33)
 	case "p":
@@ -595,10 +628,11 @@ func applyUserAgentStyle(style *computedStyle, node *dom.Node) {
 	case "a":
 		if _, ok := attribute(node, "href"); ok {
 			style.color = color.NRGBA{R: 0, G: 0, B: 0xee, A: 0xff}
+			style.textDecoration = TextDecorationUnderline
 			style.underline = true
 		}
 	case "strong", "b":
-		style.fontWeight = FontWeightBold
+		style.fontWeightValue = 700
 	case "img":
 		if value, ok := dimensionAttribute(node, "width"); ok {
 			style.width = px(value)
@@ -974,7 +1008,7 @@ func applyDeclarationCandidates(style *computedStyle, parent *styledNode, candid
 			applyCSSWideKeyword(style, parent, candidate.target, "unset", viewport)
 			return
 		}
-		applyTargetDeclaration(style, parentFontSize(parent, viewport), candidate.target, declaration, viewport)
+		applyTargetDeclaration(style, parent, candidate.target, declaration, viewport)
 		return
 	}
 }
@@ -1022,7 +1056,8 @@ func sameCascadeLayer(left, right winningDeclaration) bool {
 	return true
 }
 
-func applyTargetDeclaration(style *computedStyle, parentSize float64, target string, declaration css.Declaration, viewport Viewport) {
+func applyTargetDeclaration(style *computedStyle, parent *styledNode, target string, declaration css.Declaration, viewport Viewport) {
+	parentSize := parentFontSize(parent, viewport)
 	if declaration.Property == "font" {
 		size, lineHeight, weight, _, ok := parseFontShorthand(declaration.Value, viewport)
 		if !ok {
@@ -1047,11 +1082,11 @@ func applyTargetDeclaration(style *computedStyle, parentSize float64, target str
 		return
 	}
 	if declaration.Property == target {
-		applyDeclaration(style, target, declaration.Value, viewport)
+		applyDeclaration(style, target, declaration.Value, parentFontWeight(parent), viewport)
 		return
 	}
 	temporary := *style
-	applyDeclaration(&temporary, declaration.Property, declaration.Value, viewport)
+	applyDeclaration(&temporary, declaration.Property, declaration.Value, parentFontWeight(parent), viewport)
 	copyComputedProperty(style, temporary, target)
 }
 
@@ -1092,11 +1127,12 @@ func copyComputedProperty(destination *computedStyle, source computedStyle, prop
 	case "font-size":
 		destination.fontSize = source.fontSize
 	case "font-weight":
-		destination.fontWeight = source.fontWeight
+		destination.fontWeightValue = source.fontWeightValue
 	case "line-height":
 		destination.lineHeight = source.lineHeight
 	case "text-decoration-line":
-		destination.underline = source.underline
+		destination.textDecoration = source.textDecoration
+		destination.underline = destination.ancestorUnderline || source.textDecoration == TextDecorationUnderline
 	case "text-align":
 		destination.textAlign = source.textAlign
 	case "list-style-type":
@@ -1491,7 +1527,7 @@ func compareInt(left, right int) int {
 	}
 }
 
-func applyDeclaration(style *computedStyle, property, source string, viewport Viewport) {
+func applyDeclaration(style *computedStyle, property, source string, inheritedFontWeight int, viewport Viewport) {
 	value := strings.TrimSpace(strings.ToLower(source))
 	switch property {
 	case "display":
@@ -1502,8 +1538,10 @@ func applyDeclaration(style *computedStyle, property, source string, viewport Vi
 			style.display = displayBlock
 		case "list-item":
 			style.display = displayListItem
-		case "inline", "inline-block":
+		case "inline":
 			style.display = displayInline
+		case "inline-block":
+			style.display = displayInlineBlock
 		}
 	case "color":
 		if parsed, ok := parseColor(value); ok {
@@ -1515,20 +1553,20 @@ func applyDeclaration(style *computedStyle, property, source string, viewport Vi
 			style.hasBackground = parsed.A != 0
 		}
 	case "font-weight":
-		if value == "bold" || value == "bolder" {
-			style.fontWeight = FontWeightBold
+		if value == "bold" {
+			style.fontWeightValue = 700
+		} else if value == "bolder" {
+			style.fontWeightValue = relativeFontWeight(inheritedFontWeight, true)
 		} else if numeric, err := strconv.Atoi(value); err == nil && numeric >= 1 && numeric <= 1000 {
-			if numeric >= 600 {
-				style.fontWeight = FontWeightBold
-			} else {
-				style.fontWeight = FontWeightNormal
-			}
-		} else if value == "normal" || value == "lighter" {
-			style.fontWeight = FontWeightNormal
+			style.fontWeightValue = numeric
+		} else if value == "normal" {
+			style.fontWeightValue = 400
+		} else if value == "lighter" {
+			style.fontWeightValue = relativeFontWeight(inheritedFontWeight, false)
 		}
 	case "line-height":
 		if value == "normal" {
-			style.lineHeight = computedLineHeight{value: 1.2}
+			style.lineHeight = computedLineHeight{value: 1.2, normal: true}
 		} else if numeric, err := strconv.ParseFloat(value, 64); err == nil && numeric > 0 && isFinite(numeric) {
 			style.lineHeight = computedLineHeight{value: numeric}
 		} else if parsed, ok := parseLength(value, style.fontSize, style.fontSize, viewport); ok && parsed.unit != lengthAuto {
@@ -1539,9 +1577,11 @@ func applyDeclaration(style *computedStyle, property, source string, viewport Vi
 		}
 	case "text-decoration", "text-decoration-line":
 		if strings.Contains(value, "underline") {
+			style.textDecoration = TextDecorationUnderline
 			style.underline = true
 		} else if value == "none" {
-			style.underline = false
+			style.textDecoration = TextDecorationNone
+			style.underline = style.ancestorUnderline
 		}
 	case "opacity":
 		if numeric, err := strconv.ParseFloat(value, 64); err == nil && isFinite(numeric) {
@@ -1632,10 +1672,16 @@ func applyDeclaration(style *computedStyle, property, source string, viewport Vi
 		switch value {
 		case "center":
 			style.textAlign = alignCenter
-		case "right", "end":
+		case "right":
 			style.textAlign = alignRight
-		case "left", "start", "justify":
+		case "end":
+			style.textAlign = alignEnd
+		case "left":
 			style.textAlign = alignLeft
+		case "start":
+			style.textAlign = alignStart
+		case "justify":
+			style.textAlign = alignJustify
 		}
 	case "list-style", "list-style-type":
 		if parsed, ok := parseListStyleType(value); ok {
@@ -1658,6 +1704,41 @@ func applyDeclaration(style *computedStyle, property, source string, viewport Vi
 				style.marginLeft = parsed
 			}
 		}
+	}
+}
+
+func relativeFontWeight(inherited int, bolder bool) int {
+	switch {
+	case inherited < 100:
+		if bolder {
+			return 400
+		}
+		return inherited
+	case inherited < 350:
+		if bolder {
+			return 400
+		}
+		return 100
+	case inherited < 550:
+		if bolder {
+			return 700
+		}
+		return 100
+	case inherited < 750:
+		if bolder {
+			return 900
+		}
+		return 400
+	case inherited < 900:
+		if bolder {
+			return 900
+		}
+		return 700
+	default:
+		if bolder {
+			return inherited
+		}
+		return 700
 	}
 }
 
@@ -2003,6 +2084,13 @@ func parentFontSize(parent *styledNode, viewport Viewport) float64 {
 		return environmentInitialFontSize(viewport)
 	}
 	return parent.style.fontSize
+}
+
+func parentFontWeight(parent *styledNode) int {
+	if parent == nil {
+		return 400
+	}
+	return parent.style.fontWeightValue
 }
 
 func px(value float64) length {

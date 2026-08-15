@@ -11,18 +11,22 @@ import (
 type displayMode = computed.DisplayMode
 
 const (
-	displayInline   = computed.DisplayInline
-	displayBlock    = computed.DisplayBlock
-	displayListItem = computed.DisplayListItem
-	displayNone     = computed.DisplayNone
+	displayInline      = computed.DisplayInline
+	displayInlineBlock = computed.DisplayInlineBlock
+	displayBlock       = computed.DisplayBlock
+	displayListItem    = computed.DisplayListItem
+	displayNone        = computed.DisplayNone
 )
 
 type textAlignment = computed.TextAlignment
 
 const (
-	alignLeft   = computed.AlignLeft
-	alignCenter = computed.AlignCenter
-	alignRight  = computed.AlignRight
+	alignLeft    = computed.AlignLeft
+	alignCenter  = computed.AlignCenter
+	alignRight   = computed.AlignRight
+	alignStart   = computed.AlignStart
+	alignEnd     = computed.AlignEnd
+	alignJustify = computed.AlignJustify
 )
 
 type listStyleType = computed.ListStyleType

@@ -186,6 +186,19 @@ typedef struct gossamer_v8_host {
                      int64_t delay_milliseconds, uint64_t *timer_out,
                      char **error_out);
   int (*clear_timeout)(uint64_t execution_id, uint64_t timer, char **error_out);
+  int (*computed_style_property)(
+      uint64_t execution_id, uint64_t document, uint32_t node,
+      const char *pseudo, size_t pseudo_length, const char *name,
+      size_t name_length, char **value_out, size_t *value_length_out,
+      int *found_out, char **error_out);
+  int (*computed_style_property_count)(
+      uint64_t execution_id, uint64_t document, uint32_t node,
+      const char *pseudo, size_t pseudo_length, size_t *count_out,
+      char **error_out);
+  int (*computed_style_property_name)(
+      uint64_t execution_id, uint64_t document, uint32_t node,
+      const char *pseudo, size_t pseudo_length, size_t index, char **name_out,
+      size_t *name_length_out, int *found_out, char **error_out);
 } gossamer_v8_host;
 
 typedef struct gossamer_v8_node_handle {

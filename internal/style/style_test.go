@@ -2,6 +2,7 @@ package style_test
 
 import (
 	"errors"
+	"fmt"
 	"image/color"
 	"testing"
 
@@ -151,6 +152,139 @@ func TestEnvironmentInitialFontSizeFeedsInitialAndRemValues(t *testing.T) {
 	}
 	if got, want := targetStyle.Width().Value(), 20.0; got != want {
 		t.Errorf("target Width().Value() = %v, want %v", got, want)
+	}
+}
+
+func TestComputedValuesRemainDistinctFromRendererApproximations(t *testing.T) {
+	document := dom.NewDocument()
+	html := dom.NewElement("html")
+	body := dom.NewElement("body", dom.Attribute{Name: "style", Value: "text-decoration-line: underline"})
+	target := dom.NewElement("span", dom.Attribute{
+		Name:  "style",
+		Value: "display: inline-block; font-weight: 537; line-height: normal; text-align: end",
+	})
+	numeric := dom.NewElement("span", dom.Attribute{
+		Name:  "style",
+		Value: "font-weight: 650; line-height: 1.2; text-align: justify",
+	})
+	start := dom.NewElement("span", dom.Attribute{Name: "style", Value: "text-align: start"})
+	body.AppendChild(target)
+	body.AppendChild(numeric)
+	body.AppendChild(start)
+	html.AppendChild(body)
+	document.AppendChild(html)
+
+	snapshot := style.Compute(document, style.Input{Environment: style.Environment{Width: 320, Height: 200}})
+	targetStyle, ok := snapshot.Lookup(target)
+	if !ok {
+		t.Fatal("snapshot does not contain target")
+	}
+	if got := targetStyle.Display(); got != style.DisplayInlineBlock {
+		t.Errorf("display = %v, want inline-block", got)
+	}
+	if got := targetStyle.FontWeightValue(); got != 537 {
+		t.Errorf("font-weight value = %d, want 537", got)
+	}
+	if got := targetStyle.FontWeight(); got != style.FontWeightNormal {
+		t.Errorf("font face = %v, want normal", got)
+	}
+	if got := targetStyle.LineHeight(); !got.IsNormal() || got.Pixels(20) != 24 {
+		t.Errorf("normal line-height = %#v, pixels(20) = %v; want normal and 24", got, got.Pixels(20))
+	}
+	if got := targetStyle.TextAlignment(); got != style.AlignEnd {
+		t.Errorf("text-align = %v, want end", got)
+	}
+	if got := targetStyle.TextDecorationLine(); got != style.TextDecorationNone {
+		t.Errorf("child text-decoration-line = %v, want non-inherited none", got)
+	}
+	if !targetStyle.Underline() {
+		t.Error("child lost the ancestor's propagated underline rendering")
+	}
+
+	numericStyle, ok := snapshot.Lookup(numeric)
+	if !ok {
+		t.Fatal("snapshot does not contain numeric target")
+	}
+	if got := numericStyle.FontWeightValue(); got != 650 || numericStyle.FontWeight() != style.FontWeightBold {
+		t.Errorf("numeric font weight = %d, face %v; want 650, bold", got, numericStyle.FontWeight())
+	}
+	if got := numericStyle.LineHeight(); got.IsNormal() || got.IsAbsolute() || got.Pixels(20) != 24 {
+		t.Errorf("unitless line-height = %#v, pixels(20) = %v; want non-normal unitless 24", got, got.Pixels(20))
+	}
+	if got := numericStyle.TextAlignment(); got != style.AlignJustify {
+		t.Errorf("text-align = %v, want justify", got)
+	}
+	startStyle, ok := snapshot.Lookup(start)
+	if !ok {
+		t.Fatal("snapshot does not contain start target")
+	}
+	if got := startStyle.TextAlignment(); got != style.AlignStart {
+		t.Errorf("text-align = %v, want start", got)
+	}
+}
+
+func TestRelativeFontWeightsUseTheInheritedComputedWeight(t *testing.T) {
+	tests := []struct {
+		inherited int
+		bolder    int
+		lighter   int
+	}{
+		{inherited: 50, bolder: 400, lighter: 50},
+		{inherited: 100, bolder: 400, lighter: 100},
+		{inherited: 349, bolder: 400, lighter: 100},
+		{inherited: 350, bolder: 700, lighter: 100},
+		{inherited: 549, bolder: 700, lighter: 100},
+		{inherited: 550, bolder: 900, lighter: 400},
+		{inherited: 749, bolder: 900, lighter: 400},
+		{inherited: 750, bolder: 900, lighter: 700},
+		{inherited: 899, bolder: 900, lighter: 700},
+		{inherited: 900, bolder: 900, lighter: 700},
+		{inherited: 1000, bolder: 1000, lighter: 700},
+	}
+
+	document := dom.NewDocument()
+	html := dom.NewElement("html")
+	body := dom.NewElement("body")
+	type expectation struct {
+		node *dom.Node
+		want int
+	}
+	expectations := make([]expectation, 0, len(tests)*2)
+	for _, test := range tests {
+		parent := dom.NewElement("div", dom.Attribute{
+			Name:  "style",
+			Value: fmt.Sprintf("font-weight: %d", test.inherited),
+		})
+		bolder := dom.NewElement("span", dom.Attribute{Name: "style", Value: "font-weight: bolder"})
+		lighter := dom.NewElement("span", dom.Attribute{Name: "style", Value: "font-weight: lighter"})
+		parent.AppendChild(bolder)
+		parent.AppendChild(lighter)
+		body.AppendChild(parent)
+		expectations = append(expectations,
+			expectation{node: bolder, want: test.bolder},
+			expectation{node: lighter, want: test.lighter},
+		)
+	}
+	strong := dom.NewElement("strong", dom.Attribute{Name: "style", Value: "font-weight: bolder"})
+	heading := dom.NewElement("h1", dom.Attribute{Name: "style", Value: "font-weight: lighter"})
+	body.AppendChild(strong)
+	body.AppendChild(heading)
+	expectations = append(expectations,
+		expectation{node: strong, want: 700},
+		expectation{node: heading, want: 100},
+	)
+	html.AppendChild(body)
+	document.AppendChild(html)
+
+	snapshot := style.Compute(document, style.Input{})
+	for _, expected := range expectations {
+		computed, ok := snapshot.Lookup(expected.node)
+		if !ok {
+			t.Fatal("snapshot does not contain relative-weight target")
+		}
+		if got := computed.FontWeightValue(); got != expected.want {
+			t.Errorf("font-weight = %d, want %d", got, expected.want)
+		}
 	}
 }
 

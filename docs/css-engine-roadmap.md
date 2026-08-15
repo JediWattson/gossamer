@@ -132,6 +132,15 @@ tests before it participates in general page rendering.
 
 ### 8. CSSOM and incremental restyle
 
+Current foundation: `element.style` remains a live mutable view of the DOM
+attribute, while `getComputedStyle()` returns a fresh read-only declaration
+whose property, indexed-name, and length reads synchronously consult the
+browser's current versioned Go snapshot. Same-task DOM/style mutations are
+therefore observable without publishing a frame or clearing render dirtiness.
+The exposed values are still the layout-independent subset represented by
+`internal/style`; box-dependent resolved-value serialization and
+pseudo-element style slots are pending.
+
 - Expose stylesheet, rule, declaration, and computed-style APIs through stable
   numeric browser handles.
 - Classify effective DOM mutations as character-data, attribute, or child-list

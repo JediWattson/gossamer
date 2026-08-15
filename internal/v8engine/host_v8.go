@@ -118,6 +118,14 @@ func domDocumentHost(host browser.Host) (browser.DOMDocumentHost, bool) {
 	return domHost, ok
 }
 
+func domComputedStyleHost(host browser.Host) (browser.DOMComputedStyleHost, error) {
+	domHost, ok := host.(browser.DOMComputedStyleHost)
+	if !ok {
+		return nil, fmt.Errorf("V8 host does not support computed style bindings")
+	}
+	return domHost, nil
+}
+
 //export goGossamerV8HostDocumentMetadata
 func goGossamerV8HostDocumentMetadata(
 	executionID C.uint64_t,
@@ -1316,6 +1324,111 @@ func goGossamerV8HostStylePropertyName(
 			return err
 		}
 		names, err := domHost.StylePropertyNames(browserNodeHandle(document, node))
+		if err != nil {
+			return err
+		}
+		found := uint64(index) < uint64(len(names))
+		if foundOut != nil {
+			if found {
+				*foundOut = 1
+			} else {
+				*foundOut = 0
+			}
+		}
+		if !found {
+			return writeHostString("", nameOut, nameLengthOut)
+		}
+		return writeHostString(names[int(index)], nameOut, nameLengthOut)
+	}, executionID)
+}
+
+//export goGossamerV8HostComputedStyleProperty
+func goGossamerV8HostComputedStyleProperty(
+	executionID C.uint64_t,
+	document C.uint64_t,
+	node C.uint32_t,
+	pseudo *C.char,
+	pseudoLength C.size_t,
+	name *C.char,
+	nameLength C.size_t,
+	valueOut **C.char,
+	valueLengthOut *C.size_t,
+	foundOut *C.int,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domComputedStyleHost(host)
+		if err != nil {
+			return err
+		}
+		value, found, err := domHost.ComputedStyleProperty(
+			browserNodeHandle(document, node),
+			goString(pseudo, pseudoLength),
+			goString(name, nameLength),
+		)
+		if err != nil {
+			return err
+		}
+		if foundOut != nil {
+			if found {
+				*foundOut = 1
+			} else {
+				*foundOut = 0
+			}
+		}
+		return writeHostString(value, valueOut, valueLengthOut)
+	}, executionID)
+}
+
+//export goGossamerV8HostComputedStylePropertyCount
+func goGossamerV8HostComputedStylePropertyCount(
+	executionID C.uint64_t,
+	document C.uint64_t,
+	node C.uint32_t,
+	pseudo *C.char,
+	pseudoLength C.size_t,
+	countOut *C.size_t,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domComputedStyleHost(host)
+		if err != nil {
+			return err
+		}
+		names, err := domHost.ComputedStylePropertyNames(
+			browserNodeHandle(document, node), goString(pseudo, pseudoLength),
+		)
+		if err != nil {
+			return err
+		}
+		if countOut != nil {
+			*countOut = C.size_t(len(names))
+		}
+		return nil
+	}, executionID)
+}
+
+//export goGossamerV8HostComputedStylePropertyName
+func goGossamerV8HostComputedStylePropertyName(
+	executionID C.uint64_t,
+	document C.uint64_t,
+	node C.uint32_t,
+	pseudo *C.char,
+	pseudoLength C.size_t,
+	index C.size_t,
+	nameOut **C.char,
+	nameLengthOut *C.size_t,
+	foundOut *C.int,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domComputedStyleHost(host)
+		if err != nil {
+			return err
+		}
+		names, err := domHost.ComputedStylePropertyNames(
+			browserNodeHandle(document, node), goString(pseudo, pseudoLength),
+		)
 		if err != nil {
 			return err
 		}

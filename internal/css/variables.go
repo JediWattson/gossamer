@@ -157,6 +157,27 @@ func (properties CustomProperties) Value(name string) (value string, ok bool) {
 	return properties.lookupCanonical(canonical)
 }
 
+// Names returns the canonical names of every effective custom property in
+// ascending byte order. Names shadowed by an absent local value are omitted.
+// The returned slice is owned by the caller.
+func (properties CustomProperties) Names() []string {
+	seen := make(map[string]struct{})
+	names := make([]string, 0)
+	for layer := properties.layer; layer != nil; layer = layer.parent {
+		for name, change := range layer.changes {
+			if _, ok := seen[name]; ok {
+				continue
+			}
+			seen[name] = struct{}{}
+			if change.present {
+				names = append(names, name)
+			}
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
 func (properties CustomProperties) lookupCanonical(name string) (string, bool) {
 	for layer := properties.layer; layer != nil; layer = layer.parent {
 		if change, ok := layer.changes[name]; ok {

@@ -1,6 +1,9 @@
 package css
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func TestCustomPropertiesStructurallyShareUnchangedParents(t *testing.T) {
 	parent := ResolveCustomProperties(CustomProperties{}, map[string]string{
@@ -78,5 +81,31 @@ func TestCustomPropertiesTombstonesShadowWithoutMutatingParent(t *testing.T) {
 		if value, ok := parent.Value(name); !ok || value != want {
 			t.Errorf("parent Value(%s) = %q, %t, want %q, true", name, value, ok, want)
 		}
+	}
+}
+
+func TestCustomPropertiesNamesReturnsSortedEffectiveCanonicalNames(t *testing.T) {
+	parent := ResolveCustomProperties(CustomProperties{}, map[string]string{
+		"--z":      "last",
+		"--hidden": "parent",
+		`--\61`:    "escaped",
+	})
+	child := ResolveCustomProperties(parent, map[string]string{
+		"--B":      "uppercase",
+		"--hidden": "initial",
+	})
+
+	got := child.Names()
+	want := []string{"--B", "--a", "--z"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("Names() = %q, want %q", got, want)
+	}
+
+	got[0] = "--mutated"
+	if next := child.Names(); !slices.Equal(next, want) {
+		t.Fatalf("Names() after caller mutation = %q, want %q", next, want)
+	}
+	if names := (CustomProperties{}).Names(); len(names) != 0 {
+		t.Fatalf("zero-value Names() = %q, want empty", names)
 	}
 }

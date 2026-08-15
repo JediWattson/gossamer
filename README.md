@@ -115,7 +115,10 @@ prototypes, namespace-aware creation, selector traversal, inline style, DOM
 `Event` objects, capture/target/bubble dispatch, generic listeners, tree and
 fragment mutation, markup parsing/serialization, attributes, live child
 collections, `classList`, `dataset`, form state, focus, microtasks, and timers
-without passing Go pointers into V8.
+without passing Go pointers into V8. It also exposes live, read-only
+`getComputedStyle()` declarations for the longhands represented by the current
+style engine; every read crosses the browser host boundary to the current Go
+computed-style snapshot rather than caching values in V8.
 Browser input currently covers click, pointer, keyboard, input, focus, and
 change event families. Profiling covers heap totals, sampled allocations,
 GC callbacks, weak-wrapper collection, wrapper-root region sweeps, callback
@@ -159,6 +162,9 @@ Realm teardown against the stock engine. See
   and logical pseudo-classes
 - Cascade ordering across `!important`, specificity, source order, inline
   styles, and named top-level `@layer` rules
+- Versioned, immutable computed-style snapshots and a live, read-only
+  `getComputedStyle()` subset for the currently supported longhands and custom
+  properties
 - Inherited custom properties and nested `var()` fallbacks with cycle
   invalidation
 - Screen media queries for viewport width, height, orientation, media types,
@@ -183,7 +189,8 @@ Realm teardown against the stock engine. See
 | `internal/dom` | DOM nodes, tree ownership, and deterministic dumps |
 | `internal/css` | Stylesheet parsing, selectors, layers, and media queries |
 | `internal/resource` | Resource discovery, caching, limits, and image decoding |
-| `internal/render` | Style computation, layout, display lists, and PNG painting |
+| `internal/style` | Cascade, inheritance, typed computed values, and immutable style snapshots |
+| `internal/render` | Used-value resolution, layout, display lists, and PNG painting |
 | `internal/runtime` | Realms, task and microtask queues, actor scheduling, and shadow ownership telemetry |
 | `internal/browser` | Browser/Page ownership, loading, stable-ID mutation scheduling, and frame invalidation |
 
@@ -207,6 +214,12 @@ Only `inline`, `block`, `list-item`, and `none` have dedicated display
 behavior; `inline-block` currently degrades to inline. Screenshots clip to one
 800 x 600 viewport. Unsupported CSS is skipped, and failed stylesheets or
 images degrade independently so the rest of a page can still render.
+
+The first `getComputedStyle()` surface is layout-independent. It reports the
+typed computed values Gossamer currently owns, so percentages, viewport units,
+and `auto` are not converted to box-dependent used pixels. Unsupported
+pseudo-elements return an empty live declaration; pseudo-element layout and
+generated boxes remain future work.
 
 ## Development
 
