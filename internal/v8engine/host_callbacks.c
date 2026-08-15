@@ -55,6 +55,73 @@ extern int goGossamerV8HostRemoveAttribute(uint64_t execution_id,
                                            uint64_t document, uint32_t node,
                                            const char *name, size_t name_length,
                                            char **error_out);
+extern int goGossamerV8HostNodeMetadata(
+    uint64_t execution_id, uint64_t document, uint32_t node,
+    uint8_t *type_out, char **node_name_out, size_t *node_name_length_out,
+    char **local_name_out, size_t *local_name_length_out, int *connected_out,
+    char **error_out);
+extern int goGossamerV8HostRelatedNode(uint64_t execution_id,
+                                       uint64_t document, uint32_t node,
+                                       uint8_t relation,
+                                       uint32_t *related_node_out,
+                                       int *found_out, char **error_out);
+extern int goGossamerV8HostChildNodes(uint64_t execution_id,
+                                      uint64_t document, uint32_t node,
+                                      int elements_only, uint32_t **nodes_out,
+                                      size_t *count_out, char **error_out);
+extern int goGossamerV8HostContains(uint64_t execution_id, uint64_t document,
+                                    uint32_t node, uint64_t other_document,
+                                    uint32_t other_node, int *contains_out,
+                                    char **error_out);
+extern int goGossamerV8HostReplaceChild(
+    uint64_t execution_id, uint64_t parent_document, uint32_t parent_node,
+    uint64_t child_document, uint32_t child_node, uint64_t replaced_document,
+    uint32_t replaced_node, char **error_out);
+extern int goGossamerV8HostNodeValue(uint64_t execution_id, uint64_t document,
+                                     uint32_t node, char **value_out,
+                                     size_t *value_length_out,
+                                     int *non_null_out, char **error_out);
+extern int goGossamerV8HostSetNodeValue(uint64_t execution_id,
+                                        uint64_t document, uint32_t node,
+                                        const char *value,
+                                        size_t value_length, char **error_out);
+extern int goGossamerV8HostHasAttribute(uint64_t execution_id,
+                                        uint64_t document, uint32_t node,
+                                        const char *name, size_t name_length,
+                                        int *found_out, char **error_out);
+extern int goGossamerV8HostStyleCSSText(uint64_t execution_id,
+                                        uint64_t document, uint32_t node,
+                                        char **value_out,
+                                        size_t *value_length_out,
+                                        char **error_out);
+extern int goGossamerV8HostSetStyleCSSText(uint64_t execution_id,
+                                           uint64_t document, uint32_t node,
+                                           const char *value,
+                                           size_t value_length,
+                                           char **error_out);
+extern int goGossamerV8HostStyleProperty(
+    uint64_t execution_id, uint64_t document, uint32_t node,
+    const char *name, size_t name_length, char **value_out,
+    size_t *value_length_out, char **priority_out, size_t *priority_length_out,
+    int *found_out, char **error_out);
+extern int goGossamerV8HostSetStyleProperty(
+    uint64_t execution_id, uint64_t document, uint32_t node,
+    const char *name, size_t name_length, const char *value,
+    size_t value_length, const char *priority, size_t priority_length,
+    char **error_out);
+extern int goGossamerV8HostRemoveStyleProperty(
+    uint64_t execution_id, uint64_t document, uint32_t node,
+    const char *name, size_t name_length, char **value_out,
+    size_t *value_length_out, char **error_out);
+extern int goGossamerV8HostStylePropertyCount(uint64_t execution_id,
+                                              uint64_t document,
+                                              uint32_t node,
+                                              size_t *count_out,
+                                              char **error_out);
+extern int goGossamerV8HostStylePropertyName(
+    uint64_t execution_id, uint64_t document, uint32_t node, size_t index,
+    char **name_out, size_t *name_length_out, int *found_out,
+    char **error_out);
 extern int goGossamerV8HostRetainNodeWrapper(uint64_t execution_id,
                                              uint64_t document, uint32_t node,
                                              char **error_out);
@@ -82,6 +149,21 @@ static gossamer_v8_host gossamer_v8_go_host(uint64_t execution_id) {
       .get_attribute = goGossamerV8HostGetAttribute,
       .set_attribute = goGossamerV8HostSetAttribute,
       .remove_attribute = goGossamerV8HostRemoveAttribute,
+      .node_metadata = goGossamerV8HostNodeMetadata,
+      .related_node = goGossamerV8HostRelatedNode,
+      .child_nodes = goGossamerV8HostChildNodes,
+      .contains = goGossamerV8HostContains,
+      .replace_child = goGossamerV8HostReplaceChild,
+      .node_value = goGossamerV8HostNodeValue,
+      .set_node_value = goGossamerV8HostSetNodeValue,
+      .has_attribute = goGossamerV8HostHasAttribute,
+      .style_css_text = goGossamerV8HostStyleCSSText,
+      .set_style_css_text = goGossamerV8HostSetStyleCSSText,
+      .style_property = goGossamerV8HostStyleProperty,
+      .set_style_property = goGossamerV8HostSetStyleProperty,
+      .remove_style_property = goGossamerV8HostRemoveStyleProperty,
+      .style_property_count = goGossamerV8HostStylePropertyCount,
+      .style_property_name = goGossamerV8HostStylePropertyName,
       .retain_node_wrapper = goGossamerV8HostRetainNodeWrapper,
       .queue_callback = goGossamerV8HostQueueCallback,
       .queue_microtask = goGossamerV8HostQueueMicrotask,

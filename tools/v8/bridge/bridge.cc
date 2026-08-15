@@ -17,6 +17,7 @@
 #include "include/libplatform/libplatform.h"
 #include "include/v8-array-buffer.h"
 #include "include/v8-context.h"
+#include "include/v8-container.h"
 #include "include/v8-exception.h"
 #include "include/v8-function.h"
 #include "include/v8-initialization.h"
@@ -37,6 +38,8 @@ namespace {
 constexpr uint8_t kClickEvent = 1;
 constexpr int kNodeDocumentField = 0;
 constexpr int kNodeIDField = 1;
+constexpr int kNodeStyleField = 2;
+constexpr int kStyleNodeField = 0;
 constexpr int64_t kMaximumDelayMilliseconds =
     std::numeric_limits<int64_t>::max() / 1000000;
 
@@ -203,6 +206,7 @@ struct gossamer_v8_realm {
   v8::Isolate *isolate = nullptr;
   v8::Global<v8::Context> context;
   v8::Global<v8::ObjectTemplate> node_template;
+  v8::Global<v8::ObjectTemplate> style_template;
   const gossamer_v8_host *active_host = nullptr;
   bool sampling = false;
   bool closed = false;
@@ -313,7 +317,7 @@ bool RequireHost(gossamer_v8_realm *realm, std::string *error) {
 }
 
 bool ReadWrapperKey(v8::Local<v8::Object> object, WrapperKey *key) {
-  if (object.IsEmpty() || object->InternalFieldCount() != 2 || key == nullptr)
+  if (object.IsEmpty() || object->InternalFieldCount() < 2 || key == nullptr)
     return false;
   v8::Local<v8::Data> document_data =
       object->GetInternalField(kNodeDocumentField);
@@ -355,6 +359,95 @@ bool StringFromValue(v8::Isolate *isolate, v8::Local<v8::Value> value,
     return false;
   *output = UTF8Value(isolate, rendered);
   return true;
+}
+
+bool NewUTF8String(v8::Isolate *isolate, const char *bytes, size_t length,
+                   v8::Local<v8::String> *output) {
+  if (length > static_cast<size_t>(std::numeric_limits<int>::max()))
+    return false;
+  return v8::String::NewFromUtf8(isolate, bytes == nullptr ? "" : bytes,
+                                 v8::NewStringType::kNormal,
+                                 static_cast<int>(length))
+      .ToLocal(output);
+}
+
+bool ReadStyleKey(v8::Isolate *isolate, v8::Local<v8::Object> receiver,
+                  WrapperKey *key) {
+  if (receiver.IsEmpty() || receiver->InternalFieldCount() != 1) {
+    ThrowError(isolate,
+               "CSS method receiver is not a Gossamer style declaration");
+    return false;
+  }
+  v8::Local<v8::Data> node_data = receiver->GetInternalField(kStyleNodeField);
+  if (!node_data->IsValue()) {
+    ThrowError(isolate, "Gossamer style declaration lost its element");
+    return false;
+  }
+  v8::Local<v8::Value> node_value = node_data.As<v8::Value>();
+  if (!node_value->IsObject() ||
+      !ReadWrapperKey(node_value.As<v8::Object>(), key)) {
+    ThrowError(isolate, "Gossamer style declaration lost its element");
+    return false;
+  }
+  return true;
+}
+
+struct NodeMetadata {
+  uint8_t type = 0;
+  std::string node_name;
+  std::string local_name;
+  bool connected = false;
+};
+
+bool ReadNodeMetadata(gossamer_v8_realm *realm, const WrapperKey &key,
+                      NodeMetadata *metadata, std::string *error) {
+  if (!RequireHost(realm, error))
+    return false;
+  char *node_name = nullptr;
+  size_t node_name_length = 0;
+  char *local_name = nullptr;
+  size_t local_name_length = 0;
+  int connected = 0;
+  char *host_error = nullptr;
+  int ok = realm->active_host->node_metadata(
+      realm->active_host->execution_id, key.document, key.node,
+      &metadata->type, &node_name, &node_name_length, &local_name,
+      &local_name_length, &connected, &host_error);
+  if (ok == 0) {
+    *error = TakeCString(host_error);
+    std::free(node_name);
+    std::free(local_name);
+    if (error->empty())
+      *error = "reading DOM node metadata failed";
+    return false;
+  }
+  std::free(host_error);
+  metadata->node_name.assign(node_name == nullptr ? "" : node_name,
+                             node_name_length);
+  metadata->local_name.assign(local_name == nullptr ? "" : local_name,
+                              local_name_length);
+  metadata->connected = connected != 0;
+  std::free(node_name);
+  std::free(local_name);
+  return true;
+}
+
+std::string CSSPropertyNameFromJS(const std::string &name) {
+  if (name == "cssFloat")
+    return "float";
+  if (name.rfind("--", 0) == 0)
+    return name;
+  std::string result;
+  result.reserve(name.size() + 4);
+  for (char character : name) {
+    if (character >= 'A' && character <= 'Z') {
+      result.push_back('-');
+      result.push_back(static_cast<char>(character + ('a' - 'A')));
+    } else {
+      result.push_back(character);
+    }
+  }
+  return result;
 }
 
 bool EventTypeFromValue(v8::Isolate *isolate, v8::Local<v8::Value> value,
@@ -858,6 +951,895 @@ void NodeRemoveAttribute(const v8::FunctionCallbackInfo<v8::Value> &info) {
   std::free(host_error);
 }
 
+void NodeMetadataGetter(v8::Local<v8::Name> property,
+                        const v8::PropertyCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.Holder(), &key))
+    return;
+  NodeMetadata metadata;
+  std::string error;
+  if (!ReadNodeMetadata(realm, key, &metadata, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  std::string name = UTF8Value(isolate, property.As<v8::Value>());
+  if (name == "nodeType") {
+    info.GetReturnValue().Set(v8::Integer::NewFromUnsigned(isolate,
+                                                           metadata.type));
+    return;
+  }
+  if (name == "isConnected") {
+    info.GetReturnValue().Set(v8::Boolean::New(isolate, metadata.connected));
+    return;
+  }
+  if (name == "localName") {
+    if (metadata.type != 1) {
+      info.GetReturnValue().Set(v8::Null(isolate));
+      return;
+    }
+    v8::Local<v8::String> value;
+    if (!NewUTF8String(isolate, metadata.local_name.data(),
+                       metadata.local_name.size(), &value)) {
+      ThrowError(isolate, "V8 failed to allocate localName");
+      return;
+    }
+    info.GetReturnValue().Set(value);
+    return;
+  }
+  if (name == "tagName" && metadata.type != 1) {
+    info.GetReturnValue().Set(v8::Undefined(isolate));
+    return;
+  }
+  v8::Local<v8::String> value;
+  if (!NewUTF8String(isolate, metadata.node_name.data(),
+                     metadata.node_name.size(), &value)) {
+    ThrowError(isolate, "V8 failed to allocate nodeName");
+    return;
+  }
+  info.GetReturnValue().Set(value);
+}
+
+bool RelationFromProperty(const std::string &name, uint8_t *relation) {
+  if (name == "parentNode")
+    *relation = 1;
+  else if (name == "parentElement")
+    *relation = 2;
+  else if (name == "firstChild")
+    *relation = 3;
+  else if (name == "lastChild")
+    *relation = 4;
+  else if (name == "previousSibling")
+    *relation = 5;
+  else if (name == "nextSibling")
+    *relation = 6;
+  else if (name == "firstElementChild")
+    *relation = 7;
+  else if (name == "lastElementChild")
+    *relation = 8;
+  else if (name == "previousElementSibling")
+    *relation = 9;
+  else if (name == "nextElementSibling")
+    *relation = 10;
+  else
+    return false;
+  return true;
+}
+
+void NodeRelationGetter(v8::Local<v8::Name> property,
+                        const v8::PropertyCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.Holder(), &key))
+    return;
+  uint8_t relation = 0;
+  if (!RelationFromProperty(UTF8Value(isolate, property.As<v8::Value>()),
+                            &relation)) {
+    ThrowError(isolate, "unknown DOM traversal property");
+    return;
+  }
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  uint32_t related_node = 0;
+  int found = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->related_node(
+          realm->active_host->execution_id, key.document, key.node, relation,
+          &related_node, &found, &host_error) == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate, error.empty() ? "DOM traversal failed" : error);
+    return;
+  }
+  std::free(host_error);
+  if (found == 0) {
+    info.GetReturnValue().Set(v8::Null(isolate));
+    return;
+  }
+  v8::Local<v8::Object> wrapper;
+  if (!GetOrCreateNodeWrapper(realm, isolate->GetCurrentContext(),
+                              WrapperKey{key.document, related_node}, &error)
+           .ToLocal(&wrapper)) {
+    ThrowError(isolate, error.empty() ? "V8 failed to wrap a related DOM node"
+                                      : error);
+    return;
+  }
+  info.GetReturnValue().Set(wrapper);
+}
+
+bool ReadChildNodes(gossamer_v8_realm *realm, const WrapperKey &key,
+                    bool elements_only, std::vector<uint32_t> *nodes,
+                    std::string *error) {
+  if (!RequireHost(realm, error))
+    return false;
+  uint32_t *host_nodes = nullptr;
+  size_t count = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->child_nodes(
+          realm->active_host->execution_id, key.document, key.node,
+          elements_only ? 1 : 0, &host_nodes, &count, &host_error) == 0) {
+    *error = TakeCString(host_error);
+    std::free(host_nodes);
+    if (error->empty())
+      *error = "reading DOM child nodes failed";
+    return false;
+  }
+  std::free(host_error);
+  if (count == 0) {
+    nodes->clear();
+  } else {
+    nodes->assign(host_nodes, host_nodes + count);
+  }
+  std::free(host_nodes);
+  return true;
+}
+
+void NodeChildrenGetter(v8::Local<v8::Name> property,
+                        const v8::PropertyCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.Holder(), &key))
+    return;
+  bool elements_only =
+      UTF8Value(isolate, property.As<v8::Value>()) == "children";
+  std::vector<uint32_t> nodes;
+  std::string error;
+  if (!ReadChildNodes(realm, key, elements_only, &nodes, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  if (nodes.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
+    ThrowError(isolate, "DOM child collection exceeds V8's array limit");
+    return;
+  }
+  v8::Local<v8::Array> result =
+      v8::Array::New(isolate, static_cast<int>(nodes.size()));
+  v8::Local<v8::Context> context = isolate->GetCurrentContext();
+  for (size_t index = 0; index < nodes.size(); ++index) {
+    v8::Local<v8::Object> wrapper;
+    if (!GetOrCreateNodeWrapper(realm, context,
+                                WrapperKey{key.document, nodes[index]}, &error)
+             .ToLocal(&wrapper) ||
+        !result->Set(context, static_cast<uint32_t>(index), wrapper)
+             .FromMaybe(false)) {
+      ThrowError(isolate, error.empty() ? "V8 failed to build a child collection"
+                                        : error);
+      return;
+    }
+  }
+  info.GetReturnValue().Set(result);
+}
+
+void NodeChildElementCountGetter(
+    v8::Local<v8::Name>, const v8::PropertyCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.Holder(), &key))
+    return;
+  std::vector<uint32_t> nodes;
+  std::string error;
+  if (!ReadChildNodes(realm, key, true, &nodes, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  info.GetReturnValue().Set(v8::Integer::NewFromUnsigned(
+      isolate, static_cast<uint32_t>(nodes.size())));
+}
+
+void NodeHasChildNodes(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.This(), &key))
+    return;
+  std::vector<uint32_t> nodes;
+  std::string error;
+  if (!ReadChildNodes(realm, key, false, &nodes, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  info.GetReturnValue().Set(v8::Boolean::New(isolate, !nodes.empty()));
+}
+
+void NodeContains(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.This(), &key))
+    return;
+  if (info.Length() == 0 || info[0]->IsNull()) {
+    info.GetReturnValue().Set(false);
+    return;
+  }
+  WrapperKey other;
+  if (!ReadNodeArgument(isolate, info[0], &other,
+                        "contains requires a Gossamer node or null"))
+    return;
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  int contains = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->contains(
+          realm->active_host->execution_id, key.document, key.node,
+          other.document, other.node, &contains, &host_error) == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate, error.empty() ? "contains failed" : error);
+    return;
+  }
+  std::free(host_error);
+  info.GetReturnValue().Set(v8::Boolean::New(isolate, contains != 0));
+}
+
+void NodeReplaceChild(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  WrapperKey parent;
+  WrapperKey child;
+  WrapperKey replaced;
+  if (!ReadReceiverKey(isolate, info.This(), &parent))
+    return;
+  if (info.Length() < 2 ||
+      !ReadNodeArgument(isolate, info[0], &child,
+                        "replaceChild requires a Gossamer child node") ||
+      !ReadNodeArgument(isolate, info[1], &replaced,
+                        "replaceChild requires a Gossamer replaced node"))
+    return;
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  char *host_error = nullptr;
+  if (realm->active_host->replace_child(
+          realm->active_host->execution_id, parent.document, parent.node,
+          child.document, child.node, replaced.document, replaced.node,
+          &host_error) == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate, error.empty() ? "replaceChild failed" : error);
+    return;
+  }
+  std::free(host_error);
+  info.GetReturnValue().Set(info[1]);
+}
+
+void NodeValueGetter(v8::Local<v8::Name>,
+                     const v8::PropertyCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.Holder(), &key))
+    return;
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  char *value = nullptr;
+  size_t value_length = 0;
+  int non_null = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->node_value(
+          realm->active_host->execution_id, key.document, key.node, &value,
+          &value_length, &non_null, &host_error) == 0) {
+    error = TakeCString(host_error);
+    std::free(value);
+    ThrowError(isolate, error.empty() ? "reading nodeValue failed" : error);
+    return;
+  }
+  std::free(host_error);
+  if (non_null == 0) {
+    std::free(value);
+    info.GetReturnValue().Set(v8::Null(isolate));
+    return;
+  }
+  v8::Local<v8::String> result;
+  bool allocated = NewUTF8String(isolate, value, value_length, &result);
+  std::free(value);
+  if (!allocated) {
+    ThrowError(isolate, "V8 failed to allocate nodeValue");
+    return;
+  }
+  info.GetReturnValue().Set(result);
+}
+
+void NodeValueSetter(v8::Local<v8::Name>, v8::Local<v8::Value> value,
+                     const v8::PropertyCallbackInfo<v8::Boolean> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.Holder(), &key)) {
+    info.GetReturnValue().Set(false);
+    return;
+  }
+  std::string rendered;
+  if (!StringFromValue(isolate, value, &rendered)) {
+    info.GetReturnValue().Set(false);
+    return;
+  }
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    info.GetReturnValue().Set(false);
+    return;
+  }
+  char *host_error = nullptr;
+  if (realm->active_host->set_node_value(
+          realm->active_host->execution_id, key.document, key.node,
+          rendered.data(), rendered.size(), &host_error) == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate, error.empty() ? "setting nodeValue failed" : error);
+    info.GetReturnValue().Set(false);
+    return;
+  }
+  std::free(host_error);
+  info.GetReturnValue().Set(true);
+}
+
+void NodeReflectedAttributeGetter(
+    v8::Local<v8::Name> property,
+    const v8::PropertyCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.Holder(), &key))
+    return;
+  std::string property_name = UTF8Value(isolate, property.As<v8::Value>());
+  const char *attribute = property_name == "className" ? "class" : "id";
+  char *value = nullptr;
+  size_t value_length = 0;
+  int found = 0;
+  char *host_error = nullptr;
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  if (realm->active_host->get_attribute(
+          realm->active_host->execution_id, key.document, key.node, attribute,
+          std::strlen(attribute), &value, &value_length, &found,
+          &host_error) == 0) {
+    error = TakeCString(host_error);
+    std::free(value);
+    ThrowError(isolate, error.empty() ? "reading reflected attribute failed"
+                                      : error);
+    return;
+  }
+  std::free(host_error);
+  v8::Local<v8::String> result;
+  bool allocated = NewUTF8String(isolate, value, found == 0 ? 0 : value_length,
+                                 &result);
+  std::free(value);
+  if (!allocated) {
+    ThrowError(isolate, "V8 failed to allocate a reflected attribute");
+    return;
+  }
+  info.GetReturnValue().Set(result);
+}
+
+void NodeReflectedAttributeSetter(
+    v8::Local<v8::Name> property, v8::Local<v8::Value> value,
+    const v8::PropertyCallbackInfo<v8::Boolean> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.Holder(), &key)) {
+    info.GetReturnValue().Set(false);
+    return;
+  }
+  std::string rendered;
+  if (!StringFromValue(isolate, value, &rendered)) {
+    info.GetReturnValue().Set(false);
+    return;
+  }
+  std::string property_name = UTF8Value(isolate, property.As<v8::Value>());
+  const char *attribute = property_name == "className" ? "class" : "id";
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    info.GetReturnValue().Set(false);
+    return;
+  }
+  char *host_error = nullptr;
+  if (realm->active_host->set_attribute(
+          realm->active_host->execution_id, key.document, key.node, attribute,
+          std::strlen(attribute), rendered.data(), rendered.size(),
+          &host_error) == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate, error.empty() ? "setting reflected attribute failed"
+                                      : error);
+    info.GetReturnValue().Set(false);
+    return;
+  }
+  std::free(host_error);
+  info.GetReturnValue().Set(true);
+}
+
+void NodeHasAttribute(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.This(), &key))
+    return;
+  std::string name;
+  if (info.Length() == 0 || !StringFromValue(isolate, info[0], &name))
+    return;
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  int found = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->has_attribute(
+          realm->active_host->execution_id, key.document, key.node, name.data(),
+          name.size(), &found, &host_error) == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate, error.empty() ? "hasAttribute failed" : error);
+    return;
+  }
+  std::free(host_error);
+  info.GetReturnValue().Set(v8::Boolean::New(isolate, found != 0));
+}
+
+void NodeRemove(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.This(), &key))
+    return;
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  uint32_t parent_node = 0;
+  int found = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->related_node(
+          realm->active_host->execution_id, key.document, key.node, 1,
+          &parent_node, &found, &host_error) == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate, error.empty() ? "remove traversal failed" : error);
+    return;
+  }
+  std::free(host_error);
+  if (found == 0)
+    return;
+  host_error = nullptr;
+  if (realm->active_host->remove_child(
+          realm->active_host->execution_id, key.document, parent_node,
+          key.document, key.node, &host_error) == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate, error.empty() ? "remove failed" : error);
+    return;
+  }
+  std::free(host_error);
+}
+
+void NodeStyleGetter(v8::Local<v8::Name>,
+                     const v8::PropertyCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  WrapperKey key;
+  v8::Local<v8::Object> node = info.Holder();
+  if (!ReadReceiverKey(isolate, node, &key))
+    return;
+  NodeMetadata metadata;
+  std::string error;
+  if (!ReadNodeMetadata(realm, key, &metadata, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  if (metadata.type != 1) {
+    info.GetReturnValue().Set(v8::Undefined(isolate));
+    return;
+  }
+  v8::Local<v8::Data> cached_data = node->GetInternalField(kNodeStyleField);
+  if (cached_data->IsValue()) {
+    v8::Local<v8::Value> cached = cached_data.As<v8::Value>();
+    if (cached->IsObject()) {
+      info.GetReturnValue().Set(cached);
+      return;
+    }
+  }
+  v8::Local<v8::ObjectTemplate> style_template =
+      realm->style_template.Get(isolate);
+  v8::Local<v8::Object> style;
+  if (!style_template->NewInstance(isolate->GetCurrentContext()).ToLocal(
+          &style)) {
+    ThrowError(isolate, "V8 failed to allocate element.style");
+    return;
+  }
+  style->SetInternalField(kStyleNodeField, node);
+  node->SetInternalField(kNodeStyleField, style);
+  info.GetReturnValue().Set(style);
+}
+
+void StyleCSSTextGetter(v8::Local<v8::Name>,
+                        const v8::PropertyCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  WrapperKey key;
+  if (!ReadStyleKey(isolate, info.Holder(), &key))
+    return;
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  char *value = nullptr;
+  size_t value_length = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->style_css_text(
+          realm->active_host->execution_id, key.document, key.node, &value,
+          &value_length, &host_error) == 0) {
+    error = TakeCString(host_error);
+    std::free(value);
+    ThrowError(isolate, error.empty() ? "reading cssText failed" : error);
+    return;
+  }
+  std::free(host_error);
+  v8::Local<v8::String> result;
+  bool allocated = NewUTF8String(isolate, value, value_length, &result);
+  std::free(value);
+  if (!allocated) {
+    ThrowError(isolate, "V8 failed to allocate cssText");
+    return;
+  }
+  info.GetReturnValue().Set(result);
+}
+
+void StyleCSSTextSetter(v8::Local<v8::Name>, v8::Local<v8::Value> value,
+                        const v8::PropertyCallbackInfo<v8::Boolean> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  WrapperKey key;
+  if (!ReadStyleKey(isolate, info.Holder(), &key)) {
+    info.GetReturnValue().Set(false);
+    return;
+  }
+  std::string rendered;
+  if (!StringFromValue(isolate, value, &rendered)) {
+    info.GetReturnValue().Set(false);
+    return;
+  }
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    info.GetReturnValue().Set(false);
+    return;
+  }
+  char *host_error = nullptr;
+  if (realm->active_host->set_style_css_text(
+          realm->active_host->execution_id, key.document, key.node,
+          rendered.data(), rendered.size(), &host_error) == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate, error.empty() ? "setting cssText failed" : error);
+    info.GetReturnValue().Set(false);
+    return;
+  }
+  std::free(host_error);
+  info.GetReturnValue().Set(true);
+}
+
+bool ReadStyleProperty(gossamer_v8_realm *realm, const WrapperKey &key,
+                       const std::string &name, std::string *value,
+                       std::string *priority, bool *found,
+                       std::string *error) {
+  if (!RequireHost(realm, error))
+    return false;
+  char *host_value = nullptr;
+  size_t value_length = 0;
+  char *host_priority = nullptr;
+  size_t priority_length = 0;
+  int host_found = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->style_property(
+          realm->active_host->execution_id, key.document, key.node, name.data(),
+          name.size(), &host_value, &value_length, &host_priority,
+          &priority_length, &host_found, &host_error) == 0) {
+    *error = TakeCString(host_error);
+    std::free(host_value);
+    std::free(host_priority);
+    if (error->empty())
+      *error = "reading style property failed";
+    return false;
+  }
+  std::free(host_error);
+  value->assign(host_value == nullptr ? "" : host_value, value_length);
+  priority->assign(host_priority == nullptr ? "" : host_priority,
+                   priority_length);
+  *found = host_found != 0;
+  std::free(host_value);
+  std::free(host_priority);
+  return true;
+}
+
+bool SetStyleProperty(gossamer_v8_realm *realm, const WrapperKey &key,
+                      const std::string &name, const std::string &value,
+                      const std::string &priority, std::string *error) {
+  if (!RequireHost(realm, error))
+    return false;
+  char *host_error = nullptr;
+  if (realm->active_host->set_style_property(
+          realm->active_host->execution_id, key.document, key.node, name.data(),
+          name.size(), value.data(), value.size(), priority.data(),
+          priority.size(), &host_error) == 0) {
+    *error = TakeCString(host_error);
+    if (error->empty())
+      *error = "setting style property failed";
+    return false;
+  }
+  std::free(host_error);
+  return true;
+}
+
+void StyleLengthGetter(v8::Local<v8::Name>,
+                       const v8::PropertyCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  WrapperKey key;
+  if (!ReadStyleKey(isolate, info.Holder(), &key))
+    return;
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  size_t count = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->style_property_count(
+          realm->active_host->execution_id, key.document, key.node, &count,
+          &host_error) == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate, error.empty() ? "reading style length failed" : error);
+    return;
+  }
+  std::free(host_error);
+  info.GetReturnValue().Set(
+      v8::Number::New(isolate, static_cast<double>(count)));
+}
+
+void StyleItem(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  WrapperKey key;
+  if (!ReadStyleKey(isolate, info.This(), &key))
+    return;
+  uint64_t index = 0;
+  if (info.Length() != 0) {
+    v8::Maybe<uint32_t> converted =
+        info[0]->Uint32Value(isolate->GetCurrentContext());
+    if (converted.IsNothing())
+      return;
+    index = converted.FromJust();
+  }
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  char *name = nullptr;
+  size_t name_length = 0;
+  int found = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->style_property_name(
+          realm->active_host->execution_id, key.document, key.node,
+          static_cast<size_t>(index), &name, &name_length, &found,
+          &host_error) == 0) {
+    error = TakeCString(host_error);
+    std::free(name);
+    ThrowError(isolate, error.empty() ? "reading style item failed" : error);
+    return;
+  }
+  std::free(host_error);
+  if (found == 0) {
+    std::free(name);
+    v8::Local<v8::String> empty = v8::String::Empty(isolate);
+    info.GetReturnValue().Set(empty);
+    return;
+  }
+  v8::Local<v8::String> result;
+  bool allocated = NewUTF8String(isolate, name, name_length, &result);
+  std::free(name);
+  if (!allocated) {
+    ThrowError(isolate, "V8 failed to allocate style item");
+    return;
+  }
+  info.GetReturnValue().Set(result);
+}
+
+void StyleGetPropertyValue(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  WrapperKey key;
+  if (!ReadStyleKey(isolate, info.This(), &key))
+    return;
+  std::string name;
+  if (info.Length() == 0 || !StringFromValue(isolate, info[0], &name))
+    return;
+  std::string value;
+  std::string priority;
+  std::string error;
+  bool found = false;
+  if (!ReadStyleProperty(realm, key, name, &value, &priority, &found, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  v8::Local<v8::String> result;
+  if (!NewUTF8String(isolate, value.data(), found ? value.size() : 0,
+                     &result)) {
+    ThrowError(isolate, "V8 failed to allocate a style property value");
+    return;
+  }
+  info.GetReturnValue().Set(result);
+}
+
+void StyleGetPropertyPriority(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  WrapperKey key;
+  if (!ReadStyleKey(isolate, info.This(), &key))
+    return;
+  std::string name;
+  if (info.Length() == 0 || !StringFromValue(isolate, info[0], &name))
+    return;
+  std::string value;
+  std::string priority;
+  std::string error;
+  bool found = false;
+  if (!ReadStyleProperty(realm, key, name, &value, &priority, &found, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  v8::Local<v8::String> result;
+  if (!NewUTF8String(isolate, priority.data(), found ? priority.size() : 0,
+                     &result)) {
+    ThrowError(isolate, "V8 failed to allocate a style priority");
+    return;
+  }
+  info.GetReturnValue().Set(result);
+}
+
+void StyleSetProperty(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  WrapperKey key;
+  if (!ReadStyleKey(isolate, info.This(), &key))
+    return;
+  std::string name;
+  std::string value;
+  std::string priority;
+  if (info.Length() < 2 || !StringFromValue(isolate, info[0], &name) ||
+      !StringFromValue(isolate, info[1], &value) ||
+      (info.Length() > 2 &&
+       !StringFromValue(isolate, info[2], &priority)))
+    return;
+  std::string error;
+  if (!SetStyleProperty(realm, key, name, value, priority, &error))
+    ThrowError(isolate, error);
+}
+
+void StyleRemoveProperty(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  WrapperKey key;
+  if (!ReadStyleKey(isolate, info.This(), &key))
+    return;
+  std::string name;
+  if (info.Length() == 0 || !StringFromValue(isolate, info[0], &name))
+    return;
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  char *value = nullptr;
+  size_t value_length = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->remove_style_property(
+          realm->active_host->execution_id, key.document, key.node, name.data(),
+          name.size(), &value, &value_length, &host_error) == 0) {
+    error = TakeCString(host_error);
+    std::free(value);
+    ThrowError(isolate, error.empty() ? "removeProperty failed" : error);
+    return;
+  }
+  std::free(host_error);
+  v8::Local<v8::String> result;
+  bool allocated = NewUTF8String(isolate, value, value_length, &result);
+  std::free(value);
+  if (!allocated) {
+    ThrowError(isolate, "V8 failed to allocate the removed style value");
+    return;
+  }
+  info.GetReturnValue().Set(result);
+}
+
+void StyleDirectPropertyGetter(
+    v8::Local<v8::Name> property,
+    const v8::PropertyCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  WrapperKey key;
+  if (!ReadStyleKey(isolate, info.Holder(), &key))
+    return;
+  std::string name =
+      CSSPropertyNameFromJS(UTF8Value(isolate, property.As<v8::Value>()));
+  std::string value;
+  std::string priority;
+  std::string error;
+  bool found = false;
+  if (!ReadStyleProperty(realm, key, name, &value, &priority, &found, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  v8::Local<v8::String> result;
+  if (!NewUTF8String(isolate, value.data(), found ? value.size() : 0,
+                     &result)) {
+    ThrowError(isolate, "V8 failed to allocate a direct style property");
+    return;
+  }
+  info.GetReturnValue().Set(result);
+}
+
+void StyleDirectPropertySetter(
+    v8::Local<v8::Name> property, v8::Local<v8::Value> value,
+    const v8::PropertyCallbackInfo<v8::Boolean> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  WrapperKey key;
+  if (!ReadStyleKey(isolate, info.Holder(), &key)) {
+    info.GetReturnValue().Set(false);
+    return;
+  }
+  std::string name =
+      CSSPropertyNameFromJS(UTF8Value(isolate, property.As<v8::Value>()));
+  std::string rendered;
+  if (!StringFromValue(isolate, value, &rendered)) {
+    info.GetReturnValue().Set(false);
+    return;
+  }
+  std::string error;
+  if (!SetStyleProperty(realm, key, name, rendered, "", &error)) {
+    ThrowError(isolate, error);
+    info.GetReturnValue().Set(false);
+    return;
+  }
+  info.GetReturnValue().Set(true);
+}
+
 void NodeAddEventListener(const v8::FunctionCallbackInfo<v8::Value> &info) {
   v8::Isolate *isolate = info.GetIsolate();
   gossamer_v8_realm *realm = CurrentRealm(isolate);
@@ -1012,28 +1994,118 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   v8::Isolate *isolate = realm->isolate;
   v8::Local<v8::ObjectTemplate> node_template =
       v8::ObjectTemplate::New(isolate);
-  node_template->SetInternalFieldCount(2);
+  node_template->SetInternalFieldCount(3);
   node_template->SetNativeDataProperty(
       v8::String::NewFromUtf8Literal(isolate, "textContent"),
       NodeTextContentGetter, NodeTextContentSetter);
+  node_template->SetNativeDataProperty(
+      v8::String::NewFromUtf8Literal(isolate, "nodeValue"), NodeValueGetter,
+      NodeValueSetter);
+  node_template->SetNativeDataProperty(
+      v8::String::NewFromUtf8Literal(isolate, "data"), NodeValueGetter,
+      NodeValueSetter);
+  for (const char *name : {"nodeType", "nodeName", "tagName", "localName",
+                           "isConnected"}) {
+    node_template->SetNativeDataProperty(
+        v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
+        NodeMetadataGetter);
+  }
+  for (const char *name : {"parentNode", "parentElement", "firstChild",
+                           "lastChild", "previousSibling", "nextSibling",
+                           "firstElementChild", "lastElementChild",
+                           "previousElementSibling", "nextElementSibling"}) {
+    node_template->SetNativeDataProperty(
+        v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
+        NodeRelationGetter);
+  }
+  node_template->SetNativeDataProperty(
+      v8::String::NewFromUtf8Literal(isolate, "childNodes"),
+      NodeChildrenGetter);
+  node_template->SetNativeDataProperty(
+      v8::String::NewFromUtf8Literal(isolate, "children"), NodeChildrenGetter);
+  node_template->SetNativeDataProperty(
+      v8::String::NewFromUtf8Literal(isolate, "childElementCount"),
+      NodeChildElementCountGetter);
+  node_template->SetNativeDataProperty(
+      v8::String::NewFromUtf8Literal(isolate, "id"),
+      NodeReflectedAttributeGetter, NodeReflectedAttributeSetter);
+  node_template->SetNativeDataProperty(
+      v8::String::NewFromUtf8Literal(isolate, "className"),
+      NodeReflectedAttributeGetter, NodeReflectedAttributeSetter);
+  node_template->SetNativeDataProperty(
+      v8::String::NewFromUtf8Literal(isolate, "style"), NodeStyleGetter);
   node_template->Set(isolate, "appendChild",
                      v8::FunctionTemplate::New(isolate, NodeAppendChild));
   node_template->Set(isolate, "insertBefore",
                      v8::FunctionTemplate::New(isolate, NodeInsertBefore));
   node_template->Set(isolate, "removeChild",
                      v8::FunctionTemplate::New(isolate, NodeRemoveChild));
+  node_template->Set(isolate, "replaceChild",
+                     v8::FunctionTemplate::New(isolate, NodeReplaceChild));
+  node_template->Set(isolate, "hasChildNodes",
+                     v8::FunctionTemplate::New(isolate, NodeHasChildNodes));
+  node_template->Set(isolate, "contains",
+                     v8::FunctionTemplate::New(isolate, NodeContains));
+  node_template->Set(isolate, "remove",
+                     v8::FunctionTemplate::New(isolate, NodeRemove));
   node_template->Set(isolate, "getAttribute",
                      v8::FunctionTemplate::New(isolate, NodeGetAttribute));
   node_template->Set(isolate, "setAttribute",
                      v8::FunctionTemplate::New(isolate, NodeSetAttribute));
   node_template->Set(isolate, "removeAttribute",
                      v8::FunctionTemplate::New(isolate, NodeRemoveAttribute));
+  node_template->Set(isolate, "hasAttribute",
+                     v8::FunctionTemplate::New(isolate, NodeHasAttribute));
   node_template->Set(isolate, "addEventListener",
                      v8::FunctionTemplate::New(isolate, NodeAddEventListener));
   node_template->Set(
       isolate, "removeEventListener",
       v8::FunctionTemplate::New(isolate, NodeRemoveEventListener));
   realm->node_template.Reset(isolate, node_template);
+
+  v8::Local<v8::ObjectTemplate> style_template =
+      v8::ObjectTemplate::New(isolate);
+  style_template->SetInternalFieldCount(1);
+  style_template->SetNativeDataProperty(
+      v8::String::NewFromUtf8Literal(isolate, "cssText"), StyleCSSTextGetter,
+      StyleCSSTextSetter);
+  style_template->SetNativeDataProperty(
+      v8::String::NewFromUtf8Literal(isolate, "length"), StyleLengthGetter);
+  style_template->Set(isolate, "item",
+                      v8::FunctionTemplate::New(isolate, StyleItem));
+  style_template->Set(
+      isolate, "getPropertyValue",
+      v8::FunctionTemplate::New(isolate, StyleGetPropertyValue));
+  style_template->Set(
+      isolate, "getPropertyPriority",
+      v8::FunctionTemplate::New(isolate, StyleGetPropertyPriority));
+  style_template->Set(isolate, "setProperty",
+                      v8::FunctionTemplate::New(isolate, StyleSetProperty));
+  style_template->Set(
+      isolate, "removeProperty",
+      v8::FunctionTemplate::New(isolate, StyleRemoveProperty));
+  for (const char *name : {
+           "display",          "color",              "background",
+           "backgroundColor",  "fontSize",           "fontWeight",
+           "lineHeight",       "textDecoration",     "textDecorationLine",
+           "textAlign",        "opacity",            "width",
+           "height",           "minWidth",           "maxWidth",
+           "padding",          "paddingTop",         "paddingRight",
+           "paddingBottom",    "paddingLeft",        "margin",
+           "marginTop",        "marginRight",        "marginBottom",
+           "marginLeft",       "border",             "borderTop",
+           "borderRight",      "borderBottom",       "borderLeft",
+           "borderWidth",      "borderStyle",        "borderColor",
+           "borderTopWidth",   "borderRightWidth",   "borderBottomWidth",
+           "borderLeftWidth",  "borderTopStyle",     "borderRightStyle",
+           "borderBottomStyle", "borderLeftStyle",    "borderTopColor",
+           "borderRightColor", "borderBottomColor",  "borderLeftColor",
+           "listStyle",        "listStyleType",      "cssFloat"}) {
+    style_template->SetNativeDataProperty(
+        v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
+        StyleDirectPropertyGetter, StyleDirectPropertySetter);
+  }
+  realm->style_template.Reset(isolate, style_template);
 
   v8::Local<v8::Object> document = v8::Object::New(isolate);
   v8::Local<v8::Function> get_element_by_id;
@@ -1121,6 +2193,7 @@ void ClearRealmHandles(gossamer_v8_realm *realm) {
   realm->timer_callbacks.clear();
   realm->callback_timers.clear();
   realm->node_template.Reset();
+  realm->style_template.Reset();
 }
 
 } // namespace

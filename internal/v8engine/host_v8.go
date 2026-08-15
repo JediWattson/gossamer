@@ -89,6 +89,30 @@ func goString(data *C.char, length C.size_t) string {
 	return string(unsafe.Slice((*byte)(unsafe.Pointer(data)), int(length)))
 }
 
+func writeHostString(value string, valueOut **C.char, valueLengthOut *C.size_t) error {
+	if valueOut != nil {
+		*valueOut = nil
+		if value != "" {
+			*valueOut = (*C.char)(C.CBytes([]byte(value)))
+			if *valueOut == nil {
+				return fmt.Errorf("V8 host could not allocate string output")
+			}
+		}
+	}
+	if valueLengthOut != nil {
+		*valueLengthOut = C.size_t(len(value))
+	}
+	return nil
+}
+
+func domElementHost(host browser.Host) (browser.DOMElementHost, error) {
+	domHost, ok := host.(browser.DOMElementHost)
+	if !ok {
+		return nil, fmt.Errorf("V8 host does not support DOM element bindings")
+	}
+	return domHost, nil
+}
+
 //export goGossamerV8HostGetElementByID
 func goGossamerV8HostGetElementByID(
 	executionID C.uint64_t,
@@ -348,6 +372,467 @@ func goGossamerV8HostRemoveAttribute(
 ) C.int {
 	return runHostCall(errorOut, func(host browser.Host) error {
 		return host.RemoveAttribute(browserNodeHandle(document, node), goString(name, nameLength))
+	}, executionID)
+}
+
+//export goGossamerV8HostNodeMetadata
+func goGossamerV8HostNodeMetadata(
+	executionID C.uint64_t,
+	document C.uint64_t,
+	node C.uint32_t,
+	typeOut *C.uint8_t,
+	nodeNameOut **C.char,
+	nodeNameLengthOut *C.size_t,
+	localNameOut **C.char,
+	localNameLengthOut *C.size_t,
+	connectedOut *C.int,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domElementHost(host)
+		if err != nil {
+			return err
+		}
+		metadata, err := domHost.NodeMetadata(browserNodeHandle(document, node))
+		if err != nil {
+			return err
+		}
+		if typeOut != nil {
+			*typeOut = C.uint8_t(metadata.Type)
+		}
+		if connectedOut != nil {
+			if metadata.Connected {
+				*connectedOut = 1
+			} else {
+				*connectedOut = 0
+			}
+		}
+		if err := writeHostString(metadata.NodeName, nodeNameOut, nodeNameLengthOut); err != nil {
+			return err
+		}
+		if err := writeHostString(metadata.LocalName, localNameOut, localNameLengthOut); err != nil {
+			if nodeNameOut != nil {
+				C.free(unsafe.Pointer(*nodeNameOut))
+				*nodeNameOut = nil
+			}
+			return err
+		}
+		return nil
+	}, executionID)
+}
+
+//export goGossamerV8HostRelatedNode
+func goGossamerV8HostRelatedNode(
+	executionID C.uint64_t,
+	document C.uint64_t,
+	node C.uint32_t,
+	relation C.uint8_t,
+	relatedNodeOut *C.uint32_t,
+	foundOut *C.int,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domElementHost(host)
+		if err != nil {
+			return err
+		}
+		related, found, err := domHost.RelatedNode(
+			browserNodeHandle(document, node),
+			browser.NodeRelation(relation),
+		)
+		if err != nil {
+			return err
+		}
+		if relatedNodeOut != nil {
+			*relatedNodeOut = C.uint32_t(related.Node)
+		}
+		if foundOut != nil {
+			if found {
+				*foundOut = 1
+			} else {
+				*foundOut = 0
+			}
+		}
+		return nil
+	}, executionID)
+}
+
+//export goGossamerV8HostChildNodes
+func goGossamerV8HostChildNodes(
+	executionID C.uint64_t,
+	document C.uint64_t,
+	node C.uint32_t,
+	elementsOnly C.int,
+	nodesOut **C.uint32_t,
+	countOut *C.size_t,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domElementHost(host)
+		if err != nil {
+			return err
+		}
+		handles, err := domHost.ChildNodes(browserNodeHandle(document, node), elementsOnly != 0)
+		if err != nil {
+			return err
+		}
+		if nodesOut != nil {
+			*nodesOut = nil
+			if len(handles) != 0 {
+				bytes := C.size_t(len(handles)) * C.size_t(unsafe.Sizeof(C.uint32_t(0)))
+				allocated := C.malloc(bytes)
+				if allocated == nil {
+					return fmt.Errorf("V8 host could not allocate child node output")
+				}
+				*nodesOut = (*C.uint32_t)(allocated)
+				output := unsafe.Slice(*nodesOut, len(handles))
+				for index, handle := range handles {
+					if handle.Document != browser.DocumentGeneration(document) {
+						C.free(allocated)
+						*nodesOut = nil
+						return fmt.Errorf("V8 host returned a child from another document")
+					}
+					output[index] = C.uint32_t(handle.Node)
+				}
+			}
+		}
+		if countOut != nil {
+			*countOut = C.size_t(len(handles))
+		}
+		return nil
+	}, executionID)
+}
+
+//export goGossamerV8HostContains
+func goGossamerV8HostContains(
+	executionID C.uint64_t,
+	document C.uint64_t,
+	node C.uint32_t,
+	otherDocument C.uint64_t,
+	otherNode C.uint32_t,
+	containsOut *C.int,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domElementHost(host)
+		if err != nil {
+			return err
+		}
+		contains, err := domHost.Contains(
+			browserNodeHandle(document, node),
+			browserNodeHandle(otherDocument, otherNode),
+		)
+		if err != nil {
+			return err
+		}
+		if containsOut != nil {
+			if contains {
+				*containsOut = 1
+			} else {
+				*containsOut = 0
+			}
+		}
+		return nil
+	}, executionID)
+}
+
+//export goGossamerV8HostReplaceChild
+func goGossamerV8HostReplaceChild(
+	executionID C.uint64_t,
+	parentDocument C.uint64_t,
+	parentNode C.uint32_t,
+	childDocument C.uint64_t,
+	childNode C.uint32_t,
+	replacedDocument C.uint64_t,
+	replacedNode C.uint32_t,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domElementHost(host)
+		if err != nil {
+			return err
+		}
+		return domHost.ReplaceChild(
+			browserNodeHandle(parentDocument, parentNode),
+			browserNodeHandle(childDocument, childNode),
+			browserNodeHandle(replacedDocument, replacedNode),
+		)
+	}, executionID)
+}
+
+//export goGossamerV8HostNodeValue
+func goGossamerV8HostNodeValue(
+	executionID C.uint64_t,
+	document C.uint64_t,
+	node C.uint32_t,
+	valueOut **C.char,
+	valueLengthOut *C.size_t,
+	nonNullOut *C.int,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domElementHost(host)
+		if err != nil {
+			return err
+		}
+		value, nonNull, err := domHost.NodeValue(browserNodeHandle(document, node))
+		if err != nil {
+			return err
+		}
+		if nonNullOut != nil {
+			if nonNull {
+				*nonNullOut = 1
+			} else {
+				*nonNullOut = 0
+			}
+		}
+		return writeHostString(value, valueOut, valueLengthOut)
+	}, executionID)
+}
+
+//export goGossamerV8HostSetNodeValue
+func goGossamerV8HostSetNodeValue(
+	executionID C.uint64_t,
+	document C.uint64_t,
+	node C.uint32_t,
+	value *C.char,
+	valueLength C.size_t,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domElementHost(host)
+		if err != nil {
+			return err
+		}
+		return domHost.SetNodeValue(browserNodeHandle(document, node), goString(value, valueLength))
+	}, executionID)
+}
+
+//export goGossamerV8HostHasAttribute
+func goGossamerV8HostHasAttribute(
+	executionID C.uint64_t,
+	document C.uint64_t,
+	node C.uint32_t,
+	name *C.char,
+	nameLength C.size_t,
+	foundOut *C.int,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domElementHost(host)
+		if err != nil {
+			return err
+		}
+		found, err := domHost.HasAttribute(browserNodeHandle(document, node), goString(name, nameLength))
+		if err != nil {
+			return err
+		}
+		if foundOut != nil {
+			if found {
+				*foundOut = 1
+			} else {
+				*foundOut = 0
+			}
+		}
+		return nil
+	}, executionID)
+}
+
+//export goGossamerV8HostStyleCSSText
+func goGossamerV8HostStyleCSSText(
+	executionID C.uint64_t,
+	document C.uint64_t,
+	node C.uint32_t,
+	valueOut **C.char,
+	valueLengthOut *C.size_t,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domElementHost(host)
+		if err != nil {
+			return err
+		}
+		value, err := domHost.StyleCSSText(browserNodeHandle(document, node))
+		if err != nil {
+			return err
+		}
+		return writeHostString(value, valueOut, valueLengthOut)
+	}, executionID)
+}
+
+//export goGossamerV8HostSetStyleCSSText
+func goGossamerV8HostSetStyleCSSText(
+	executionID C.uint64_t,
+	document C.uint64_t,
+	node C.uint32_t,
+	value *C.char,
+	valueLength C.size_t,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domElementHost(host)
+		if err != nil {
+			return err
+		}
+		return domHost.SetStyleCSSText(browserNodeHandle(document, node), goString(value, valueLength))
+	}, executionID)
+}
+
+//export goGossamerV8HostStyleProperty
+func goGossamerV8HostStyleProperty(
+	executionID C.uint64_t,
+	document C.uint64_t,
+	node C.uint32_t,
+	name *C.char,
+	nameLength C.size_t,
+	valueOut **C.char,
+	valueLengthOut *C.size_t,
+	priorityOut **C.char,
+	priorityLengthOut *C.size_t,
+	foundOut *C.int,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domElementHost(host)
+		if err != nil {
+			return err
+		}
+		value, priority, found, err := domHost.StyleProperty(
+			browserNodeHandle(document, node), goString(name, nameLength),
+		)
+		if err != nil {
+			return err
+		}
+		if foundOut != nil {
+			if found {
+				*foundOut = 1
+			} else {
+				*foundOut = 0
+			}
+		}
+		if err := writeHostString(value, valueOut, valueLengthOut); err != nil {
+			return err
+		}
+		if err := writeHostString(priority, priorityOut, priorityLengthOut); err != nil {
+			if valueOut != nil {
+				C.free(unsafe.Pointer(*valueOut))
+				*valueOut = nil
+			}
+			return err
+		}
+		return nil
+	}, executionID)
+}
+
+//export goGossamerV8HostSetStyleProperty
+func goGossamerV8HostSetStyleProperty(
+	executionID C.uint64_t,
+	document C.uint64_t,
+	node C.uint32_t,
+	name *C.char,
+	nameLength C.size_t,
+	value *C.char,
+	valueLength C.size_t,
+	priority *C.char,
+	priorityLength C.size_t,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domElementHost(host)
+		if err != nil {
+			return err
+		}
+		return domHost.SetStyleProperty(
+			browserNodeHandle(document, node),
+			goString(name, nameLength),
+			goString(value, valueLength),
+			goString(priority, priorityLength),
+		)
+	}, executionID)
+}
+
+//export goGossamerV8HostRemoveStyleProperty
+func goGossamerV8HostRemoveStyleProperty(
+	executionID C.uint64_t,
+	document C.uint64_t,
+	node C.uint32_t,
+	name *C.char,
+	nameLength C.size_t,
+	valueOut **C.char,
+	valueLengthOut *C.size_t,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domElementHost(host)
+		if err != nil {
+			return err
+		}
+		value, err := domHost.RemoveStyleProperty(
+			browserNodeHandle(document, node), goString(name, nameLength),
+		)
+		if err != nil {
+			return err
+		}
+		return writeHostString(value, valueOut, valueLengthOut)
+	}, executionID)
+}
+
+//export goGossamerV8HostStylePropertyCount
+func goGossamerV8HostStylePropertyCount(
+	executionID C.uint64_t,
+	document C.uint64_t,
+	node C.uint32_t,
+	countOut *C.size_t,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domElementHost(host)
+		if err != nil {
+			return err
+		}
+		names, err := domHost.StylePropertyNames(browserNodeHandle(document, node))
+		if err != nil {
+			return err
+		}
+		if countOut != nil {
+			*countOut = C.size_t(len(names))
+		}
+		return nil
+	}, executionID)
+}
+
+//export goGossamerV8HostStylePropertyName
+func goGossamerV8HostStylePropertyName(
+	executionID C.uint64_t,
+	document C.uint64_t,
+	node C.uint32_t,
+	index C.size_t,
+	nameOut **C.char,
+	nameLengthOut *C.size_t,
+	foundOut *C.int,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domElementHost(host)
+		if err != nil {
+			return err
+		}
+		names, err := domHost.StylePropertyNames(browserNodeHandle(document, node))
+		if err != nil {
+			return err
+		}
+		found := uint64(index) < uint64(len(names))
+		if foundOut != nil {
+			if found {
+				*foundOut = 1
+			} else {
+				*foundOut = 0
+			}
+		}
+		if !found {
+			return writeHostString("", nameOut, nameLengthOut)
+		}
+		return writeHostString(names[int(index)], nameOut, nameLengthOut)
 	}, executionID)
 }
 

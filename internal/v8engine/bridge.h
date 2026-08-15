@@ -56,6 +56,60 @@ typedef struct gossamer_v8_host {
   int (*remove_attribute)(uint64_t execution_id, uint64_t document,
                           uint32_t node, const char *name, size_t name_length,
                           char **error_out);
+  int (*node_metadata)(uint64_t execution_id, uint64_t document, uint32_t node,
+                       uint8_t *type_out, char **node_name_out,
+                       size_t *node_name_length_out, char **local_name_out,
+                       size_t *local_name_length_out, int *connected_out,
+                       char **error_out);
+  int (*related_node)(uint64_t execution_id, uint64_t document, uint32_t node,
+                      uint8_t relation, uint32_t *related_node_out,
+                      int *found_out, char **error_out);
+  int (*child_nodes)(uint64_t execution_id, uint64_t document, uint32_t node,
+                     int elements_only, uint32_t **nodes_out,
+                     size_t *count_out, char **error_out);
+  int (*contains)(uint64_t execution_id, uint64_t document, uint32_t node,
+                  uint64_t other_document, uint32_t other_node,
+                  int *contains_out, char **error_out);
+  int (*replace_child)(uint64_t execution_id, uint64_t parent_document,
+                       uint32_t parent_node, uint64_t child_document,
+                       uint32_t child_node, uint64_t replaced_document,
+                       uint32_t replaced_node, char **error_out);
+  int (*node_value)(uint64_t execution_id, uint64_t document, uint32_t node,
+                    char **value_out, size_t *value_length_out,
+                    int *non_null_out, char **error_out);
+  int (*set_node_value)(uint64_t execution_id, uint64_t document,
+                        uint32_t node, const char *value, size_t value_length,
+                        char **error_out);
+  int (*has_attribute)(uint64_t execution_id, uint64_t document, uint32_t node,
+                       const char *name, size_t name_length, int *found_out,
+                       char **error_out);
+  int (*style_css_text)(uint64_t execution_id, uint64_t document,
+                        uint32_t node, char **value_out,
+                        size_t *value_length_out, char **error_out);
+  int (*set_style_css_text)(uint64_t execution_id, uint64_t document,
+                            uint32_t node, const char *value,
+                            size_t value_length, char **error_out);
+  int (*style_property)(uint64_t execution_id, uint64_t document,
+                        uint32_t node, const char *name, size_t name_length,
+                        char **value_out, size_t *value_length_out,
+                        char **priority_out, size_t *priority_length_out,
+                        int *found_out, char **error_out);
+  int (*set_style_property)(uint64_t execution_id, uint64_t document,
+                            uint32_t node, const char *name,
+                            size_t name_length, const char *value,
+                            size_t value_length, const char *priority,
+                            size_t priority_length, char **error_out);
+  int (*remove_style_property)(uint64_t execution_id, uint64_t document,
+                               uint32_t node, const char *name,
+                               size_t name_length, char **value_out,
+                               size_t *value_length_out, char **error_out);
+  int (*style_property_count)(uint64_t execution_id, uint64_t document,
+                              uint32_t node, size_t *count_out,
+                              char **error_out);
+  int (*style_property_name)(uint64_t execution_id, uint64_t document,
+                             uint32_t node, size_t index, char **name_out,
+                             size_t *name_length_out, int *found_out,
+                             char **error_out);
   int (*retain_node_wrapper)(uint64_t execution_id, uint64_t document,
                              uint32_t node, char **error_out);
   int (*queue_callback)(uint64_t execution_id, uint64_t callback,

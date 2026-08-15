@@ -4,6 +4,7 @@ package v8engine
 
 import (
 	"context"
+	"image/color"
 	"io"
 	"net/http"
 	"net/url"
@@ -341,6 +342,200 @@ func TestStockV8DOMWrapperClickMutatesThroughQueuedCallbackAndPaint(t *testing.T
 		ledgerAfterClick.ObjectsCreated-ledgerBeforeClick.ObjectsCreated < 3 ||
 		ledgerAfterClick.ObjectsDestroyed-ledgerBeforeClick.ObjectsDestroyed < 3 {
 		t.Fatalf("click ownership boundary: before=%#v after=%#v", ledgerBeforeClick, ledgerAfterClick)
+	}
+}
+
+func TestStockV8ElementTraversalReflectionInlineStyleAndLifetime(t *testing.T) {
+	engine := newTestEngine(t)
+	browserRuntime, err := browser.NewWithEngine(engine)
+	if err != nil {
+		t.Fatalf("NewWithEngine: %v", err)
+	}
+	defer func() {
+		if err := browserRuntime.Close(); err != nil {
+			t.Errorf("Close browser: %v", err)
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	page, err := browserRuntime.LoadPage(
+		ctx,
+		"https://gossamer.test/element",
+		staticDocumentLoader{document: `<!doctype html><html><body style="margin:0"><main id="mount"></main></body></html>`},
+	)
+	if err != nil {
+		t.Fatalf("LoadPage: %v", err)
+	}
+	realm, ok := engine.LatestRealm()
+	if !ok {
+		t.Fatal("stock V8 engine has no live document realm")
+	}
+	document := page.Document()
+	baselineLiveNodes := document.Store().LiveLen()
+
+	_, err = page.QueueScript(browser.ScriptSource{
+		URL: "https://gossamer.test/element.js",
+		Source: `
+			(() => {
+				const mount = document.getElementById("mount");
+				if (mount.nodeType !== 1 || mount.nodeName !== "MAIN" ||
+					mount.tagName !== "MAIN" || mount.localName !== "main" ||
+					!mount.isConnected || mount.parentElement.tagName !== "BODY") {
+					throw new Error("connected element metadata is incomplete");
+				}
+
+				const row = document.createElement("section");
+				if (row.isConnected || row.parentNode !== null || row.nodeValue !== null) {
+					throw new Error("detached element metadata is incorrect");
+				}
+				row.id = "framework-row";
+				row.className = "card selected";
+				if (row.getAttribute("id") !== "framework-row" ||
+					row.getAttribute("class") !== "card selected" ||
+					!row.hasAttribute("class")) {
+					throw new Error("reflected element attributes diverged");
+				}
+
+				if (row.style !== row.style) throw new Error("element.style is not SameObject");
+				row.style.cssText = "display:block; color: rgb(1, 2, 3); width: 90px";
+				row.style.backgroundColor = "#123456";
+				row.style.setProperty("height", "32px", "important");
+				if (row.style.length !== 5 || row.style.item(0) !== "display" ||
+					row.style.getPropertyValue("background-color") !== "#123456" ||
+					row.style.getPropertyPriority("height") !== "important" ||
+					row.style.width !== "90px" || !row.getAttribute("style").includes("background-color: #123456")) {
+					throw new Error("inline CSS declaration did not reflect through style attribute");
+				}
+				row.style.setProperty("ignored", "value", "not-a-priority");
+				if (row.style.getPropertyValue("ignored") !== "") {
+					throw new Error("invalid CSS priority was accepted");
+				}
+
+				const first = document.createElement("span");
+				first.textContent = "alpha";
+				const gap = document.createTextNode("gap");
+				const last = document.createElement("strong");
+				last.textContent = "omega";
+				row.appendChild(first);
+				row.appendChild(gap);
+				row.appendChild(last);
+				if (!row.hasChildNodes() || row.childNodes.length !== 3 ||
+					row.children.length !== 2 || row.childElementCount !== 2 ||
+					row.firstChild !== first || row.lastChild !== last ||
+					first.nextSibling !== gap || gap.previousSibling !== first ||
+					first.nextElementSibling !== last || last.previousElementSibling !== first ||
+					row.firstElementChild !== first || row.lastElementChild !== last ||
+					row.childNodes[1] !== gap || row.children[1] !== last ||
+					!row.contains(row) || !row.contains(gap) || row.contains(null)) {
+					throw new Error("node traversal or canonical wrapper identity failed");
+				}
+				gap.data = "middle";
+				if (gap.nodeType !== 3 || gap.nodeName !== "#text" ||
+					gap.nodeValue !== "middle" || gap.textContent !== "middle") {
+					throw new Error("character data reflection failed");
+				}
+				const replacement = document.createTextNode("replacement");
+				if (row.replaceChild(replacement, gap) !== gap || gap.parentNode !== null ||
+					replacement.parentNode !== row || row.textContent !== "alphareplacementomega") {
+					throw new Error("replaceChild traversal state is incorrect");
+				}
+
+				mount.appendChild(row);
+				if (!row.isConnected || row.parentNode !== mount || mount.firstElementChild !== row) {
+					throw new Error("publication did not update traversal metadata");
+				}
+				const disposable = document.createElement("aside");
+				mount.appendChild(disposable);
+				disposable.remove();
+				if (disposable.parentNode !== null) throw new Error("Element.remove failed");
+			})();
+		`,
+	})
+	if err != nil {
+		t.Fatalf("QueueScript: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("run element script: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("render element result: %v", err)
+	}
+	rowID, found := document.ElementByID("framework-row")
+	if !found {
+		t.Fatal("reflected id did not publish the element")
+	}
+	styleAttribute, found, err := document.GetAttribute(rowID, "style")
+	if err != nil || !found || styleAttribute != "display: block; color: rgb(1, 2, 3); width: 90px; background-color: #123456; height: 32px !important;" {
+		t.Fatalf("style attribute = %q, %t, %v", styleAttribute, found, err)
+	}
+	row, _ := document.Resolve(rowID)
+	rowBox := findV8BoxForNode(page.Frame().Root, row)
+	if rowBox == nil || rowBox.Bounds.Width != 90 || rowBox.Bounds.Height != 32 {
+		t.Fatalf("inline style layout box = %#v", rowBox)
+	}
+	wantBackground := color.NRGBA{R: 0x12, G: 0x34, B: 0x56, A: 0xff}
+	paintedBackground := false
+	for _, command := range page.Frame().DisplayList.Commands {
+		if command.Kind == render.FillRectCommand && command.Color == wantBackground && command.Rect == rowBox.Bounds {
+			paintedBackground = true
+			break
+		}
+	}
+	if !paintedBackground {
+		t.Fatal("element.style background did not reach the display list")
+	}
+
+	_, err = page.QueueScript(browser.ScriptSource{
+		URL: "https://gossamer.test/element-detach.js",
+		Source: `
+			(() => {
+				const row = document.getElementById("framework-row");
+				globalThis.__heldStyle = row.style;
+				row.remove();
+			})();
+		`,
+	})
+	if err != nil {
+		t.Fatalf("QueueScript detach: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("run detach script: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("render detach result: %v", err)
+	}
+	if err := realm.CollectGarbage(page); err != nil {
+		t.Fatalf("CollectGarbage with held style: %v", err)
+	}
+	if document.Store().LiveLen() <= baselineLiveNodes {
+		t.Fatal("held element.style did not preserve its detached native component")
+	}
+	_, err = page.QueueScript(browser.ScriptSource{
+		URL: "https://gossamer.test/element-style-after-gc.js",
+		Source: `
+			__heldStyle.width = "77px";
+			if (__heldStyle.width !== "77px" ||
+				!__heldStyle.cssText.includes("width: 77px")) {
+				throw new Error("held style lost its element after V8 GC");
+			}
+			globalThis.__heldStyle = undefined;
+		`,
+	})
+	if err != nil {
+		t.Fatalf("QueueScript held style: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("run held style script: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("render held style mutation: %v", err)
+	}
+	if err := realm.CollectGarbage(page); err != nil {
+		t.Fatalf("CollectGarbage after style release: %v", err)
+	}
+	if got := document.Store().LiveLen(); got != baselineLiveNodes {
+		t.Fatalf("live nodes after style release = %d, want baseline %d", got, baselineLiveNodes)
 	}
 }
 

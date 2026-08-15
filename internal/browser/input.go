@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
+	"github.com/JediWattson/gossamer/internal/css"
 	"github.com/JediWattson/gossamer/internal/dom"
 	"github.com/JediWattson/gossamer/internal/render"
 	browserruntime "github.com/JediWattson/gossamer/internal/runtime"
@@ -270,6 +272,224 @@ func (host *taskHost) RemoveAttribute(handle NodeHandle, name string) error {
 	return host.mutateNodes(handle, NodeHandle{}, NodeHandle{}, func() error {
 		return host.page.document.RemoveAttribute(handle.Node, name)
 	})
+}
+
+func (host *taskHost) NodeMetadata(handle NodeHandle) (NodeMetadata, error) {
+	host.page.mutex.RLock()
+	defer host.page.mutex.RUnlock()
+	if err := host.validateHandleLocked(handle); err != nil {
+		return NodeMetadata{}, err
+	}
+	snapshot, err := host.page.document.Snapshot(handle.Node)
+	if err != nil {
+		return NodeMetadata{}, err
+	}
+	return domNodeMetadata(snapshot), nil
+}
+
+func (host *taskHost) RelatedNode(handle NodeHandle, relation NodeRelation) (NodeHandle, bool, error) {
+	host.page.mutex.RLock()
+	defer host.page.mutex.RUnlock()
+	if err := host.validateHandleLocked(handle); err != nil {
+		return NodeHandle{}, false, err
+	}
+	domRelation, ok := browserNodeRelation(relation)
+	if !ok {
+		return NodeHandle{}, false, fmt.Errorf("browser: unknown node relation %d", relation)
+	}
+	related, found, err := host.page.document.RelatedNode(handle.Node, domRelation)
+	if err != nil || !found {
+		return NodeHandle{}, found, err
+	}
+	return NodeHandle{Document: host.generation, Node: related}, true, nil
+}
+
+func (host *taskHost) ChildNodes(handle NodeHandle, elementsOnly bool) ([]NodeHandle, error) {
+	host.page.mutex.RLock()
+	defer host.page.mutex.RUnlock()
+	if err := host.validateHandleLocked(handle); err != nil {
+		return nil, err
+	}
+	nodes, err := host.page.document.ChildNodes(handle.Node, elementsOnly)
+	if err != nil {
+		return nil, err
+	}
+	handles := make([]NodeHandle, len(nodes))
+	for index, node := range nodes {
+		handles[index] = NodeHandle{Document: host.generation, Node: node}
+	}
+	return handles, nil
+}
+
+func (host *taskHost) Contains(handle, other NodeHandle) (bool, error) {
+	host.page.mutex.RLock()
+	defer host.page.mutex.RUnlock()
+	if err := host.validateHandleLocked(handle); err != nil {
+		return false, err
+	}
+	if err := host.validateHandleLocked(other); err != nil {
+		return false, err
+	}
+	return host.page.document.Contains(handle.Node, other.Node)
+}
+
+func (host *taskHost) ReplaceChild(parent, child, replaced NodeHandle) error {
+	return host.mutateNodes(parent, child, replaced, func() error {
+		return host.page.document.ReplaceChild(parent.Node, child.Node, replaced.Node)
+	})
+}
+
+func (host *taskHost) NodeValue(handle NodeHandle) (string, bool, error) {
+	host.page.mutex.RLock()
+	defer host.page.mutex.RUnlock()
+	if err := host.validateHandleLocked(handle); err != nil {
+		return "", false, err
+	}
+	return host.page.document.NodeValue(handle.Node)
+}
+
+func (host *taskHost) SetNodeValue(handle NodeHandle, value string) error {
+	return host.mutateNodes(handle, NodeHandle{}, NodeHandle{}, func() error {
+		return host.page.document.SetNodeValue(handle.Node, value)
+	})
+}
+
+func (host *taskHost) HasAttribute(handle NodeHandle, name string) (bool, error) {
+	host.page.mutex.RLock()
+	defer host.page.mutex.RUnlock()
+	if err := host.validateHandleLocked(handle); err != nil {
+		return false, err
+	}
+	return host.page.document.HasAttribute(handle.Node, name)
+}
+
+func (host *taskHost) StyleCSSText(handle NodeHandle) (string, error) {
+	host.page.mutex.RLock()
+	defer host.page.mutex.RUnlock()
+	if err := host.validateHandleLocked(handle); err != nil {
+		return "", err
+	}
+	source, _, err := host.page.document.GetAttribute(handle.Node, "style")
+	if err != nil {
+		return "", err
+	}
+	return css.SerializeDeclarationList(css.ParseDeclarationList(source)), nil
+}
+
+func (host *taskHost) SetStyleCSSText(handle NodeHandle, source string) error {
+	normalized := css.SerializeDeclarationList(css.ParseDeclarationList(source))
+	return host.mutateNodes(handle, NodeHandle{}, NodeHandle{}, func() error {
+		if normalized == "" {
+			return host.page.document.RemoveAttribute(handle.Node, "style")
+		}
+		return host.page.document.SetAttribute(handle.Node, "style", normalized)
+	})
+}
+
+func (host *taskHost) StyleProperty(handle NodeHandle, property string) (string, string, bool, error) {
+	host.page.mutex.RLock()
+	defer host.page.mutex.RUnlock()
+	if err := host.validateHandleLocked(handle); err != nil {
+		return "", "", false, err
+	}
+	source, _, err := host.page.document.GetAttribute(handle.Node, "style")
+	if err != nil {
+		return "", "", false, err
+	}
+	value, important, found := css.DeclarationValue(css.ParseDeclarationList(source), property)
+	priority := ""
+	if important {
+		priority = "important"
+	}
+	return value, priority, found, nil
+}
+
+func (host *taskHost) SetStyleProperty(handle NodeHandle, property, value, priority string) error {
+	if strings.TrimSpace(value) == "" {
+		_, err := host.RemoveStyleProperty(handle, property)
+		return err
+	}
+	priority = strings.TrimSpace(priority)
+	if priority != "" && !strings.EqualFold(priority, "important") {
+		return nil
+	}
+	return host.mutateNodes(handle, NodeHandle{}, NodeHandle{}, func() error {
+		source, _, err := host.page.document.GetAttribute(handle.Node, "style")
+		if err != nil {
+			return err
+		}
+		declarations := css.ParseDeclarationList(source)
+		updated, changed := css.SetDeclaration(declarations, property, value, priority != "")
+		if !changed {
+			return nil
+		}
+		return host.setInlineStyleLocked(handle.Node, updated)
+	})
+}
+
+func (host *taskHost) RemoveStyleProperty(handle NodeHandle, property string) (string, error) {
+	previous := ""
+	err := host.mutateNodes(handle, NodeHandle{}, NodeHandle{}, func() error {
+		source, _, err := host.page.document.GetAttribute(handle.Node, "style")
+		if err != nil {
+			return err
+		}
+		updated, value, changed := css.RemoveDeclaration(css.ParseDeclarationList(source), property)
+		previous = value
+		if !changed {
+			return nil
+		}
+		return host.setInlineStyleLocked(handle.Node, updated)
+	})
+	return previous, err
+}
+
+func (host *taskHost) StylePropertyNames(handle NodeHandle) ([]string, error) {
+	host.page.mutex.RLock()
+	defer host.page.mutex.RUnlock()
+	if err := host.validateHandleLocked(handle); err != nil {
+		return nil, err
+	}
+	source, _, err := host.page.document.GetAttribute(handle.Node, "style")
+	if err != nil {
+		return nil, err
+	}
+	return css.DeclarationPropertyNames(css.ParseDeclarationList(source)), nil
+}
+
+func (host *taskHost) setInlineStyleLocked(node dom.NodeID, declarations []css.Declaration) error {
+	serialized := css.SerializeDeclarationList(declarations)
+	if serialized == "" {
+		return host.page.document.RemoveAttribute(node, "style")
+	}
+	return host.page.document.SetAttribute(node, "style", serialized)
+}
+
+func browserNodeRelation(relation NodeRelation) (dom.NodeRelation, bool) {
+	switch relation {
+	case RelationParentNode:
+		return dom.ParentNode, true
+	case RelationParentElement:
+		return dom.ParentElement, true
+	case RelationFirstChild:
+		return dom.FirstChild, true
+	case RelationLastChild:
+		return dom.LastChild, true
+	case RelationPreviousSibling:
+		return dom.PreviousSibling, true
+	case RelationNextSibling:
+		return dom.NextSibling, true
+	case RelationFirstElementChild:
+		return dom.FirstElementChild, true
+	case RelationLastElementChild:
+		return dom.LastElementChild, true
+	case RelationPreviousElementSibling:
+		return dom.PreviousElementSibling, true
+	case RelationNextElementSibling:
+		return dom.NextElementSibling, true
+	default:
+		return 0, false
+	}
 }
 
 func (host *taskHost) mutateNodes(first, second, third NodeHandle, mutation func() error) error {

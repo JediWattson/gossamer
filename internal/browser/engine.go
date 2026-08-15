@@ -1,6 +1,10 @@
 package browser
 
-import "time"
+import (
+	"time"
+
+	"github.com/JediWattson/gossamer/internal/dom"
+)
 
 // ValueHandle is opaque engine-owned identity for a JavaScript value or
 // callback. Browser code may transport it but never inspect engine storage.
@@ -74,4 +78,98 @@ type Host interface {
 type NodeWrapperLifetimeHost interface {
 	RetainNodeWrapper(NodeHandle) error
 	ReleaseNodeWrappers([]NodeHandle) error
+}
+
+// NodeRelation identifies one traversal property on a JavaScript Node or
+// Element wrapper.
+type NodeRelation uint8
+
+const (
+	RelationParentNode NodeRelation = iota + 1
+	RelationParentElement
+	RelationFirstChild
+	RelationLastChild
+	RelationPreviousSibling
+	RelationNextSibling
+	RelationFirstElementChild
+	RelationLastElementChild
+	RelationPreviousElementSibling
+	RelationNextElementSibling
+)
+
+// DOMNodeType uses the numeric values exposed by the web Node interface.
+type DOMNodeType uint8
+
+const (
+	DOMElementNode               DOMNodeType = 1
+	DOMTextNode                  DOMNodeType = 3
+	DOMProcessingInstructionNode DOMNodeType = 7
+	DOMCommentNode               DOMNodeType = 8
+	DOMDocumentNode              DOMNodeType = 9
+	DOMDocumentTypeNode          DOMNodeType = 10
+)
+
+// NodeMetadata is the scalar node state exposed through JavaScript traversal.
+type NodeMetadata struct {
+	Type      DOMNodeType
+	NodeName  string
+	LocalName string
+	Connected bool
+}
+
+// DOMElementHost is an optional extension implemented by browser hosts that
+// expose the practical Node, Element, and inline-style surface used by
+// framework renderers. Keeping it separate lets smaller engines implement the
+// base Host without pretending to support these APIs.
+type DOMElementHost interface {
+	NodeMetadata(NodeHandle) (NodeMetadata, error)
+	RelatedNode(NodeHandle, NodeRelation) (NodeHandle, bool, error)
+	ChildNodes(NodeHandle, bool) ([]NodeHandle, error)
+	Contains(NodeHandle, NodeHandle) (bool, error)
+	ReplaceChild(NodeHandle, NodeHandle, NodeHandle) error
+	NodeValue(NodeHandle) (string, bool, error)
+	SetNodeValue(NodeHandle, string) error
+	HasAttribute(NodeHandle, string) (bool, error)
+	StyleCSSText(NodeHandle) (string, error)
+	SetStyleCSSText(NodeHandle, string) error
+	StyleProperty(NodeHandle, string) (string, string, bool, error)
+	SetStyleProperty(NodeHandle, string, string, string) error
+	RemoveStyleProperty(NodeHandle, string) (string, error)
+	StylePropertyNames(NodeHandle) ([]string, error)
+}
+
+func domNodeMetadata(snapshot dom.NodeSnapshot) NodeMetadata {
+	metadata := NodeMetadata{Connected: snapshot.Connected}
+	switch snapshot.Type {
+	case dom.ElementNode:
+		metadata.Type = DOMElementNode
+		metadata.LocalName = snapshot.Data
+		metadata.NodeName = asciiUpper(snapshot.Data)
+	case dom.TextNode:
+		metadata.Type = DOMTextNode
+		metadata.NodeName = "#text"
+	case dom.CommentNode:
+		metadata.Type = DOMCommentNode
+		metadata.NodeName = "#comment"
+	case dom.DocumentNode:
+		metadata.Type = DOMDocumentNode
+		metadata.NodeName = "#document"
+	case dom.DoctypeNode:
+		metadata.Type = DOMDocumentTypeNode
+		metadata.NodeName = snapshot.Data
+	case dom.ProcessingInstructionNode:
+		metadata.Type = DOMProcessingInstructionNode
+		metadata.NodeName = snapshot.Target
+	}
+	return metadata
+}
+
+func asciiUpper(value string) string {
+	bytes := []byte(value)
+	for index, character := range bytes {
+		if character >= 'a' && character <= 'z' {
+			bytes[index] = character - ('a' - 'A')
+		}
+	}
+	return string(bytes)
 }
