@@ -17,8 +17,9 @@ not.
 - `internal/css` owns CSS syntax, rules, selectors, media conditions,
   declaration lists, and reusable component-value operations.
 - `internal/style` owns typed computed values, inheritance, and the immutable
-  snapshots produced by the current cascade. Cascade provenance, the remaining
-  origins, and centralized property metadata continue to move into it.
+  snapshots produced by the current cascade. Its central property registry
+  drives the supported longhands through cascade and CSSOM; provenance and the
+  remaining origins continue to move into it.
 - `internal/render` owns used-value resolution that depends on containing-block
   geometry, layout, display-list construction, and paint.
 - `internal/browser` owns stylesheet sets, viewport/environment changes,
@@ -66,16 +67,18 @@ shared tokenizer.
 
 Current foundation: cascade and computed-value calculation live in
 `internal/style`; browser pages cache versioned, stable-ID snapshots; and
-render consumes the exact snapshot retained by each frame. Provenance,
-remaining origins, and complete CSS-wide/property metadata are still pending.
+render consumes the exact snapshot retained by each frame. The current 34
+longhands share one registry for inheritance, validation, computation, copying,
+serialization, and invalidation metadata, and `all` participates in the full
+existing layer/importance cascade without resetting custom properties.
+Provenance and the remaining origins are still pending.
 
 - Move cascade and computed-value ownership out of `internal/render`.
 - Model user-agent, user, presentational-hint, author, and inline origins,
   including normal and important order.
-- Complete cascade layers, `initial`, `inherit`, `unset`, `revert`,
-  `revert-layer`, and the `all` shorthand.
-- Define property metadata centrally: initial value, inheritance, grammar,
-  shorthand expansion, computed representation, and invalidation impact.
+- Extend CSS-wide handling and the central property registry with every new
+  longhand while preserving `all` exclusions such as `direction`,
+  `unicode-bidi`, and custom properties.
 - Cache parsed embedded and inline declaration blocks without changing
   observable cascade order.
 
