@@ -121,18 +121,32 @@ type styledNode struct {
 	children []*styledNode
 }
 
+type authorStyleContext struct {
+	sheets           []css.Stylesheet
+	layerRanks       map[string]int
+	mediaEnvironment css.MediaEnvironment
+}
+
 type winningDeclaration struct {
 	declaration css.Declaration
 	specificity css.Specificity
 	order       int
+	layerRank   int
+	layered     bool
+	inline      bool
 }
 
 func buildStyleTree(document *dom.Node, viewport Viewport, external map[*dom.Node]css.Stylesheet) *styledNode {
-	stylesheets := collectAuthorStyles(document, external)
-	return styleNode(document, nil, stylesheets, viewport)
+	stylesheets := collectAuthorStyles(document, external, viewport)
+	author := authorStyleContext{
+		sheets:           stylesheets,
+		layerRanks:       authorLayerRanks(stylesheets),
+		mediaEnvironment: screenMediaEnvironment(viewport),
+	}
+	return styleNode(document, nil, author, viewport)
 }
 
-func collectAuthorStyles(root *dom.Node, external map[*dom.Node]css.Stylesheet) []css.Stylesheet {
+func collectAuthorStyles(root *dom.Node, external map[*dom.Node]css.Stylesheet, viewport Viewport) []css.Stylesheet {
 	var stylesheets []css.Stylesheet
 	var visit func(*dom.Node)
 	visit = func(node *dom.Node) {
@@ -142,7 +156,7 @@ func collectAuthorStyles(root *dom.Node, external map[*dom.Node]css.Stylesheet) 
 		if node.Type == dom.ElementNode {
 			switch node.Data {
 			case "style":
-				if !authorStyleOwnerApplies(node) {
+				if !authorStyleOwnerApplies(node, viewport) {
 					break
 				}
 				var source strings.Builder
@@ -156,7 +170,7 @@ func collectAuthorStyles(root *dom.Node, external map[*dom.Node]css.Stylesheet) 
 				stylesheet, _ := css.Parse(source.String())
 				stylesheets = append(stylesheets, stylesheet)
 			case "link":
-				if stylesheet, ok := external[node]; ok && authorStyleOwnerApplies(node) {
+				if stylesheet, ok := external[node]; ok && authorStyleOwnerApplies(node, viewport) {
 					stylesheets = append(stylesheets, stylesheet)
 				}
 			}
@@ -169,14 +183,14 @@ func collectAuthorStyles(root *dom.Node, external map[*dom.Node]css.Stylesheet) 
 	return stylesheets
 }
 
-func styleNode(node *dom.Node, parent *styledNode, sheets []css.Stylesheet, viewport Viewport) *styledNode {
+func styleNode(node *dom.Node, parent *styledNode, author authorStyleContext, viewport Viewport) *styledNode {
 	style := initialStyle(node, parent)
 	if node != nil && node.Type == dom.ElementNode {
-		applyAuthorStyles(&style, node, sheets, viewport, parentFontSize(parent))
+		applyAuthorStyles(&style, node, author, viewport, parentFontSize(parent))
 	}
 	styled := &styledNode{node: node, style: style}
 	for _, child := range node.Children {
-		styled.children = append(styled.children, styleNode(child, styled, sheets, viewport))
+		styled.children = append(styled.children, styleNode(child, styled, author, viewport))
 	}
 	return styled
 }
@@ -301,31 +315,36 @@ func initialStyle(node *dom.Node, parent *styledNode) computedStyle {
 	return style
 }
 
-func applyAuthorStyles(style *computedStyle, node *dom.Node, sheets []css.Stylesheet, viewport Viewport, parentSize float64) {
+func applyAuthorStyles(style *computedStyle, node *dom.Node, author authorStyleContext, viewport Viewport, parentSize float64) {
 	winners := make(map[string]winningDeclaration)
 	sourceOrder := 0
-	record := func(declaration css.Declaration, specificity css.Specificity, order int) {
+	record := func(declaration css.Declaration, specificity css.Specificity, order int, layer string, inline bool) {
+		layerRank, layered := author.layerRanks[layer]
 		for _, expanded := range expandDeclaration(declaration, viewport) {
 			candidate := winningDeclaration{
 				declaration: expanded,
 				specificity: specificity,
 				order:       order,
+				layerRank:   layerRank,
+				layered:     layered && !inline,
+				inline:      inline,
 			}
 			if current, ok := winners[expanded.Property]; !ok || declarationWins(candidate, current) {
 				winners[expanded.Property] = candidate
 			}
 		}
 	}
-	for _, sheet := range sheets {
+	for _, sheet := range author.sheets {
 		for _, rule := range sheet.Rules {
 			specificity, matches := rule.Match(node)
+			matches = matches && rule.MatchesMedia(author.mediaEnvironment)
 			for _, declaration := range rule.Declarations {
 				order := sourceOrder
 				sourceOrder++
 				if !matches {
 					continue
 				}
-				record(declaration, specificity, order)
+				record(declaration, specificity, order, rule.Layer, false)
 			}
 		}
 	}
@@ -334,7 +353,7 @@ func applyAuthorStyles(style *computedStyle, node *dom.Node, sheets []css.Styles
 		inlineSheet, _ := css.Parse("*{" + source + "}")
 		if len(inlineSheet.Rules) != 0 {
 			for _, declaration := range inlineSheet.Rules[0].Declarations {
-				record(declaration, css.Specificity{IDs: 1_000_000}, sourceOrder)
+				record(declaration, css.Specificity{}, sourceOrder, "", true)
 				sourceOrder++
 			}
 		}
@@ -364,9 +383,42 @@ func applyAuthorStyles(style *computedStyle, node *dom.Node, sheets []css.Styles
 	}
 }
 
+func authorLayerRanks(sheets []css.Stylesheet) map[string]int {
+	ranks := make(map[string]int)
+	for _, sheet := range sheets {
+		for _, name := range sheet.LayerOrder {
+			if name == "" {
+				continue
+			}
+			if _, exists := ranks[name]; exists {
+				continue
+			}
+			ranks[name] = len(ranks)
+		}
+		for _, rule := range sheet.Rules {
+			if rule.Layer == "" {
+				continue
+			}
+			if _, exists := ranks[rule.Layer]; !exists {
+				ranks[rule.Layer] = len(ranks)
+			}
+		}
+	}
+	return ranks
+}
+
+func screenMediaEnvironment(viewport Viewport) css.MediaEnvironment {
+	return css.MediaEnvironment{
+		Type:            "screen",
+		Width:           float64(viewport.Width),
+		Height:          float64(viewport.Height),
+		InitialFontSize: 16,
+	}
+}
+
 func expandDeclaration(declaration css.Declaration, viewport Viewport) []css.Declaration {
 	if declaration.Property != "font" {
-		if !validBorderDeclaration(declaration, viewport) {
+		if !validComputedDeclaration(declaration, viewport) {
 			return nil
 		}
 		return []css.Declaration{declaration}
@@ -375,17 +427,91 @@ func expandDeclaration(declaration css.Declaration, viewport Viewport) []css.Dec
 	if !ok {
 		return nil
 	}
-	return []css.Declaration{
+	expanded := []css.Declaration{
 		{Property: "font-size", Value: size, Important: declaration.Important},
 		{Property: "line-height", Value: lineHeight, Important: declaration.Important},
 		{Property: "font-weight", Value: weight, Important: declaration.Important},
 		{Property: "font-family", Value: family, Important: declaration.Important},
 	}
+	validated := expanded[:0]
+	for _, candidate := range expanded {
+		if validComputedDeclaration(candidate, viewport) {
+			validated = append(validated, candidate)
+		}
+	}
+	return validated
 }
 
-func validBorderDeclaration(declaration css.Declaration, viewport Viewport) bool {
+func validComputedDeclaration(declaration css.Declaration, viewport Viewport) bool {
 	value := strings.TrimSpace(strings.ToLower(declaration.Value))
 	switch declaration.Property {
+	case "display":
+		switch value {
+		case "none", "block", "list-item", "inline", "inline-block":
+			return true
+		default:
+			return false
+		}
+	case "color":
+		_, ok := parseColor(value)
+		return ok
+	case "background", "background-color":
+		_, ok := parseColor(firstCSSValue(value))
+		return ok
+	case "font-size":
+		parsed, ok := parseLength(value, 1, 1, viewport)
+		if !ok || parsed.unit == lengthAuto {
+			return false
+		}
+		resolved := resolveLength(parsed, 1, viewport, 1)
+		return resolved > 0 && isFinite(resolved)
+	case "font-weight":
+		if value == "bold" || value == "bolder" || value == "normal" || value == "lighter" {
+			return true
+		}
+		numeric, err := strconv.Atoi(value)
+		return err == nil && numeric >= 1 && numeric <= 1000
+	case "line-height":
+		if value == "normal" {
+			return true
+		}
+		if numeric, err := strconv.ParseFloat(value, 64); err == nil {
+			return numeric > 0 && isFinite(numeric)
+		}
+		parsed, ok := parseLength(value, 1, 1, viewport)
+		if !ok || parsed.unit == lengthAuto {
+			return false
+		}
+		resolved := resolveLength(parsed, 1, viewport, 1)
+		return resolved > 0 && isFinite(resolved)
+	case "text-decoration", "text-decoration-line":
+		if value == "none" {
+			return true
+		}
+		for _, token := range strings.Fields(value) {
+			if token == "underline" {
+				return true
+			}
+		}
+		return false
+	case "opacity":
+		numeric, err := strconv.ParseFloat(value, 64)
+		return err == nil && isFinite(numeric)
+	case "width", "height", "min-width":
+		parsed, ok := parseLength(value, 1, 1, viewport)
+		return ok && nonNegativeLength(parsed)
+	case "max-width":
+		if value == "none" {
+			return true
+		}
+		parsed, ok := parseLength(value, 1, 1, viewport)
+		return ok && nonNegativeLength(parsed)
+	case "padding":
+		_, ok := parsePaddingLengths(value, 1, viewport)
+		return ok
+	case "padding-top", "padding-right", "padding-bottom", "padding-left":
+		parsed, ok := parseLength(value, 1, 1, viewport)
+		return ok && parsed.unit != lengthAuto && nonNegativeLength(parsed)
 	case "border", "border-top", "border-right", "border-bottom", "border-left":
 		_, ok := parseBorderShorthand(value, 1, viewport)
 		return ok
@@ -407,8 +533,24 @@ func validBorderDeclaration(declaration css.Declaration, viewport Viewport) bool
 	case "border-top-color", "border-right-color", "border-bottom-color", "border-left-color":
 		_, ok := parseBorderColor(value)
 		return ok
+	case "text-align":
+		switch value {
+		case "center", "right", "end", "left", "start", "justify":
+			return true
+		default:
+			return false
+		}
+	case "list-style", "list-style-type":
+		_, ok := parseListStyleType(value)
+		return ok
+	case "margin":
+		_, ok := parseBoxLengths(value, 1, viewport)
+		return ok
+	case "margin-top", "margin-right", "margin-bottom", "margin-left":
+		_, ok := parseLength(value, 1, 1, viewport)
+		return ok
 	default:
-		return true
+		return false
 	}
 }
 
@@ -500,7 +642,7 @@ func validFontLineHeight(source string, viewport Viewport) bool {
 	return ok && parsed.unit != lengthAuto && nonNegativeLength(parsed)
 }
 
-func authorStyleOwnerApplies(node *dom.Node) bool {
+func authorStyleOwnerApplies(node *dom.Node, viewport Viewport) bool {
 	if node == nil || node.Type != dom.ElementNode {
 		return false
 	}
@@ -522,51 +664,7 @@ func authorStyleOwnerApplies(node *dom.Node) bool {
 		}
 	}
 	media, _ := attribute(node, "media")
-	return mediaTypeMayMatchScreen(media)
-}
-
-// mediaTypeMayMatchScreen evaluates only the media type. Feature expressions
-// are intentionally left for the future media-query evaluator, so a screen or
-// all query remains eligible regardless of its trailing conditions.
-func mediaTypeMayMatchScreen(source string) bool {
-	if strings.TrimSpace(source) == "" {
-		return true
-	}
-	for _, rawQuery := range strings.Split(strings.ToLower(source), ",") {
-		fields := strings.Fields(strings.TrimSpace(rawQuery))
-		if len(fields) == 0 {
-			continue
-		}
-		if fields[0] == "only" {
-			fields = fields[1:]
-		}
-		negated := false
-		if len(fields) != 0 && fields[0] == "not" {
-			negated = true
-			fields = fields[1:]
-		}
-		if len(fields) == 0 {
-			continue
-		}
-		matches := false
-		switch {
-		case strings.HasPrefix(fields[0], "("):
-			matches = true
-		case fields[0] == "all", fields[0] == "screen":
-			matches = true
-		case fields[0] == "print":
-			matches = false
-		default:
-			matches = false
-		}
-		if negated {
-			matches = !matches
-		}
-		if matches {
-			return true
-		}
-	}
-	return false
+	return css.MediaQueryListMatches(media, screenMediaEnvironment(viewport))
 }
 
 func containsHTMLToken(source, token string) bool {
@@ -589,6 +687,30 @@ func declarationPrecedence(left, right winningDeclaration) int {
 		}
 		return -1
 	}
+	if left.inline != right.inline {
+		if left.inline {
+			return 1
+		}
+		return -1
+	}
+	if left.layered != right.layered {
+		if left.declaration.Important {
+			if left.layered {
+				return 1
+			}
+			return -1
+		}
+		if left.layered {
+			return -1
+		}
+		return 1
+	}
+	if left.layered && left.layerRank != right.layerRank {
+		if left.declaration.Important {
+			return compareInt(right.layerRank, left.layerRank)
+		}
+		return compareInt(left.layerRank, right.layerRank)
+	}
 	if comparison := left.specificity.Compare(right.specificity); comparison != 0 {
 		return comparison
 	}
@@ -596,6 +718,17 @@ func declarationPrecedence(left, right winningDeclaration) int {
 	case left.order < right.order:
 		return -1
 	case left.order > right.order:
+		return 1
+	default:
+		return 0
+	}
+}
+
+func compareInt(left, right int) int {
+	switch {
+	case left < right:
+		return -1
+	case left > right:
 		return 1
 	default:
 		return 0

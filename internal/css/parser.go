@@ -12,6 +12,8 @@ import (
 // accidentally merging identifiers or creating function tokens.
 const commentBoundary byte = 0
 
+const maxGroupRuleNesting = 128
+
 // Parse parses the supported subset of a CSS stylesheet. Unsupported or
 // malformed rules and declarations are skipped so a bad rule does not discard
 // the rest of the sheet. An error is returned only when an unterminated comment
@@ -27,13 +29,28 @@ func Parse(source string) (Stylesheet, error) {
 }
 
 type stylesheetParser struct {
-	source string
-	pos    int
+	source     string
+	pos        int
+	stylesheet *Stylesheet
+	context    ruleContext
+	nesting    int
+}
+
+type ruleContext struct {
+	layer string
+	media []string
 }
 
 func (parser *stylesheetParser) parse() (Stylesheet, error) {
-	var stylesheet Stylesheet
+	stylesheet := Stylesheet{}
+	parser.stylesheet = &stylesheet
+	if err := parser.parseRuleList(); err != nil {
+		return stylesheet, err
+	}
+	return stylesheet, nil
+}
 
+func (parser *stylesheetParser) parseRuleList() error {
 	for parser.pos < len(parser.source) {
 		parser.skipIgnorable()
 		if parser.pos >= len(parser.source) {
@@ -41,15 +58,15 @@ func (parser *stylesheetParser) parse() (Stylesheet, error) {
 		}
 
 		if parser.source[parser.pos] == '@' {
-			if err := parser.skipAtRule(); err != nil {
-				return stylesheet, err
+			if err := parser.parseAtRule(); err != nil {
+				return err
 			}
 			continue
 		}
 
 		prelude, delimiter, err := parser.readRulePrelude()
 		if err != nil {
-			return stylesheet, err
+			return err
 		}
 		if delimiter != '{' {
 			// A semicolon terminates a malformed qualified rule. A stray closing
@@ -59,7 +76,7 @@ func (parser *stylesheetParser) parse() (Stylesheet, error) {
 
 		block, err := parser.readBlock()
 		if err != nil {
-			return stylesheet, err
+			return err
 		}
 		selectors, valid := parseSelectorList(prelude)
 		if !valid {
@@ -67,14 +84,125 @@ func (parser *stylesheetParser) parse() (Stylesheet, error) {
 		}
 		declarations := parseDeclarations(block)
 
-		stylesheet.Rules = append(stylesheet.Rules, Rule{
+		parser.stylesheet.Rules = append(parser.stylesheet.Rules, Rule{
 			Selectors:    selectors,
 			Declarations: declarations,
-			Order:        len(stylesheet.Rules),
+			Order:        len(parser.stylesheet.Rules),
+			Layer:        parser.context.layer,
+			Media:        append([]string(nil), parser.context.media...),
 		})
 	}
 
-	return stylesheet, nil
+	return nil
+}
+
+func (parser *stylesheetParser) parseAtRule() error {
+	parser.pos++ // '@'
+	nameStart := parser.pos
+	_, parser.pos = consumeIdentifier(parser.source, parser.pos)
+	if parser.pos == nameStart {
+		return parser.skipAtRuleTail()
+	}
+	name := strings.ToLower(parser.source[nameStart:parser.pos])
+	prelude, delimiter, err := parser.readRulePrelude()
+	if err != nil {
+		return err
+	}
+	prelude = strings.TrimSpace(normalizeCommentBoundaries(prelude))
+
+	switch delimiter {
+	case ';', 0, '}':
+		if name == "layer" && delimiter == ';' && parser.context.layer == "" && len(parser.context.media) == 0 {
+			if layers, ok := parseLayerNameList(prelude); ok {
+				for _, layer := range layers {
+					parser.recordLayer(layer)
+				}
+			}
+		}
+		return nil
+	case '{':
+		block, err := parser.readBlock()
+		if err != nil {
+			return err
+		}
+		switch name {
+		case "layer":
+			if parser.context.layer != "" || len(parser.context.media) != 0 {
+				return nil
+			}
+			layers, ok := parseLayerNameList(prelude)
+			if !ok || len(layers) != 1 {
+				// Anonymous, nested, dotted, and multi-name layer blocks are deferred
+				// until the layer identity model can represent their cascade ordering.
+				return nil
+			}
+			parser.recordLayer(layers[0])
+			return parser.parseNestedRuleList(block, ruleContext{
+				layer: layers[0],
+				media: append([]string(nil), parser.context.media...),
+			})
+		case "media":
+			media := append([]string(nil), parser.context.media...)
+			media = append(media, prelude)
+			return parser.parseNestedRuleList(block, ruleContext{
+				layer: parser.context.layer,
+				media: media,
+			})
+		default:
+			return nil
+		}
+	default:
+		return nil
+	}
+}
+
+func (parser *stylesheetParser) parseNestedRuleList(source string, context ruleContext) error {
+	if parser.nesting >= maxGroupRuleNesting {
+		return nil
+	}
+	nested := stylesheetParser{
+		source:     source,
+		stylesheet: parser.stylesheet,
+		context:    context,
+		nesting:    parser.nesting + 1,
+	}
+	return nested.parseRuleList()
+}
+
+func (parser *stylesheetParser) recordLayer(name string) {
+	for _, existing := range parser.stylesheet.LayerOrder {
+		if existing == name {
+			return
+		}
+	}
+	parser.stylesheet.LayerOrder = append(parser.stylesheet.LayerOrder, name)
+}
+
+func parseLayerNameList(source string) ([]string, bool) {
+	parts := splitTopLevel(source, ',')
+	if len(parts) == 0 {
+		return nil, false
+	}
+	layers := make([]string, 0, len(parts))
+	for _, part := range parts {
+		name := trimCSSIgnorable(part)
+		if name == "" || !validLayerName(name) {
+			return nil, false
+		}
+		layers = append(layers, name)
+	}
+	return layers, true
+}
+
+func validLayerName(source string) bool {
+	if strings.Contains(source, ".") || !validPropertyName(source) {
+		return false
+	}
+	switch strings.ToLower(source) {
+	case "initial", "inherit", "unset", "revert", "revert-layer":
+		return false
+	}
+	return true
 }
 
 func (parser *stylesheetParser) skipIgnorable() {
@@ -215,16 +343,14 @@ func (parser *stylesheetParser) readBlock() (string, error) {
 	return parser.source[start:parser.pos], nil
 }
 
-func (parser *stylesheetParser) skipAtRule() error {
+func (parser *stylesheetParser) skipAtRuleTail() error {
 	// Skip an at-rule through its top-level semicolon or its complete block.
-	// Nested blocks (for example @media containing qualified rules) are skipped
-	// as a unit until conditional rule evaluation is implemented.
+	// This is used only after a malformed at-keyword; recognized at-rules are
+	// handled by parseAtRule.
 	quote := byte(0)
 	escaped := false
 	parenDepth := 0
 	bracketDepth := 0
-	parser.pos++ // '@'
-
 	for parser.pos < len(parser.source) {
 		character := parser.source[parser.pos]
 		if quote != 0 {

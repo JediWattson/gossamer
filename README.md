@@ -48,8 +48,10 @@ and layout subset: complex selectors, common colors and lengths, block flow,
 inline text and image wrapping, intrinsic and author-specified image dimensions,
 content-box width and height constraints, margins, padding, text alignment,
 line height, unordered and decimal list markers, bundled regular/bold fonts,
-the common `font` shorthand, solid block borders, links, backgrounds, and
-opacity. Legacy HTML comment wrappers around stylesheets are accepted. CSS
-imports, full media-query evaluation, generated content, floats, retained
-inline boxes and their borders, advanced display modes, broken-image UI, SVG,
-and AVIF are not implemented yet.
+the common `font` shorthand, solid block borders, links, backgrounds, opacity,
+named top-level cascade layers, and screen media queries for viewport width,
+height, and orientation. Legacy HTML comment wrappers around stylesheets are
+accepted. CSS imports, `@supports`, anonymous and nested cascade layers, the
+remaining media features, generated content, floats, retained inline boxes and
+their borders, advanced display modes, broken-image UI, SVG, and AVIF are not
+implemented yet.

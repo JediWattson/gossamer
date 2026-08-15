@@ -41,7 +41,7 @@ a:link, a:visited {
 	if err != nil {
 		t.Fatalf("Parse() error = %v", err)
 	}
-	if got, want := len(stylesheet.Rules), 3; got != want {
+	if got, want := len(stylesheet.Rules), 4; got != want {
 		t.Fatalf("len(Rules) = %d, want %d", got, want)
 	}
 
@@ -94,6 +94,17 @@ a:link, a:visited {
 	}
 	if links.Selectors[1].Matches(link) {
 		t.Error("a:visited selector matched without history state")
+	}
+
+	responsive := stylesheet.Rules[3]
+	if got, want := responsive.Order, 3; got != want {
+		t.Errorf("responsive rule Order = %d, want %d", got, want)
+	}
+	if got, want := responsive.Media, []string{"(max-width: 700px)"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("responsive rule Media = %#v, want %#v", got, want)
+	}
+	if len(responsive.Selectors) != 1 || !responsive.Selectors[0].Matches(dom.NewElement("div")) {
+		t.Error("responsive rule did not retain its div selector")
 	}
 }
 
@@ -287,15 +298,22 @@ func TestParseReturnsPartialSheetForUnrecoverableString(t *testing.T) {
 	}
 }
 
-func TestUnsupportedOnlySheetIsEmptyWithoutError(t *testing.T) {
+func TestUnsupportedRulesDoNotDiscardSupportedMediaRule(t *testing.T) {
 	t.Parallel()
 
 	stylesheet, err := css.Parse(`@charset "utf-8"; @media print { body { color: black } } section::before { color: red } svg|circle { fill: blue }`)
 	if err != nil {
 		t.Fatalf("Parse() error = %v", err)
 	}
-	if got := len(stylesheet.Rules); got != 0 {
-		t.Fatalf("len(Rules) = %d, want 0", got)
+	if got, want := len(stylesheet.Rules), 1; got != want {
+		t.Fatalf("len(Rules) = %d, want %d", got, want)
+	}
+	rule := stylesheet.Rules[0]
+	if got, want := rule.Media, []string{"print"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("media rule Media = %#v, want %#v", got, want)
+	}
+	if len(rule.Selectors) != 1 || !rule.Selectors[0].Matches(dom.NewElement("body")) {
+		t.Error("supported @media rule did not retain its body selector")
 	}
 }
 

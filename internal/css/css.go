@@ -1,21 +1,28 @@
 // Package css parses and matches the CSS subset used by Gossamer's rendering
 // pipeline. It supports complex selectors, attribute selectors, logical and
-// structural pseudo-classes, and the declarations consumed by the renderer.
-// Namespaces, pseudo-elements, escaped identifiers, and conditional at-rules
-// are intentionally outside the current subset.
+// structural pseudo-classes, named top-level cascade layers, viewport media
+// queries, and the declarations consumed by the renderer. Namespaces,
+// pseudo-elements, escaped identifiers, and the remaining at-rules are outside
+// the current subset.
 package css
 
-// Stylesheet is an ordered collection of qualified CSS rules.
+// Stylesheet is an ordered collection of qualified CSS rules. LayerOrder lists
+// supported named top-level layers in first-declaration order.
 type Stylesheet struct {
-	Rules []Rule
+	Rules      []Rule
+	LayerOrder []string
 }
 
 // Rule associates one or more selectors with an ordered declaration block.
-// Order is zero-based and increases for each successfully parsed rule.
+// Order is zero-based and increases for each successfully parsed rule. Layer is
+// empty for unlayered rules. Media contains the outer-to-inner @media query
+// lists that must all match for the rule to apply.
 type Rule struct {
 	Selectors    []Selector
 	Declarations []Declaration
 	Order        int
+	Layer        string
+	Media        []string
 }
 
 // Selector is a parsed complex selector. Its representation is deliberately
