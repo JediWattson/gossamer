@@ -116,6 +116,9 @@ func paintBox(list *DisplayList, box *Box, styles map[*dom.Node]computedStyle) {
 			Color: style.background,
 		})
 	}
+	if hasStyle {
+		paintBoxBorders(list, box, style)
+	}
 	if len(box.flow) != 0 {
 		for _, item := range box.flow {
 			if item.box != nil {
@@ -142,6 +145,35 @@ func paintBox(list *DisplayList, box *Box, styles map[*dom.Node]computedStyle) {
 	if grouped {
 		list.Commands = append(list.Commands, Command{Kind: EndOpacityCommand})
 	}
+}
+
+func paintBoxBorders(list *DisplayList, box *Box, style computedStyle) {
+	bounds := box.Bounds
+	borders := box.Border
+	// Physical sides are painted in top/right/bottom/left order. Uniform solid
+	// borders are exact; diagonal corner splitting for differently colored
+	// adjacent sides is deferred with the remaining advanced border geometry.
+	paintBorderEdge(list, Rect{X: bounds.X, Y: bounds.Y, Width: bounds.Width, Height: borders.Top}, borderPaintColor(style.borderTop, style.color))
+	paintBorderEdge(list, Rect{X: bounds.X + bounds.Width - borders.Right, Y: bounds.Y, Width: borders.Right, Height: bounds.Height}, borderPaintColor(style.borderRight, style.color))
+	paintBorderEdge(list, Rect{X: bounds.X, Y: bounds.Y + bounds.Height - borders.Bottom, Width: bounds.Width, Height: borders.Bottom}, borderPaintColor(style.borderBottom, style.color))
+	paintBorderEdge(list, Rect{X: bounds.X, Y: bounds.Y, Width: borders.Left, Height: bounds.Height}, borderPaintColor(style.borderLeft, style.color))
+}
+
+func paintBorderEdge(list *DisplayList, rectangle Rect, edgeColor color.NRGBA) {
+	if rectangle.Width <= 0 || rectangle.Height <= 0 || edgeColor.A == 0 {
+		return
+	}
+	list.Commands = append(list.Commands, Command{Kind: FillRectCommand, Rect: rectangle, Color: edgeColor})
+}
+
+func borderPaintColor(side borderSide, currentColor color.NRGBA) color.NRGBA {
+	if side.style != borderStyleSolid {
+		return color.NRGBA{}
+	}
+	if side.hasColor {
+		return side.color
+	}
+	return currentColor
 }
 
 func paintInlineFragment(list *DisplayList, fragment InlineFragment, styles map[*dom.Node]computedStyle) {

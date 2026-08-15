@@ -57,6 +57,7 @@ type Box struct {
 	Bounds        Rect
 	ContentBounds Rect
 	Padding       Edges
+	Border        Edges
 	Children      []*Box
 	Fragments     []InlineFragment
 	Text          []TextFragment

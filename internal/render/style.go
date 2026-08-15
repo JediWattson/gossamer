@@ -48,6 +48,21 @@ const (
 	listStyleNone
 )
 
+type borderStyle uint8
+
+const (
+	borderStyleNone borderStyle = iota
+	borderStyleSolid
+	borderStyleHidden
+)
+
+type borderSide struct {
+	width    length
+	style    borderStyle
+	color    color.NRGBA
+	hasColor bool
+}
+
 func (lineHeight computedLineHeight) pixels(fontSize float64) float64 {
 	if lineHeight.absolute {
 		return lineHeight.value
@@ -90,6 +105,10 @@ type computedStyle struct {
 	paddingRight  length
 	paddingBottom length
 	paddingLeft   length
+	borderTop     borderSide
+	borderRight   borderSide
+	borderBottom  borderSide
+	borderLeft    borderSide
 	marginTop     length
 	marginRight   length
 	marginBottom  length
@@ -177,6 +196,10 @@ func initialStyle(node *dom.Node, parent *styledNode) computedStyle {
 		paddingRight:  px(0),
 		paddingBottom: px(0),
 		paddingLeft:   px(0),
+		borderTop:     initialBorderSide(),
+		borderRight:   initialBorderSide(),
+		borderBottom:  initialBorderSide(),
+		borderLeft:    initialBorderSide(),
 		marginTop:     length{unit: lengthPX},
 		marginRight:   length{unit: lengthPX},
 		marginBottom:  length{unit: lengthPX},
@@ -282,7 +305,7 @@ func applyAuthorStyles(style *computedStyle, node *dom.Node, sheets []css.Styles
 	winners := make(map[string]winningDeclaration)
 	sourceOrder := 0
 	record := func(declaration css.Declaration, specificity css.Specificity, order int) {
-		for _, expanded := range expandFontDeclaration(declaration, viewport) {
+		for _, expanded := range expandDeclaration(declaration, viewport) {
 			candidate := winningDeclaration{
 				declaration: expanded,
 				specificity: specificity,
@@ -341,8 +364,11 @@ func applyAuthorStyles(style *computedStyle, node *dom.Node, sheets []css.Styles
 	}
 }
 
-func expandFontDeclaration(declaration css.Declaration, viewport Viewport) []css.Declaration {
+func expandDeclaration(declaration css.Declaration, viewport Viewport) []css.Declaration {
 	if declaration.Property != "font" {
+		if !validBorderDeclaration(declaration, viewport) {
+			return nil
+		}
 		return []css.Declaration{declaration}
 	}
 	size, lineHeight, weight, family, ok := parseFontShorthand(declaration.Value, viewport)
@@ -354,6 +380,35 @@ func expandFontDeclaration(declaration css.Declaration, viewport Viewport) []css
 		{Property: "line-height", Value: lineHeight, Important: declaration.Important},
 		{Property: "font-weight", Value: weight, Important: declaration.Important},
 		{Property: "font-family", Value: family, Important: declaration.Important},
+	}
+}
+
+func validBorderDeclaration(declaration css.Declaration, viewport Viewport) bool {
+	value := strings.TrimSpace(strings.ToLower(declaration.Value))
+	switch declaration.Property {
+	case "border", "border-top", "border-right", "border-bottom", "border-left":
+		_, ok := parseBorderShorthand(value, 1, viewport)
+		return ok
+	case "border-width":
+		_, ok := parseBorderWidths(value, 1, viewport)
+		return ok
+	case "border-top-width", "border-right-width", "border-bottom-width", "border-left-width":
+		_, ok := parseBorderWidth(value, 1, viewport)
+		return ok
+	case "border-style":
+		_, ok := parseBorderStyles(value)
+		return ok
+	case "border-top-style", "border-right-style", "border-bottom-style", "border-left-style":
+		_, ok := parseBorderStyle(value)
+		return ok
+	case "border-color":
+		_, ok := parseBorderColors(value)
+		return ok
+	case "border-top-color", "border-right-color", "border-bottom-color", "border-left-color":
+		_, ok := parseBorderColor(value)
+		return ok
+	default:
+		return true
 	}
 }
 
@@ -640,6 +695,50 @@ func applyDeclaration(style *computedStyle, property, source string, viewport Vi
 				style.paddingLeft = parsed
 			}
 		}
+	case "border":
+		if parsed, ok := parseBorderShorthand(value, style.fontSize, viewport); ok {
+			style.borderTop, style.borderRight, style.borderBottom, style.borderLeft = parsed, parsed, parsed, parsed
+		}
+	case "border-top", "border-right", "border-bottom", "border-left":
+		if parsed, ok := parseBorderShorthand(value, style.fontSize, viewport); ok {
+			switch property {
+			case "border-top":
+				style.borderTop = parsed
+			case "border-right":
+				style.borderRight = parsed
+			case "border-bottom":
+				style.borderBottom = parsed
+			case "border-left":
+				style.borderLeft = parsed
+			}
+		}
+	case "border-width":
+		if parsed, ok := parseBorderWidths(value, style.fontSize, viewport); ok {
+			style.borderTop.width, style.borderRight.width, style.borderBottom.width, style.borderLeft.width = parsed[0], parsed[1], parsed[2], parsed[3]
+		}
+	case "border-top-width", "border-right-width", "border-bottom-width", "border-left-width":
+		if parsed, ok := parseBorderWidth(value, style.fontSize, viewport); ok {
+			borderSideForProperty(style, property).width = parsed
+		}
+	case "border-style":
+		if parsed, ok := parseBorderStyles(value); ok {
+			style.borderTop.style, style.borderRight.style, style.borderBottom.style, style.borderLeft.style = parsed[0], parsed[1], parsed[2], parsed[3]
+		}
+	case "border-top-style", "border-right-style", "border-bottom-style", "border-left-style":
+		if parsed, ok := parseBorderStyle(value); ok {
+			borderSideForProperty(style, property).style = parsed
+		}
+	case "border-color":
+		if parsed, ok := parseBorderColors(value); ok {
+			applyBorderColor(&style.borderTop, parsed[0])
+			applyBorderColor(&style.borderRight, parsed[1])
+			applyBorderColor(&style.borderBottom, parsed[2])
+			applyBorderColor(&style.borderLeft, parsed[3])
+		}
+	case "border-top-color", "border-right-color", "border-bottom-color", "border-left-color":
+		if parsed, ok := parseBorderColor(value); ok {
+			applyBorderColor(borderSideForProperty(style, property), parsed)
+		}
 	case "text-align":
 		switch value {
 		case "center":
@@ -670,6 +769,163 @@ func applyDeclaration(style *computedStyle, property, source string, viewport Vi
 				style.marginLeft = parsed
 			}
 		}
+	}
+}
+
+func initialBorderSide() borderSide {
+	return borderSide{width: px(3)}
+}
+
+func parseBorderShorthand(source string, fontSize float64, viewport Viewport) (borderSide, bool) {
+	fields := strings.Fields(source)
+	if len(fields) == 0 || len(fields) > 3 {
+		return borderSide{}, false
+	}
+	result := initialBorderSide()
+	seenWidth := false
+	seenStyle := false
+	seenColor := false
+	for _, field := range fields {
+		if width, ok := parseBorderWidth(field, fontSize, viewport); ok && !seenWidth {
+			result.width = width
+			seenWidth = true
+			continue
+		}
+		if style, ok := parseBorderStyle(field); ok && !seenStyle {
+			result.style = style
+			seenStyle = true
+			continue
+		}
+		if parsedColor, ok := parseBorderColor(field); ok && !seenColor {
+			applyBorderColor(&result, parsedColor)
+			seenColor = true
+			continue
+		}
+		return borderSide{}, false
+	}
+	return result, true
+}
+
+func parseBorderWidth(source string, fontSize float64, viewport Viewport) (length, bool) {
+	switch source {
+	case "thin":
+		return px(1), true
+	case "medium":
+		return px(3), true
+	case "thick":
+		return px(5), true
+	}
+	parsed, ok := parseLength(source, fontSize, fontSize, viewport)
+	if !ok || parsed.unit == lengthAuto || parsed.unit == lengthPercent || !nonNegativeLength(parsed) {
+		return length{}, false
+	}
+	return parsed, true
+}
+
+func parseBorderWidths(source string, fontSize float64, viewport Viewport) ([4]length, bool) {
+	parts := strings.Fields(source)
+	if len(parts) < 1 || len(parts) > 4 {
+		return [4]length{}, false
+	}
+	parsed := make([]length, len(parts))
+	for index, part := range parts {
+		value, ok := parseBorderWidth(part, fontSize, viewport)
+		if !ok {
+			return [4]length{}, false
+		}
+		parsed[index] = value
+	}
+	return expandFourSides(parsed), true
+}
+
+func parseBorderStyle(source string) (borderStyle, bool) {
+	switch source {
+	case "none":
+		return borderStyleNone, true
+	case "solid":
+		return borderStyleSolid, true
+	case "hidden":
+		return borderStyleHidden, true
+	default:
+		return borderStyleNone, false
+	}
+}
+
+func parseBorderStyles(source string) ([4]borderStyle, bool) {
+	parts := strings.Fields(source)
+	if len(parts) < 1 || len(parts) > 4 {
+		return [4]borderStyle{}, false
+	}
+	parsed := make([]borderStyle, len(parts))
+	for index, part := range parts {
+		value, ok := parseBorderStyle(part)
+		if !ok {
+			return [4]borderStyle{}, false
+		}
+		parsed[index] = value
+	}
+	return expandFourSides(parsed), true
+}
+
+type borderColor struct {
+	value    color.NRGBA
+	explicit bool
+}
+
+func parseBorderColor(source string) (borderColor, bool) {
+	if source == "currentcolor" {
+		return borderColor{}, true
+	}
+	parsed, ok := parseColor(source)
+	return borderColor{value: parsed, explicit: ok}, ok
+}
+
+func parseBorderColors(source string) ([4]borderColor, bool) {
+	parts := strings.Fields(source)
+	if len(parts) < 1 || len(parts) > 4 {
+		return [4]borderColor{}, false
+	}
+	parsed := make([]borderColor, len(parts))
+	for index, part := range parts {
+		value, ok := parseBorderColor(part)
+		if !ok {
+			return [4]borderColor{}, false
+		}
+		parsed[index] = value
+	}
+	return expandFourSides(parsed), true
+}
+
+func expandFourSides[T any](parsed []T) [4]T {
+	var result [4]T
+	switch len(parsed) {
+	case 1:
+		result = [4]T{parsed[0], parsed[0], parsed[0], parsed[0]}
+	case 2:
+		result = [4]T{parsed[0], parsed[1], parsed[0], parsed[1]}
+	case 3:
+		result = [4]T{parsed[0], parsed[1], parsed[2], parsed[1]}
+	case 4:
+		copy(result[:], parsed)
+	}
+	return result
+}
+
+func applyBorderColor(side *borderSide, parsed borderColor) {
+	side.color = parsed.value
+	side.hasColor = parsed.explicit
+}
+
+func borderSideForProperty(style *computedStyle, property string) *borderSide {
+	switch {
+	case strings.Contains(property, "top"):
+		return &style.borderTop
+	case strings.Contains(property, "right"):
+		return &style.borderRight
+	case strings.Contains(property, "bottom"):
+		return &style.borderBottom
+	default:
+		return &style.borderLeft
 	}
 }
 
