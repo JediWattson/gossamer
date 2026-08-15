@@ -64,6 +64,7 @@ type Stats struct {
 	LiveArrayBuffers   uint64
 	LiveTypedArrays    uint64
 	LiveMaps           uint64
+	LiveSets           uint64
 	LiveBytes          uint64
 	LiveRegions        uint64
 	BulkRegionReleases uint64
@@ -104,6 +105,8 @@ func (kind HeapKind) String() string {
 		return "TypedArray"
 	case HeapMap:
 		return "Map"
+	case HeapSet:
+		return "Set"
 	default:
 		return fmt.Sprintf("HeapKind(%d)", kind)
 	}
@@ -233,7 +236,7 @@ func (store *Store) allocLocked(owner ownership.OwnerID, regionID RegionID, inte
 }
 
 func (store *Store) allocKindLocked(owner ownership.OwnerID, regionID RegionID, kind HeapKind, internal bool) (Ref, error) {
-	if kind < HeapCell || kind > HeapMap {
+	if kind < HeapCell || kind > HeapSet {
 		return Ref{}, fmt.Errorf("%w: heap kind %d", ErrTypeMismatch, kind)
 	}
 	region, err := store.mutableRegionLocked(owner, regionID, internal)
@@ -677,6 +680,8 @@ func (store *Store) recordKindAllocationLocked(kind HeapKind, bytes uint64) {
 		store.stats.LiveTypedArrays++
 	case HeapMap:
 		store.stats.LiveMaps++
+	case HeapSet:
+		store.stats.LiveSets++
 	}
 	store.stats.LiveBytes += bytes
 }
@@ -714,6 +719,8 @@ func (store *Store) recordKindFreeLocked(slot *Slot) {
 		store.stats.LiveTypedArrays--
 	case HeapMap:
 		store.stats.LiveMaps--
+	case HeapSet:
+		store.stats.LiveSets--
 	}
 }
 
@@ -1308,6 +1315,13 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 		case HeapMap:
 			for _, entry := range sourceSlot.Map.Entries {
 				if err := store.mapSetLocked(to, copyRef, remapValue(entry.Key, mapping), remapValue(entry.Value, mapping), true); err != nil {
+					_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
+					return nil, err
+				}
+			}
+		case HeapSet:
+			for _, value := range sourceSlot.Set.Values {
+				if err := store.setAddLocked(to, copyRef, remapValue(value, mapping), true); err != nil {
 					_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
 					return nil, err
 				}

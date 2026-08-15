@@ -414,6 +414,48 @@ func (context *TaskContext) MapClear(ref memory.Ref) error {
 	return context.Realm.store.MapClear(context.Owner, ref)
 }
 
+func (context *TaskContext) NewSet() (memory.Ref, error) {
+	if context == nil || context.Realm == nil {
+		return memory.Ref{}, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.AllocSet(context.Owner, context.MemoryRegion)
+}
+
+func (context *TaskContext) DerefSet(ref memory.Ref) (memory.Set, error) {
+	if context == nil || context.Realm == nil {
+		return memory.Set{}, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.DerefSet(context.Owner, ref)
+}
+
+func (context *TaskContext) SetAdd(ref memory.Ref, value memory.Value) error {
+	if context == nil || context.Realm == nil {
+		return fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.SetAdd(context.Owner, ref, value)
+}
+
+func (context *TaskContext) SetHas(ref memory.Ref, value memory.Value) (bool, error) {
+	if context == nil || context.Realm == nil {
+		return false, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.SetHas(context.Owner, ref, value)
+}
+
+func (context *TaskContext) SetDelete(ref memory.Ref, value memory.Value) (bool, error) {
+	if context == nil || context.Realm == nil {
+		return false, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.SetDelete(context.Owner, ref, value)
+}
+
+func (context *TaskContext) SetClear(ref memory.Ref) error {
+	if context == nil || context.Realm == nil {
+		return fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.SetClear(context.Owner, ref)
+}
+
 func (context *TaskContext) Set(ref memory.Ref, field int, value memory.Value) error {
 	if context == nil || context.Realm == nil {
 		return fmt.Errorf("runtime: nil task context")

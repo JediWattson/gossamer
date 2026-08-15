@@ -134,6 +134,13 @@ Replacing a value preserves the original key and insertion position. Delete
 and Clear unlink every removed key/value edge. Copy and Promote preserve order,
 key semantics, and shared aliases.
 
+### Set
+
+Native Sets retain insertion-ordered unique values using the same SameValueZero
+engine as Map. Adding an equivalent value is idempotent and preserves the
+original Ref and position. Delete and Clear unlink removed members; Copy and
+Promote preserve order and semantic equality.
+
 ## Deliberate boundaries
 
 These native payloads are not yet ECMAScript implementations. String
