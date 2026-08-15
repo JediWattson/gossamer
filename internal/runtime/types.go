@@ -498,6 +498,55 @@ func (context *TaskContext) SetRegExpLastIndex(ref memory.Ref, index uint64) err
 	return context.Realm.store.SetRegExpLastIndex(context.Owner, ref, index)
 }
 
+func (context *TaskContext) NewError(kind memory.ErrorKind, message memory.Value) (memory.Ref, error) {
+	if context == nil || context.Realm == nil {
+		return memory.Ref{}, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.AllocError(context.Owner, context.MemoryRegion, kind, message)
+}
+
+func (context *TaskContext) DerefError(ref memory.Ref) (memory.ErrorObject, error) {
+	if context == nil || context.Realm == nil {
+		return memory.ErrorObject{}, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.DerefError(context.Owner, ref)
+}
+
+func (context *TaskContext) SetErrorMessage(ref memory.Ref, message memory.Value) error {
+	if context == nil || context.Realm == nil {
+		return fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.SetErrorMessage(context.Owner, ref, message)
+}
+
+func (context *TaskContext) SetErrorStack(ref memory.Ref, stack memory.Value) error {
+	if context == nil || context.Realm == nil {
+		return fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.SetErrorStack(context.Owner, ref, stack)
+}
+
+func (context *TaskContext) SetErrorCause(ref memory.Ref, cause memory.Value) error {
+	if context == nil || context.Realm == nil {
+		return fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.SetErrorCause(context.Owner, ref, cause)
+}
+
+func (context *TaskContext) ClearErrorCause(ref memory.Ref) error {
+	if context == nil || context.Realm == nil {
+		return fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.ClearErrorCause(context.Owner, ref)
+}
+
+func (context *TaskContext) SetAggregateErrors(ref memory.Ref, errors []memory.Value) error {
+	if context == nil || context.Realm == nil {
+		return fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.SetAggregateErrors(context.Owner, ref, errors)
+}
+
 func (context *TaskContext) Set(ref memory.Ref, field int, value memory.Value) error {
 	if context == nil || context.Realm == nil {
 		return fmt.Errorf("runtime: nil task context")

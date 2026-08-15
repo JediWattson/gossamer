@@ -44,6 +44,7 @@ func (store *Store) CheckInvariants() error {
 	liveSets := uint64(0)
 	liveDates := uint64(0)
 	liveRegExps := uint64(0)
+	liveErrors := uint64(0)
 	liveBytes := uint64(0)
 	liveRegions := uint64(0)
 	for owner, claim := range store.ownerClaims {
@@ -404,6 +405,26 @@ func (store *Store) CheckInvariants() error {
 				if !patternSlot.Occupied || patternSlot.Generation != slot.RegExp.Pattern.Gen || patternSlot.Kind != HeapString {
 					return invariantError("RegExp %s has non-String pattern %s", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot.RegExp.Pattern)
 				}
+			case HeapError:
+				liveErrors++
+				if slotHasOtherPayload(slot, HeapError) {
+					return invariantError("Error %s retains another typed payload", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
+				}
+				if slot.Error.Kind.Name() == "" {
+					return invariantError("Error %s has invalid kind %d", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot.Error.Kind)
+				}
+				if err := store.checkOptionalTypedRefLocked(slot.Error.Message, HeapString, "Error message"); err != nil {
+					return err
+				}
+				if err := store.checkOptionalTypedRefLocked(slot.Error.Stack, HeapString, "Error stack"); err != nil {
+					return err
+				}
+				if !slot.Error.HasCause && slot.Error.Cause != (Value{}) {
+					return invariantError("Error %s retains an absent cause", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
+				}
+				if slot.Error.Kind != ErrorAggregate && len(slot.Error.Errors) != 0 {
+					return invariantError("%s %s retains %d aggregate members", slot.Error.Kind.Name(), Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, len(slot.Error.Errors))
+				}
 			default:
 				return invariantError("R%d occupied slot %d has unknown heap kind %d", id, index, slot.Kind)
 			}
@@ -474,8 +495,8 @@ func (store *Store) CheckInvariants() error {
 			return invariantError("ledger object %d edges %v, want %v", object, snapshot.Edges, wantTargets)
 		}
 	}
-	if store.stats.LiveSlots != liveSlots || store.stats.LiveCells != liveCells || store.stats.LiveStrings != liveStrings || store.stats.LiveObjects != liveObjects || store.stats.LiveArrays != liveArrays || store.stats.LiveContexts != liveContexts || store.stats.LiveFunctions != liveFunctions || store.stats.LivePromises != livePromises || store.stats.LiveBigInts != liveBigInts || store.stats.LiveSymbols != liveSymbols || store.stats.LiveArrayBuffers != liveArrayBuffers || store.stats.LiveTypedArrays != liveTypedArrays || store.stats.LiveMaps != liveMaps || store.stats.LiveSets != liveSets || store.stats.LiveDates != liveDates || store.stats.LiveRegExps != liveRegExps || store.stats.LiveBytes != liveBytes || store.stats.LiveRegions != liveRegions {
-		return invariantError("stats slots/cells/strings/objects/arrays/contexts/functions/promises/bigints/symbols/buffers/views/maps/sets/dates/regexps/bytes/regions = %d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d, derived %d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d", store.stats.LiveSlots, store.stats.LiveCells, store.stats.LiveStrings, store.stats.LiveObjects, store.stats.LiveArrays, store.stats.LiveContexts, store.stats.LiveFunctions, store.stats.LivePromises, store.stats.LiveBigInts, store.stats.LiveSymbols, store.stats.LiveArrayBuffers, store.stats.LiveTypedArrays, store.stats.LiveMaps, store.stats.LiveSets, store.stats.LiveDates, store.stats.LiveRegExps, store.stats.LiveBytes, store.stats.LiveRegions, liveSlots, liveCells, liveStrings, liveObjects, liveArrays, liveContexts, liveFunctions, livePromises, liveBigInts, liveSymbols, liveArrayBuffers, liveTypedArrays, liveMaps, liveSets, liveDates, liveRegExps, liveBytes, liveRegions)
+	if store.stats.LiveSlots != liveSlots || store.stats.LiveCells != liveCells || store.stats.LiveStrings != liveStrings || store.stats.LiveObjects != liveObjects || store.stats.LiveArrays != liveArrays || store.stats.LiveContexts != liveContexts || store.stats.LiveFunctions != liveFunctions || store.stats.LivePromises != livePromises || store.stats.LiveBigInts != liveBigInts || store.stats.LiveSymbols != liveSymbols || store.stats.LiveArrayBuffers != liveArrayBuffers || store.stats.LiveTypedArrays != liveTypedArrays || store.stats.LiveMaps != liveMaps || store.stats.LiveSets != liveSets || store.stats.LiveDates != liveDates || store.stats.LiveRegExps != liveRegExps || store.stats.LiveErrors != liveErrors || store.stats.LiveBytes != liveBytes || store.stats.LiveRegions != liveRegions {
+		return invariantError("stats slots/cells/strings/objects/arrays/contexts/functions/promises/bigints/symbols/buffers/views/maps/sets/dates/regexps/errors/bytes/regions = %d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d, derived %d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d", store.stats.LiveSlots, store.stats.LiveCells, store.stats.LiveStrings, store.stats.LiveObjects, store.stats.LiveArrays, store.stats.LiveContexts, store.stats.LiveFunctions, store.stats.LivePromises, store.stats.LiveBigInts, store.stats.LiveSymbols, store.stats.LiveArrayBuffers, store.stats.LiveTypedArrays, store.stats.LiveMaps, store.stats.LiveSets, store.stats.LiveDates, store.stats.LiveRegExps, store.stats.LiveErrors, store.stats.LiveBytes, store.stats.LiveRegions, liveSlots, liveCells, liveStrings, liveObjects, liveArrays, liveContexts, liveFunctions, livePromises, liveBigInts, liveSymbols, liveArrayBuffers, liveTypedArrays, liveMaps, liveSets, liveDates, liveRegExps, liveErrors, liveBytes, liveRegions)
 	}
 	if store.closed && (liveSlots != 0 || liveRegions != 0) {
 		return invariantError("closed store retains %d slots in %d regions", liveSlots, liveRegions)
@@ -583,6 +604,9 @@ func slotHasOtherPayload(slot *Slot, kind HeapKind) bool {
 		return true
 	}
 	if kind != HeapRegExp && slot.RegExp != (RegExp{}) {
+		return true
+	}
+	if kind != HeapError && (slot.Error.Kind != 0 || slot.Error.Message != (Value{}) || slot.Error.Stack != (Value{}) || slot.Error.Cause != (Value{}) || slot.Error.HasCause || len(slot.Error.Errors) != 0) {
 		return true
 	}
 	return false

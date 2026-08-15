@@ -40,6 +40,7 @@ var (
 	ErrBufferBounds          = errors.New("memory: buffer access is out of bounds")
 	ErrInvalidTypedArray     = errors.New("memory: invalid TypedArray view")
 	ErrInvalidRegExp         = errors.New("memory: invalid RegExp")
+	ErrInvalidError          = errors.New("memory: invalid Error")
 	ErrObjectReferenced      = errors.New("memory: heap object still has incoming references")
 	ErrCellReferenced        = ErrObjectReferenced
 	ErrRegionReferenced      = errors.New("memory: region still has incoming references")
@@ -68,6 +69,7 @@ type Stats struct {
 	LiveSets           uint64
 	LiveDates          uint64
 	LiveRegExps        uint64
+	LiveErrors         uint64
 	LiveBytes          uint64
 	LiveRegions        uint64
 	BulkRegionReleases uint64
@@ -114,6 +116,8 @@ func (kind HeapKind) String() string {
 		return "Date"
 	case HeapRegExp:
 		return "RegExp"
+	case HeapError:
+		return "Error"
 	default:
 		return fmt.Sprintf("HeapKind(%d)", kind)
 	}
@@ -243,7 +247,7 @@ func (store *Store) allocLocked(owner ownership.OwnerID, regionID RegionID, inte
 }
 
 func (store *Store) allocKindLocked(owner ownership.OwnerID, regionID RegionID, kind HeapKind, internal bool) (Ref, error) {
-	if kind < HeapCell || kind > HeapRegExp {
+	if kind < HeapCell || kind > HeapError {
 		return Ref{}, fmt.Errorf("%w: heap kind %d", ErrTypeMismatch, kind)
 	}
 	region, err := store.mutableRegionLocked(owner, regionID, internal)
@@ -693,6 +697,8 @@ func (store *Store) recordKindAllocationLocked(kind HeapKind, bytes uint64) {
 		store.stats.LiveDates++
 	case HeapRegExp:
 		store.stats.LiveRegExps++
+	case HeapError:
+		store.stats.LiveErrors++
 	}
 	store.stats.LiveBytes += bytes
 }
@@ -736,6 +742,8 @@ func (store *Store) recordKindFreeLocked(slot *Slot) {
 		store.stats.LiveDates--
 	case HeapRegExp:
 		store.stats.LiveRegExps--
+	case HeapError:
+		store.stats.LiveErrors--
 	}
 }
 
@@ -1350,6 +1358,20 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 			expression := cloneRegExp(sourceSlot.RegExp)
 			expression.Pattern = mapping[expression.Pattern]
 			if err := store.initializeRegExpLocked(to, copyRef, expression, true); err != nil {
+				_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
+				return nil, err
+			}
+		case HeapError:
+			value := cloneError(sourceSlot.Error)
+			value.Message = remapValue(value.Message, mapping)
+			value.Stack = remapValue(value.Stack, mapping)
+			if value.HasCause {
+				value.Cause = remapValue(value.Cause, mapping)
+			}
+			for index, member := range value.Errors {
+				value.Errors[index] = remapValue(member, mapping)
+			}
+			if err := store.initializeErrorLocked(to, copyRef, value, true); err != nil {
 				_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
 				return nil, err
 			}

@@ -43,6 +43,7 @@ const (
 	HeapSet
 	HeapDate
 	HeapRegExp
+	HeapError
 )
 
 // StringObject is the first real typed native-heap payload. Text is immutable;
@@ -70,6 +71,7 @@ type Slot struct {
 	Set         Set
 	Date        Date
 	RegExp      RegExp
+	Error       ErrorObject
 	Occupied    bool
 
 	object ownership.ObjectID
@@ -114,6 +116,7 @@ func cloneSlot(slot Slot) Slot {
 		Set:         cloneSet(slot.Set),
 		Date:        slot.Date,
 		RegExp:      cloneRegExp(slot.RegExp),
+		Error:       cloneError(slot.Error),
 		Occupied:    slot.Occupied,
 	}
 }
@@ -192,11 +195,20 @@ func slotReferences(slot *Slot) []Value {
 		}
 		return []Value{RefValue(slot.RegExp.Pattern)}
 	}
+	if slot.Kind == HeapError {
+		values := make([]Value, 0, 2+len(slot.Error.Errors)+1)
+		values = append(values, slot.Error.Message, slot.Error.Stack)
+		if slot.Error.HasCause {
+			values = append(values, slot.Error.Cause)
+		}
+		values = append(values, slot.Error.Errors...)
+		return values
+	}
 	return nil
 }
 
 func slotStorageEmpty(slot *Slot) bool {
-	return slot != nil && slot.Kind == HeapInvalid && len(slot.Cell.Fields) == 0 && slot.String.Text == "" && slot.Object.Prototype == (Value{}) && len(slot.Object.Properties) == 0 && slot.Array.Length == 0 && len(slot.Array.Elements) == 0 && slot.Context.Parent == (Value{}) && len(slot.Context.Bindings) == 0 && slot.Function.Kind == 0 && slot.Function.Name == (Value{}) && slot.Function.Environment == (Value{}) && slot.Function.Arity == 0 && len(slot.Function.Code) == 0 && len(slot.Function.Constants) == 0 && slot.Function.NativeID == 0 && slot.Promise.State == PromisePending && slot.Promise.Result == (Value{}) && len(slot.Promise.Reactions) == 0 && !slot.Promise.Handled && !slot.BigInt.Negative && len(slot.BigInt.Magnitude) == 0 && slot.Symbol.ID == 0 && slot.Symbol.Description == (Value{}) && len(slot.ArrayBuffer.Bytes) == 0 && !slot.ArrayBuffer.Detached && slot.TypedArray == (TypedArray{}) && len(slot.Map.Entries) == 0 && len(slot.Set.Values) == 0 && slot.Date.Milliseconds == 0 && slot.RegExp == (RegExp{})
+	return slot != nil && slot.Kind == HeapInvalid && len(slot.Cell.Fields) == 0 && slot.String.Text == "" && slot.Object.Prototype == (Value{}) && len(slot.Object.Properties) == 0 && slot.Array.Length == 0 && len(slot.Array.Elements) == 0 && slot.Context.Parent == (Value{}) && len(slot.Context.Bindings) == 0 && slot.Function.Kind == 0 && slot.Function.Name == (Value{}) && slot.Function.Environment == (Value{}) && slot.Function.Arity == 0 && len(slot.Function.Code) == 0 && len(slot.Function.Constants) == 0 && slot.Function.NativeID == 0 && slot.Promise.State == PromisePending && slot.Promise.Result == (Value{}) && len(slot.Promise.Reactions) == 0 && !slot.Promise.Handled && !slot.BigInt.Negative && len(slot.BigInt.Magnitude) == 0 && slot.Symbol.ID == 0 && slot.Symbol.Description == (Value{}) && len(slot.ArrayBuffer.Bytes) == 0 && !slot.ArrayBuffer.Detached && slot.TypedArray == (TypedArray{}) && len(slot.Map.Entries) == 0 && len(slot.Set.Values) == 0 && slot.Date.Milliseconds == 0 && slot.RegExp == (RegExp{}) && slot.Error.Kind == 0 && slot.Error.Message == (Value{}) && slot.Error.Stack == (Value{}) && slot.Error.Cause == (Value{}) && !slot.Error.HasCause && len(slot.Error.Errors) == 0
 }
 
 func clearSlotPayload(slot *Slot) {
@@ -216,6 +228,7 @@ func clearSlotPayload(slot *Slot) {
 	slot.Set = Set{}
 	slot.Date = Date{}
 	slot.RegExp = RegExp{}
+	slot.Error = ErrorObject{}
 }
 
 func initializeSlotPayload(slot *Slot, kind HeapKind) {

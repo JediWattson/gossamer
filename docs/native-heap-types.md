@@ -161,6 +161,19 @@ clone the pattern graph and preserve flags and `lastIndex`.
 Pattern compilation, matching, match arrays, and Unicode set behavior remain a
 later interpreter/library layer.
 
+### Error
+
+Native Errors retain one of the standard Error family identities, an optional
+native String message and stack, and an explicitly present scalar-or-Ref
+cause. AggregateErrors additionally retain an ordered list of arbitrary
+members. Message, stack, cause, and aggregate references all use the counted
+write barrier; replacing or clearing any diagnostic data unlinks old edges.
+
+Copy and Promote preserve the Error family, cause presence, aggregate order,
+and aliases across all retained values. Stack capture and formatting, throwing
+and catching, host frames, and language-level constructors remain interpreter
+and host-runtime responsibilities.
+
 ## Deliberate boundaries
 
 These native payloads are not yet ECMAScript implementations. String
