@@ -33,6 +33,7 @@ const (
 	HeapObject
 	HeapArray
 	HeapContext
+	HeapFunction
 )
 
 // StringObject is the first real typed native-heap payload. Text is immutable;
@@ -50,6 +51,7 @@ type Slot struct {
 	Object     Object
 	Array      Array
 	Context    Context
+	Function   Function
 	Occupied   bool
 
 	object ownership.ObjectID
@@ -84,6 +86,7 @@ func cloneSlot(slot Slot) Slot {
 		Object:     cloneObject(slot.Object),
 		Array:      cloneArray(slot.Array),
 		Context:    cloneContext(slot.Context),
+		Function:   cloneFunction(slot.Function),
 		Occupied:   slot.Occupied,
 	}
 }
@@ -121,11 +124,17 @@ func slotReferences(slot *Slot) []Value {
 		}
 		return values
 	}
+	if slot.Kind == HeapFunction {
+		values := make([]Value, 0, 2+len(slot.Function.Constants))
+		values = append(values, slot.Function.Name, slot.Function.Environment)
+		values = append(values, slot.Function.Constants...)
+		return values
+	}
 	return nil
 }
 
 func slotStorageEmpty(slot *Slot) bool {
-	return slot != nil && slot.Kind == HeapInvalid && len(slot.Cell.Fields) == 0 && slot.String.Text == "" && slot.Object.Prototype == (Value{}) && len(slot.Object.Properties) == 0 && slot.Array.Length == 0 && len(slot.Array.Elements) == 0 && slot.Context.Parent == (Value{}) && len(slot.Context.Bindings) == 0
+	return slot != nil && slot.Kind == HeapInvalid && len(slot.Cell.Fields) == 0 && slot.String.Text == "" && slot.Object.Prototype == (Value{}) && len(slot.Object.Properties) == 0 && slot.Array.Length == 0 && len(slot.Array.Elements) == 0 && slot.Context.Parent == (Value{}) && len(slot.Context.Bindings) == 0 && slot.Function.Kind == 0 && slot.Function.Name == (Value{}) && slot.Function.Environment == (Value{}) && slot.Function.Arity == 0 && len(slot.Function.Code) == 0 && len(slot.Function.Constants) == 0 && slot.Function.NativeID == 0
 }
 
 func clearSlotPayload(slot *Slot) {
@@ -135,6 +144,7 @@ func clearSlotPayload(slot *Slot) {
 	slot.Object = Object{}
 	slot.Array = Array{}
 	slot.Context = Context{}
+	slot.Function = Function{}
 }
 
 func initializeSlotPayload(slot *Slot, kind HeapKind) {

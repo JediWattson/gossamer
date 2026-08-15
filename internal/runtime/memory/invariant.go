@@ -34,6 +34,7 @@ func (store *Store) CheckInvariants() error {
 	liveObjects := uint64(0)
 	liveArrays := uint64(0)
 	liveContexts := uint64(0)
+	liveFunctions := uint64(0)
 	liveBytes := uint64(0)
 	liveRegions := uint64(0)
 	for owner, claim := range store.ownerClaims {
@@ -236,6 +237,27 @@ func (store *Store) CheckInvariants() error {
 						return invariantError("Context %s binding %q retains an uninitialized value", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, nameSlot.String.Text)
 					}
 				}
+			case HeapFunction:
+				liveFunctions++
+				liveBytes += uint64(len(slot.Function.Code))
+				if slotHasOtherPayload(slot, HeapFunction) {
+					return invariantError("Function %s retains another typed payload", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
+				}
+				if slot.Function.Kind != FunctionBytecode && slot.Function.Kind != FunctionNative {
+					return invariantError("Function %s has invalid kind %d", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot.Function.Kind)
+				}
+				if slot.Function.Kind == FunctionBytecode && slot.Function.NativeID != 0 {
+					return invariantError("bytecode Function %s has native ID %d", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot.Function.NativeID)
+				}
+				if slot.Function.Kind == FunctionNative && (slot.Function.NativeID == 0 || len(slot.Function.Code) != 0 || len(slot.Function.Constants) != 0) {
+					return invariantError("native Function %s has an invalid descriptor", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
+				}
+				if err := store.checkOptionalTypedRefLocked(slot.Function.Name, HeapString, "Function name"); err != nil {
+					return err
+				}
+				if err := store.checkOptionalTypedRefLocked(slot.Function.Environment, HeapContext, "Function environment"); err != nil {
+					return err
+				}
 			default:
 				return invariantError("R%d occupied slot %d has unknown heap kind %d", id, index, slot.Kind)
 			}
@@ -306,8 +328,8 @@ func (store *Store) CheckInvariants() error {
 			return invariantError("ledger object %d edges %v, want %v", object, snapshot.Edges, wantTargets)
 		}
 	}
-	if store.stats.LiveSlots != liveSlots || store.stats.LiveCells != liveCells || store.stats.LiveStrings != liveStrings || store.stats.LiveObjects != liveObjects || store.stats.LiveArrays != liveArrays || store.stats.LiveContexts != liveContexts || store.stats.LiveBytes != liveBytes || store.stats.LiveRegions != liveRegions {
-		return invariantError("stats slots/cells/strings/objects/arrays/contexts/bytes/regions = %d/%d/%d/%d/%d/%d/%d/%d, derived %d/%d/%d/%d/%d/%d/%d/%d", store.stats.LiveSlots, store.stats.LiveCells, store.stats.LiveStrings, store.stats.LiveObjects, store.stats.LiveArrays, store.stats.LiveContexts, store.stats.LiveBytes, store.stats.LiveRegions, liveSlots, liveCells, liveStrings, liveObjects, liveArrays, liveContexts, liveBytes, liveRegions)
+	if store.stats.LiveSlots != liveSlots || store.stats.LiveCells != liveCells || store.stats.LiveStrings != liveStrings || store.stats.LiveObjects != liveObjects || store.stats.LiveArrays != liveArrays || store.stats.LiveContexts != liveContexts || store.stats.LiveFunctions != liveFunctions || store.stats.LiveBytes != liveBytes || store.stats.LiveRegions != liveRegions {
+		return invariantError("stats slots/cells/strings/objects/arrays/contexts/functions/bytes/regions = %d/%d/%d/%d/%d/%d/%d/%d/%d, derived %d/%d/%d/%d/%d/%d/%d/%d/%d", store.stats.LiveSlots, store.stats.LiveCells, store.stats.LiveStrings, store.stats.LiveObjects, store.stats.LiveArrays, store.stats.LiveContexts, store.stats.LiveFunctions, store.stats.LiveBytes, store.stats.LiveRegions, liveSlots, liveCells, liveStrings, liveObjects, liveArrays, liveContexts, liveFunctions, liveBytes, liveRegions)
 	}
 	if store.closed && (liveSlots != 0 || liveRegions != 0) {
 		return invariantError("closed store retains %d slots in %d regions", liveSlots, liveRegions)
@@ -387,7 +409,27 @@ func slotHasOtherPayload(slot *Slot, kind HeapKind) bool {
 	if kind != HeapContext && (slot.Context.Parent != (Value{}) || len(slot.Context.Bindings) != 0) {
 		return true
 	}
+	if kind != HeapFunction && (slot.Function.Kind != 0 || slot.Function.Name != (Value{}) || slot.Function.Environment != (Value{}) || slot.Function.Arity != 0 || len(slot.Function.Code) != 0 || len(slot.Function.Constants) != 0 || slot.Function.NativeID != 0) {
+		return true
+	}
 	return false
+}
+
+func (store *Store) checkOptionalTypedRefLocked(value Value, kind HeapKind, label string) error {
+	if value.Kind() == ValueNull {
+		return nil
+	}
+	if !value.IsRef() {
+		return invariantError("%s has invalid kind %d", label, value.Kind())
+	}
+	_, slot, err := store.slotLocked(value.Ref())
+	if err != nil {
+		return invariantError("%s %s: %v", label, value.Ref(), err)
+	}
+	if slot.Kind != kind {
+		return invariantError("%s %s is %s, want %s", label, value.Ref(), slot.Kind, kind)
+	}
+	return nil
 }
 
 func (store *Store) checkContextChainLocked(start Ref) error {

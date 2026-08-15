@@ -204,6 +204,27 @@ func (context *TaskContext) ResolveBinding(contextRef, name memory.Ref) (memory.
 	return context.Realm.store.ResolveBinding(context.Owner, contextRef, name)
 }
 
+func (context *TaskContext) NewBytecodeFunction(name, environment memory.Value, arity uint32, code []byte, constants []memory.Value) (memory.Ref, error) {
+	if context == nil || context.Realm == nil {
+		return memory.Ref{}, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.AllocBytecodeFunction(context.Owner, context.MemoryRegion, name, environment, arity, code, constants)
+}
+
+func (context *TaskContext) NewNativeFunction(name, environment memory.Value, arity uint32, nativeID uint64) (memory.Ref, error) {
+	if context == nil || context.Realm == nil {
+		return memory.Ref{}, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.AllocNativeFunction(context.Owner, context.MemoryRegion, name, environment, arity, nativeID)
+}
+
+func (context *TaskContext) DerefFunction(ref memory.Ref) (memory.Function, error) {
+	if context == nil || context.Realm == nil {
+		return memory.Function{}, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.DerefFunction(context.Owner, ref)
+}
+
 func (context *TaskContext) Set(ref memory.Ref, field int, value memory.Value) error {
 	if context == nil || context.Realm == nil {
 		return fmt.Errorf("runtime: nil task context")

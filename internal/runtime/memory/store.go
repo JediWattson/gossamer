@@ -29,6 +29,7 @@ var (
 	ErrBindingUninitialized = errors.New("memory: binding is uninitialized")
 	ErrImmutableBinding     = errors.New("memory: binding is immutable")
 	ErrContextCycle         = errors.New("memory: context parent cycle")
+	ErrInvalidFunction      = errors.New("memory: invalid function descriptor")
 	ErrObjectReferenced     = errors.New("memory: heap object still has incoming references")
 	ErrCellReferenced       = ErrObjectReferenced
 	ErrRegionReferenced     = errors.New("memory: region still has incoming references")
@@ -47,6 +48,7 @@ type Stats struct {
 	LiveObjects        uint64
 	LiveArrays         uint64
 	LiveContexts       uint64
+	LiveFunctions      uint64
 	LiveBytes          uint64
 	LiveRegions        uint64
 	BulkRegionReleases uint64
@@ -73,6 +75,8 @@ func (kind HeapKind) String() string {
 		return "Array"
 	case HeapContext:
 		return "Context"
+	case HeapFunction:
+		return "Function"
 	default:
 		return fmt.Sprintf("HeapKind(%d)", kind)
 	}
@@ -202,7 +206,7 @@ func (store *Store) allocLocked(owner ownership.OwnerID, regionID RegionID, inte
 }
 
 func (store *Store) allocKindLocked(owner ownership.OwnerID, regionID RegionID, kind HeapKind, internal bool) (Ref, error) {
-	if kind < HeapCell || kind > HeapContext {
+	if kind < HeapCell || kind > HeapFunction {
 		return Ref{}, fmt.Errorf("%w: heap kind %d", ErrTypeMismatch, kind)
 	}
 	region, err := store.mutableRegionLocked(owner, regionID, internal)
@@ -632,6 +636,8 @@ func (store *Store) recordKindAllocationLocked(kind HeapKind, bytes uint64) {
 		store.stats.LiveArrays++
 	case HeapContext:
 		store.stats.LiveContexts++
+	case HeapFunction:
+		store.stats.LiveFunctions++
 	}
 	store.stats.LiveBytes += bytes
 }
@@ -652,6 +658,9 @@ func (store *Store) recordKindFreeLocked(slot *Slot) {
 		store.stats.LiveArrays--
 	case HeapContext:
 		store.stats.LiveContexts--
+	case HeapFunction:
+		store.stats.LiveFunctions--
+		store.stats.LiveBytes -= uint64(len(slot.Function.Code))
 	}
 }
 
@@ -1181,6 +1190,17 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 						return nil, err
 					}
 				}
+			}
+		case HeapFunction:
+			function := cloneFunction(sourceSlot.Function)
+			function.Name = remapValue(function.Name, mapping)
+			function.Environment = remapValue(function.Environment, mapping)
+			for index, constant := range function.Constants {
+				function.Constants[index] = remapValue(constant, mapping)
+			}
+			if err := store.initializeFunctionLocked(to, copyRef, function, true); err != nil {
+				_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
+				return nil, err
 			}
 		default:
 			_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})

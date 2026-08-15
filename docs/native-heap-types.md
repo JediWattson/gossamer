@@ -58,6 +58,18 @@ Parent, name, and initialized value references are counted edges. Copy and
 Promote preserve parent structure, binding order, initialization, mutability,
 and captured aliases.
 
+### Function
+
+Native Functions are immutable executable descriptors. A bytecode Function
+owns cloned instruction bytes, scalar-or-Ref constants, arity, an optional
+native String name, and an optional captured Context. A native Function carries
+the same name/environment metadata plus a nonzero opaque numeric callback ID;
+it never stores a Go pointer.
+
+Function names, environments, and Ref constants are counted edges. Copy and
+Promote clone bytecode and preserve closure and constant aliasing. Execution is
+deliberately deferred to the interpreter layer.
+
 ## Deliberate boundaries
 
 These native payloads are not yet ECMAScript implementations. String
