@@ -82,16 +82,18 @@ first-class queues are also ownership boundaries: fake runtime objects are
 published to a queue, transferred to the receiving task, and released in bulk
 when that task's logical region ends.
 
-The shadow ledger now backs a small native `RegionStore`. Its synthetic Cells
+The shadow ledger now backs a small native `RegionStore`. Its typed payloads
 live in generation-checked region slots, cross-region writes maintain counted
 region edges, and private refs can cross Realm queues only through explicit
 Transfer, Publish, or Copy operations. Task and microtask queues use the same
 Ref boundary. Explicit promotion copies only a reachable subgraph into
 immutable shared storage, allowing the original temporary region to be
-released. This is still independent from JavaScript values, garbage
+released. Immutable native Strings are the first payload whose bytes follow
+region lifetime. This remains independent from JavaScript semantics, garbage
 collection, and V8 internals. See
-[`docs/phase-0-kernel.md`](docs/phase-0-kernel.md) for the invariants and exact
-scope.
+[`docs/phase-0-kernel.md`](docs/phase-0-kernel.md) for the invariants and
+[`docs/native-heap-types.md`](docs/native-heap-types.md) for the typed payload
+contract.
 
 The DOM now also has additive stable `NodeID` identity over its existing
 pointer-backed storage. A minimal `Browser`/`Page` boundary ties an indexed

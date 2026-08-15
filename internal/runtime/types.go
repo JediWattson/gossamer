@@ -51,7 +51,15 @@ func (context *TaskContext) NewCell() (memory.Ref, error) {
 	if context == nil || context.Realm == nil {
 		return memory.Ref{}, fmt.Errorf("runtime: nil task context")
 	}
-	return context.Realm.store.Alloc(context.Owner, context.MemoryRegion)
+	return context.Realm.store.AllocCell(context.Owner, context.MemoryRegion)
+}
+
+// NewString allocates an immutable native string in the task's private region.
+func (context *TaskContext) NewString(text string) (memory.Ref, error) {
+	if context == nil || context.Realm == nil {
+		return memory.Ref{}, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.AllocString(context.Owner, context.MemoryRegion, text)
 }
 
 func (context *TaskContext) Deref(ref memory.Ref) (memory.Cell, error) {
@@ -59,6 +67,13 @@ func (context *TaskContext) Deref(ref memory.Ref) (memory.Cell, error) {
 		return memory.Cell{}, fmt.Errorf("runtime: nil task context")
 	}
 	return context.Realm.store.Deref(context.Owner, ref)
+}
+
+func (context *TaskContext) DerefString(ref memory.Ref) (string, error) {
+	if context == nil || context.Realm == nil {
+		return "", fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.DerefString(context.Owner, ref)
 }
 
 func (context *TaskContext) Set(ref memory.Ref, field int, value memory.Value) error {

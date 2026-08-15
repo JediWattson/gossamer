@@ -40,7 +40,9 @@ claim(region, object) is either present or absent
 
 - `internal/runtime/ownership` models task, queue, wrapper, document, realm,
   browser, and immutable shared owners.
-- `internal/runtime/memory` owns synthetic Cells in explicit regions and slots.
+- `internal/runtime/memory` owns typed heap payloads in explicit regions and
+  slots. Synthetic Cells exercise mutation; immutable native Strings are the
+  first concrete payload whose bytes follow region lifetime.
 - Freed slots advance their generation and exhausted generations are retired,
   so a stale Ref cannot become valid again.
 - Every mutable physical region has exactly one owner. Published regions are
@@ -103,9 +105,12 @@ Physical allocation optimizations such as typed slabs or object pools should
 be evaluated later against the semantic telemetry. They are implementation
 details, not the Phase 0 ownership model.
 
-The RegionStore intentionally does not implement JavaScript objects, tracing
+The RegionStore intentionally does not implement JavaScript semantics, tracing
 garbage collection, automatic escape promotion, packed refs, or V8 heap
 integration. Those remain later milestones.
+
+See [`native-heap-types.md`](native-heap-types.md) for the typed-slot contract
+and the payloads currently implemented behind it.
 
 The explicit promotion lifecycle is now executable end to end:
 

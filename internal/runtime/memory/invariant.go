@@ -17,7 +17,7 @@ type slotLocation struct {
 }
 
 // CheckInvariants independently derives the Store's live slot, object-edge,
-// region-edge, owner, and ledger state from Cell contents. Tests and debug
+// region-edge, owner, and ledger state from typed heap contents. Tests and debug
 // builds can call it after arbitrary operation sequences without mutating the
 // heap.
 func (store *Store) CheckInvariants() error {
@@ -28,7 +28,10 @@ func (store *Store) CheckInvariants() error {
 	defer store.mutex.Unlock()
 
 	objects := make(map[ownership.ObjectID]slotLocation)
+	liveSlots := uint64(0)
 	liveCells := uint64(0)
+	liveStrings := uint64(0)
+	liveBytes := uint64(0)
 	liveRegions := uint64(0)
 	for owner, claim := range store.ownerClaims {
 		if claim == 0 {
@@ -57,7 +60,7 @@ func (store *Store) CheckInvariants() error {
 		}
 		if region.State == RegionDestroyed {
 			for index, slot := range region.Slots {
-				if slot.Occupied || slot.object != 0 || len(slot.Cell.Fields) != 0 {
+				if slot.Occupied || slot.object != 0 || !slotStorageEmpty(&slot) {
 					return invariantError("destroyed R%d slot %d still owns storage", id, index)
 				}
 				if slot.Generation == 0 {
@@ -110,7 +113,7 @@ func (store *Store) CheckInvariants() error {
 			}
 			free[index] = struct{}{}
 			slot := region.Slots[index]
-			if slot.Occupied || slot.object != 0 || len(slot.Cell.Fields) != 0 || slot.Generation == math.MaxUint32 {
+			if slot.Occupied || slot.object != 0 || !slotStorageEmpty(&slot) || slot.Generation == math.MaxUint32 {
 				return invariantError("R%d free slot %d has live or retired state", id, index)
 			}
 		}
@@ -121,7 +124,7 @@ func (store *Store) CheckInvariants() error {
 			}
 			_, onFreeList := free[uint32(index)]
 			if !slot.Occupied {
-				if slot.object != 0 || len(slot.Cell.Fields) != 0 {
+				if slot.object != 0 || !slotStorageEmpty(slot) {
 					return invariantError("R%d vacant slot %d retains storage", id, index)
 				}
 				if slot.Generation != math.MaxUint32 && !onFreeList {
@@ -139,7 +142,22 @@ func (store *Store) CheckInvariants() error {
 				return invariantError("ledger object %d appears at R%d:%d and R%d:%d", slot.object, previous.region, previous.slot, id, index)
 			}
 			objects[slot.object] = slotLocation{region: id, slot: uint32(index)}
-			liveCells++
+			liveSlots++
+			switch slot.Kind {
+			case HeapCell:
+				liveCells++
+				if slot.String.Text != "" {
+					return invariantError("Cell %s retains String payload", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
+				}
+			case HeapString:
+				liveStrings++
+				liveBytes += uint64(len(slot.String.Text))
+				if len(slot.Cell.Fields) != 0 {
+					return invariantError("String %s retains Cell payload", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
+				}
+			default:
+				return invariantError("R%d occupied slot %d has unknown heap kind %d", id, index, slot.Kind)
+			}
 		}
 	}
 
@@ -155,7 +173,7 @@ func (store *Store) CheckInvariants() error {
 			if !slot.Occupied {
 				continue
 			}
-			for field, value := range slot.Cell.Fields {
+			for field, value := range slotReferences(slot) {
 				if !value.IsRef() {
 					continue
 				}
@@ -207,11 +225,11 @@ func (store *Store) CheckInvariants() error {
 			return invariantError("ledger object %d edges %v, want %v", object, snapshot.Edges, wantTargets)
 		}
 	}
-	if store.stats.LiveCells != liveCells || store.stats.LiveRegions != liveRegions {
-		return invariantError("stats live cells/regions = %d/%d, derived %d/%d", store.stats.LiveCells, store.stats.LiveRegions, liveCells, liveRegions)
+	if store.stats.LiveSlots != liveSlots || store.stats.LiveCells != liveCells || store.stats.LiveStrings != liveStrings || store.stats.LiveBytes != liveBytes || store.stats.LiveRegions != liveRegions {
+		return invariantError("stats slots/cells/strings/bytes/regions = %d/%d/%d/%d/%d, derived %d/%d/%d/%d/%d", store.stats.LiveSlots, store.stats.LiveCells, store.stats.LiveStrings, store.stats.LiveBytes, store.stats.LiveRegions, liveSlots, liveCells, liveStrings, liveBytes, liveRegions)
 	}
-	if store.closed && (liveCells != 0 || liveRegions != 0) {
-		return invariantError("closed store retains %d cells in %d regions", liveCells, liveRegions)
+	if store.closed && (liveSlots != 0 || liveRegions != 0) {
+		return invariantError("closed store retains %d slots in %d regions", liveSlots, liveRegions)
 	}
 	if store.sharedOwner.Value == 0 {
 		if store.sharedClaim != 0 {

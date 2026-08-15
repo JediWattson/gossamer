@@ -116,6 +116,7 @@ func TestRealmQueuePublishSharesImmutableRegion(t *testing.T) {
 		t.Fatal(err)
 	}
 	var published memory.Ref
+	var publishedText memory.Ref
 	var read bool
 	if _, err := source.EnqueueTask(func(task *browserruntime.TaskContext) error {
 		var allocErr error
@@ -123,7 +124,11 @@ func TestRealmQueuePublishSharesImmutableRegion(t *testing.T) {
 		if allocErr != nil {
 			return allocErr
 		}
-		if err := task.Set(published, 0, memory.StringValue("shared")); err != nil {
+		publishedText, allocErr = task.NewString("shared")
+		if allocErr != nil {
+			return allocErr
+		}
+		if err := task.Set(published, 0, memory.RefValue(publishedText)); err != nil {
 			return err
 		}
 		_, err := task.Publish(destination, func(task *browserruntime.TaskContext) error {
@@ -131,8 +136,15 @@ func TestRealmQueuePublishSharesImmutableRegion(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			read = len(cell.Fields) == 1 && cell.Fields[0].String() == "shared"
-			if err := task.Set(task.Refs[0], 0, memory.StringValue("mutated")); !errors.Is(err, memory.ErrImmutableRegion) {
+			if len(cell.Fields) != 1 || !cell.Fields[0].IsRef() {
+				t.Fatalf("published Cell = %#v", cell)
+			}
+			text, err := task.DerefString(cell.Fields[0].Ref())
+			if err != nil {
+				return err
+			}
+			read = text == "shared"
+			if err := task.Set(task.Refs[0], 0, memory.UndefinedValue()); !errors.Is(err, memory.ErrImmutableRegion) {
 				t.Fatalf("published Set error = %v, want ErrImmutableRegion", err)
 			}
 			return nil

@@ -16,7 +16,7 @@ func TestStaleRefNeverResolvesAfterSlotOrRegionReuse(t *testing.T) {
 	owner := realmOwner(1)
 	region := mustRegion(t, store, owner)
 	first := mustAlloc(t, store, owner, region)
-	if err := store.Set(owner, first, 0, memory.StringValue("first")); err != nil {
+	if err := store.Set(owner, first, 0, memory.NumberValue(1)); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Free(owner, first); err != nil {
@@ -42,6 +42,62 @@ func TestStaleRefNeverResolvesAfterSlotOrRegionReuse(t *testing.T) {
 	}
 	if _, err := store.Deref(owner, second); !errors.Is(err, memory.ErrStaleRef) {
 		t.Fatalf("Deref(destroyed region) error = %v, want ErrStaleRef", err)
+	}
+}
+
+func TestNativeStringHasTypedLifetimeAndPromotion(t *testing.T) {
+	t.Parallel()
+
+	store := memory.NewStore(nil)
+	defer store.Close()
+	owner := realmOwner(14)
+	reader := realmOwner(15)
+	region := mustRegion(t, store, owner)
+	root := mustAlloc(t, store, owner, region)
+	text, err := store.AllocString(owner, region, "hello, region heap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := store.DerefString(owner, text); err != nil || got != "hello, region heap" {
+		t.Fatalf("DerefString() = %q, %v", got, err)
+	}
+	if _, err := store.DerefCell(owner, text); !errors.Is(err, memory.ErrTypeMismatch) {
+		t.Fatalf("DerefCell(String) error = %v, want ErrTypeMismatch", err)
+	}
+	if _, err := store.DerefString(owner, root); !errors.Is(err, memory.ErrTypeMismatch) {
+		t.Fatalf("DerefString(Cell) error = %v, want ErrTypeMismatch", err)
+	}
+	if err := store.Set(owner, root, 0, memory.RefValue(text)); err != nil {
+		t.Fatal(err)
+	}
+
+	promoted, err := store.Promote(owner, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	promotedRoot, err := store.DerefCell(reader, promoted[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	promotedText := promotedRoot.Fields[0].Ref()
+	if promotedText == text {
+		t.Fatal("promotion reused source String Ref")
+	}
+	if got, err := store.DerefString(reader, promotedText); err != nil || got != "hello, region heap" {
+		t.Fatalf("promoted DerefString() = %q, %v", got, err)
+	}
+	if err := store.ReleaseOwner(owner); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DerefString(owner, text); !errors.Is(err, memory.ErrStaleRef) {
+		t.Fatalf("source String after release = %v, want ErrStaleRef", err)
+	}
+	stats := store.Stats()
+	if stats.LiveSlots != 2 || stats.LiveCells != 1 || stats.LiveStrings != 1 || stats.LiveBytes != uint64(len("hello, region heap")) {
+		t.Fatalf("Stats() = %#v", stats)
+	}
+	if err := store.CheckInvariants(); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -21,8 +21,10 @@ var (
 	ErrImmutableRegion      = errors.New("memory: published region is immutable")
 	ErrAccessDenied         = errors.New("memory: private region access denied")
 	ErrStaleRef             = errors.New("memory: stale reference")
+	ErrTypeMismatch         = errors.New("memory: heap object type mismatch")
 	ErrInvalidField         = errors.New("memory: invalid field")
-	ErrCellReferenced       = errors.New("memory: cell still has incoming references")
+	ErrObjectReferenced     = errors.New("memory: heap object still has incoming references")
+	ErrCellReferenced       = ErrObjectReferenced
 	ErrRegionReferenced     = errors.New("memory: region still has incoming references")
 	ErrExplicitSendRequired = errors.New("memory: private refs require Transfer, Publish, or Copy")
 	ErrInvalidTransfer      = errors.New("memory: transfer destination is not a queue")
@@ -33,7 +35,10 @@ var (
 type Stats struct {
 	Allocations        uint64
 	Frees              uint64
+	LiveSlots          uint64
 	LiveCells          uint64
+	LiveStrings        uint64
+	LiveBytes          uint64
 	LiveRegions        uint64
 	BulkRegionReleases uint64
 }
@@ -41,6 +46,21 @@ type Stats struct {
 type objectEdge struct {
 	from ownership.ObjectID
 	to   ownership.ObjectID
+}
+
+func typeError(ref Ref, got, want HeapKind) error {
+	return fmt.Errorf("%w: %s contains %s, want %s", ErrTypeMismatch, ref, got, want)
+}
+
+func (kind HeapKind) String() string {
+	switch kind {
+	case HeapCell:
+		return "Cell"
+	case HeapString:
+		return "String"
+	default:
+		return fmt.Sprintf("HeapKind(%d)", kind)
+	}
 }
 
 // Store is a concurrency-safe native heap whose Cells are mirrored by the
@@ -148,15 +168,28 @@ func (store *Store) Region(id RegionID) (Region, error) {
 }
 
 func (store *Store) Alloc(owner ownership.OwnerID, regionID RegionID) (Ref, error) {
+	return store.AllocCell(owner, regionID)
+}
+
+// AllocCell allocates the synthetic field container used by the ownership
+// tests. Alloc remains its compatibility alias.
+func (store *Store) AllocCell(owner ownership.OwnerID, regionID RegionID) (Ref, error) {
 	if store == nil {
 		return Ref{}, fmt.Errorf("memory: nil store")
 	}
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
-	return store.allocLocked(owner, regionID, false)
+	return store.allocKindLocked(owner, regionID, HeapCell, false)
 }
 
 func (store *Store) allocLocked(owner ownership.OwnerID, regionID RegionID, internal bool) (Ref, error) {
+	return store.allocKindLocked(owner, regionID, HeapCell, internal)
+}
+
+func (store *Store) allocKindLocked(owner ownership.OwnerID, regionID RegionID, kind HeapKind, internal bool) (Ref, error) {
+	if kind != HeapCell && kind != HeapString {
+		return Ref{}, fmt.Errorf("%w: heap kind %d", ErrTypeMismatch, kind)
+	}
 	region, err := store.mutableRegionLocked(owner, regionID, internal)
 	if err != nil {
 		return Ref{}, err
@@ -169,23 +202,47 @@ func (store *Store) allocLocked(owner ownership.OwnerID, regionID RegionID, inte
 	if len(region.free) != 0 {
 		index = region.free[len(region.free)-1]
 		region.free = region.free[:len(region.free)-1]
-		region.Slots[index].Occupied = true
-		region.Slots[index].object = object
-		region.Slots[index].Cell = Cell{}
+		slot := &region.Slots[index]
+		slot.Occupied = true
+		slot.object = object
+		clearSlotPayload(slot)
+		slot.Kind = kind
 	} else {
 		if uint64(len(region.Slots)) > math.MaxUint32 {
 			_ = store.ledger.Release(object, owner)
 			return Ref{}, fmt.Errorf("memory: region R%d exhausted slots", regionID)
 		}
 		index = uint32(len(region.Slots))
-		region.Slots = append(region.Slots, Slot{Generation: 1, Occupied: true, object: object})
+		region.Slots = append(region.Slots, Slot{Generation: 1, Kind: kind, Occupied: true, object: object})
 	}
 	store.stats.Allocations++
-	store.stats.LiveCells++
+	store.stats.LiveSlots++
+	store.recordKindAllocationLocked(kind, 0)
 	return Ref{Region: regionID, Slot: index, Gen: region.Slots[index].Generation}, nil
 }
 
+// AllocString clones text into an immutable String slot owned by regionID.
+func (store *Store) AllocString(owner ownership.OwnerID, regionID RegionID, text string) (Ref, error) {
+	if store == nil {
+		return Ref{}, fmt.Errorf("memory: nil store")
+	}
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+	ref, err := store.allocKindLocked(owner, regionID, HeapString, false)
+	if err != nil {
+		return Ref{}, err
+	}
+	_, slot, _ := store.slotLocked(ref)
+	slot.String = cloneString(StringObject{Text: text})
+	store.stats.LiveBytes += uint64(len(slot.String.Text))
+	return ref, nil
+}
+
 func (store *Store) Deref(owner ownership.OwnerID, ref Ref) (Cell, error) {
+	return store.DerefCell(owner, ref)
+}
+
+func (store *Store) DerefCell(owner ownership.OwnerID, ref Ref) (Cell, error) {
 	if store == nil {
 		return Cell{}, fmt.Errorf("memory: nil store")
 	}
@@ -195,7 +252,27 @@ func (store *Store) Deref(owner ownership.OwnerID, ref Ref) (Cell, error) {
 	if err != nil {
 		return Cell{}, err
 	}
+	if slot.Kind != HeapCell {
+		return Cell{}, typeError(ref, slot.Kind, HeapCell)
+	}
 	return cloneCell(slot.Cell), nil
+}
+
+// DerefString returns the immutable native string payload for ref.
+func (store *Store) DerefString(owner ownership.OwnerID, ref Ref) (string, error) {
+	if store == nil {
+		return "", fmt.Errorf("memory: nil store")
+	}
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+	_, slot, err := store.readSlotLocked(owner, ref)
+	if err != nil {
+		return "", err
+	}
+	if slot.Kind != HeapString {
+		return "", typeError(ref, slot.Kind, HeapString)
+	}
+	return slot.String.Text, nil
 }
 
 func (store *Store) Get(owner ownership.OwnerID, ref Ref, field int) (Value, error) {
@@ -225,6 +302,9 @@ func (store *Store) setLocked(owner ownership.OwnerID, object Ref, field int, va
 	region, slot, err := store.writeSlotLocked(owner, object, internal)
 	if err != nil {
 		return err
+	}
+	if slot.Kind != HeapCell {
+		return typeError(object, slot.Kind, HeapCell)
 	}
 	var targetRegion *Region
 	var targetSlot *Slot
@@ -293,13 +373,14 @@ func (store *Store) Free(owner ownership.OwnerID, ref Ref) error {
 			return fmt.Errorf("%w: %s", ErrCellReferenced, ref)
 		}
 	}
-	if err := store.unlinkCellLocked(region, slot); err != nil {
+	if err := store.unlinkSlotLocked(region, slot); err != nil {
 		return err
 	}
 	if err := store.ledger.Release(slot.object, region.Owner); err != nil {
 		return err
 	}
-	slot.Cell = Cell{}
+	store.recordKindFreeLocked(slot)
+	clearSlotPayload(slot)
 	slot.object = 0
 	slot.Occupied = false
 	if slot.Generation != math.MaxUint32 {
@@ -307,7 +388,7 @@ func (store *Store) Free(owner ownership.OwnerID, ref Ref) error {
 		region.free = append(region.free, ref.Slot)
 	}
 	store.stats.Frees++
-	store.stats.LiveCells--
+	store.stats.LiveSlots--
 	return nil
 }
 
@@ -510,6 +591,29 @@ func (store *Store) Stats() Stats {
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
 	return store.stats
+}
+
+func (store *Store) recordKindAllocationLocked(kind HeapKind, bytes uint64) {
+	switch kind {
+	case HeapCell:
+		store.stats.LiveCells++
+	case HeapString:
+		store.stats.LiveStrings++
+	}
+	store.stats.LiveBytes += bytes
+}
+
+func (store *Store) recordKindFreeLocked(slot *Slot) {
+	if slot == nil || !slot.Occupied {
+		return
+	}
+	switch slot.Kind {
+	case HeapCell:
+		store.stats.LiveCells--
+	case HeapString:
+		store.stats.LiveStrings--
+		store.stats.LiveBytes -= uint64(len(slot.String.Text))
+	}
 }
 
 func (store *Store) Close() error {
@@ -717,8 +821,8 @@ func (store *Store) unlinkLocked(fromRegion RegionID, fromObject ownership.Objec
 	return nil
 }
 
-func (store *Store) unlinkCellLocked(region *Region, slot *Slot) error {
-	for _, value := range slot.Cell.Fields {
+func (store *Store) unlinkSlotLocked(region *Region, slot *Slot) error {
+	for _, value := range slotReferences(slot) {
 		if !value.IsRef() {
 			continue
 		}
@@ -759,7 +863,7 @@ func (store *Store) destroyRegionsLocked(ids map[RegionID]struct{}) error {
 		for index := range region.Slots {
 			slot := &region.Slots[index]
 			if slot.Occupied {
-				if err := store.unlinkCellLocked(region, slot); err != nil {
+				if err := store.unlinkSlotLocked(region, slot); err != nil {
 					return err
 				}
 			}
@@ -775,13 +879,14 @@ func (store *Store) destroyRegionsLocked(ids map[RegionID]struct{}) error {
 			if err := store.ledger.Release(slot.object, region.Owner); err != nil {
 				return err
 			}
-			slot.Cell = Cell{}
+			store.recordKindFreeLocked(slot)
+			clearSlotPayload(slot)
 			slot.object = 0
 			slot.Occupied = false
 			if slot.Generation != math.MaxUint32 {
 				slot.Generation++
 			}
-			store.stats.LiveCells--
+			store.stats.LiveSlots--
 		}
 		region.free = nil
 		region.State = RegionDestroyed
@@ -947,7 +1052,7 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 		}
 		seen[ref] = struct{}{}
 		order = append(order, ref)
-		for _, value := range slot.Cell.Fields {
+		for _, value := range slotReferences(slot) {
 			if value.IsRef() {
 				queue = append(queue, value.Ref())
 			}
@@ -966,24 +1071,38 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 	store.stats.LiveRegions++
 	mapping := make(map[Ref]Ref, len(order))
 	for _, source := range order {
-		copyRef, allocErr := store.allocLocked(to, destination.ID, true)
+		_, sourceSlot, _ := store.slotLocked(source)
+		copyRef, allocErr := store.allocKindLocked(to, destination.ID, sourceSlot.Kind, true)
 		if allocErr != nil {
 			_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
 			return nil, allocErr
+		}
+		if sourceSlot.Kind == HeapString {
+			_, copySlot, _ := store.slotLocked(copyRef)
+			copySlot.String = cloneString(sourceSlot.String)
+			store.stats.LiveBytes += uint64(len(copySlot.String.Text))
 		}
 		mapping[source] = copyRef
 	}
 	for _, source := range order {
 		_, sourceSlot, _ := store.slotLocked(source)
 		copyRef := mapping[source]
-		for field, value := range sourceSlot.Cell.Fields {
-			if value.IsRef() {
-				value = RefValue(mapping[value.Ref()])
+		switch sourceSlot.Kind {
+		case HeapCell:
+			for field, value := range sourceSlot.Cell.Fields {
+				if value.IsRef() {
+					value = RefValue(mapping[value.Ref()])
+				}
+				if err := store.setLocked(to, copyRef, field, value, true); err != nil {
+					_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
+					return nil, err
+				}
 			}
-			if err := store.setLocked(to, copyRef, field, value, true); err != nil {
-				_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
-				return nil, err
-			}
+		case HeapString:
+			// Immutable payload was cloned during allocation.
+		default:
+			_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
+			return nil, fmt.Errorf("%w: cannot copy heap kind %d", ErrTypeMismatch, sourceSlot.Kind)
 		}
 	}
 	result := make([]Ref, len(roots))

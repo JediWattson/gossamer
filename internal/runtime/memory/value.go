@@ -6,9 +6,9 @@ type ValueKind uint8
 
 const (
 	ValueUndefined ValueKind = iota
+	ValueNull
 	ValueBool
 	ValueNumber
-	ValueString
 	ValueReference
 )
 
@@ -18,17 +18,14 @@ type Value struct {
 	kind   ValueKind
 	bool   bool
 	number float64
-	text   string
 	ref    Ref
 }
 
 func UndefinedValue() Value      { return Value{} }
+func NullValue() Value           { return Value{kind: ValueNull} }
 func BoolValue(value bool) Value { return Value{kind: ValueBool, bool: value} }
 func NumberValue(value float64) Value {
 	return Value{kind: ValueNumber, number: value}
-}
-func StringValue(value string) Value {
-	return Value{kind: ValueString, text: value}
 }
 func RefValue(ref Ref) Value { return Value{kind: ValueReference, ref: ref} }
 
@@ -37,4 +34,3 @@ func (value Value) IsRef() bool     { return value.kind == ValueReference }
 func (value Value) Ref() Ref        { return value.ref }
 func (value Value) Bool() bool      { return value.bool }
 func (value Value) Number() float64 { return value.number }
-func (value Value) String() string  { return value.text }

@@ -1,6 +1,10 @@
 package memory
 
-import "github.com/JediWattson/gossamer/internal/runtime/ownership"
+import (
+	"strings"
+
+	"github.com/JediWattson/gossamer/internal/runtime/ownership"
+)
 
 // RegionState describes whether storage is mutable, moving through a queue,
 // globally readable, or gone.
@@ -18,10 +22,28 @@ type Cell struct {
 	Fields []Value
 }
 
-// Slot holds one generation-checked Cell.
+// HeapKind identifies the concrete payload stored in a generation-checked
+// slot. Refs stay untyped so the Store can reject type confusion at deref.
+type HeapKind uint8
+
+const (
+	HeapInvalid HeapKind = iota
+	HeapCell
+	HeapString
+)
+
+// StringObject is the first real typed native-heap payload. Text is immutable;
+// cloning a graph clones its backing bytes into the destination region.
+type StringObject struct {
+	Text string
+}
+
+// Slot holds one generation-checked typed heap payload.
 type Slot struct {
 	Generation uint32
+	Kind       HeapKind
 	Cell       Cell
+	String     StringObject
 	Occupied   bool
 
 	object ownership.ObjectID
@@ -43,6 +65,40 @@ func cloneCell(cell Cell) Cell {
 	return Cell{Fields: append([]Value(nil), cell.Fields...)}
 }
 
+func cloneString(value StringObject) StringObject {
+	return StringObject{Text: strings.Clone(value.Text)}
+}
+
+func cloneSlot(slot Slot) Slot {
+	return Slot{
+		Generation: slot.Generation,
+		Kind:       slot.Kind,
+		Cell:       cloneCell(slot.Cell),
+		String:     cloneString(slot.String),
+		Occupied:   slot.Occupied,
+	}
+}
+
+func slotReferences(slot *Slot) []Value {
+	if slot == nil || !slot.Occupied {
+		return nil
+	}
+	if slot.Kind == HeapCell {
+		return slot.Cell.Fields
+	}
+	return nil
+}
+
+func slotStorageEmpty(slot *Slot) bool {
+	return slot != nil && slot.Kind == HeapInvalid && len(slot.Cell.Fields) == 0 && slot.String.Text == ""
+}
+
+func clearSlotPayload(slot *Slot) {
+	slot.Kind = HeapInvalid
+	slot.Cell = Cell{}
+	slot.String = StringObject{}
+}
+
 func cloneRegion(region *Region) Region {
 	result := Region{
 		ID:    region.ID,
@@ -51,11 +107,7 @@ func cloneRegion(region *Region) Region {
 		Slots: make([]Slot, len(region.Slots)),
 	}
 	for index, slot := range region.Slots {
-		result.Slots[index] = Slot{
-			Generation: slot.Generation,
-			Cell:       cloneCell(slot.Cell),
-			Occupied:   slot.Occupied,
-		}
+		result.Slots[index] = cloneSlot(slot)
 	}
 	return result
 }
