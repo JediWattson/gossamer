@@ -39,6 +39,7 @@ func (store *Store) CheckInvariants() error {
 	liveBigInts := uint64(0)
 	liveSymbols := uint64(0)
 	liveArrayBuffers := uint64(0)
+	liveTypedArrays := uint64(0)
 	liveBytes := uint64(0)
 	liveRegions := uint64(0)
 	for owner, claim := range store.ownerClaims {
@@ -316,6 +317,32 @@ func (store *Store) CheckInvariants() error {
 				if slot.ArrayBuffer.Detached && len(slot.ArrayBuffer.Bytes) != 0 {
 					return invariantError("detached ArrayBuffer %s retains %d bytes", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, len(slot.ArrayBuffer.Bytes))
 				}
+			case HeapTypedArray:
+				liveTypedArrays++
+				if slotHasOtherPayload(slot, HeapTypedArray) {
+					return invariantError("TypedArray %s retains another typed payload", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
+				}
+				size, valid := elementSize(slot.TypedArray.Element)
+				if !valid || slot.TypedArray.ByteOffset%size != 0 {
+					return invariantError("TypedArray %s has invalid element %d or offset %d", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot.TypedArray.Element, slot.TypedArray.ByteOffset)
+				}
+				bufferRegion := store.regions[slot.TypedArray.Buffer.Region]
+				if bufferRegion == nil || bufferRegion.State == RegionDestroyed || uint64(slot.TypedArray.Buffer.Slot) >= uint64(len(bufferRegion.Slots)) {
+					return invariantError("TypedArray %s has stale buffer %s", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot.TypedArray.Buffer)
+				}
+				bufferSlot := &bufferRegion.Slots[slot.TypedArray.Buffer.Slot]
+				if !bufferSlot.Occupied || bufferSlot.Generation != slot.TypedArray.Buffer.Gen || bufferSlot.Kind != HeapArrayBuffer {
+					return invariantError("TypedArray %s has non-ArrayBuffer target %s", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot.TypedArray.Buffer)
+				}
+				byteLength := slot.TypedArray.Length * size
+				if slot.TypedArray.Length != 0 && byteLength/slot.TypedArray.Length != size {
+					return invariantError("TypedArray %s byte length overflows", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
+				}
+				if !bufferSlot.ArrayBuffer.Detached {
+					if _, _, err := bufferRange(len(bufferSlot.ArrayBuffer.Bytes), slot.TypedArray.ByteOffset, byteLength); err != nil {
+						return invariantError("TypedArray %s range: %v", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, err)
+					}
+				}
 			default:
 				return invariantError("R%d occupied slot %d has unknown heap kind %d", id, index, slot.Kind)
 			}
@@ -386,8 +413,8 @@ func (store *Store) CheckInvariants() error {
 			return invariantError("ledger object %d edges %v, want %v", object, snapshot.Edges, wantTargets)
 		}
 	}
-	if store.stats.LiveSlots != liveSlots || store.stats.LiveCells != liveCells || store.stats.LiveStrings != liveStrings || store.stats.LiveObjects != liveObjects || store.stats.LiveArrays != liveArrays || store.stats.LiveContexts != liveContexts || store.stats.LiveFunctions != liveFunctions || store.stats.LivePromises != livePromises || store.stats.LiveBigInts != liveBigInts || store.stats.LiveSymbols != liveSymbols || store.stats.LiveArrayBuffers != liveArrayBuffers || store.stats.LiveBytes != liveBytes || store.stats.LiveRegions != liveRegions {
-		return invariantError("stats slots/cells/strings/objects/arrays/contexts/functions/promises/bigints/symbols/buffers/bytes/regions = %d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d, derived %d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d", store.stats.LiveSlots, store.stats.LiveCells, store.stats.LiveStrings, store.stats.LiveObjects, store.stats.LiveArrays, store.stats.LiveContexts, store.stats.LiveFunctions, store.stats.LivePromises, store.stats.LiveBigInts, store.stats.LiveSymbols, store.stats.LiveArrayBuffers, store.stats.LiveBytes, store.stats.LiveRegions, liveSlots, liveCells, liveStrings, liveObjects, liveArrays, liveContexts, liveFunctions, livePromises, liveBigInts, liveSymbols, liveArrayBuffers, liveBytes, liveRegions)
+	if store.stats.LiveSlots != liveSlots || store.stats.LiveCells != liveCells || store.stats.LiveStrings != liveStrings || store.stats.LiveObjects != liveObjects || store.stats.LiveArrays != liveArrays || store.stats.LiveContexts != liveContexts || store.stats.LiveFunctions != liveFunctions || store.stats.LivePromises != livePromises || store.stats.LiveBigInts != liveBigInts || store.stats.LiveSymbols != liveSymbols || store.stats.LiveArrayBuffers != liveArrayBuffers || store.stats.LiveTypedArrays != liveTypedArrays || store.stats.LiveBytes != liveBytes || store.stats.LiveRegions != liveRegions {
+		return invariantError("stats slots/cells/strings/objects/arrays/contexts/functions/promises/bigints/symbols/buffers/views/bytes/regions = %d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d, derived %d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d", store.stats.LiveSlots, store.stats.LiveCells, store.stats.LiveStrings, store.stats.LiveObjects, store.stats.LiveArrays, store.stats.LiveContexts, store.stats.LiveFunctions, store.stats.LivePromises, store.stats.LiveBigInts, store.stats.LiveSymbols, store.stats.LiveArrayBuffers, store.stats.LiveTypedArrays, store.stats.LiveBytes, store.stats.LiveRegions, liveSlots, liveCells, liveStrings, liveObjects, liveArrays, liveContexts, liveFunctions, livePromises, liveBigInts, liveSymbols, liveArrayBuffers, liveTypedArrays, liveBytes, liveRegions)
 	}
 	if store.closed && (liveSlots != 0 || liveRegions != 0) {
 		return invariantError("closed store retains %d slots in %d regions", liveSlots, liveRegions)
@@ -480,6 +507,9 @@ func slotHasOtherPayload(slot *Slot, kind HeapKind) bool {
 		return true
 	}
 	if kind != HeapArrayBuffer && (len(slot.ArrayBuffer.Bytes) != 0 || slot.ArrayBuffer.Detached) {
+		return true
+	}
+	if kind != HeapTypedArray && slot.TypedArray != (TypedArray{}) {
 		return true
 	}
 	return false

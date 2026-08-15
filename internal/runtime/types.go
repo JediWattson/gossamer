@@ -344,6 +344,34 @@ func (context *TaskContext) DetachArrayBuffer(ref memory.Ref) error {
 	return context.Realm.store.DetachArrayBuffer(context.Owner, ref)
 }
 
+func (context *TaskContext) NewTypedArray(buffer memory.Ref, element memory.ElementKind, byteOffset, length uint64) (memory.Ref, error) {
+	if context == nil || context.Realm == nil {
+		return memory.Ref{}, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.AllocTypedArray(context.Owner, context.MemoryRegion, buffer, element, byteOffset, length)
+}
+
+func (context *TaskContext) DerefTypedArray(ref memory.Ref) (memory.TypedArray, error) {
+	if context == nil || context.Realm == nil {
+		return memory.TypedArray{}, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.DerefTypedArray(context.Owner, ref)
+}
+
+func (context *TaskContext) ReadTypedArrayElement(ref memory.Ref, index uint64) (float64, error) {
+	if context == nil || context.Realm == nil {
+		return 0, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.ReadTypedArrayElement(context.Owner, ref, index)
+}
+
+func (context *TaskContext) WriteTypedArrayElement(ref memory.Ref, index uint64, number float64) error {
+	if context == nil || context.Realm == nil {
+		return fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.WriteTypedArrayElement(context.Owner, ref, index, number)
+}
+
 func (context *TaskContext) Set(ref memory.Ref, field int, value memory.Value) error {
 	if context == nil || context.Realm == nil {
 		return fmt.Errorf("runtime: nil task context")

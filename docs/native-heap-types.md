@@ -111,6 +111,18 @@ releases the bytes, is idempotent, and causes later reads or writes to fail.
 Copy and Promote clone attached bytes rather than sharing mutation. Detached
 state is preserved, and live-byte telemetry drops immediately on detach.
 
+### TypedArray
+
+Native TypedArrays are immutable descriptors over an ArrayBuffer Ref. The
+Store supports signed and unsigned 8/16/32-bit integers, clamped bytes, and
+32/64-bit floats with alignment and range validation. Element access is
+little-endian; integer writes wrap and clamped-byte writes use ties-to-even.
+
+Multiple views share buffer mutation. Detachment is observed through every
+view. Copy and Promote clone the reachable buffer and retarget the copied view,
+so mutation never leaks back to the source graph. BigInt views and DataView are
+deliberately separate later payloads.
+
 ## Deliberate boundaries
 
 These native payloads are not yet ECMAScript implementations. String

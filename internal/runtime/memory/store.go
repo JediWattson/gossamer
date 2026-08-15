@@ -38,6 +38,7 @@ var (
 	ErrInvalidSymbol         = errors.New("memory: invalid Symbol")
 	ErrDetachedBuffer        = errors.New("memory: ArrayBuffer is detached")
 	ErrBufferBounds          = errors.New("memory: buffer access is out of bounds")
+	ErrInvalidTypedArray     = errors.New("memory: invalid TypedArray view")
 	ErrObjectReferenced      = errors.New("memory: heap object still has incoming references")
 	ErrCellReferenced        = ErrObjectReferenced
 	ErrRegionReferenced      = errors.New("memory: region still has incoming references")
@@ -61,6 +62,7 @@ type Stats struct {
 	LiveBigInts        uint64
 	LiveSymbols        uint64
 	LiveArrayBuffers   uint64
+	LiveTypedArrays    uint64
 	LiveBytes          uint64
 	LiveRegions        uint64
 	BulkRegionReleases uint64
@@ -97,6 +99,8 @@ func (kind HeapKind) String() string {
 		return "Symbol"
 	case HeapArrayBuffer:
 		return "ArrayBuffer"
+	case HeapTypedArray:
+		return "TypedArray"
 	default:
 		return fmt.Sprintf("HeapKind(%d)", kind)
 	}
@@ -226,7 +230,7 @@ func (store *Store) allocLocked(owner ownership.OwnerID, regionID RegionID, inte
 }
 
 func (store *Store) allocKindLocked(owner ownership.OwnerID, regionID RegionID, kind HeapKind, internal bool) (Ref, error) {
-	if kind < HeapCell || kind > HeapArrayBuffer {
+	if kind < HeapCell || kind > HeapTypedArray {
 		return Ref{}, fmt.Errorf("%w: heap kind %d", ErrTypeMismatch, kind)
 	}
 	region, err := store.mutableRegionLocked(owner, regionID, internal)
@@ -666,6 +670,8 @@ func (store *Store) recordKindAllocationLocked(kind HeapKind, bytes uint64) {
 		store.stats.LiveSymbols++
 	case HeapArrayBuffer:
 		store.stats.LiveArrayBuffers++
+	case HeapTypedArray:
+		store.stats.LiveTypedArrays++
 	}
 	store.stats.LiveBytes += bytes
 }
@@ -699,6 +705,8 @@ func (store *Store) recordKindFreeLocked(slot *Slot) {
 	case HeapArrayBuffer:
 		store.stats.LiveArrayBuffers--
 		store.stats.LiveBytes -= uint64(len(slot.ArrayBuffer.Bytes))
+	case HeapTypedArray:
+		store.stats.LiveTypedArrays--
 	}
 }
 
@@ -1283,6 +1291,13 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 			}
 		case HeapArrayBuffer:
 			// Mutable bytes were cloned during allocation.
+		case HeapTypedArray:
+			view := cloneTypedArray(sourceSlot.TypedArray)
+			view.Buffer = mapping[view.Buffer]
+			if err := store.initializeTypedArrayLocked(to, copyRef, view, true); err != nil {
+				_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
+				return nil, err
+			}
 		default:
 			_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
 			return nil, fmt.Errorf("%w: cannot copy heap kind %d", ErrTypeMismatch, sourceSlot.Kind)

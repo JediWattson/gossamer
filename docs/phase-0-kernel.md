@@ -45,7 +45,7 @@ claim(region, object) is either present or absent
   sparse Arrays, lexical Contexts, immutable Function descriptors, and
   explicitly drained Promises, and canonical BigInts are the first concrete
   payloads. Symbols keep semantic identity across physical graph copies, while
-  ArrayBuffers own explicitly detachable bytes.
+  ArrayBuffers own explicitly detachable bytes and typed numeric views.
 - Freed slots advance their generation and exhausted generations are retired,
   so a stale Ref cannot become valid again.
 - Every mutable physical region has exactly one owner. Published regions are
