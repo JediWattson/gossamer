@@ -30,6 +30,7 @@ const (
 	HeapInvalid HeapKind = iota
 	HeapCell
 	HeapString
+	HeapObject
 )
 
 // StringObject is the first real typed native-heap payload. Text is immutable;
@@ -44,6 +45,7 @@ type Slot struct {
 	Kind       HeapKind
 	Cell       Cell
 	String     StringObject
+	Object     Object
 	Occupied   bool
 
 	object ownership.ObjectID
@@ -75,6 +77,7 @@ func cloneSlot(slot Slot) Slot {
 		Kind:       slot.Kind,
 		Cell:       cloneCell(slot.Cell),
 		String:     cloneString(slot.String),
+		Object:     cloneObject(slot.Object),
 		Occupied:   slot.Occupied,
 	}
 }
@@ -86,17 +89,26 @@ func slotReferences(slot *Slot) []Value {
 	if slot.Kind == HeapCell {
 		return slot.Cell.Fields
 	}
+	if slot.Kind == HeapObject {
+		values := make([]Value, 0, 1+len(slot.Object.Properties)*2)
+		values = append(values, slot.Object.Prototype)
+		for _, property := range slot.Object.Properties {
+			values = append(values, RefValue(property.Name), property.Value)
+		}
+		return values
+	}
 	return nil
 }
 
 func slotStorageEmpty(slot *Slot) bool {
-	return slot != nil && slot.Kind == HeapInvalid && len(slot.Cell.Fields) == 0 && slot.String.Text == ""
+	return slot != nil && slot.Kind == HeapInvalid && len(slot.Cell.Fields) == 0 && slot.String.Text == "" && slot.Object.Prototype == (Value{}) && len(slot.Object.Properties) == 0
 }
 
 func clearSlotPayload(slot *Slot) {
 	slot.Kind = HeapInvalid
 	slot.Cell = Cell{}
 	slot.String = StringObject{}
+	slot.Object = Object{}
 }
 
 func cloneRegion(region *Region) Region {

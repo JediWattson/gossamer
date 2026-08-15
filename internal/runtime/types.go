@@ -76,6 +76,50 @@ func (context *TaskContext) DerefString(ref memory.Ref) (string, error) {
 	return context.Realm.store.DerefString(context.Owner, ref)
 }
 
+// NewHeapObject allocates an empty native object. NewObject remains the
+// ownership-ledger test helper and intentionally returns a shadow ObjectID.
+func (context *TaskContext) NewHeapObject() (memory.Ref, error) {
+	if context == nil || context.Realm == nil {
+		return memory.Ref{}, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.AllocObject(context.Owner, context.MemoryRegion)
+}
+
+func (context *TaskContext) DerefObject(ref memory.Ref) (memory.Object, error) {
+	if context == nil || context.Realm == nil {
+		return memory.Object{}, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.DerefObject(context.Owner, ref)
+}
+
+func (context *TaskContext) SetPrototype(object memory.Ref, prototype memory.Value) error {
+	if context == nil || context.Realm == nil {
+		return fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.SetPrototype(context.Owner, object, prototype)
+}
+
+func (context *TaskContext) SetProperty(object, name memory.Ref, value memory.Value) error {
+	if context == nil || context.Realm == nil {
+		return fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.SetProperty(context.Owner, object, name, value)
+}
+
+func (context *TaskContext) GetOwnProperty(object, name memory.Ref) (memory.Value, bool, error) {
+	if context == nil || context.Realm == nil {
+		return memory.Value{}, false, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.GetOwnProperty(context.Owner, object, name)
+}
+
+func (context *TaskContext) DeleteProperty(object, name memory.Ref) (bool, error) {
+	if context == nil || context.Realm == nil {
+		return false, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.DeleteProperty(context.Owner, object, name)
+}
+
 func (context *TaskContext) Set(ref memory.Ref, field int, value memory.Value) error {
 	if context == nil || context.Realm == nil {
 		return fmt.Errorf("runtime: nil task context")

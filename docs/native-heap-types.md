@@ -25,8 +25,20 @@ Inline scalar `Value` instances cover `undefined`, `null`, booleans, and
 numbers. A string used by another heap object is represented by `RefValue`, so
 the ordinary object and region write barriers account for that edge.
 
+### Object
+
+Native Objects store a null-or-Object prototype and insertion-ordered own
+properties. Property names are native String refs; equal String contents select
+the same property even when they arrive through different Refs. Prototype,
+name, and value references all pass through the counted write barrier.
+
+`SetProperty`, `GetOwnProperty`, and `DeleteProperty` deliberately implement
+own storage only. Prototype-chain lookup, descriptors, accessors, coercion, and
+ECMAScript key ordering belong above RegionStore.
+
 ## Deliberate boundaries
 
 These native payloads are not yet ECMAScript implementations. String
-interning, ropes, UTF-16 indexing, coercion, automatic promotion, tracing GC,
-packed refs, and V8 heap integration are outside this layer.
+interning, ropes, UTF-16 indexing, coercion, property descriptors, automatic
+promotion, tracing GC, packed refs, and V8 heap integration are outside this
+layer.
