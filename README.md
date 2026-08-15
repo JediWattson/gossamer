@@ -73,6 +73,28 @@ The display list is deliberately separate from rasterization. A future window
 backend can replay the same paint commands without replacing the document,
 style, or layout pipeline.
 
+## Phase 0 execution kernel
+
+Gossamer now has an engine-independent execution kernel under
+`internal/runtime`. A realm admits one ordered logical executor, drains its
+microtasks after each task, and can run concurrently with other realms. Its
+first-class queues are also ownership boundaries: fake runtime objects are
+published to a queue, transferred to the receiving task, and released in bulk
+when that task's logical region ends.
+
+This is semantic lifetime instrumentation, not a replacement for Go's heap or
+garbage collector. The shadow ledger records object creation, promotion,
+publication, transfer, release, destruction, and aggregate counters so the
+model can be proven before a JavaScript engine is connected. See
+[`docs/phase-0-kernel.md`](docs/phase-0-kernel.md) for the invariants and
+adoption sequence.
+
+The DOM now also has additive stable `NodeID` identity over its existing
+pointer-backed storage. A minimal `Browser`/`Page` boundary ties an indexed
+Document to its Realm, URL, resources, invalidation state, and current Frame.
+Stable-ID mutations can enqueue a later render task without changing the
+working CSS/layout/render implementation.
+
 ## What works today
 
 ### Loading and resources
@@ -92,6 +114,7 @@ style, or layout pipeline.
   `textarea`
 - Common implied elements and implied end tags
 - Deterministic DOM dumps for parser development
+- Stable `NodeID` lookup in both directions through an indexed `Document`
 - Body `<noscript>` fallback rendering because JavaScript is not enabled
 
 ### CSS, layout, and paint
@@ -123,6 +146,8 @@ style, or layout pipeline.
 | `internal/css` | Stylesheet parsing, selectors, layers, and media queries |
 | `internal/resource` | Resource discovery, caching, limits, and image decoding |
 | `internal/render` | Style computation, layout, display lists, and PNG painting |
+| `internal/runtime` | Realms, task and microtask queues, actor scheduling, and shadow ownership telemetry |
+| `internal/browser` | Browser/Page ownership, loading, stable-ID mutation scheduling, and frame invalidation |
 
 ## Current limitations
 
