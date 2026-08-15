@@ -133,6 +133,16 @@ enum class IteratorMode : int32_t {
   Entries = 3,
 };
 
+enum class DOMMutationOperation : uint8_t {
+  Append = 1,
+  Prepend = 2,
+  Before = 3,
+  After = 4,
+  ReplaceWith = 5,
+  ReplaceChildren = 6,
+  Remove = 7,
+};
+
 struct EventState {
   EventInterface interface = EventInterface::Event;
   std::string type;
@@ -416,7 +426,155 @@ gossamer_v8_realm *CurrentRealm(v8::Isolate *isolate) {
   return static_cast<gossamer_v8_realm *>(isolate->GetData(0));
 }
 
+constexpr const char *kDOMExceptionPrefix = "__GOSSAMER_DOM_EXCEPTION__:";
+
+int DOMExceptionLegacyCode(const std::string &name) {
+  if (name == "HierarchyRequestError")
+    return 3;
+  if (name == "InvalidCharacterError")
+    return 5;
+  if (name == "NotFoundError")
+    return 8;
+  if (name == "NamespaceError")
+    return 14;
+  if (name == "InvalidStateError")
+    return 11;
+  if (name == "SyntaxError")
+    return 12;
+  return 0;
+}
+
+void InitializeDOMException(v8::Isolate *isolate,
+                            v8::Local<v8::Object> object,
+                            const std::string &message,
+                            const std::string &name) {
+  v8::Local<v8::Context> context = isolate->GetCurrentContext();
+  v8::Local<v8::String> rendered_message;
+  v8::Local<v8::String> rendered_name;
+  if (!v8::String::NewFromUtf8(isolate, message.data(),
+                               v8::NewStringType::kNormal,
+                               static_cast<int>(std::min<size_t>(
+                                   message.size(),
+                                   std::numeric_limits<int>::max())))
+           .ToLocal(&rendered_message))
+    rendered_message = v8::String::Empty(isolate);
+  if (!v8::String::NewFromUtf8(isolate, name.data(),
+                               v8::NewStringType::kNormal,
+                               static_cast<int>(std::min<size_t>(
+                                   name.size(),
+                                   std::numeric_limits<int>::max())))
+           .ToLocal(&rendered_name))
+    rendered_name = v8::String::NewFromUtf8Literal(isolate, "Error");
+  object
+      ->DefineOwnProperty(context,
+                          v8::String::NewFromUtf8Literal(isolate, "message"),
+                          rendered_message,
+                          static_cast<v8::PropertyAttribute>(v8::ReadOnly |
+                                                             v8::DontEnum))
+      .FromMaybe(false);
+  object
+      ->DefineOwnProperty(context,
+                          v8::String::NewFromUtf8Literal(isolate, "name"),
+                          rendered_name,
+                          static_cast<v8::PropertyAttribute>(v8::ReadOnly |
+                                                             v8::DontEnum))
+      .FromMaybe(false);
+  object
+      ->DefineOwnProperty(
+          context, v8::String::NewFromUtf8Literal(isolate, "code"),
+          v8::Integer::New(isolate, DOMExceptionLegacyCode(name)),
+          static_cast<v8::PropertyAttribute>(v8::ReadOnly | v8::DontEnum))
+      .FromMaybe(false);
+}
+
+void DOMExceptionConstructor(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  if (!info.IsConstructCall()) {
+    isolate->ThrowException(v8::Exception::TypeError(
+        v8::String::NewFromUtf8Literal(isolate,
+                                       "DOMException constructor requires new")));
+    return;
+  }
+  std::string message;
+  std::string name = "Error";
+  if (info.Length() > 0 && !info[0]->IsUndefined()) {
+    v8::String::Utf8Value rendered(isolate, info[0]);
+    if (*rendered != nullptr)
+      message.assign(*rendered, rendered.length());
+  }
+  if (info.Length() > 1 && !info[1]->IsUndefined()) {
+    v8::String::Utf8Value rendered(isolate, info[1]);
+    if (*rendered != nullptr)
+      name.assign(*rendered, rendered.length());
+  }
+  InitializeDOMException(isolate, info.This(), message, name);
+  info.GetReturnValue().Set(info.This());
+}
+
+void DOMExceptionToString(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  v8::Local<v8::Context> context = isolate->GetCurrentContext();
+  v8::Local<v8::Value> name;
+  v8::Local<v8::Value> message;
+  if (!info.This()
+           ->Get(context, v8::String::NewFromUtf8Literal(isolate, "name"))
+           .ToLocal(&name) ||
+      !info.This()
+           ->Get(context,
+                 v8::String::NewFromUtf8Literal(isolate, "message"))
+           .ToLocal(&message))
+    return;
+  std::string rendered_name = UTF8Value(isolate, name);
+  std::string rendered_message = UTF8Value(isolate, message);
+  std::string result = rendered_name;
+  if (!rendered_message.empty())
+    result += ": " + rendered_message;
+  v8::Local<v8::String> rendered;
+  if (v8::String::NewFromUtf8(isolate, result.data(),
+                              v8::NewStringType::kNormal,
+                              static_cast<int>(result.size()))
+          .ToLocal(&rendered))
+    info.GetReturnValue().Set(rendered);
+}
+
 void ThrowError(v8::Isolate *isolate, const std::string &message) {
+  const size_t prefix_length = std::strlen(kDOMExceptionPrefix);
+  if (message.compare(0, prefix_length, kDOMExceptionPrefix) == 0) {
+    size_t separator = message.find(':', prefix_length);
+    if (separator != std::string::npos) {
+      std::string name = message.substr(prefix_length,
+                                        separator - prefix_length);
+      std::string detail = message.substr(separator + 1);
+      v8::Local<v8::Context> context = isolate->GetCurrentContext();
+      v8::Local<v8::Value> constructor_value;
+      if (context->Global()
+              ->Get(context,
+                    v8::String::NewFromUtf8Literal(isolate, "DOMException"))
+              .ToLocal(&constructor_value) &&
+          constructor_value->IsFunction()) {
+        v8::Local<v8::String> rendered_detail;
+        v8::Local<v8::String> rendered_name;
+        if (v8::String::NewFromUtf8(isolate, detail.data(),
+                                    v8::NewStringType::kNormal,
+                                    static_cast<int>(detail.size()))
+                    .ToLocal(&rendered_detail) &&
+            v8::String::NewFromUtf8(isolate, name.data(),
+                                    v8::NewStringType::kNormal,
+                                    static_cast<int>(name.size()))
+                    .ToLocal(&rendered_name)) {
+          v8::Local<v8::Value> arguments[] = {rendered_detail, rendered_name};
+          v8::Local<v8::Object> exception;
+          if (constructor_value.As<v8::Function>()
+                  ->NewInstance(context, 2, arguments)
+                  .ToLocal(&exception)) {
+            isolate->ThrowException(exception);
+            return;
+          }
+        }
+      }
+    }
+  }
   v8::Local<v8::String> rendered;
   if (!v8::String::NewFromUtf8(
            isolate, message.data(), v8::NewStringType::kNormal,
@@ -3788,36 +3946,61 @@ void NodeHasAttribute(const v8::FunctionCallbackInfo<v8::Value> &info) {
   info.GetReturnValue().Set(v8::Boolean::New(isolate, found != 0));
 }
 
-void NodeRemove(const v8::FunctionCallbackInfo<v8::Value> &info) {
+void NodeConvenienceMutation(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
   v8::Isolate *isolate = info.GetIsolate();
   gossamer_v8_realm *realm = CurrentRealm(isolate);
-  WrapperKey key;
-  if (!ReadReceiverKey(isolate, info.This(), &key))
+  WrapperKey receiver;
+  if (!ReadReceiverKey(isolate, info.This(), &receiver))
     return;
+  DOMMutationOperation operation = static_cast<DOMMutationOperation>(
+      info.Data().As<v8::Uint32>()->Value());
   std::string error;
   if (!RequireHost(realm, &error)) {
     ThrowError(isolate, error);
     return;
   }
-  uint32_t parent_node = 0;
-  int found = 0;
-  char *host_error = nullptr;
-  if (realm->active_host->related_node(
-          realm->active_host->execution_id, key.document, key.node, 1,
-          &parent_node, &found, &host_error) == 0) {
-    error = TakeCString(host_error);
-    ThrowError(isolate, error.empty() ? "remove traversal failed" : error);
-    return;
+
+  std::vector<uint64_t> documents;
+  std::vector<uint32_t> nodes;
+  if (operation != DOMMutationOperation::Remove) {
+    documents.reserve(info.Length());
+    nodes.reserve(info.Length());
+    for (int index = 0; index < info.Length(); ++index) {
+      WrapperKey argument;
+      if (info[index]->IsObject() &&
+          ReadWrapperKey(info[index].As<v8::Object>(), &argument)) {
+        documents.push_back(argument.document);
+        nodes.push_back(argument.node);
+        continue;
+      }
+      std::string text;
+      if (!StringFromValue(isolate, info[index], &text))
+        return;
+      char *host_error = nullptr;
+      if (realm->active_host->create_text_node(
+              realm->active_host->execution_id, text.data(), text.size(),
+              &argument.document, &argument.node, &host_error) == 0) {
+        error = TakeCString(host_error);
+        ThrowError(isolate,
+                   error.empty() ? "creating mutation text failed" : error);
+        return;
+      }
+      std::free(host_error);
+      documents.push_back(argument.document);
+      nodes.push_back(argument.node);
+    }
   }
-  std::free(host_error);
-  if (found == 0)
-    return;
-  host_error = nullptr;
-  if (realm->active_host->remove_child(
-          realm->active_host->execution_id, key.document, parent_node,
-          key.document, key.node, &host_error) == 0) {
+
+  char *host_error = nullptr;
+  if (realm->active_host->mutate_nodes(
+          realm->active_host->execution_id, receiver.document, receiver.node,
+          static_cast<uint8_t>(operation),
+          documents.empty() ? nullptr : documents.data(),
+          nodes.empty() ? nullptr : nodes.data(), nodes.size(),
+          &host_error) == 0) {
     error = TakeCString(host_error);
-    ThrowError(isolate, error.empty() ? "remove failed" : error);
+    ThrowError(isolate, error.empty() ? "DOM mutation failed" : error);
     return;
   }
   std::free(host_error);
@@ -5434,6 +5617,8 @@ void IllegalDOMConstructor(
 
 bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   v8::Isolate *isolate = realm->isolate;
+  v8::Local<v8::FunctionTemplate> dom_exception_template =
+      v8::FunctionTemplate::New(isolate, DOMExceptionConstructor);
   v8::Local<v8::FunctionTemplate> event_target_template =
       v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
   v8::Local<v8::FunctionTemplate> node_template =
@@ -5478,6 +5663,32 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
       new_event_template(EventInterface::InputEvent);
   v8::Local<v8::FunctionTemplate> focus_event_template =
       new_event_template(EventInterface::FocusEvent);
+
+  dom_exception_template->SetClassName(
+      v8::String::NewFromUtf8Literal(isolate, "DOMException"));
+  dom_exception_template->PrototypeTemplate()->Set(
+      isolate, "toString",
+      v8::FunctionTemplate::New(isolate, DOMExceptionToString));
+  dom_exception_template->PrototypeTemplate()->Set(
+      v8::Symbol::GetToStringTag(isolate),
+      v8::String::NewFromUtf8Literal(isolate, "DOMException"),
+      static_cast<v8::PropertyAttribute>(v8::ReadOnly | v8::DontEnum));
+  for (const auto &constant :
+       {std::pair<const char *, int>{"HIERARCHY_REQUEST_ERR", 3},
+        {"INVALID_CHARACTER_ERR", 5},
+        {"NOT_FOUND_ERR", 8},
+        {"INVALID_STATE_ERR", 11},
+        {"SYNTAX_ERR", 12},
+        {"NAMESPACE_ERR", 14}}) {
+    dom_exception_template->Set(
+        v8::String::NewFromUtf8(isolate, constant.first).ToLocalChecked(),
+        v8::Integer::New(isolate, constant.second),
+        static_cast<v8::PropertyAttribute>(v8::ReadOnly | v8::DontDelete));
+    dom_exception_template->PrototypeTemplate()->Set(
+        v8::String::NewFromUtf8(isolate, constant.first).ToLocalChecked(),
+        v8::Integer::New(isolate, constant.second),
+        static_cast<v8::PropertyAttribute>(v8::ReadOnly | v8::DontDelete));
+  }
 
   event_target_template->SetClassName(
       v8::String::NewFromUtf8Literal(isolate, "EventTarget"));
@@ -5800,8 +6011,6 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
                       v8::FunctionTemplate::New(isolate, NodeHasChildNodes));
   node_prototype->Set(isolate, "contains",
                       v8::FunctionTemplate::New(isolate, NodeContains));
-  node_prototype->Set(isolate, "remove",
-                      v8::FunctionTemplate::New(isolate, NodeRemove));
   node_prototype->Set(isolate, "cloneNode",
                       v8::FunctionTemplate::New(isolate, NodeCloneNode));
 
@@ -5818,11 +6027,41 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
         prototype->SetNativeDataProperty(
             v8::String::NewFromUtf8Literal(isolate, "childElementCount"),
             NodeChildElementCountGetter);
+        for (const auto &method :
+             {std::pair<const char *, DOMMutationOperation>{
+                  "append", DOMMutationOperation::Append},
+              {"prepend", DOMMutationOperation::Prepend},
+              {"replaceChildren", DOMMutationOperation::ReplaceChildren}}) {
+          prototype->Set(
+              isolate, method.first,
+              v8::FunctionTemplate::New(
+                  isolate, NodeConvenienceMutation,
+                  v8::Integer::NewFromUnsigned(
+                      isolate, static_cast<uint8_t>(method.second))));
+        }
+      };
+
+  auto install_child_node_surface =
+      [isolate](v8::Local<v8::ObjectTemplate> prototype) {
+        for (const auto &method :
+             {std::pair<const char *, DOMMutationOperation>{
+                  "before", DOMMutationOperation::Before},
+              {"after", DOMMutationOperation::After},
+              {"replaceWith", DOMMutationOperation::ReplaceWith},
+              {"remove", DOMMutationOperation::Remove}}) {
+          prototype->Set(
+              isolate, method.first,
+              v8::FunctionTemplate::New(
+                  isolate, NodeConvenienceMutation,
+                  v8::Integer::NewFromUnsigned(
+                      isolate, static_cast<uint8_t>(method.second))));
+        }
       };
 
   v8::Local<v8::ObjectTemplate> element_prototype =
       element_template->PrototypeTemplate();
   install_parent_node_surface(element_prototype);
+  install_child_node_surface(element_prototype);
   for (const char *name : {"tagName"}) {
     element_prototype->SetNativeDataProperty(
         v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
@@ -5911,6 +6150,7 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
       v8::FunctionTemplate::New(isolate, HTMLElementFocus,
                                 v8::False(isolate)));
 
+  install_child_node_surface(text_template->PrototypeTemplate());
   text_template->PrototypeTemplate()->SetNativeDataProperty(
       v8::String::NewFromUtf8Literal(isolate, "data"), NodeValueGetter,
       NodeValueSetter);
@@ -6185,7 +6425,8 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
                          constructor)
                    .FromMaybe(false);
       };
-  return expose_interface("EventTarget", event_target_template) &&
+  return expose_interface("DOMException", dom_exception_template) &&
+         expose_interface("EventTarget", event_target_template) &&
          expose_interface("Event", event_template) &&
          expose_interface("MouseEvent", mouse_event_template) &&
          expose_interface("PointerEvent", pointer_event_template) &&

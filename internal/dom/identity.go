@@ -487,7 +487,7 @@ func (document *Document) CreateElement(name string) (NodeID, error) {
 	}
 	name = strings.ToLower(name)
 	if !validDOMName(name) {
-		return InvalidNodeID, fmt.Errorf("%w: element %q", ErrInvalidName, name)
+		return InvalidNodeID, NewException(InvalidCharacterError, ErrInvalidName, "invalid element name %q", name)
 	}
 	document.store.mutex.Lock()
 	defer document.store.mutex.Unlock()
@@ -505,14 +505,14 @@ func (document *Document) CreateElementNS(namespaceURI, qualifiedName string) (N
 		return InvalidNodeID, err
 	}
 	if prefix != "" && namespaceURI == "" {
-		return InvalidNodeID, fmt.Errorf("%w: prefix %q requires a namespace", ErrNamespace, prefix)
+		return InvalidNodeID, NewException(NamespaceError, ErrNamespace, "prefix %q requires a namespace", prefix)
 	}
 	if prefix == "xml" && namespaceURI != XMLNamespace {
-		return InvalidNodeID, fmt.Errorf("%w: xml prefix requires %q", ErrNamespace, XMLNamespace)
+		return InvalidNodeID, NewException(NamespaceError, ErrNamespace, "xml prefix requires %q", XMLNamespace)
 	}
 	usesXMLNS := qualifiedName == "xmlns" || prefix == "xmlns"
 	if usesXMLNS != (namespaceURI == XMLNSNamespace) {
-		return InvalidNodeID, fmt.Errorf("%w: xmlns name and namespace must agree", ErrNamespace)
+		return InvalidNodeID, NewException(NamespaceError, ErrNamespace, "xmlns name and namespace must agree")
 	}
 	document.store.mutex.Lock()
 	defer document.store.mutex.Unlock()
@@ -798,67 +798,25 @@ func (document *Document) InsertBefore(parentID, childID, referenceID NodeID) er
 	if !ok {
 		return fmt.Errorf("%w: %d", ErrUnknownNode, childID)
 	}
-	if parent.Type != ElementNode && parent.Type != DocumentNode && parent.Type != DocumentFragmentNode {
-		return fmt.Errorf("%w: node %d cannot have children", ErrWrongNodeKind, parentID)
-	}
-	for ancestor := parent; ancestor != nil; ancestor = ancestor.Parent {
-		if ancestor == child {
-			return fmt.Errorf("%w: insertion would create a cycle", ErrInvalidTree)
-		}
-	}
 	var reference *Node
 	if referenceID != InvalidNodeID {
-		if referenceID == childID {
-			return nil
-		}
 		reference, ok = document.store.resolveLocked(referenceID)
 		if !ok {
 			return fmt.Errorf("%w: %d", ErrUnknownNode, referenceID)
 		}
 		if reference.Parent != parent {
-			return fmt.Errorf("%w: reference %d is not a child of %d", ErrInvalidTree, referenceID, parentID)
+			return NewException(NotFoundError, ErrInvalidTree, "reference node %d is not a child of node %d", referenceID, parentID)
 		}
 	}
+	nodes := []*Node{child}
 	if child.Type == DocumentFragmentNode {
-		children := append([]*Node(nil), child.Children...)
-		if len(children) == 0 {
-			return nil
-		}
-		for _, candidate := range children {
-			for ancestor := parent; ancestor != nil; ancestor = ancestor.Parent {
-				if ancestor == candidate {
-					return fmt.Errorf("%w: fragment insertion would create a cycle", ErrInvalidTree)
-				}
-			}
-		}
-		index := len(parent.Children)
-		if reference != nil {
-			index = childIndex(parent, reference)
-		}
-		child.Children = nil
-		for _, candidate := range children {
-			candidate.Parent = parent
-		}
-		parent.Children = append(parent.Children, make([]*Node, len(children))...)
-		copy(parent.Children[index+len(children):], parent.Children[index:len(parent.Children)-len(children)])
-		copy(parent.Children[index:index+len(children)], children)
-		document.version.Add(1)
-		return nil
+		nodes = append([]*Node(nil), child.Children...)
 	}
-	if child.Parent != nil {
-		child.Parent.removeChild(child)
+	placement := placeAppend
+	if reference != nil {
+		placement = placeBefore
 	}
-	child.Parent = parent
-	if reference == nil {
-		parent.Children = append(parent.Children, child)
-	} else {
-		index := childIndex(parent, reference)
-		parent.Children = append(parent.Children, nil)
-		copy(parent.Children[index+1:], parent.Children[index:])
-		parent.Children[index] = child
-	}
-	document.version.Add(1)
-	return nil
+	return document.placeNodesLocked(parent, nodes, reference, placement)
 }
 
 // ReplaceChildrenFromFragment replaces all children of an element or fragment
@@ -874,25 +832,10 @@ func (document *Document) ReplaceChildrenFromFragment(parentID NodeID, fragment 
 	if !ok {
 		return fmt.Errorf("%w: %d", ErrUnknownNode, parentID)
 	}
-	if parent.Type != ElementNode && parent.Type != DocumentFragmentNode {
-		return fmt.Errorf("%w: node %d cannot receive fragment children", ErrWrongNodeKind, parentID)
+	if fragment == nil || fragment.Type != DocumentFragmentNode {
+		return NewException(HierarchyRequestError, ErrWrongNodeKind, "replacement source is not a document fragment")
 	}
-	children, err := document.adoptFragmentChildrenLocked(fragment)
-	if err != nil {
-		return err
-	}
-	if len(parent.Children) == 0 && len(children) == 0 {
-		return nil
-	}
-	for _, child := range parent.Children {
-		child.Parent = nil
-	}
-	parent.Children = children
-	for _, child := range children {
-		child.Parent = parent
-	}
-	document.version.Add(1)
-	return nil
+	return document.placeNodesLocked(parent, append([]*Node(nil), fragment.Children...), parent, placeReplaceAll)
 }
 
 // InsertFragment inserts a parsed fragment before referenceID, or appends it
@@ -907,71 +850,25 @@ func (document *Document) InsertFragment(parentID, referenceID NodeID, fragment 
 	if !ok {
 		return fmt.Errorf("%w: %d", ErrUnknownNode, parentID)
 	}
-	if parent.Type != ElementNode && parent.Type != DocumentFragmentNode {
-		return fmt.Errorf("%w: node %d cannot receive fragment children", ErrWrongNodeKind, parentID)
-	}
-	index := len(parent.Children)
+	var reference *Node
 	if referenceID != InvalidNodeID {
-		reference, found := document.store.resolveLocked(referenceID)
+		var found bool
+		reference, found = document.store.resolveLocked(referenceID)
 		if !found {
 			return fmt.Errorf("%w: %d", ErrUnknownNode, referenceID)
 		}
 		if reference.Parent != parent {
-			return fmt.Errorf("%w: reference %d is not a child of %d", ErrInvalidTree, referenceID, parentID)
+			return NewException(NotFoundError, ErrInvalidTree, "reference node %d is not a child of node %d", referenceID, parentID)
 		}
-		index = childIndex(parent, reference)
 	}
-	children, err := document.adoptFragmentChildrenLocked(fragment)
-	if err != nil {
-		return err
-	}
-	if len(children) == 0 {
-		return nil
-	}
-	updated := make([]*Node, 0, len(parent.Children)+len(children))
-	updated = append(updated, parent.Children[:index]...)
-	updated = append(updated, children...)
-	updated = append(updated, parent.Children[index:]...)
-	parent.Children = updated
-	for _, child := range children {
-		child.Parent = parent
-	}
-	document.version.Add(1)
-	return nil
-}
-
-func (document *Document) adoptFragmentChildrenLocked(fragment *Node) ([]*Node, error) {
 	if fragment == nil || fragment.Type != DocumentFragmentNode {
-		return nil, fmt.Errorf("%w: expected a document fragment", ErrWrongNodeKind)
+		return NewException(HierarchyRequestError, ErrWrongNodeKind, "insertion source is not a document fragment")
 	}
-	children := append([]*Node(nil), fragment.Children...)
-	var ordered []*Node
-	known := 0
-	for _, child := range children {
-		subtree, err := collectSubtree(child)
-		if err != nil {
-			return nil, err
-		}
-		ordered = append(ordered, subtree...)
-		for _, node := range subtree {
-			if _, exists := document.store.ids[node]; exists {
-				known++
-			}
-		}
+	placement := placeAppend
+	if reference != nil {
+		placement = placeBefore
 	}
-	if known != 0 && known != len(ordered) {
-		return nil, fmt.Errorf("%w: fragment mixes indexed and unindexed nodes", ErrInvalidTree)
-	}
-	if known == 0 {
-		for _, node := range ordered {
-			document.store.assignLocked(node)
-		}
-	}
-	fragment.Children = nil
-	for _, child := range children {
-		child.Parent = nil
-	}
-	return children, nil
+	return document.placeNodesLocked(parent, append([]*Node(nil), fragment.Children...), reference, placement)
 }
 
 // RemoveChild detaches a direct child while preserving both stable IDs.
@@ -990,12 +887,9 @@ func (document *Document) RemoveChild(parentID, childID NodeID) error {
 		return fmt.Errorf("%w: %d", ErrUnknownNode, childID)
 	}
 	if child.Parent != parent {
-		return fmt.Errorf("%w: node %d is not a child of %d", ErrInvalidTree, childID, parentID)
+		return NewException(NotFoundError, ErrInvalidTree, "node %d is not a child of node %d", childID, parentID)
 	}
-	parent.removeChild(child)
-	child.Parent = nil
-	document.version.Add(1)
-	return nil
+	return document.removeChildLocked(parent, child)
 }
 
 func (document *Document) GetAttribute(id NodeID, name string) (string, bool, error) {
@@ -1049,7 +943,7 @@ func (document *Document) SetAttribute(id NodeID, name, value string) error {
 	}
 	name = strings.ToLower(name)
 	if !validDOMName(name) {
-		return fmt.Errorf("%w: attribute %q", ErrInvalidName, name)
+		return NewException(InvalidCharacterError, ErrInvalidName, "invalid attribute name %q", name)
 	}
 	document.store.mutex.Lock()
 	defer document.store.mutex.Unlock()
@@ -1253,17 +1147,17 @@ func validDOMName(name string) bool {
 
 func parseQualifiedName(name string) (prefix, localName string, err error) {
 	if !validDOMName(name) {
-		return "", "", fmt.Errorf("%w: element %q", ErrInvalidName, name)
+		return "", "", NewException(InvalidCharacterError, ErrInvalidName, "invalid qualified name %q", name)
 	}
 	if strings.Count(name, ":") > 1 {
-		return "", "", fmt.Errorf("%w: qualified name %q", ErrInvalidName, name)
+		return "", "", NewException(NamespaceError, ErrInvalidName, "invalid qualified name %q", name)
 	}
 	prefix, localName, found := strings.Cut(name, ":")
 	if !found {
 		return "", name, nil
 	}
 	if prefix == "" || localName == "" || !validDOMName(prefix) || !validDOMName(localName) {
-		return "", "", fmt.Errorf("%w: qualified name %q", ErrInvalidName, name)
+		return "", "", NewException(NamespaceError, ErrInvalidName, "invalid qualified name %q", name)
 	}
 	return prefix, localName, nil
 }

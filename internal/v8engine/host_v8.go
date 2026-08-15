@@ -77,7 +77,11 @@ func runHostCall(errorOut **C.char, callback func(browser.Host) error, execution
 
 func hostCallFailure(errorOut **C.char, err error) C.int {
 	if errorOut != nil {
-		*errorOut = C.CString(err.Error())
+		message := err.Error()
+		if name, ok := dom.ErrorExceptionName(err); ok {
+			message = "__GOSSAMER_DOM_EXCEPTION__:" + string(name) + ":" + message
+		}
+		*errorOut = C.CString(message)
 	}
 	return 0
 }
@@ -679,6 +683,42 @@ func goGossamerV8HostReplaceChild(
 			browserNodeHandle(parentDocument, parentNode),
 			browserNodeHandle(childDocument, childNode),
 			browserNodeHandle(replacedDocument, replacedNode),
+		)
+	}, executionID)
+}
+
+//export goGossamerV8HostMutateNodes
+func goGossamerV8HostMutateNodes(
+	executionID C.uint64_t,
+	receiverDocument C.uint64_t,
+	receiverNode C.uint32_t,
+	operation C.uint8_t,
+	documents *C.uint64_t,
+	nodes *C.uint32_t,
+	count C.size_t,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domElementHost(host)
+		if err != nil {
+			return err
+		}
+		length := int(count)
+		handles := make([]browser.NodeHandle, length)
+		if length != 0 {
+			if documents == nil || nodes == nil {
+				return fmt.Errorf("V8 host received an incomplete DOM mutation list")
+			}
+			documentValues := unsafe.Slice(documents, length)
+			nodeValues := unsafe.Slice(nodes, length)
+			for index := range handles {
+				handles[index] = browserNodeHandle(documentValues[index], nodeValues[index])
+			}
+		}
+		return domHost.MutateNodes(
+			browserNodeHandle(receiverDocument, receiverNode),
+			dom.MutationOperation(operation),
+			handles,
 		)
 	}, executionID)
 }

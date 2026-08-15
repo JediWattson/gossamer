@@ -230,6 +230,7 @@ type DOMElementHost interface {
 	ChildNodes(NodeHandle, bool) ([]NodeHandle, error)
 	Contains(NodeHandle, NodeHandle) (bool, error)
 	ReplaceChild(NodeHandle, NodeHandle, NodeHandle) error
+	MutateNodes(NodeHandle, dom.MutationOperation, []NodeHandle) error
 	NodeValue(NodeHandle) (string, bool, error)
 	SetNodeValue(NodeHandle, string) error
 	HasAttribute(NodeHandle, string) (bool, error)

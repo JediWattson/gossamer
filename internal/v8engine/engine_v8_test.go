@@ -2239,6 +2239,126 @@ func TestStockV8NodeMutationChurnPreservesOwnershipBoundaries(t *testing.T) {
 	}
 }
 
+func TestStockV8AtomicConvenienceMutationsAndDOMExceptions(t *testing.T) {
+	engine := newTestEngine(t)
+	browserRuntime, err := browser.NewWithEngine(engine)
+	if err != nil {
+		t.Fatalf("NewWithEngine: %v", err)
+	}
+	defer func() {
+		if err := browserRuntime.Close(); err != nil {
+			t.Errorf("Close browser: %v", err)
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	page, err := browserRuntime.LoadPage(ctx, "https://gossamer.test/dom-mutations", staticDocumentLoader{
+		document: `<!doctype html><html><body><main id="root"><p id="first">A</p><p id="second">B</p></main></body></html>`,
+	})
+	if err != nil {
+		t.Fatalf("LoadPage: %v", err)
+	}
+	realm, ok := engine.LatestRealm()
+	if !ok {
+		t.Fatal("stock V8 engine has no live document realm")
+	}
+
+	_, err = page.QueueScript(browser.ScriptSource{
+		URL: "https://gossamer.test/dom-mutations/assert.js",
+		Source: `
+			(() => {
+				const root = document.getElementById("root");
+				const first = document.getElementById("first");
+				const second = document.getElementById("second");
+				const strong = document.createElement("strong");
+				strong.textContent = "S";
+				root.prepend("zero", strong);
+				first.before("before");
+				first.after("after");
+				second.replaceWith(first, "tail");
+				if (root.textContent !== "zeroSbeforeafterAtail" ||
+					root.querySelectorAll("p").length !== 1 ||
+					second.parentNode !== null || first.parentNode !== root) {
+					throw new Error("convenience mutation order or identity failed: " + root.textContent);
+				}
+
+				const before = root.innerHTML;
+				const invalid = document.createElement("section");
+				let failures = 0;
+				try { document.append(invalid); } catch (error) {
+					if (!(error instanceof DOMException) || error.name !== "HierarchyRequestError" ||
+						error.code !== DOMException.HIERARCHY_REQUEST_ERR ||
+						Object.prototype.toString.call(error) !== "[object DOMException]") throw error;
+					failures++;
+				}
+				if (invalid.parentNode !== null || root.innerHTML !== before) {
+					throw new Error("failed hierarchy mutation changed the tree");
+				}
+				try { root.removeChild(document.body); } catch (error) {
+					if (!(error instanceof DOMException) || error.name !== "NotFoundError") throw error;
+					failures++;
+				}
+				try { document.createElement("bad name"); } catch (error) {
+					if (!(error instanceof DOMException) || error.name !== "InvalidCharacterError") throw error;
+					failures++;
+				}
+				try { root.querySelector("["); } catch (error) {
+					if (!(error instanceof DOMException) || error.name !== "SyntaxError") throw error;
+					failures++;
+				}
+				if (failures !== 4) throw new Error("missing typed DOM failures: " + failures);
+
+				root.replaceChildren("done", strong);
+				if (root.textContent !== "doneS" || strong.parentNode !== root) {
+					throw new Error("replaceChildren failed");
+				}
+				strong.remove();
+				if (root.textContent !== "done" || strong.parentNode !== null) {
+					throw new Error("remove failed");
+				}
+				globalThis.__heldMilestone8Node = strong;
+			})();
+		`,
+	})
+	if err != nil {
+		t.Fatalf("QueueScript: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("run DOM mutation assertions: %v", err)
+	}
+	for page.Dirty() {
+		if err := page.Realm.RunOne(context.Background()); err != nil {
+			t.Fatalf("render DOM mutations: %v", err)
+		}
+	}
+	if !v8FrameContainsText(page.Frame(), "done") {
+		t.Fatal("convenience mutation did not reach paint")
+	}
+	if err := realm.CollectGarbage(page); err != nil {
+		t.Fatalf("CollectGarbage with held detached node: %v", err)
+	}
+	_, err = page.QueueScript(browser.ScriptSource{
+		URL:    "https://gossamer.test/dom-mutations/release.js",
+		Source: `globalThis.__heldMilestone8Node = undefined;`,
+	})
+	if err != nil {
+		t.Fatalf("QueueScript release: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("release held node: %v", err)
+	}
+	if err := realm.CollectGarbage(page); err != nil {
+		t.Fatalf("CollectGarbage after release: %v", err)
+	}
+	if err := page.Close(); err != nil {
+		t.Fatalf("Close page: %v", err)
+	}
+	if ledger := browserRuntime.Ledger().Stats(); ledger.LiveObjects != 0 || ledger.PersistentObjects != 0 {
+		t.Fatalf("Milestone 8 teardown ownership = %#v", ledger)
+	}
+}
+
 func newTestEngine(t *testing.T) *Engine {
 	t.Helper()
 	icuData := os.Getenv("GOSSAMER_V8_ICU_DATA")

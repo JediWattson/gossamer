@@ -519,7 +519,7 @@ func (host *taskHost) AttributeNames(handle NodeHandle) ([]string, error) {
 func (host *taskHost) QuerySelector(handle NodeHandle, source string, all bool) ([]NodeHandle, error) {
 	selectors, err := css.ParseSelectorList(source)
 	if err != nil {
-		return nil, err
+		return nil, dom.NewException(dom.SyntaxError, err, "invalid selector %q", source)
 	}
 	host.page.mutex.RLock()
 	defer host.page.mutex.RUnlock()
@@ -562,7 +562,7 @@ func (host *taskHost) QuerySelector(handle NodeHandle, source string, all bool) 
 func (host *taskHost) MatchesSelector(handle NodeHandle, source string) (bool, error) {
 	selectors, err := css.ParseSelectorList(source)
 	if err != nil {
-		return false, err
+		return false, dom.NewException(dom.SyntaxError, err, "invalid selector %q", source)
 	}
 	host.page.mutex.RLock()
 	defer host.page.mutex.RUnlock()
@@ -582,7 +582,7 @@ func (host *taskHost) MatchesSelector(handle NodeHandle, source string) (bool, e
 func (host *taskHost) ClosestSelector(handle NodeHandle, source string) (NodeHandle, bool, error) {
 	selectors, err := css.ParseSelectorList(source)
 	if err != nil {
-		return NodeHandle{}, false, err
+		return NodeHandle{}, false, dom.NewException(dom.SyntaxError, err, "invalid selector %q", source)
 	}
 	host.page.mutex.RLock()
 	defer host.page.mutex.RUnlock()
@@ -668,7 +668,7 @@ func (host *taskHost) InsertAdjacentHTML(handle NodeHandle, position, source str
 	switch position {
 	case "beforebegin", "afterbegin", "beforeend", "afterend":
 	default:
-		return fmt.Errorf("browser: invalid insertAdjacentHTML position %q", position)
+		return dom.NewException(dom.SyntaxError, dom.ErrInvalidTree, "invalid insertAdjacentHTML position %q", position)
 	}
 	host.page.mutex.RLock()
 	if err := host.validateHandleLocked(handle); err != nil {
@@ -739,6 +739,16 @@ func (host *taskHost) InsertAdjacentHTML(handle NodeHandle, position, source str
 			return dom.ErrUnknownNode
 		}
 		return host.page.document.InsertFragment(parentID, reference, fragment)
+	})
+}
+
+func (host *taskHost) MutateNodes(receiver NodeHandle, operation dom.MutationOperation, nodes []NodeHandle) error {
+	return host.mutateNodeSlice(receiver, nodes, func() error {
+		ids := make([]dom.NodeID, len(nodes))
+		for index, node := range nodes {
+			ids[index] = node.Node
+		}
+		return host.page.document.Mutate(receiver.Node, operation, ids)
 	})
 }
 
@@ -1007,6 +1017,31 @@ func (host *taskHost) mutateNodes(first, second, third NodeHandle, mutation func
 		if handle.Node == dom.InvalidNodeID {
 			continue
 		}
+		if err := host.validateHandleLocked(handle); err != nil {
+			return err
+		}
+	}
+	before := host.page.document.Version()
+	if err := mutation(); err != nil {
+		return err
+	}
+	if host.page.document.Version() != before {
+		host.page.dirty = true
+		host.mutated = true
+		if err := host.page.nodeLifetimes.sync(host.task); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (host *taskHost) mutateNodeSlice(receiver NodeHandle, nodes []NodeHandle, mutation func() error) error {
+	host.page.mutex.Lock()
+	defer host.page.mutex.Unlock()
+	if err := host.validateHandleLocked(receiver); err != nil {
+		return err
+	}
+	for _, handle := range nodes {
 		if err := host.validateHandleLocked(handle); err != nil {
 			return err
 		}

@@ -211,57 +211,16 @@ func (document *Document) ReplaceChild(parentID, childID, replacedID NodeID) err
 		return fmt.Errorf("%w: %d", ErrUnknownNode, replacedID)
 	}
 	if replaced.Parent != parent {
-		return fmt.Errorf("%w: node %d is not a child of %d", ErrInvalidTree, replacedID, parentID)
+		return NewException(NotFoundError, ErrInvalidTree, "node %d is not a child of node %d", replacedID, parentID)
 	}
 	if child == replaced {
 		return nil
 	}
-	if parent.Type != ElementNode && parent.Type != DocumentNode && parent.Type != DocumentFragmentNode {
-		return fmt.Errorf("%w: node %d cannot have children", ErrWrongNodeKind, parentID)
-	}
-	for ancestor := parent; ancestor != nil; ancestor = ancestor.Parent {
-		if ancestor == child {
-			return fmt.Errorf("%w: replacement would create a cycle", ErrInvalidTree)
-		}
-	}
+	nodes := []*Node{child}
 	if child.Type == DocumentFragmentNode {
-		children := append([]*Node(nil), child.Children...)
-		for _, candidate := range children {
-			for ancestor := parent; ancestor != nil; ancestor = ancestor.Parent {
-				if ancestor == candidate {
-					return fmt.Errorf("%w: fragment replacement would create a cycle", ErrInvalidTree)
-				}
-			}
-		}
-		index := childIndex(parent, replaced)
-		if index == len(parent.Children) {
-			return fmt.Errorf("%w: replacement node disappeared", ErrInvalidTree)
-		}
-		updated := make([]*Node, 0, len(parent.Children)-1+len(children))
-		updated = append(updated, parent.Children[:index]...)
-		updated = append(updated, children...)
-		updated = append(updated, parent.Children[index+1:]...)
-		parent.Children = updated
-		child.Children = nil
-		for _, candidate := range children {
-			candidate.Parent = parent
-		}
-		replaced.Parent = nil
-		document.version.Add(1)
-		return nil
+		nodes = append([]*Node(nil), child.Children...)
 	}
-	if child.Parent != nil {
-		child.Parent.removeChild(child)
-	}
-	index := childIndex(parent, replaced)
-	if index == len(parent.Children) {
-		return fmt.Errorf("%w: replacement node disappeared", ErrInvalidTree)
-	}
-	parent.Children[index] = child
-	child.Parent = parent
-	replaced.Parent = nil
-	document.version.Add(1)
-	return nil
+	return document.placeNodesLocked(parent, nodes, replaced, placeReplace)
 }
 
 // NodeValue implements the nullable character-data view used by JavaScript.

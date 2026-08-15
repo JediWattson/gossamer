@@ -89,6 +89,10 @@ typedef struct gossamer_v8_host {
                        uint32_t parent_node, uint64_t child_document,
                        uint32_t child_node, uint64_t replaced_document,
                        uint32_t replaced_node, char **error_out);
+  int (*mutate_nodes)(uint64_t execution_id, uint64_t receiver_document,
+                      uint32_t receiver_node, uint8_t operation,
+                      const uint64_t *documents, const uint32_t *nodes,
+                      size_t count, char **error_out);
   int (*node_value)(uint64_t execution_id, uint64_t document, uint32_t node,
                     char **value_out, size_t *value_length_out,
                     int *non_null_out, char **error_out);

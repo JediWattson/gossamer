@@ -92,6 +92,10 @@ extern int goGossamerV8HostReplaceChild(
     uint64_t execution_id, uint64_t parent_document, uint32_t parent_node,
     uint64_t child_document, uint32_t child_node, uint64_t replaced_document,
     uint32_t replaced_node, char **error_out);
+extern int goGossamerV8HostMutateNodes(
+    uint64_t execution_id, uint64_t receiver_document, uint32_t receiver_node,
+    uint8_t operation, const uint64_t *documents, const uint32_t *nodes,
+    size_t count, char **error_out);
 extern int goGossamerV8HostNodeValue(uint64_t execution_id, uint64_t document,
                                      uint32_t node, char **value_out,
                                      size_t *value_length_out,
@@ -242,6 +246,7 @@ static gossamer_v8_host gossamer_v8_go_host(uint64_t execution_id) {
       .child_nodes = goGossamerV8HostChildNodes,
       .contains = goGossamerV8HostContains,
       .replace_child = goGossamerV8HostReplaceChild,
+      .mutate_nodes = goGossamerV8HostMutateNodes,
       .node_value = goGossamerV8HostNodeValue,
       .set_node_value = goGossamerV8HostSetNodeValue,
       .has_attribute = goGossamerV8HostHasAttribute,
