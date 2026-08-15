@@ -19,7 +19,7 @@ const (
 	defaultTimeout = 30 * time.Second
 	acceptDocument = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
 	acceptStyle    = "text/css,*/*;q=0.1"
-	acceptImage    = "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
+	acceptImage    = "image/webp,image/png,image/jpeg,image/gif,*/*;q=0.1"
 	acceptFont     = "font/woff2,font/woff,*/*;q=0.1"
 	acceptScript   = "text/javascript,application/javascript,*/*;q=0.1"
 )

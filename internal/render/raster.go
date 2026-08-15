@@ -8,6 +8,8 @@ import (
 	"image/png"
 	"io"
 	"math"
+
+	xdraw "golang.org/x/image/draw"
 )
 
 type rasterLayer struct {
@@ -53,6 +55,28 @@ func rasterize(displayList DisplayList, fonts *fontBook) (*image.RGBA, error) {
 			); err != nil {
 				return nil, err
 			}
+
+		case DrawImageCommand:
+			if command.Image == nil || command.Rect.Width <= 0 || command.Rect.Height <= 0 {
+				continue
+			}
+			destination := image.Rect(
+				int(math.Floor(command.Rect.X)),
+				int(math.Floor(command.Rect.Y)),
+				int(math.Ceil(command.Rect.X+command.Rect.Width)),
+				int(math.Ceil(command.Rect.Y+command.Rect.Height)),
+			)
+			// Scale against the full destination and let the draw implementation
+			// clip to the canvas. Intersecting first would distort offscreen images.
+			opacity := clamp(command.Opacity, 0, 1)
+			if opacity == 0 {
+				continue
+			}
+			var options *xdraw.Options
+			if opacity < 1 {
+				options = &xdraw.Options{SrcMask: image.NewUniform(color.Alpha{A: uint8(math.Round(opacity * 255))})}
+			}
+			xdraw.ApproxBiLinear.Scale(canvas, destination, command.Image, command.Image.Bounds(), draw.Over, options)
 
 		case BeginOpacityCommand:
 			layers = append(layers, rasterLayer{

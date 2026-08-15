@@ -2,8 +2,10 @@
 package render
 
 import (
+	"image"
 	"image/color"
 
+	"github.com/JediWattson/gossamer/internal/css"
 	"github.com/JediWattson/gossamer/internal/dom"
 )
 
@@ -15,6 +17,14 @@ type Viewport struct {
 
 // DefaultViewport is the initial headless browser viewport.
 var DefaultViewport = Viewport{Width: 800, Height: 600}
+
+// Resources contains decoded navigation resources consumed while styling,
+// laying out, and painting a document. Entries are keyed by the DOM element
+// that initiated the request so duplicate URLs remain distinct consumers.
+type Resources struct {
+	Stylesheets map[*dom.Node]css.Stylesheet
+	Images      map[*dom.Node]image.Image
+}
 
 // Rect is an axis-aligned rectangle in CSS pixels.
 type Rect struct {
@@ -34,10 +44,33 @@ const (
 
 // Box is retained layout geometry for painting and future hit testing.
 type Box struct {
-	Node     *dom.Node
-	Bounds   Rect
-	Children []*Box
-	Text     []TextFragment
+	Node      *dom.Node
+	Bounds    Rect
+	Children  []*Box
+	Fragments []InlineFragment
+	Text      []TextFragment
+	flow      []flowItem
+}
+
+type flowItem struct {
+	fragment InlineFragment
+	box      *Box
+}
+
+// InlineFragmentKind identifies one atomic inline layout result.
+type InlineFragmentKind uint8
+
+const (
+	TextFragmentKind InlineFragmentKind = iota
+	ImageFragmentKind
+)
+
+// InlineFragment preserves DOM/layout order across text and replaced content.
+// Exactly one of Text or Image is populated according to Kind.
+type InlineFragment struct {
+	Kind  InlineFragmentKind
+	Text  TextFragment
+	Image ImageFragment
 }
 
 // TextFragment is one positioned run of text.
@@ -53,6 +86,14 @@ type TextFragment struct {
 	Color      color.NRGBA
 }
 
+// ImageFragment is one positioned decoded image.
+type ImageFragment struct {
+	Node    *dom.Node
+	Image   image.Image
+	Bounds  Rect
+	Opacity float64
+}
+
 // CommandKind identifies a display-list operation.
 type CommandKind uint8
 
@@ -61,6 +102,7 @@ const (
 	DrawTextCommand
 	BeginOpacityCommand
 	EndOpacityCommand
+	DrawImageCommand
 )
 
 // Command is a backend-neutral paint operation.
@@ -76,6 +118,7 @@ type Command struct {
 	FontSize   float64
 	FontWeight FontWeight
 	Opacity    float64
+	Image      image.Image
 }
 
 // DisplayList is an ordered set of paint operations for a viewport.

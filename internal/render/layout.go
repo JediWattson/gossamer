@@ -2,6 +2,7 @@ package render
 
 import (
 	"fmt"
+	"image"
 	"math"
 	"unicode"
 
@@ -12,30 +13,39 @@ type layoutContext struct {
 	viewport Viewport
 	fonts    *fontBook
 	styles   map[*dom.Node]computedStyle
+	images   map[*dom.Node]image.Image
 }
 
 type inlineToken struct {
 	text         string
 	node         *dom.Node
 	style        computedStyle
+	image        image.Image
+	replaced     bool
+	opacity      float64
 	leadingSpace bool
 	lineBreak    bool
 }
 
 type inlinePiece struct {
-	text    string
-	node    *dom.Node
-	style   computedStyle
-	x       float64
-	width   float64
-	metrics textMetrics
+	text     string
+	node     *dom.Node
+	style    computedStyle
+	image    image.Image
+	replaced bool
+	opacity  float64
+	x        float64
+	width    float64
+	height   float64
+	metrics  textMetrics
 }
 
-func layoutDocument(root *styledNode, viewport Viewport, fonts *fontBook) (*Box, map[*dom.Node]computedStyle, error) {
+func layoutDocument(root *styledNode, viewport Viewport, images map[*dom.Node]image.Image, fonts *fontBook) (*Box, map[*dom.Node]computedStyle, error) {
 	context := &layoutContext{
 		viewport: viewport,
 		fonts:    fonts,
 		styles:   make(map[*dom.Node]computedStyle),
+		images:   images,
 	}
 	context.indexStyles(root)
 
@@ -89,6 +99,31 @@ func (context *layoutContext) layoutBlock(node *styledNode, containingX, content
 	rightAuto := style.marginRight.unit == lengthAuto
 	left := resolveLength(style.marginLeft, availableWidth, context.viewport, 0)
 	right := resolveLength(style.marginRight, availableWidth, context.viewport, 0)
+	if node.node.Type == dom.ElementNode && node.node.Data == "img" {
+		decoded := context.images[node.node]
+		imageWidth, imageHeight, ok := context.replacedDimensions(style, decoded, availableWidth)
+		if !ok {
+			return &Box{Node: node.node, Bounds: Rect{X: containingX + left, Y: contentY}}, nil
+		}
+		remaining := availableWidth - imageWidth
+		switch {
+		case leftAuto && rightAuto:
+			left = remaining / 2
+		case leftAuto:
+			left = remaining - right
+		}
+		bounds := Rect{X: containingX + left, Y: contentY, Width: imageWidth, Height: imageHeight}
+		fragment := InlineFragment{
+			Kind:  ImageFragmentKind,
+			Image: ImageFragment{Node: node.node, Image: decoded, Bounds: bounds, Opacity: 1},
+		}
+		return &Box{
+			Node:      node.node,
+			Bounds:    bounds,
+			Fragments: []InlineFragment{fragment},
+			flow:      []flowItem{{fragment: fragment}},
+		}, nil
+	}
 
 	width := availableWidth - left - right
 	if style.width.unit != lengthAuto {
@@ -135,6 +170,7 @@ func (context *layoutContext) layoutBlock(node *styledNode, containingX, content
 				return nil, err
 			}
 			box.Children = append(box.Children, childBox)
+			box.flow = append(box.flow, flowItem{box: childBox})
 			cursorY = childBox.Bounds.Y + childBox.Bounds.Height
 			previousBottomMargin = resolveLength(child.style.marginBottom, width, context.viewport, 0)
 			hasContent = true
@@ -154,10 +190,22 @@ func (context *layoutContext) layoutBlock(node *styledNode, containingX, content
 			if hasContent {
 				cursorY += previousBottomMargin
 				for fragmentIndex := range fragments {
-					fragments[fragmentIndex].BaselineY += previousBottomMargin
+					fragment := &fragments[fragmentIndex]
+					switch fragment.Kind {
+					case TextFragmentKind:
+						fragment.Text.BaselineY += previousBottomMargin
+					case ImageFragmentKind:
+						fragment.Image.Bounds.Y += previousBottomMargin
+					}
 				}
 			}
-			box.Text = append(box.Text, fragments...)
+			box.Fragments = append(box.Fragments, fragments...)
+			for _, fragment := range fragments {
+				box.flow = append(box.flow, flowItem{fragment: fragment})
+				if fragment.Kind == TextFragmentKind {
+					box.Text = append(box.Text, fragment.Text)
+				}
+			}
 			cursorY += height
 			previousBottomMargin = 0
 			hasContent = true
@@ -169,16 +217,16 @@ func (context *layoutContext) layoutBlock(node *styledNode, containingX, content
 	return box, nil
 }
 
-func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width float64) ([]TextFragment, float64, error) {
-	builder := inlineTokenBuilder{}
+func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width float64) ([]InlineFragment, float64, error) {
+	builder := inlineTokenBuilder{images: context.images}
 	for _, node := range nodes {
-		builder.add(node)
+		builder.add(node, 1)
 	}
 	if len(builder.tokens) == 0 {
 		return nil, 0, nil
 	}
 
-	var fragments []TextFragment
+	var fragments []InlineFragment
 	var line []inlinePiece
 	lineWidth := 0.0
 	cursorY := y
@@ -198,7 +246,21 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 		leading := math.Max(0, lineHeight-lineAscent-lineDescent)
 		baseline := cursorY + leading/2 + lineAscent
 		for _, piece := range line {
-			fragment := TextFragment{
+			if piece.replaced {
+				fragments = append(fragments, InlineFragment{
+					Kind: ImageFragmentKind,
+					Image: ImageFragment{
+						Node:    piece.node,
+						Image:   piece.image,
+						Bounds:  Rect{X: x + piece.x, Y: baseline - piece.height, Width: piece.width, Height: piece.height},
+						Opacity: piece.opacity,
+					},
+				})
+				continue
+			}
+			textColor := piece.style.color
+			textColor.A = uint8(math.Round(float64(textColor.A) * clamp(piece.opacity, 0, 1)))
+			text := TextFragment{
 				Node:       piece.node,
 				Text:       piece.text,
 				X:          x + piece.x,
@@ -207,21 +269,21 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 				Height:     lineHeight,
 				FontSize:   piece.style.fontSize,
 				FontWeight: piece.style.fontWeight,
-				Color:      piece.style.color,
+				Color:      textColor,
 			}
-			if len(fragments) != 0 {
-				previous := &fragments[len(fragments)-1]
-				if previous.Node == fragment.Node &&
-					previous.BaselineY == fragment.BaselineY &&
-					previous.FontSize == fragment.FontSize &&
-					previous.FontWeight == fragment.FontWeight &&
-					previous.Color == fragment.Color {
-					previous.Text += fragment.Text
-					previous.Width += fragment.Width
+			if len(fragments) != 0 && fragments[len(fragments)-1].Kind == TextFragmentKind {
+				previous := &fragments[len(fragments)-1].Text
+				if previous.Node == text.Node &&
+					previous.BaselineY == text.BaselineY &&
+					previous.FontSize == text.FontSize &&
+					previous.FontWeight == text.FontWeight &&
+					previous.Color == text.Color {
+					previous.Text += text.Text
+					previous.Width += text.Width
 					continue
 				}
 			}
-			fragments = append(fragments, fragment)
+			fragments = append(fragments, InlineFragment{Kind: TextFragmentKind, Text: text})
 		}
 		cursorY += lineHeight
 		line = nil
@@ -233,9 +295,22 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 			flushLine()
 			continue
 		}
-		wordMetrics, err := context.fonts.metrics(token.text, token.style.fontSize, token.style.fontWeight)
-		if err != nil {
-			return nil, 0, err
+		wordMetrics := textMetrics{}
+		imageWidth := 0.0
+		imageHeight := 0.0
+		if token.replaced {
+			var ok bool
+			imageWidth, imageHeight, ok = context.replacedDimensions(token.style, token.image, width)
+			if !ok {
+				continue
+			}
+			wordMetrics = textMetrics{width: imageWidth, ascent: imageHeight}
+		} else {
+			var err error
+			wordMetrics, err = context.fonts.metrics(token.text, token.style.fontSize, token.style.fontWeight)
+			if err != nil {
+				return nil, 0, err
+			}
 		}
 		prefix := ""
 		prefixWidth := 0.0
@@ -252,53 +327,117 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 			prefix = ""
 			prefixWidth = 0
 		}
+		if token.replaced {
+			line = append(line, inlinePiece{
+				node:     token.node,
+				style:    token.style,
+				image:    token.image,
+				replaced: true,
+				opacity:  token.opacity,
+				x:        lineWidth + prefixWidth,
+				width:    wordMetrics.width,
+				height:   imageHeight,
+				metrics:  wordMetrics,
+			})
+			lineWidth += prefixWidth + wordMetrics.width
+			continue
+		}
 		pieceText := prefix + token.text
 		pieceMetrics, err := context.fonts.metrics(pieceText, token.style.fontSize, token.style.fontWeight)
 		if err != nil {
 			return nil, 0, err
 		}
-		line = append(line, inlinePiece{
-			text:    pieceText,
-			node:    token.node,
-			style:   token.style,
-			x:       lineWidth,
-			width:   pieceMetrics.width,
-			metrics: pieceMetrics,
-		})
+		line = append(line, inlinePiece{text: pieceText, node: token.node, style: token.style, opacity: token.opacity, x: lineWidth, width: pieceMetrics.width, metrics: pieceMetrics})
 		lineWidth += pieceMetrics.width
 	}
 	flushLine()
 	return fragments, cursorY - y, nil
 }
 
+func (context *layoutContext) replacedDimensions(style computedStyle, decoded image.Image, availableWidth float64) (float64, float64, bool) {
+	naturalWidth := 0.0
+	naturalHeight := 0.0
+	hasNaturalSize := false
+	if decoded != nil {
+		bounds := decoded.Bounds()
+		naturalWidth = float64(bounds.Dx())
+		naturalHeight = float64(bounds.Dy())
+		hasNaturalSize = naturalWidth > 0 && naturalHeight > 0
+	}
+
+	widthSpecified := style.width.unit != lengthAuto
+	// Percentage heights resolve to auto while the containing block has the
+	// auto height used by this layout slice.
+	heightSpecified := style.height.unit != lengthAuto && style.height.unit != lengthPercent
+	if !hasNaturalSize && !(widthSpecified && heightSpecified) {
+		return 0, 0, false
+	}
+	width := naturalWidth
+	height := naturalHeight
+	if widthSpecified {
+		width = resolveLength(style.width, availableWidth, context.viewport, naturalWidth)
+	}
+	if heightSpecified {
+		height = resolveLength(style.height, naturalHeight, context.viewport, naturalHeight)
+	}
+	switch {
+	case widthSpecified && !heightSpecified:
+		height = naturalHeight * width / naturalWidth
+	case heightSpecified && !widthSpecified:
+		width = naturalWidth * height / naturalHeight
+	}
+	if width < 0 || height < 0 || !isFinite(width) || !isFinite(height) {
+		return 0, 0, false
+	}
+	return width, height, true
+}
+
 type inlineTokenBuilder struct {
 	tokens       []inlineToken
+	images       map[*dom.Node]image.Image
 	pendingSpace bool
 	hasContent   bool
 }
 
-func (builder *inlineTokenBuilder) add(node *styledNode) {
+func (builder *inlineTokenBuilder) add(node *styledNode, inheritedOpacity float64) {
 	if node == nil || node.style.display == displayNone {
 		return
 	}
+	opacity := clamp(inheritedOpacity*node.style.opacity, 0, 1)
 	if node.node.Type == dom.ElementNode && node.node.Data == "br" {
 		builder.tokens = append(builder.tokens, inlineToken{lineBreak: true})
 		builder.pendingSpace = false
 		builder.hasContent = false
 		return
 	}
+	if node.node.Type == dom.ElementNode && node.node.Data == "img" {
+		decoded := builder.images[node.node]
+		if decoded != nil || hasExplicitImageDimensions(node.style) {
+			builder.tokens = append(builder.tokens, inlineToken{
+				node:         node.node,
+				style:        node.style,
+				image:        decoded,
+				replaced:     true,
+				opacity:      opacity,
+				leadingSpace: builder.pendingSpace && builder.hasContent,
+			})
+			builder.pendingSpace = false
+			builder.hasContent = true
+		}
+		return
+	}
 	if node.node.Type == dom.TextNode {
-		builder.addText(node.node.Data, node.node, node.style)
+		builder.addText(node.node.Data, node.node, node.style, opacity)
 		return
 	}
 	for _, child := range node.children {
 		if child.style.display != displayBlock {
-			builder.add(child)
+			builder.add(child, opacity)
 		}
 	}
 }
 
-func (builder *inlineTokenBuilder) addText(source string, node *dom.Node, style computedStyle) {
+func (builder *inlineTokenBuilder) addText(source string, node *dom.Node, style computedStyle, opacity float64) {
 	start := -1
 	flushWord := func(end int) {
 		if start < 0 {
@@ -308,6 +447,7 @@ func (builder *inlineTokenBuilder) addText(source string, node *dom.Node, style 
 			text:         source[start:end],
 			node:         node,
 			style:        style,
+			opacity:      opacity,
 			leadingSpace: builder.pendingSpace && builder.hasContent,
 		})
 		builder.hasContent = true
@@ -327,6 +467,10 @@ func (builder *inlineTokenBuilder) addText(source string, node *dom.Node, style 
 		}
 	}
 	flushWord(len(source))
+}
+
+func hasExplicitImageDimensions(style computedStyle) bool {
+	return style.width.unit != lengthAuto && style.height.unit != lengthAuto && style.height.unit != lengthPercent
 }
 
 func findStyledElement(root *styledNode, name string) *styledNode {

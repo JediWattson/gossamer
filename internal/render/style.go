@@ -2,6 +2,7 @@ package render
 
 import (
 	"image/color"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -45,6 +46,7 @@ type computedStyle struct {
 	underline     bool
 	opacity       float64
 	width         length
+	height        length
 	marginTop     length
 	marginRight   length
 	marginBottom  length
@@ -63,29 +65,39 @@ type winningDeclaration struct {
 	order       int
 }
 
-func buildStyleTree(document *dom.Node, viewport Viewport) *styledNode {
-	stylesheets := collectAuthorStyles(document)
+func buildStyleTree(document *dom.Node, viewport Viewport, external map[*dom.Node]css.Stylesheet) *styledNode {
+	stylesheets := collectAuthorStyles(document, external)
 	return styleNode(document, nil, stylesheets, viewport)
 }
 
-func collectAuthorStyles(root *dom.Node) []css.Stylesheet {
+func collectAuthorStyles(root *dom.Node, external map[*dom.Node]css.Stylesheet) []css.Stylesheet {
 	var stylesheets []css.Stylesheet
 	var visit func(*dom.Node)
 	visit = func(node *dom.Node) {
 		if node == nil {
 			return
 		}
-		if node.Type == dom.ElementNode && node.Data == "style" {
-			var source strings.Builder
-			for _, child := range node.Children {
-				if child.Type == dom.TextNode {
-					source.WriteString(child.Data)
+		if node.Type == dom.ElementNode {
+			switch node.Data {
+			case "style":
+				if !authorStyleOwnerApplies(node) {
+					break
+				}
+				var source strings.Builder
+				for _, child := range node.Children {
+					if child.Type == dom.TextNode {
+						source.WriteString(child.Data)
+					}
+				}
+				// CSS error recovery keeps all safely parsed rules. A malformed
+				// author sheet must not prevent the document from rendering.
+				stylesheet, _ := css.Parse(source.String())
+				stylesheets = append(stylesheets, stylesheet)
+			case "link":
+				if stylesheet, ok := external[node]; ok && authorStyleOwnerApplies(node) {
+					stylesheets = append(stylesheets, stylesheet)
 				}
 			}
-			// CSS error recovery keeps all safely parsed rules. A malformed author
-			// sheet must not prevent the rest of the document from rendering.
-			stylesheet, _ := css.Parse(source.String())
-			stylesheets = append(stylesheets, stylesheet)
 		}
 		for _, child := range node.Children {
 			visit(child)
@@ -115,6 +127,7 @@ func initialStyle(node *dom.Node, parent *styledNode) computedStyle {
 		lineHeight:   1.2,
 		opacity:      1,
 		width:        length{unit: lengthAuto},
+		height:       length{unit: lengthAuto},
 		marginTop:    length{unit: lengthPX},
 		marginRight:  length{unit: lengthPX},
 		marginBottom: length{unit: lengthPX},
@@ -180,42 +193,51 @@ func initialStyle(node *dom.Node, parent *styledNode) computedStyle {
 		}
 	case "strong", "b":
 		style.fontWeight = FontWeightBold
+	case "img":
+		if value, ok := dimensionAttribute(node, "width"); ok {
+			style.width = px(value)
+		}
+		if value, ok := dimensionAttribute(node, "height"); ok {
+			style.height = px(value)
+		}
 	}
 	return style
 }
 
 func applyAuthorStyles(style *computedStyle, node *dom.Node, sheets []css.Stylesheet, viewport Viewport, parentSize float64) {
 	winners := make(map[string]winningDeclaration)
-	orderOffset := 0
+	sourceOrder := 0
 	for _, sheet := range sheets {
 		for _, rule := range sheet.Rules {
 			specificity, matches := rule.Match(node)
-			if !matches {
-				continue
-			}
-			for declarationIndex, declaration := range rule.Declarations {
+			for _, declaration := range rule.Declarations {
+				order := sourceOrder
+				sourceOrder++
+				if !matches {
+					continue
+				}
 				candidate := winningDeclaration{
 					declaration: declaration,
 					specificity: specificity,
-					order:       orderOffset + rule.Order*1024 + declarationIndex,
+					order:       order,
 				}
 				if current, ok := winners[declaration.Property]; !ok || declarationWins(candidate, current) {
 					winners[declaration.Property] = candidate
 				}
 			}
 		}
-		orderOffset += (len(sheet.Rules) + 1) * 1024
 	}
 
 	if source, ok := attribute(node, "style"); ok {
 		inlineSheet, _ := css.Parse("*{" + source + "}")
 		if len(inlineSheet.Rules) != 0 {
-			for index, declaration := range inlineSheet.Rules[0].Declarations {
+			for _, declaration := range inlineSheet.Rules[0].Declarations {
 				candidate := winningDeclaration{
 					declaration: declaration,
 					specificity: css.Specificity{IDs: 1_000_000},
-					order:       orderOffset + index,
+					order:       sourceOrder,
 				}
+				sourceOrder++
 				if current, ok := winners[declaration.Property]; !ok || declarationWins(candidate, current) {
 					winners[declaration.Property] = candidate
 				}
@@ -226,7 +248,10 @@ func applyAuthorStyles(style *computedStyle, node *dom.Node, sheets []css.Styles
 	// Font size must be computed before em lengths in the remaining properties.
 	if winner, ok := winners["font-size"]; ok {
 		if value, ok := parseLength(winner.declaration.Value, parentSize, parentSize, viewport); ok && value.unit != lengthAuto {
-			style.fontSize = resolveLength(value, parentSize, viewport, parentSize)
+			resolved := resolveLength(value, parentSize, viewport, parentSize)
+			if resolved > 0 && isFinite(resolved) {
+				style.fontSize = resolved
+			}
 		}
 	}
 	orderedWinners := make([]winningDeclaration, 0, len(winners))
@@ -242,6 +267,84 @@ func applyAuthorStyles(style *computedStyle, node *dom.Node, sheets []css.Styles
 	for _, winner := range orderedWinners {
 		applyDeclaration(style, winner.declaration.Property, winner.declaration.Value, viewport)
 	}
+}
+
+func authorStyleOwnerApplies(node *dom.Node) bool {
+	if node == nil || node.Type != dom.ElementNode {
+		return false
+	}
+	if node.Data == "style" {
+		if sourceType, ok := attribute(node, "type"); ok && strings.TrimSpace(sourceType) != "" {
+			essence := strings.TrimSpace(strings.SplitN(sourceType, ";", 2)[0])
+			if !strings.EqualFold(essence, "text/css") {
+				return false
+			}
+		}
+	}
+	if node.Data == "link" {
+		if _, disabled := attribute(node, "disabled"); disabled {
+			return false
+		}
+		rel, _ := attribute(node, "rel")
+		if containsHTMLToken(rel, "alternate") {
+			return false
+		}
+	}
+	media, _ := attribute(node, "media")
+	return mediaTypeMayMatchScreen(media)
+}
+
+// mediaTypeMayMatchScreen evaluates only the media type. Feature expressions
+// are intentionally left for the future media-query evaluator, so a screen or
+// all query remains eligible regardless of its trailing conditions.
+func mediaTypeMayMatchScreen(source string) bool {
+	if strings.TrimSpace(source) == "" {
+		return true
+	}
+	for _, rawQuery := range strings.Split(strings.ToLower(source), ",") {
+		fields := strings.Fields(strings.TrimSpace(rawQuery))
+		if len(fields) == 0 {
+			continue
+		}
+		if fields[0] == "only" {
+			fields = fields[1:]
+		}
+		negated := false
+		if len(fields) != 0 && fields[0] == "not" {
+			negated = true
+			fields = fields[1:]
+		}
+		if len(fields) == 0 {
+			continue
+		}
+		matches := false
+		switch {
+		case strings.HasPrefix(fields[0], "("):
+			matches = true
+		case fields[0] == "all", fields[0] == "screen":
+			matches = true
+		case fields[0] == "print":
+			matches = false
+		default:
+			matches = false
+		}
+		if negated {
+			matches = !matches
+		}
+		if matches {
+			return true
+		}
+	}
+	return false
+}
+
+func containsHTMLToken(source, token string) bool {
+	for _, candidate := range strings.Fields(source) {
+		if strings.EqualFold(candidate, token) {
+			return true
+		}
+	}
+	return false
 }
 
 func declarationWins(candidate, current winningDeclaration) bool {
@@ -298,7 +401,7 @@ func applyDeclaration(style *computedStyle, property, source string, viewport Vi
 			style.fontWeight = FontWeightNormal
 		}
 	case "line-height":
-		if numeric, err := strconv.ParseFloat(value, 64); err == nil && numeric > 0 {
+		if numeric, err := strconv.ParseFloat(value, 64); err == nil && numeric > 0 && isFinite(numeric) {
 			style.lineHeight = numeric
 		}
 	case "text-decoration", "text-decoration-line":
@@ -308,12 +411,16 @@ func applyDeclaration(style *computedStyle, property, source string, viewport Vi
 			style.underline = false
 		}
 	case "opacity":
-		if numeric, err := strconv.ParseFloat(value, 64); err == nil {
+		if numeric, err := strconv.ParseFloat(value, 64); err == nil && isFinite(numeric) {
 			style.opacity = clamp(numeric, 0, 1)
 		}
 	case "width":
-		if parsed, ok := parseLength(value, style.fontSize, style.fontSize, viewport); ok {
+		if parsed, ok := parseLength(value, style.fontSize, style.fontSize, viewport); ok && nonNegativeLength(parsed) {
 			style.width = parsed
+		}
+	case "height":
+		if parsed, ok := parseLength(value, style.fontSize, style.fontSize, viewport); ok && nonNegativeLength(parsed) {
+			style.height = parsed
 		}
 	case "margin":
 		if values, ok := parseBoxLengths(value, style.fontSize, viewport); ok {
@@ -342,6 +449,18 @@ func attribute(node *dom.Node, name string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+func dimensionAttribute(node *dom.Node, name string) (float64, bool) {
+	source, ok := attribute(node, name)
+	if !ok {
+		return 0, false
+	}
+	value, err := strconv.ParseUint(strings.TrimSpace(source), 10, 31)
+	if err != nil {
+		return 0, false
+	}
+	return float64(value), true
 }
 
 func parseBoxLengths(source string, fontSize float64, viewport Viewport) ([4]length, bool) {
@@ -396,10 +515,14 @@ func parseLength(source string, emBase, percentBase float64, viewport Viewport) 
 			continue
 		}
 		numeric, err := strconv.ParseFloat(strings.TrimSpace(strings.TrimSuffix(value, candidate.suffix)), 64)
-		if err != nil {
+		if err != nil || !isFinite(numeric) {
 			return length{}, false
 		}
-		return length{value: numeric * candidate.scale, unit: candidate.unit}, true
+		scaled := numeric * candidate.scale
+		if !isFinite(scaled) {
+			return length{}, false
+		}
+		return length{value: scaled, unit: candidate.unit}, true
 	}
 	return length{}, false
 }
@@ -477,6 +600,14 @@ func parentFontSize(parent *styledNode) float64 {
 
 func px(value float64) length {
 	return length{value: value, unit: lengthPX}
+}
+
+func nonNegativeLength(value length) bool {
+	return value.unit == lengthAuto || value.value >= 0
+}
+
+func isFinite(value float64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0)
 }
 
 func clamp(value, minimum, maximum float64) float64 {
