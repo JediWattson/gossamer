@@ -2,6 +2,7 @@ package dom
 
 import (
 	"errors"
+	"slices"
 	"testing"
 )
 
@@ -178,6 +179,9 @@ func TestDocumentIndexedNodeChurnPreservesIdentityAndOrder(t *testing.T) {
 	}
 	if err := document.SetAttribute(rowID, "data-state", "first"); err != nil {
 		t.Fatal(err)
+	}
+	if names, err := document.AttributeNames(rowID); err != nil || !slices.Equal(names, []string{"id", "data-state"}) {
+		t.Fatalf("AttributeNames = %#v, %v", names, err)
 	}
 	if err := document.AppendNode(rowID, leftID); err != nil {
 		t.Fatal(err)

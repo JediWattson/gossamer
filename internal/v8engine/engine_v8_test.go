@@ -526,6 +526,267 @@ func TestStockV8ElementTraversalReflectionInlineStyleAndLifetime(t *testing.T) {
 	}
 }
 
+func TestStockV8LiveDOMFacadesReflectionIterationAndLifetime(t *testing.T) {
+	engine := newTestEngine(t)
+	browserRuntime, err := browser.NewWithEngine(engine)
+	if err != nil {
+		t.Fatalf("NewWithEngine: %v", err)
+	}
+	defer func() {
+		if err := browserRuntime.Close(); err != nil {
+			t.Errorf("Close browser: %v", err)
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	page, err := browserRuntime.LoadPage(
+		ctx,
+		"https://gossamer.test/live-facades",
+		staticDocumentLoader{document: `<!doctype html><html><body><main id="mount"><span id="first" name="named-first" class="a b" data-user-id="7"></span>gap</main></body></html>`},
+	)
+	if err != nil {
+		t.Fatalf("LoadPage: %v", err)
+	}
+	realm, ok := engine.LatestRealm()
+	if !ok {
+		t.Fatal("stock V8 engine has no live document realm")
+	}
+	documentStore := page.Document().Store()
+
+	_, err = page.QueueScript(browser.ScriptSource{
+		URL: "https://gossamer.test/live-facades/assertions.js",
+		Source: `
+			(() => {
+				const mount = document.getElementById("mount");
+				const first = document.getElementById("first");
+				const nodes = mount.childNodes;
+				const elements = mount.children;
+				if (nodes !== mount.childNodes || elements !== mount.children ||
+					!(nodes instanceof NodeList) || Object.getPrototypeOf(nodes) !== NodeList.prototype ||
+					!(elements instanceof HTMLCollection) ||
+					Object.getPrototypeOf(elements) !== HTMLCollection.prototype) {
+					throw new Error("live child facades are not SameObject interface instances");
+				}
+				if (nodes.length !== 2 || elements.length !== 1 ||
+					nodes.item(0) !== first || nodes[0] !== first || nodes.item(99) !== null ||
+					elements.item(0) !== first || elements.namedItem("first") !== first ||
+					elements.namedItem("named-first") !== first || elements.first !== first ||
+					elements.namedItem("missing") !== null) {
+					throw new Error("indexed or named collection lookup is incorrect");
+				}
+				if (Object.keys(nodes).join(",") !== "0,1" ||
+					[...nodes].map(node => node.nodeName).join(",") !== "SPAN,#text" ||
+					[...nodes.keys()].join(",") !== "0,1" ||
+					[...nodes.entries()].map(([index, node]) => index + ":" + node.nodeName).join(",") !== "0:SPAN,1:#text") {
+					throw new Error("NodeList indexed properties or iterators are incorrect");
+				}
+				const visited = [];
+				nodes.forEach((node, index, owner) => visited.push(index + ":" + node.nodeName + ":" + (owner === nodes)));
+				if (visited.join(",") !== "0:SPAN:true,1:#text:true") {
+					throw new Error("NodeList forEach is incorrect");
+				}
+
+				const liveIterator = nodes.values();
+				if (liveIterator[Symbol.iterator]() !== liveIterator || liveIterator.next().value !== first) {
+					throw new Error("DOM iterator identity is incorrect");
+				}
+				const last = document.createElement("strong");
+				last.id = "last";
+				last.setAttribute("name", "named-last");
+				mount.appendChild(last);
+				if (nodes.length !== 3 || elements.length !== 2 || nodes[2] !== last ||
+					elements[1] !== last || elements.last !== last || elements["named-last"] !== last ||
+					liveIterator.next().value.nodeType !== 3 || liveIterator.next().value !== last ||
+					!liveIterator.next().done) {
+					throw new Error("child collections or an existing iterator did not stay live");
+				}
+				last.remove();
+				if (nodes.length !== 2 || elements.length !== 1 || nodes[2] !== undefined || elements.last !== undefined) {
+					throw new Error("live child collections did not observe removal");
+				}
+
+				if (first.classList !== first.classList || !(first.classList instanceof DOMTokenList) ||
+					first.classList.length !== 2 || first.classList[0] !== "a" ||
+					[...first.classList].join(" ") !== "a b" || first.classList.toString() !== "a b") {
+					throw new Error("classList identity, indices, or iteration is incorrect");
+				}
+				const classList = first.classList;
+				first.setAttribute("class", "x y");
+				if (classList.value !== "x y" || !classList.contains("x")) {
+					throw new Error("classList did not observe attribute mutation");
+				}
+				classList.add("z", "x");
+				classList.remove("y");
+				if (!classList.toggle("enabled") || classList.toggle("enabled") ||
+					!classList.toggle("forced", true) || classList.toggle("forced", false) ||
+					!classList.replace("x", "primary") || classList.replace("missing", "nope") ||
+					first.getAttribute("class") !== "primary z") {
+					throw new Error("classList mutation did not reflect to the class attribute");
+				}
+				classList.value = "raw  tokens";
+				if (first.className !== "raw  tokens" || classList.value !== "raw  tokens" ||
+					classList.toString() !== "raw  tokens" || [...classList].join(",") !== "raw,tokens") {
+					throw new Error("classList.value did not preserve reflected attribute semantics");
+				}
+
+				const initialNames = first.getAttributeNames();
+				if (initialNames.join(",") !== "id,name,class,data-user-id") {
+					throw new Error("attribute names lost insertion order: " + initialNames.join(","));
+				}
+				const dataset = first.dataset;
+				if (dataset !== first.dataset || !(dataset instanceof DOMStringMap) || dataset.userId !== "7") {
+					throw new Error("dataset identity or initial reflection is incorrect");
+				}
+				dataset.buildNumber = 9;
+				first.setAttribute("data-live-state", "ready");
+				if (first.getAttribute("data-build-number") !== "9" || dataset.liveState !== "ready" ||
+					Object.keys(dataset).join(",") !== "userId,buildNumber,liveState") {
+					throw new Error("dataset writes, liveness, or enumeration are incorrect");
+				}
+				delete dataset.userId;
+				if (first.hasAttribute("data-user-id") || dataset.userId !== undefined ||
+					first.getAttributeNames().join(",") !== "id,name,class,data-build-number,data-live-state") {
+					throw new Error("dataset deletion or attribute-name enumeration is incorrect");
+				}
+			})();
+		`,
+	})
+	if err != nil {
+		t.Fatalf("QueueScript assertions: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("run facade assertions: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("render facade assertions: %v", err)
+	}
+
+	if err := realm.CollectGarbage(page); err != nil {
+		t.Fatalf("CollectGarbage before facade lifetime baseline: %v", err)
+	}
+	baselineLiveNodes := documentStore.LiveLen()
+	_, err = page.QueueScript(browser.ScriptSource{
+		URL: "https://gossamer.test/live-facades/hold-collection.js",
+		Source: `
+			globalThis.__heldCollection = (() => {
+				const parent = document.createElement("section");
+				parent.appendChild(document.createElement("i"));
+				return parent.childNodes;
+			})();
+		`,
+	})
+	if err != nil {
+		t.Fatalf("QueueScript held collection: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("run held collection script: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("render held collection result: %v", err)
+	}
+	if err := realm.CollectGarbage(page); err != nil {
+		t.Fatalf("CollectGarbage with held collection: %v", err)
+	}
+	if got := documentStore.LiveLen(); got != baselineLiveNodes+2 {
+		t.Fatalf("held NodeList native subtree live nodes = %d, want %d", got, baselineLiveNodes+2)
+	}
+	_, err = page.QueueScript(browser.ScriptSource{
+		URL: "https://gossamer.test/live-facades/release-collection.js",
+		Source: `
+			(() => {
+				if (!(__heldCollection instanceof NodeList) || __heldCollection.length !== 1 ||
+					__heldCollection[0].tagName !== "I") {
+					throw new Error("held NodeList lost its detached native subtree after GC");
+				}
+				globalThis.__heldCollection = undefined;
+			})();
+		`,
+	})
+	if err != nil {
+		t.Fatalf("QueueScript release collection: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("run release collection script: %v", err)
+	}
+	if err := realm.CollectGarbage(page); err != nil {
+		t.Fatalf("CollectGarbage after collection release: %v", err)
+	}
+	if got := documentStore.LiveLen(); got != baselineLiveNodes {
+		t.Fatalf("live nodes after NodeList release = %d, want baseline %d", got, baselineLiveNodes)
+	}
+
+	_, err = page.QueueScript(browser.ScriptSource{
+		URL: "https://gossamer.test/live-facades/hold-token-list.js",
+		Source: `
+			globalThis.__heldTokenList = (() => {
+				const element = document.createElement("aside");
+				element.className = "held alive";
+				return element.classList;
+			})();
+		`,
+	})
+	if err != nil {
+		t.Fatalf("QueueScript held token list: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("run held token list script: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("render held token list result: %v", err)
+	}
+	if err := realm.CollectGarbage(page); err != nil {
+		t.Fatalf("CollectGarbage with held token list: %v", err)
+	}
+	if got := documentStore.LiveLen(); got != baselineLiveNodes+1 {
+		t.Fatalf("held DOMTokenList native element live nodes = %d, want %d", got, baselineLiveNodes+1)
+	}
+	_, err = page.QueueScript(browser.ScriptSource{
+		URL: "https://gossamer.test/live-facades/release-token-list.js",
+		Source: `
+			(() => {
+				if (!(__heldTokenList instanceof DOMTokenList) || __heldTokenList.value !== "held alive") {
+					throw new Error("held classList lost its detached element after GC");
+				}
+				__heldTokenList.add("after-gc");
+				if (__heldTokenList.value !== "held alive after-gc") {
+					throw new Error("held classList could not mutate after GC");
+				}
+				globalThis.__heldTokenList = undefined;
+			})();
+		`,
+	})
+	if err != nil {
+		t.Fatalf("QueueScript release token list: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("run release token list script: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("render token list release: %v", err)
+	}
+	if err := realm.CollectGarbage(page); err != nil {
+		t.Fatalf("CollectGarbage after token list release: %v", err)
+	}
+	if got := documentStore.LiveLen(); got != baselineLiveNodes {
+		t.Fatalf("live nodes after DOMTokenList release = %d, want baseline %d", got, baselineLiveNodes)
+	}
+	profile, err := realm.Profile()
+	if err != nil {
+		t.Fatalf("Profile after facade GC: %v", err)
+	}
+	if profile.LiveWrappers != 1 {
+		t.Fatalf("canonical document should be the sole live wrapper after facade GC: %#v", profile)
+	}
+
+	if err := page.Close(); err != nil {
+		t.Fatalf("Close facade page: %v", err)
+	}
+	if stats := browserRuntime.Ledger().Stats(); stats.LiveObjects != 0 || stats.PersistentObjects != 0 {
+		t.Fatalf("facade teardown ownership = %#v", stats)
+	}
+}
+
 func TestStockV8DOMPrototypesDocumentNamespaceIdentityAndTeardown(t *testing.T) {
 	engine := newTestEngine(t)
 	browserRuntime, err := browser.NewWithEngine(engine)
@@ -1233,6 +1494,10 @@ func (*capturingBindingHost) SetAttribute(browser.NodeHandle, string, string) er
 
 func (*capturingBindingHost) RemoveAttribute(browser.NodeHandle, string) error {
 	return nil
+}
+
+func (*capturingBindingHost) AttributeNames(browser.NodeHandle) ([]string, error) {
+	return nil, nil
 }
 
 func (*capturingBindingHost) Text(browser.NodeHandle) (string, error) {

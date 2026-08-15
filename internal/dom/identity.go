@@ -578,6 +578,29 @@ func (document *Document) GetAttribute(id NodeID, name string) (string, bool, er
 	return "", false, nil
 }
 
+// AttributeNames returns the element's attribute names in insertion order.
+// The returned slice is a snapshot; facade objects can call this method again
+// whenever they need a live view.
+func (document *Document) AttributeNames(id NodeID) ([]string, error) {
+	if document == nil || document.store == nil {
+		return nil, ErrInvalidDocument
+	}
+	document.store.mutex.RLock()
+	defer document.store.mutex.RUnlock()
+	node, ok := document.store.resolveLocked(id)
+	if !ok {
+		return nil, fmt.Errorf("%w: %d", ErrUnknownNode, id)
+	}
+	if node.Type != ElementNode {
+		return nil, fmt.Errorf("%w: node %d is not an element", ErrWrongNodeKind, id)
+	}
+	names := make([]string, len(node.Attributes))
+	for index, attribute := range node.Attributes {
+		names[index] = attribute.Name
+	}
+	return names, nil
+}
+
 func (document *Document) SetAttribute(id NodeID, name, value string) error {
 	if document == nil || document.store == nil {
 		return ErrInvalidDocument

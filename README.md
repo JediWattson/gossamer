@@ -113,7 +113,8 @@ objects remain under Go regions and queue ARC. Its wrapper layer exposes stable
 numeric node identity, canonical `Document`/`Node`/`Element`/`HTMLElement`/`Text`
 prototypes, namespace-aware creation, traversal, inline style, DOM `Event`
 objects, capture/target/bubble dispatch, generic listeners, tree mutation,
-attributes, microtasks, and timers without passing Go pointers into V8.
+attributes, live child collections, `classList`, `dataset`, microtasks, and
+timers without passing Go pointers into V8.
 Browser input currently covers click, pointer, keyboard, input, focus, and
 change event families. Profiling covers heap totals, sampled allocations,
 GC callbacks, weak-wrapper collection, wrapper-root region sweeps, callback
@@ -145,7 +146,8 @@ queue ARC claims. See
 - Deterministic DOM dumps for parser development
 - Stable `NodeID` lookup in both directions through an indexed `Document`
 - Optional stock-V8 classic-script execution and first-slice DOM wrappers on
-  Apple Silicon, including delegated DOM event dispatch; default builds still
+  Apple Silicon, including delegated DOM event dispatch, live `NodeList` and
+  `HTMLCollection` views, `classList`, and `dataset`; default builds still
   render body `<noscript>` fallback
 
 ### CSS, layout, and paint

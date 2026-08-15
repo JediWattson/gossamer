@@ -228,6 +228,7 @@ type DOMElementHost interface {
 	NodeValue(NodeHandle) (string, bool, error)
 	SetNodeValue(NodeHandle, string) error
 	HasAttribute(NodeHandle, string) (bool, error)
+	AttributeNames(NodeHandle) ([]string, error)
 	StyleCSSText(NodeHandle) (string, error)
 	SetStyleCSSText(NodeHandle, string) error
 	StyleProperty(NodeHandle, string) (string, string, bool, error)

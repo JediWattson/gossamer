@@ -431,6 +431,15 @@ func (host *taskHost) HasAttribute(handle NodeHandle, name string) (bool, error)
 	return host.page.document.HasAttribute(handle.Node, name)
 }
 
+func (host *taskHost) AttributeNames(handle NodeHandle) ([]string, error) {
+	host.page.mutex.RLock()
+	defer host.page.mutex.RUnlock()
+	if err := host.validateHandleLocked(handle); err != nil {
+		return nil, err
+	}
+	return host.page.document.AttributeNames(handle.Node)
+}
+
 func (host *taskHost) StyleCSSText(handle NodeHandle) (string, error) {
 	host.page.mutex.RLock()
 	defer host.page.mutex.RUnlock()

@@ -40,7 +40,17 @@ namespace {
 constexpr int kNodeDocumentField = 0;
 constexpr int kNodeIDField = 1;
 constexpr int kNodeStyleField = 2;
+constexpr int kNodeChildNodesField = 3;
+constexpr int kNodeChildrenField = 4;
+constexpr int kNodeClassListField = 5;
+constexpr int kNodeDatasetField = 6;
+constexpr int kNodeInternalFieldCount = 7;
 constexpr int kStyleNodeField = 0;
+constexpr int kFacadeNodeField = 0;
+constexpr int kIteratorFacadeField = 0;
+constexpr int kIteratorIndexField = 1;
+constexpr int kIteratorSourceKindField = 2;
+constexpr int kIteratorModeField = 3;
 constexpr int kEventStateField = 0;
 constexpr uint8_t kEventPhaseNone = 0;
 constexpr uint8_t kEventPhaseCapturing = 1;
@@ -104,6 +114,18 @@ enum class EventInterface : uint8_t {
   KeyboardEvent,
   InputEvent,
   FocusEvent,
+};
+
+enum class FacadeKind : int32_t {
+  NodeList = 1,
+  HTMLCollection = 2,
+  ClassList = 3,
+};
+
+enum class IteratorMode : int32_t {
+  Keys = 1,
+  Values = 2,
+  Entries = 3,
 };
 
 struct EventState {
@@ -282,7 +304,12 @@ struct gossamer_v8_realm {
   v8::Global<v8::FunctionTemplate> keyboard_event_template;
   v8::Global<v8::FunctionTemplate> input_event_template;
   v8::Global<v8::FunctionTemplate> focus_event_template;
+  v8::Global<v8::FunctionTemplate> node_list_template;
+  v8::Global<v8::FunctionTemplate> html_collection_template;
+  v8::Global<v8::FunctionTemplate> token_list_template;
+  v8::Global<v8::FunctionTemplate> dataset_template;
   v8::Global<v8::ObjectTemplate> style_template;
+  v8::Global<v8::ObjectTemplate> collection_iterator_template;
   v8::Global<v8::Object> document_wrapper;
   const gossamer_v8_host *active_host = nullptr;
   bool sampling = false;
@@ -476,6 +503,26 @@ bool ReadStyleKey(v8::Isolate *isolate, v8::Local<v8::Object> receiver,
   if (!node_value->IsObject() ||
       !ReadWrapperKey(node_value.As<v8::Object>(), key)) {
     ThrowError(isolate, "Gossamer style declaration lost its element");
+    return false;
+  }
+  return true;
+}
+
+bool ReadFacadeKey(v8::Isolate *isolate, v8::Local<v8::Object> receiver,
+                   WrapperKey *key) {
+  if (receiver.IsEmpty() || receiver->InternalFieldCount() != 1) {
+    ThrowError(isolate, "DOM facade receiver is not a Gossamer facade");
+    return false;
+  }
+  v8::Local<v8::Data> node_data = receiver->GetInternalField(kFacadeNodeField);
+  if (!node_data->IsValue()) {
+    ThrowError(isolate, "Gossamer DOM facade lost its node");
+    return false;
+  }
+  v8::Local<v8::Value> node_value = node_data.As<v8::Value>();
+  if (!node_value->IsObject() ||
+      !ReadWrapperKey(node_value.As<v8::Object>(), key)) {
+    ThrowError(isolate, "Gossamer DOM facade lost its node");
     return false;
   }
   return true;
@@ -1381,41 +1428,242 @@ bool ReadChildNodes(gossamer_v8_realm *realm, const WrapperKey &key,
   return true;
 }
 
+bool ReadAttributeNames(gossamer_v8_realm *realm, const WrapperKey &key,
+                        std::vector<std::string> *names,
+                        std::string *error) {
+  if (!RequireHost(realm, error))
+    return false;
+  size_t count = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->attribute_count(
+          realm->active_host->execution_id, key.document, key.node, &count,
+          &host_error) == 0) {
+    *error = TakeCString(host_error);
+    if (error->empty())
+      *error = "reading DOM attribute count failed";
+    return false;
+  }
+  std::free(host_error);
+  names->clear();
+  names->reserve(count);
+  for (size_t index = 0; index < count; ++index) {
+    char *name = nullptr;
+    size_t name_length = 0;
+    int found = 0;
+    host_error = nullptr;
+    if (realm->active_host->attribute_name(
+            realm->active_host->execution_id, key.document, key.node, index,
+            &name, &name_length, &found, &host_error) == 0) {
+      *error = TakeCString(host_error);
+      std::free(name);
+      if (error->empty())
+        *error = "reading DOM attribute name failed";
+      return false;
+    }
+    std::free(host_error);
+    if (found != 0)
+      names->emplace_back(name == nullptr ? "" : name, name_length);
+    std::free(name);
+  }
+  return true;
+}
+
+bool ReadAttribute(gossamer_v8_realm *realm, const WrapperKey &key,
+                   const std::string &name, std::string *value, bool *found,
+                   std::string *error) {
+  if (!RequireHost(realm, error))
+    return false;
+  char *host_value = nullptr;
+  size_t value_length = 0;
+  int host_found = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->get_attribute(
+          realm->active_host->execution_id, key.document, key.node,
+          name.data(), name.size(), &host_value, &value_length, &host_found,
+          &host_error) == 0) {
+    *error = TakeCString(host_error);
+    std::free(host_value);
+    if (error->empty())
+      *error = "reading DOM attribute failed";
+    return false;
+  }
+  std::free(host_error);
+  *found = host_found != 0;
+  value->assign(host_value == nullptr ? "" : host_value,
+                *found ? value_length : 0);
+  std::free(host_value);
+  return true;
+}
+
+bool WriteAttribute(gossamer_v8_realm *realm, const WrapperKey &key,
+                    const std::string &name, const std::string &value,
+                    std::string *error) {
+  if (!RequireHost(realm, error))
+    return false;
+  char *host_error = nullptr;
+  if (realm->active_host->set_attribute(
+          realm->active_host->execution_id, key.document, key.node,
+          name.data(), name.size(), value.data(), value.size(),
+          &host_error) == 0) {
+    *error = TakeCString(host_error);
+    if (error->empty())
+      *error = "writing DOM attribute failed";
+    return false;
+  }
+  std::free(host_error);
+  return true;
+}
+
+bool DeleteAttribute(gossamer_v8_realm *realm, const WrapperKey &key,
+                     const std::string &name, std::string *error) {
+  if (!RequireHost(realm, error))
+    return false;
+  char *host_error = nullptr;
+  if (realm->active_host->remove_attribute(
+          realm->active_host->execution_id, key.document, key.node,
+          name.data(), name.size(), &host_error) == 0) {
+    *error = TakeCString(host_error);
+    if (error->empty())
+      *error = "removing DOM attribute failed";
+    return false;
+  }
+  std::free(host_error);
+  return true;
+}
+
+bool IsASCIIWhitespace(char character) {
+  return character == ' ' || character == '\t' || character == '\n' ||
+         character == '\r' || character == '\f';
+}
+
+std::vector<std::string> ParseClassTokens(const std::string &value) {
+  std::vector<std::string> tokens;
+  std::unordered_set<std::string> seen;
+  size_t index = 0;
+  while (index < value.size()) {
+    while (index < value.size() && IsASCIIWhitespace(value[index]))
+      ++index;
+    size_t start = index;
+    while (index < value.size() && !IsASCIIWhitespace(value[index]))
+      ++index;
+    if (start == index)
+      continue;
+    std::string token = value.substr(start, index - start);
+    if (seen.insert(token).second)
+      tokens.push_back(std::move(token));
+  }
+  return tokens;
+}
+
+std::string SerializeClassTokens(const std::vector<std::string> &tokens) {
+  std::string result;
+  for (const std::string &token : tokens) {
+    if (!result.empty())
+      result.push_back(' ');
+    result += token;
+  }
+  return result;
+}
+
+bool ValidateClassToken(v8::Isolate *isolate, const std::string &token) {
+  if (token.empty()) {
+    ThrowError(isolate, "classList token must not be empty");
+    return false;
+  }
+  if (std::any_of(token.begin(), token.end(), IsASCIIWhitespace)) {
+    ThrowError(isolate, "classList token must not contain ASCII whitespace");
+    return false;
+  }
+  return true;
+}
+
+bool ReadClassTokens(gossamer_v8_realm *realm, const WrapperKey &key,
+                     std::vector<std::string> *tokens, std::string *error) {
+  std::string value;
+  bool found = false;
+  if (!ReadAttribute(realm, key, "class", &value, &found, error))
+    return false;
+  *tokens = ParseClassTokens(found ? value : "");
+  return true;
+}
+
+bool WriteClassTokens(gossamer_v8_realm *realm, const WrapperKey &key,
+                      const std::vector<std::string> &tokens,
+                      std::string *error) {
+  if (tokens.empty())
+    return DeleteAttribute(realm, key, "class", error);
+  return WriteAttribute(realm, key, "class", SerializeClassTokens(tokens),
+                        error);
+}
+
+bool DatasetNameFromAttribute(const std::string &attribute,
+                              std::string *property) {
+  if (attribute.rfind("data-", 0) != 0)
+    return false;
+  property->clear();
+  for (size_t index = 5; index < attribute.size(); ++index) {
+    char character = attribute[index];
+    if (character == '-' && index + 1 < attribute.size() &&
+        attribute[index + 1] >= 'a' && attribute[index + 1] <= 'z') {
+      property->push_back(static_cast<char>(attribute[++index] - 'a' + 'A'));
+    } else {
+      property->push_back(character);
+    }
+  }
+  return true;
+}
+
+bool DatasetAttributeFromName(const std::string &property,
+                              std::string *attribute) {
+  for (size_t index = 0; index + 1 < property.size(); ++index) {
+    if (property[index] == '-' && property[index + 1] >= 'a' &&
+        property[index + 1] <= 'z')
+      return false;
+  }
+  *attribute = "data-";
+  for (char character : property) {
+    if (character >= 'A' && character <= 'Z') {
+      attribute->push_back('-');
+      attribute->push_back(static_cast<char>(character - 'A' + 'a'));
+    } else {
+      attribute->push_back(character);
+    }
+  }
+  return true;
+}
+
 void NodeChildrenGetter(v8::Local<v8::Name> property,
                         const v8::PropertyCallbackInfo<v8::Value> &info) {
   v8::Isolate *isolate = info.GetIsolate();
   gossamer_v8_realm *realm = CurrentRealm(isolate);
   WrapperKey key;
-  if (!ReadReceiverKey(isolate, info.Holder(), &key))
+  v8::Local<v8::Object> node = info.Holder();
+  if (!ReadReceiverKey(isolate, node, &key))
     return;
   bool elements_only =
       UTF8Value(isolate, property.As<v8::Value>()) == "children";
-  std::vector<uint32_t> nodes;
-  std::string error;
-  if (!ReadChildNodes(realm, key, elements_only, &nodes, &error)) {
-    ThrowError(isolate, error);
-    return;
-  }
-  if (nodes.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
-    ThrowError(isolate, "DOM child collection exceeds V8's array limit");
-    return;
-  }
-  v8::Local<v8::Array> result =
-      v8::Array::New(isolate, static_cast<int>(nodes.size()));
-  v8::Local<v8::Context> context = isolate->GetCurrentContext();
-  for (size_t index = 0; index < nodes.size(); ++index) {
-    v8::Local<v8::Object> wrapper;
-    if (!GetOrCreateNodeWrapper(realm, context,
-                                WrapperKey{key.document, nodes[index]}, &error)
-             .ToLocal(&wrapper) ||
-        !result->Set(context, static_cast<uint32_t>(index), wrapper)
-             .FromMaybe(false)) {
-      ThrowError(isolate, error.empty() ? "V8 failed to build a child collection"
-                                        : error);
+  int field = elements_only ? kNodeChildrenField : kNodeChildNodesField;
+  v8::Local<v8::Data> cached_data = node->GetInternalField(field);
+  if (cached_data->IsValue()) {
+    v8::Local<v8::Value> cached = cached_data.As<v8::Value>();
+    if (cached->IsObject()) {
+      info.GetReturnValue().Set(cached);
       return;
     }
   }
-  info.GetReturnValue().Set(result);
+  v8::Local<v8::FunctionTemplate> facade_template =
+      elements_only ? realm->html_collection_template.Get(isolate)
+                    : realm->node_list_template.Get(isolate);
+  v8::Local<v8::Object> facade;
+  if (!facade_template->InstanceTemplate()
+           ->NewInstance(isolate->GetCurrentContext())
+           .ToLocal(&facade)) {
+    ThrowError(isolate, "V8 failed to allocate a live child collection");
+    return;
+  }
+  facade->SetInternalField(kFacadeNodeField, node);
+  node->SetInternalField(field, facade);
+  info.GetReturnValue().Set(facade);
 }
 
 void NodeChildElementCountGetter(
@@ -1433,6 +1681,945 @@ void NodeChildElementCountGetter(
   }
   info.GetReturnValue().Set(v8::Integer::NewFromUnsigned(
       isolate, static_cast<uint32_t>(nodes.size())));
+}
+
+FacadeKind FacadeKindFromData(v8::Local<v8::Value> data) {
+  if (data.IsEmpty() || !data->IsInt32())
+    return FacadeKind::NodeList;
+  return static_cast<FacadeKind>(data.As<v8::Int32>()->Value());
+}
+
+bool ReadFacadeLength(gossamer_v8_realm *realm, const WrapperKey &key,
+                      FacadeKind kind, size_t *length, std::string *error) {
+  if (kind == FacadeKind::ClassList) {
+    std::vector<std::string> tokens;
+    if (!ReadClassTokens(realm, key, &tokens, error))
+      return false;
+    *length = tokens.size();
+    return true;
+  }
+  std::vector<uint32_t> nodes;
+  if (!ReadChildNodes(realm, key, kind == FacadeKind::HTMLCollection, &nodes,
+                      error))
+    return false;
+  *length = nodes.size();
+  return true;
+}
+
+v8::MaybeLocal<v8::Value>
+ReadFacadeValue(gossamer_v8_realm *realm, v8::Local<v8::Context> context,
+                const WrapperKey &key, FacadeKind kind, uint32_t index,
+                bool *found, std::string *error) {
+  v8::Isolate *isolate = v8::Isolate::GetCurrent();
+  if (kind == FacadeKind::ClassList) {
+    std::vector<std::string> tokens;
+    if (!ReadClassTokens(realm, key, &tokens, error))
+      return {};
+    *found = index < tokens.size();
+    if (!*found)
+      return v8::Undefined(isolate);
+    v8::Local<v8::String> value;
+    if (!NewUTF8String(isolate, tokens[index].data(), tokens[index].size(),
+                       &value))
+      return {};
+    return value;
+  }
+  std::vector<uint32_t> nodes;
+  if (!ReadChildNodes(realm, key, kind == FacadeKind::HTMLCollection, &nodes,
+                      error))
+    return {};
+  *found = index < nodes.size();
+  if (!*found)
+    return v8::Undefined(isolate);
+  v8::Local<v8::Object> wrapper;
+  if (!GetOrCreateNodeWrapper(realm, context,
+                              WrapperKey{key.document, nodes[index]}, error)
+           .ToLocal(&wrapper))
+    return {};
+  return wrapper;
+}
+
+void FacadeLengthGetter(v8::Local<v8::Name>,
+                        const v8::PropertyCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (!ReadFacadeKey(isolate, info.Holder(), &key))
+    return;
+  size_t length = 0;
+  std::string error;
+  if (!ReadFacadeLength(CurrentRealm(isolate), key,
+                        FacadeKindFromData(info.Data()), &length, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  info.GetReturnValue().Set(v8::Number::New(isolate, length));
+}
+
+v8::Intercepted FacadeIndexedGetter(
+    uint32_t index, const v8::PropertyCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (!ReadFacadeKey(isolate, info.Holder(), &key))
+    return v8::Intercepted::kYes;
+  bool found = false;
+  std::string error;
+  v8::Local<v8::Value> value;
+  if (!ReadFacadeValue(CurrentRealm(isolate), isolate->GetCurrentContext(), key,
+                       FacadeKindFromData(info.Data()), index, &found, &error)
+           .ToLocal(&value)) {
+    ThrowError(isolate, error.empty() ? "reading live DOM facade failed"
+                                      : error);
+    return v8::Intercepted::kYes;
+  }
+  if (!found)
+    return v8::Intercepted::kNo;
+  info.GetReturnValue().Set(value);
+  return v8::Intercepted::kYes;
+}
+
+v8::Intercepted FacadeIndexedQuery(
+    uint32_t index, const v8::PropertyCallbackInfo<v8::Integer> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (!ReadFacadeKey(isolate, info.Holder(), &key))
+    return v8::Intercepted::kYes;
+  size_t length = 0;
+  std::string error;
+  if (!ReadFacadeLength(CurrentRealm(isolate), key,
+                        FacadeKindFromData(info.Data()), &length, &error)) {
+    ThrowError(isolate, error);
+    return v8::Intercepted::kYes;
+  }
+  if (index >= length)
+    return v8::Intercepted::kNo;
+  info.GetReturnValue().Set(v8::None);
+  return v8::Intercepted::kYes;
+}
+
+void FacadeIndexedEnumerator(
+    const v8::PropertyCallbackInfo<v8::Array> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (!ReadFacadeKey(isolate, info.Holder(), &key))
+    return;
+  size_t length = 0;
+  std::string error;
+  if (!ReadFacadeLength(CurrentRealm(isolate), key,
+                        FacadeKindFromData(info.Data()), &length, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  if (length > static_cast<size_t>(std::numeric_limits<int>::max())) {
+    ThrowError(isolate, "DOM facade exceeds V8's enumeration limit");
+    return;
+  }
+  v8::Local<v8::Array> indices =
+      v8::Array::New(isolate, static_cast<int>(length));
+  v8::Local<v8::Context> context = isolate->GetCurrentContext();
+  for (size_t index = 0; index < length; ++index) {
+    if (!indices
+             ->Set(context, static_cast<uint32_t>(index),
+                   v8::Integer::NewFromUnsigned(isolate,
+                                                static_cast<uint32_t>(index)))
+             .FromMaybe(false)) {
+      ThrowError(isolate, "V8 failed to enumerate DOM facade indices");
+      return;
+    }
+  }
+  info.GetReturnValue().Set(indices);
+}
+
+void FacadeItem(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (!ReadFacadeKey(isolate, info.This(), &key))
+    return;
+  uint32_t index = 0;
+  if (info.Length() != 0 &&
+      !info[0]->Uint32Value(isolate->GetCurrentContext()).To(&index))
+    return;
+  bool found = false;
+  std::string error;
+  v8::Local<v8::Value> value;
+  if (!ReadFacadeValue(CurrentRealm(isolate), isolate->GetCurrentContext(), key,
+                       FacadeKindFromData(info.Data()), index, &found, &error)
+           .ToLocal(&value)) {
+    ThrowError(isolate, error.empty() ? "reading DOM facade item failed"
+                                      : error);
+    return;
+  }
+  info.GetReturnValue().Set(found ? value : v8::Null(isolate));
+}
+
+bool FindNamedCollectionItem(gossamer_v8_realm *realm, const WrapperKey &key,
+                             const std::string &name, uint32_t *node,
+                             bool *found, std::string *error) {
+  std::vector<uint32_t> nodes;
+  if (!ReadChildNodes(realm, key, true, &nodes, error))
+    return false;
+  for (uint32_t candidate : nodes) {
+    WrapperKey candidate_key{key.document, candidate};
+    std::string value;
+    bool present = false;
+    if (!ReadAttribute(realm, candidate_key, "id", &value, &present, error))
+      return false;
+    if (present && value == name) {
+      *node = candidate;
+      *found = true;
+      return true;
+    }
+    if (!ReadAttribute(realm, candidate_key, "name", &value, &present, error))
+      return false;
+    if (present && value == name) {
+      *node = candidate;
+      *found = true;
+      return true;
+    }
+  }
+  *found = false;
+  return true;
+}
+
+void HTMLCollectionNamedItem(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (!ReadFacadeKey(isolate, info.This(), &key))
+    return;
+  std::string name;
+  if (info.Length() == 0 || !StringFromValue(isolate, info[0], &name))
+    return;
+  uint32_t node = 0;
+  bool found = false;
+  std::string error;
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  if (!FindNamedCollectionItem(realm, key, name, &node, &found, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  if (!found) {
+    info.GetReturnValue().Set(v8::Null(isolate));
+    return;
+  }
+  v8::Local<v8::Object> wrapper;
+  if (!GetOrCreateNodeWrapper(realm, isolate->GetCurrentContext(),
+                              WrapperKey{key.document, node}, &error)
+           .ToLocal(&wrapper)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  info.GetReturnValue().Set(wrapper);
+}
+
+v8::Intercepted HTMLCollectionNamedGetter(
+    v8::Local<v8::Name> property,
+    const v8::PropertyCallbackInfo<v8::Value> &info) {
+  if (!property->IsString())
+    return v8::Intercepted::kNo;
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (!ReadFacadeKey(isolate, info.Holder(), &key))
+    return v8::Intercepted::kYes;
+  std::string name = UTF8Value(isolate, property.As<v8::Value>());
+  uint32_t node = 0;
+  bool found = false;
+  std::string error;
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  if (!FindNamedCollectionItem(realm, key, name, &node, &found, &error)) {
+    ThrowError(isolate, error);
+    return v8::Intercepted::kYes;
+  }
+  if (!found)
+    return v8::Intercepted::kNo;
+  v8::Local<v8::Object> wrapper;
+  if (!GetOrCreateNodeWrapper(realm, isolate->GetCurrentContext(),
+                              WrapperKey{key.document, node}, &error)
+           .ToLocal(&wrapper)) {
+    ThrowError(isolate, error);
+    return v8::Intercepted::kYes;
+  }
+  info.GetReturnValue().Set(wrapper);
+  return v8::Intercepted::kYes;
+}
+
+v8::Intercepted HTMLCollectionNamedQuery(
+    v8::Local<v8::Name> property,
+    const v8::PropertyCallbackInfo<v8::Integer> &info) {
+  if (!property->IsString())
+    return v8::Intercepted::kNo;
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (!ReadFacadeKey(isolate, info.Holder(), &key))
+    return v8::Intercepted::kYes;
+  uint32_t node = 0;
+  bool found = false;
+  std::string error;
+  if (!FindNamedCollectionItem(CurrentRealm(isolate), key,
+                               UTF8Value(isolate, property.As<v8::Value>()),
+                               &node, &found, &error)) {
+    ThrowError(isolate, error);
+    return v8::Intercepted::kYes;
+  }
+  if (!found)
+    return v8::Intercepted::kNo;
+  info.GetReturnValue().Set(v8::None);
+  return v8::Intercepted::kYes;
+}
+
+void HTMLCollectionNamedEnumerator(
+    const v8::PropertyCallbackInfo<v8::Array> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (!ReadFacadeKey(isolate, info.Holder(), &key))
+    return;
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  std::vector<uint32_t> nodes;
+  std::string error;
+  if (!ReadChildNodes(realm, key, true, &nodes, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  std::vector<std::string> names;
+  std::unordered_set<std::string> seen;
+  for (uint32_t node : nodes) {
+    WrapperKey candidate{key.document, node};
+    for (const char *attribute : {"id", "name"}) {
+      std::string value;
+      bool found = false;
+      if (!ReadAttribute(realm, candidate, attribute, &value, &found, &error)) {
+        ThrowError(isolate, error);
+        return;
+      }
+      if (found && !value.empty() && seen.insert(value).second)
+        names.push_back(std::move(value));
+    }
+  }
+  if (names.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
+    ThrowError(isolate, "HTMLCollection exceeds V8's enumeration limit");
+    return;
+  }
+  v8::Local<v8::Array> result =
+      v8::Array::New(isolate, static_cast<int>(names.size()));
+  v8::Local<v8::Context> context = isolate->GetCurrentContext();
+  for (size_t index = 0; index < names.size(); ++index) {
+    v8::Local<v8::String> value;
+    if (!NewUTF8String(isolate, names[index].data(), names[index].size(),
+                       &value) ||
+        !result->Set(context, static_cast<uint32_t>(index), value)
+             .FromMaybe(false)) {
+      ThrowError(isolate, "V8 failed to enumerate HTMLCollection names");
+      return;
+    }
+  }
+  info.GetReturnValue().Set(result);
+}
+
+bool SetIteratorResult(v8::Isolate *isolate, v8::Local<v8::Value> value,
+                       bool done,
+                       const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Local<v8::Context> context = isolate->GetCurrentContext();
+  v8::Local<v8::Object> result = v8::Object::New(isolate);
+  if (!result
+           ->Set(context, v8::String::NewFromUtf8Literal(isolate, "value"),
+                 value)
+           .FromMaybe(false) ||
+      !result
+           ->Set(context, v8::String::NewFromUtf8Literal(isolate, "done"),
+                 v8::Boolean::New(isolate, done))
+           .FromMaybe(false)) {
+    ThrowError(isolate, "V8 failed to allocate a DOM iterator result");
+    return false;
+  }
+  info.GetReturnValue().Set(result);
+  return true;
+}
+
+void CollectionIteratorSelf(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  info.GetReturnValue().Set(info.This());
+}
+
+void CollectionIteratorNext(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  v8::Local<v8::Object> iterator = info.This();
+  if (iterator.IsEmpty() || iterator->InternalFieldCount() != 4) {
+    ThrowError(isolate, "DOM iterator receiver is not a Gossamer iterator");
+    return;
+  }
+  v8::Local<v8::Data> facade_data =
+      iterator->GetInternalField(kIteratorFacadeField);
+  v8::Local<v8::Data> index_data =
+      iterator->GetInternalField(kIteratorIndexField);
+  v8::Local<v8::Data> kind_data =
+      iterator->GetInternalField(kIteratorSourceKindField);
+  v8::Local<v8::Data> mode_data =
+      iterator->GetInternalField(kIteratorModeField);
+  if (!facade_data->IsValue() || !facade_data.As<v8::Value>()->IsObject() ||
+      !index_data->IsValue() || !index_data.As<v8::Value>()->IsUint32() ||
+      !kind_data->IsValue() || !kind_data.As<v8::Value>()->IsInt32() ||
+      !mode_data->IsValue() || !mode_data.As<v8::Value>()->IsInt32()) {
+    ThrowError(isolate, "Gossamer DOM iterator state is invalid");
+    return;
+  }
+  v8::Local<v8::Object> facade =
+      facade_data.As<v8::Value>().As<v8::Object>();
+  WrapperKey key;
+  if (!ReadFacadeKey(isolate, facade, &key))
+    return;
+  uint32_t index = index_data.As<v8::Value>().As<v8::Uint32>()->Value();
+  FacadeKind kind = static_cast<FacadeKind>(
+      kind_data.As<v8::Value>().As<v8::Int32>()->Value());
+  IteratorMode mode = static_cast<IteratorMode>(
+      mode_data.As<v8::Value>().As<v8::Int32>()->Value());
+  bool found = false;
+  std::string error;
+  v8::Local<v8::Value> value;
+  if (!ReadFacadeValue(CurrentRealm(isolate), isolate->GetCurrentContext(), key,
+                       kind, index, &found, &error)
+           .ToLocal(&value)) {
+    ThrowError(isolate, error.empty() ? "reading DOM iterator failed" : error);
+    return;
+  }
+  if (!found) {
+    SetIteratorResult(isolate, v8::Undefined(isolate), true, info);
+    return;
+  }
+  iterator->SetInternalField(kIteratorIndexField,
+                             v8::Integer::NewFromUnsigned(isolate, index + 1));
+  if (mode == IteratorMode::Keys) {
+    value = v8::Integer::NewFromUnsigned(isolate, index);
+  } else if (mode == IteratorMode::Entries) {
+    v8::Local<v8::Array> entry = v8::Array::New(isolate, 2);
+    v8::Local<v8::Context> context = isolate->GetCurrentContext();
+    if (!entry
+             ->Set(context, 0,
+                   v8::Integer::NewFromUnsigned(isolate, index))
+             .FromMaybe(false) ||
+        !entry->Set(context, 1, value).FromMaybe(false)) {
+      ThrowError(isolate, "V8 failed to allocate a DOM iterator entry");
+      return;
+    }
+    value = entry;
+  }
+  SetIteratorResult(isolate, value, false, info);
+}
+
+void FacadeIterator(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (!ReadFacadeKey(isolate, info.This(), &key))
+    return;
+  int encoded = info.Data().As<v8::Int32>()->Value();
+  FacadeKind kind = static_cast<FacadeKind>(encoded / 10);
+  IteratorMode mode = static_cast<IteratorMode>(encoded % 10);
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  v8::Local<v8::Object> iterator;
+  if (!realm->collection_iterator_template.Get(isolate)
+           ->NewInstance(isolate->GetCurrentContext())
+           .ToLocal(&iterator)) {
+    ThrowError(isolate, "V8 failed to allocate a live DOM iterator");
+    return;
+  }
+  iterator->SetInternalField(kIteratorFacadeField, info.This());
+  iterator->SetInternalField(kIteratorIndexField,
+                             v8::Integer::NewFromUnsigned(isolate, 0));
+  iterator->SetInternalField(kIteratorSourceKindField,
+                             v8::Integer::New(isolate, static_cast<int>(kind)));
+  iterator->SetInternalField(kIteratorModeField,
+                             v8::Integer::New(isolate, static_cast<int>(mode)));
+  info.GetReturnValue().Set(iterator);
+}
+
+void FacadeForEach(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (!ReadFacadeKey(isolate, info.This(), &key))
+    return;
+  if (info.Length() == 0 || !info[0]->IsFunction()) {
+    ThrowError(isolate, "DOM facade forEach requires a callback");
+    return;
+  }
+  v8::Local<v8::Function> callback = info[0].As<v8::Function>();
+  v8::Local<v8::Value> receiver =
+      info.Length() > 1 ? info[1] : v8::Undefined(isolate);
+  FacadeKind kind = FacadeKindFromData(info.Data());
+  v8::Local<v8::Context> context = isolate->GetCurrentContext();
+  for (uint32_t index = 0;; ++index) {
+    bool found = false;
+    std::string error;
+    v8::Local<v8::Value> value;
+    if (!ReadFacadeValue(CurrentRealm(isolate), context, key, kind, index,
+                         &found, &error)
+             .ToLocal(&value)) {
+      ThrowError(isolate, error.empty() ? "reading DOM facade failed" : error);
+      return;
+    }
+    if (!found)
+      return;
+    v8::Local<v8::Value> arguments[] = {
+        value, v8::Integer::NewFromUnsigned(isolate, index), info.This()};
+    if (callback->Call(context, receiver, 3, arguments).IsEmpty())
+      return;
+    if (index == std::numeric_limits<uint32_t>::max())
+      return;
+  }
+}
+
+void ClassListValueGetter(v8::Local<v8::Name>,
+                          const v8::PropertyCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (!ReadFacadeKey(isolate, info.Holder(), &key))
+    return;
+  std::string rendered;
+  bool found = false;
+  std::string error;
+  if (!ReadAttribute(CurrentRealm(isolate), key, "class", &rendered, &found,
+                     &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  v8::Local<v8::String> value;
+  if (!NewUTF8String(isolate, rendered.data(), found ? rendered.size() : 0,
+                     &value)) {
+    ThrowError(isolate, "V8 failed to allocate classList.value");
+    return;
+  }
+  info.GetReturnValue().Set(value);
+}
+
+void ClassListValueSetter(v8::Local<v8::Name>, v8::Local<v8::Value> value,
+                          const v8::PropertyCallbackInfo<v8::Boolean> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  std::string rendered;
+  if (!ReadFacadeKey(isolate, info.Holder(), &key) ||
+      !StringFromValue(isolate, value, &rendered)) {
+    info.GetReturnValue().Set(false);
+    return;
+  }
+  std::string error;
+  if (!WriteAttribute(CurrentRealm(isolate), key, "class", rendered, &error)) {
+    ThrowError(isolate, error);
+    info.GetReturnValue().Set(false);
+    return;
+  }
+  info.GetReturnValue().Set(true);
+}
+
+void ClassListToString(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (!ReadFacadeKey(isolate, info.This(), &key))
+    return;
+  std::string rendered;
+  bool found = false;
+  std::string error;
+  if (!ReadAttribute(CurrentRealm(isolate), key, "class", &rendered, &found,
+                     &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  v8::Local<v8::String> value;
+  if (!NewUTF8String(isolate, rendered.data(), found ? rendered.size() : 0,
+                     &value)) {
+    ThrowError(isolate, "V8 failed to allocate classList string");
+    return;
+  }
+  info.GetReturnValue().Set(value);
+}
+
+bool ReadClassTokenArgument(v8::Isolate *isolate, v8::Local<v8::Value> value,
+                            std::string *token) {
+  return StringFromValue(isolate, value, token) &&
+         ValidateClassToken(isolate, *token);
+}
+
+void ClassListContains(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  std::string token;
+  if (!ReadFacadeKey(isolate, info.This(), &key) ||
+      !ReadClassTokenArgument(isolate,
+                              info.Length() == 0 ? v8::Undefined(isolate)
+                                                 : info[0],
+                              &token))
+    return;
+  std::vector<std::string> tokens;
+  std::string error;
+  if (!ReadClassTokens(CurrentRealm(isolate), key, &tokens, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  info.GetReturnValue().Set(std::find(tokens.begin(), tokens.end(), token) !=
+                            tokens.end());
+}
+
+void ClassListAdd(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (!ReadFacadeKey(isolate, info.This(), &key))
+    return;
+  std::vector<std::string> additions;
+  additions.reserve(info.Length());
+  for (int index = 0; index < info.Length(); ++index) {
+    std::string token;
+    if (!ReadClassTokenArgument(isolate, info[index], &token))
+      return;
+    additions.push_back(std::move(token));
+  }
+  std::vector<std::string> tokens;
+  std::string error;
+  if (!ReadClassTokens(CurrentRealm(isolate), key, &tokens, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  for (const std::string &token : additions) {
+    if (std::find(tokens.begin(), tokens.end(), token) == tokens.end())
+      tokens.push_back(token);
+  }
+  if (!WriteClassTokens(CurrentRealm(isolate), key, tokens, &error))
+    ThrowError(isolate, error);
+}
+
+void ClassListRemove(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (!ReadFacadeKey(isolate, info.This(), &key))
+    return;
+  std::unordered_set<std::string> removals;
+  for (int index = 0; index < info.Length(); ++index) {
+    std::string token;
+    if (!ReadClassTokenArgument(isolate, info[index], &token))
+      return;
+    removals.insert(std::move(token));
+  }
+  std::vector<std::string> tokens;
+  std::string error;
+  if (!ReadClassTokens(CurrentRealm(isolate), key, &tokens, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  tokens.erase(std::remove_if(tokens.begin(), tokens.end(),
+                              [&removals](const std::string &token) {
+                                return removals.contains(token);
+                              }),
+               tokens.end());
+  if (!WriteClassTokens(CurrentRealm(isolate), key, tokens, &error))
+    ThrowError(isolate, error);
+}
+
+void ClassListToggle(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  std::string token;
+  if (!ReadFacadeKey(isolate, info.This(), &key) ||
+      !ReadClassTokenArgument(isolate,
+                              info.Length() == 0 ? v8::Undefined(isolate)
+                                                 : info[0],
+                              &token))
+    return;
+  std::vector<std::string> tokens;
+  std::string error;
+  if (!ReadClassTokens(CurrentRealm(isolate), key, &tokens, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  auto existing = std::find(tokens.begin(), tokens.end(), token);
+  bool present = existing != tokens.end();
+  bool desired = info.Length() > 1 ? info[1]->BooleanValue(isolate) : !present;
+  if (desired && !present)
+    tokens.push_back(token);
+  else if (!desired && present)
+    tokens.erase(existing);
+  if (desired != present &&
+      !WriteClassTokens(CurrentRealm(isolate), key, tokens, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  info.GetReturnValue().Set(desired);
+}
+
+void ClassListReplace(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  std::string from;
+  std::string to;
+  if (!ReadFacadeKey(isolate, info.This(), &key) ||
+      !ReadClassTokenArgument(isolate,
+                              info.Length() == 0 ? v8::Undefined(isolate)
+                                                 : info[0],
+                              &from) ||
+      !ReadClassTokenArgument(isolate,
+                              info.Length() < 2 ? v8::Undefined(isolate)
+                                                : info[1],
+                              &to))
+    return;
+  std::vector<std::string> tokens;
+  std::string error;
+  if (!ReadClassTokens(CurrentRealm(isolate), key, &tokens, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  auto existing = std::find(tokens.begin(), tokens.end(), from);
+  if (existing == tokens.end()) {
+    info.GetReturnValue().Set(false);
+    return;
+  }
+  if (from != to) {
+    if (std::find(tokens.begin(), tokens.end(), to) == tokens.end())
+      *existing = to;
+    else
+      tokens.erase(existing);
+    if (!WriteClassTokens(CurrentRealm(isolate), key, tokens, &error)) {
+      ThrowError(isolate, error);
+      return;
+    }
+  }
+  info.GetReturnValue().Set(true);
+}
+
+v8::Intercepted DatasetNamedGetter(
+    v8::Local<v8::Name> property,
+    const v8::PropertyCallbackInfo<v8::Value> &info) {
+  if (!property->IsString())
+    return v8::Intercepted::kNo;
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (!ReadFacadeKey(isolate, info.Holder(), &key))
+    return v8::Intercepted::kYes;
+  std::string attribute;
+  if (!DatasetAttributeFromName(UTF8Value(isolate, property.As<v8::Value>()),
+                                &attribute))
+    return v8::Intercepted::kNo;
+  std::string value;
+  bool found = false;
+  std::string error;
+  if (!ReadAttribute(CurrentRealm(isolate), key, attribute, &value, &found,
+                     &error)) {
+    ThrowError(isolate, error);
+    return v8::Intercepted::kYes;
+  }
+  if (!found)
+    return v8::Intercepted::kNo;
+  v8::Local<v8::String> rendered;
+  if (!NewUTF8String(isolate, value.data(), value.size(), &rendered)) {
+    ThrowError(isolate, "V8 failed to allocate a dataset value");
+    return v8::Intercepted::kYes;
+  }
+  info.GetReturnValue().Set(rendered);
+  return v8::Intercepted::kYes;
+}
+
+v8::Intercepted DatasetNamedSetter(
+    v8::Local<v8::Name> property, v8::Local<v8::Value> value,
+    const v8::PropertyCallbackInfo<v8::Boolean> &info) {
+  if (!property->IsString())
+    return v8::Intercepted::kNo;
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (!ReadFacadeKey(isolate, info.Holder(), &key)) {
+    info.GetReturnValue().Set(false);
+    return v8::Intercepted::kYes;
+  }
+  std::string attribute;
+  std::string rendered;
+  if (!DatasetAttributeFromName(UTF8Value(isolate, property.As<v8::Value>()),
+                                &attribute)) {
+    ThrowError(isolate, "dataset property names cannot contain '-' followed by a lowercase letter");
+    info.GetReturnValue().Set(false);
+    return v8::Intercepted::kYes;
+  }
+  if (!StringFromValue(isolate, value, &rendered)) {
+    info.GetReturnValue().Set(false);
+    return v8::Intercepted::kYes;
+  }
+  std::string error;
+  if (!WriteAttribute(CurrentRealm(isolate), key, attribute, rendered,
+                      &error)) {
+    ThrowError(isolate, error);
+    info.GetReturnValue().Set(false);
+    return v8::Intercepted::kYes;
+  }
+  info.GetReturnValue().Set(true);
+  return v8::Intercepted::kYes;
+}
+
+v8::Intercepted DatasetNamedQuery(
+    v8::Local<v8::Name> property,
+    const v8::PropertyCallbackInfo<v8::Integer> &info) {
+  if (!property->IsString())
+    return v8::Intercepted::kNo;
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (!ReadFacadeKey(isolate, info.Holder(), &key))
+    return v8::Intercepted::kYes;
+  std::string attribute;
+  if (!DatasetAttributeFromName(UTF8Value(isolate, property.As<v8::Value>()),
+                                &attribute))
+    return v8::Intercepted::kNo;
+  std::string value;
+  bool found = false;
+  std::string error;
+  if (!ReadAttribute(CurrentRealm(isolate), key, attribute, &value, &found,
+                     &error)) {
+    ThrowError(isolate, error);
+    return v8::Intercepted::kYes;
+  }
+  if (!found)
+    return v8::Intercepted::kNo;
+  info.GetReturnValue().Set(v8::None);
+  return v8::Intercepted::kYes;
+}
+
+v8::Intercepted DatasetNamedDeleter(
+    v8::Local<v8::Name> property,
+    const v8::PropertyCallbackInfo<v8::Boolean> &info) {
+  if (!property->IsString())
+    return v8::Intercepted::kNo;
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (!ReadFacadeKey(isolate, info.Holder(), &key)) {
+    info.GetReturnValue().Set(false);
+    return v8::Intercepted::kYes;
+  }
+  std::string attribute;
+  if (!DatasetAttributeFromName(UTF8Value(isolate, property.As<v8::Value>()),
+                                &attribute))
+    return v8::Intercepted::kNo;
+  std::string error;
+  if (!DeleteAttribute(CurrentRealm(isolate), key, attribute, &error)) {
+    ThrowError(isolate, error);
+    info.GetReturnValue().Set(false);
+    return v8::Intercepted::kYes;
+  }
+  info.GetReturnValue().Set(true);
+  return v8::Intercepted::kYes;
+}
+
+void DatasetNamedEnumerator(
+    const v8::PropertyCallbackInfo<v8::Array> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (!ReadFacadeKey(isolate, info.Holder(), &key))
+    return;
+  std::vector<std::string> attributes;
+  std::string error;
+  if (!ReadAttributeNames(CurrentRealm(isolate), key, &attributes, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  std::vector<std::string> properties;
+  std::unordered_set<std::string> seen;
+  for (const std::string &attribute : attributes) {
+    std::string property;
+    if (DatasetNameFromAttribute(attribute, &property) &&
+        seen.insert(property).second)
+      properties.push_back(std::move(property));
+  }
+  if (properties.size() >
+      static_cast<size_t>(std::numeric_limits<int>::max())) {
+    ThrowError(isolate, "dataset exceeds V8's enumeration limit");
+    return;
+  }
+  v8::Local<v8::Array> result =
+      v8::Array::New(isolate, static_cast<int>(properties.size()));
+  v8::Local<v8::Context> context = isolate->GetCurrentContext();
+  for (size_t index = 0; index < properties.size(); ++index) {
+    v8::Local<v8::String> property;
+    if (!NewUTF8String(isolate, properties[index].data(),
+                       properties[index].size(), &property) ||
+        !result->Set(context, static_cast<uint32_t>(index), property)
+             .FromMaybe(false)) {
+      ThrowError(isolate, "V8 failed to enumerate dataset properties");
+      return;
+    }
+  }
+  info.GetReturnValue().Set(result);
+}
+
+void NodeClassListGetter(v8::Local<v8::Name>,
+                         const v8::PropertyCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  v8::Local<v8::Object> node = info.Holder();
+  if (!ReadReceiverKey(isolate, node, &key))
+    return;
+  v8::Local<v8::Data> cached_data =
+      node->GetInternalField(kNodeClassListField);
+  if (cached_data->IsValue() && cached_data.As<v8::Value>()->IsObject()) {
+    info.GetReturnValue().Set(cached_data.As<v8::Value>());
+    return;
+  }
+  v8::Local<v8::Object> facade;
+  if (!CurrentRealm(isolate)->token_list_template.Get(isolate)
+           ->InstanceTemplate()
+           ->NewInstance(isolate->GetCurrentContext())
+           .ToLocal(&facade)) {
+    ThrowError(isolate, "V8 failed to allocate classList");
+    return;
+  }
+  facade->SetInternalField(kFacadeNodeField, node);
+  node->SetInternalField(kNodeClassListField, facade);
+  info.GetReturnValue().Set(facade);
+}
+
+void NodeDatasetGetter(v8::Local<v8::Name>,
+                       const v8::PropertyCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  v8::Local<v8::Object> node = info.Holder();
+  if (!ReadReceiverKey(isolate, node, &key))
+    return;
+  v8::Local<v8::Data> cached_data = node->GetInternalField(kNodeDatasetField);
+  if (cached_data->IsValue() && cached_data.As<v8::Value>()->IsObject()) {
+    info.GetReturnValue().Set(cached_data.As<v8::Value>());
+    return;
+  }
+  v8::Local<v8::Object> facade;
+  if (!CurrentRealm(isolate)->dataset_template.Get(isolate)
+           ->InstanceTemplate()
+           ->NewInstance(isolate->GetCurrentContext())
+           .ToLocal(&facade)) {
+    ThrowError(isolate, "V8 failed to allocate dataset");
+    return;
+  }
+  facade->SetInternalField(kFacadeNodeField, node);
+  node->SetInternalField(kNodeDatasetField, facade);
+  info.GetReturnValue().Set(facade);
+}
+
+void NodeGetAttributeNames(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.This(), &key))
+    return;
+  std::vector<std::string> names;
+  std::string error;
+  if (!ReadAttributeNames(CurrentRealm(isolate), key, &names, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  if (names.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
+    ThrowError(isolate, "element exceeds V8's attribute enumeration limit");
+    return;
+  }
+  v8::Local<v8::Array> result =
+      v8::Array::New(isolate, static_cast<int>(names.size()));
+  v8::Local<v8::Context> context = isolate->GetCurrentContext();
+  for (size_t index = 0; index < names.size(); ++index) {
+    v8::Local<v8::String> name;
+    if (!NewUTF8String(isolate, names[index].data(), names[index].size(),
+                       &name) ||
+        !result->Set(context, static_cast<uint32_t>(index), name)
+             .FromMaybe(false)) {
+      ThrowError(isolate, "V8 failed to allocate attribute names");
+      return;
+    }
+  }
+  info.GetReturnValue().Set(result);
 }
 
 void NodeHasChildNodes(const v8::FunctionCallbackInfo<v8::Value> &info) {
@@ -2972,6 +4159,14 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
       v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
   v8::Local<v8::FunctionTemplate> document_template =
       v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
+  v8::Local<v8::FunctionTemplate> node_list_template =
+      v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
+  v8::Local<v8::FunctionTemplate> html_collection_template =
+      v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
+  v8::Local<v8::FunctionTemplate> token_list_template =
+      v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
+  v8::Local<v8::FunctionTemplate> dataset_template =
+      v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
   auto new_event_template =
       [isolate](EventInterface interface) {
         return v8::FunctionTemplate::New(
@@ -3001,6 +4196,14 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   text_template->SetClassName(v8::String::NewFromUtf8Literal(isolate, "Text"));
   document_template->SetClassName(
       v8::String::NewFromUtf8Literal(isolate, "Document"));
+  node_list_template->SetClassName(
+      v8::String::NewFromUtf8Literal(isolate, "NodeList"));
+  html_collection_template->SetClassName(
+      v8::String::NewFromUtf8Literal(isolate, "HTMLCollection"));
+  token_list_template->SetClassName(
+      v8::String::NewFromUtf8Literal(isolate, "DOMTokenList"));
+  dataset_template->SetClassName(
+      v8::String::NewFromUtf8Literal(isolate, "DOMStringMap"));
   event_template->SetClassName(
       v8::String::NewFromUtf8Literal(isolate, "Event"));
   mouse_event_template->SetClassName(
@@ -3026,13 +4229,125 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   for (v8::Local<v8::FunctionTemplate> interface_template :
        {node_template, element_template, html_element_template, text_template,
         document_template}) {
-    interface_template->InstanceTemplate()->SetInternalFieldCount(3);
+    interface_template->InstanceTemplate()->SetInternalFieldCount(
+        kNodeInternalFieldCount);
+  }
+  for (v8::Local<v8::FunctionTemplate> facade_template :
+       {node_list_template, html_collection_template, token_list_template,
+        dataset_template}) {
+    facade_template->InstanceTemplate()->SetInternalFieldCount(1);
   }
   for (v8::Local<v8::FunctionTemplate> interface_template :
        {event_template, mouse_event_template, pointer_event_template,
         keyboard_event_template, input_event_template, focus_event_template}) {
     interface_template->InstanceTemplate()->SetInternalFieldCount(1);
   }
+
+  auto facade_data = [isolate](FacadeKind kind) {
+    return v8::Integer::New(isolate, static_cast<int>(kind));
+  };
+  auto iterator_data = [isolate](FacadeKind kind, IteratorMode mode) {
+    return v8::Integer::New(isolate, static_cast<int>(kind) * 10 +
+                                         static_cast<int>(mode));
+  };
+  auto install_iterable =
+      [isolate, facade_data, iterator_data](
+          v8::Local<v8::FunctionTemplate> facade_template, FacadeKind kind,
+          bool install_for_each) {
+        v8::Local<v8::ObjectTemplate> prototype =
+            facade_template->PrototypeTemplate();
+        v8::Local<v8::ObjectTemplate> instance =
+            facade_template->InstanceTemplate();
+        for (v8::Local<v8::ObjectTemplate> surface : {prototype, instance}) {
+          surface->SetNativeDataProperty(
+              v8::String::NewFromUtf8Literal(isolate, "length"),
+              FacadeLengthGetter, nullptr, facade_data(kind), v8::DontEnum);
+        }
+        prototype->Set(
+            isolate, "item",
+            v8::FunctionTemplate::New(isolate, FacadeItem, facade_data(kind)));
+        if (install_for_each) {
+          prototype->Set(
+              isolate, "forEach",
+              v8::FunctionTemplate::New(isolate, FacadeForEach,
+                                        facade_data(kind)));
+        }
+        for (const auto &method :
+             {std::pair<const char *, IteratorMode>{"keys",
+                                                    IteratorMode::Keys},
+              {"values", IteratorMode::Values},
+              {"entries", IteratorMode::Entries}}) {
+          prototype->Set(
+              isolate, method.first,
+              v8::FunctionTemplate::New(isolate, FacadeIterator,
+                                        iterator_data(kind, method.second)));
+        }
+        prototype->Set(
+            v8::Symbol::GetIterator(isolate),
+            v8::FunctionTemplate::New(isolate, FacadeIterator,
+                                      iterator_data(kind,
+                                                    IteratorMode::Values)));
+        instance->SetHandler(v8::IndexedPropertyHandlerConfiguration(
+            FacadeIndexedGetter, nullptr, FacadeIndexedQuery, nullptr,
+            FacadeIndexedEnumerator, facade_data(kind)));
+      };
+  install_iterable(node_list_template, FacadeKind::NodeList, true);
+  install_iterable(html_collection_template, FacadeKind::HTMLCollection,
+                   false);
+  install_iterable(token_list_template, FacadeKind::ClassList, true);
+  html_collection_template->PrototypeTemplate()->Set(
+      isolate, "namedItem",
+      v8::FunctionTemplate::New(isolate, HTMLCollectionNamedItem));
+  html_collection_template->InstanceTemplate()->SetHandler(
+      v8::NamedPropertyHandlerConfiguration(
+          HTMLCollectionNamedGetter, nullptr, HTMLCollectionNamedQuery,
+          nullptr, HTMLCollectionNamedEnumerator, v8::Local<v8::Value>(),
+          static_cast<v8::PropertyHandlerFlags>(
+              static_cast<int>(v8::PropertyHandlerFlags::kNonMasking) |
+              static_cast<int>(
+                  v8::PropertyHandlerFlags::kOnlyInterceptStrings))));
+  for (v8::Local<v8::ObjectTemplate> surface :
+       {token_list_template->PrototypeTemplate(),
+        token_list_template->InstanceTemplate()}) {
+    surface->SetNativeDataProperty(
+        v8::String::NewFromUtf8Literal(isolate, "value"),
+        ClassListValueGetter, ClassListValueSetter, v8::Local<v8::Value>(),
+        v8::DontEnum);
+  }
+  for (const auto &method :
+       {std::pair<const char *, v8::FunctionCallback>{"contains",
+                                                     ClassListContains},
+        {"add", ClassListAdd},
+        {"remove", ClassListRemove},
+        {"toggle", ClassListToggle},
+        {"replace", ClassListReplace},
+        {"toString", ClassListToString}}) {
+    token_list_template->PrototypeTemplate()->Set(
+        isolate, method.first,
+        v8::FunctionTemplate::New(isolate, method.second));
+  }
+  dataset_template->InstanceTemplate()->SetHandler(
+      v8::NamedPropertyHandlerConfiguration(
+          DatasetNamedGetter, DatasetNamedSetter, DatasetNamedQuery,
+          DatasetNamedDeleter, DatasetNamedEnumerator,
+          v8::Local<v8::Value>(),
+          v8::PropertyHandlerFlags::kOnlyInterceptStrings));
+
+  v8::Local<v8::ObjectTemplate> collection_iterator_template =
+      v8::ObjectTemplate::New(isolate);
+  collection_iterator_template->SetInternalFieldCount(4);
+  collection_iterator_template->Set(
+      isolate, "next",
+      v8::FunctionTemplate::New(isolate, CollectionIteratorNext));
+  collection_iterator_template->Set(
+      v8::Symbol::GetIterator(isolate),
+      v8::FunctionTemplate::New(isolate, CollectionIteratorSelf));
+  realm->node_list_template.Reset(isolate, node_list_template);
+  realm->html_collection_template.Reset(isolate, html_collection_template);
+  realm->token_list_template.Reset(isolate, token_list_template);
+  realm->dataset_template.Reset(isolate, dataset_template);
+  realm->collection_iterator_template.Reset(isolate,
+                                             collection_iterator_template);
 
   v8::Local<v8::ObjectTemplate> event_target_prototype =
       event_target_template->PrototypeTemplate();
@@ -3220,6 +4535,11 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
       NodeReflectedAttributeGetter, NodeReflectedAttributeSetter);
   element_prototype->SetNativeDataProperty(
       v8::String::NewFromUtf8Literal(isolate, "style"), NodeStyleGetter);
+  element_prototype->SetNativeDataProperty(
+      v8::String::NewFromUtf8Literal(isolate, "classList"),
+      NodeClassListGetter);
+  element_prototype->SetNativeDataProperty(
+      v8::String::NewFromUtf8Literal(isolate, "dataset"), NodeDatasetGetter);
   element_prototype->Set(isolate, "getAttribute",
                          v8::FunctionTemplate::New(isolate, NodeGetAttribute));
   element_prototype->Set(isolate, "setAttribute",
@@ -3229,6 +4549,9 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
       v8::FunctionTemplate::New(isolate, NodeRemoveAttribute));
   element_prototype->Set(isolate, "hasAttribute",
                          v8::FunctionTemplate::New(isolate, NodeHasAttribute));
+  element_prototype->Set(
+      isolate, "getAttributeNames",
+      v8::FunctionTemplate::New(isolate, NodeGetAttributeNames));
 
   text_template->PrototypeTemplate()->SetNativeDataProperty(
       v8::String::NewFromUtf8Literal(isolate, "data"), NodeValueGetter,
@@ -3328,6 +4651,12 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
             NodeReflectedAttributeGetter, NodeReflectedAttributeSetter);
         instance->SetNativeDataProperty(
             v8::String::NewFromUtf8Literal(isolate, "style"), NodeStyleGetter);
+        instance->SetNativeDataProperty(
+            v8::String::NewFromUtf8Literal(isolate, "classList"),
+            NodeClassListGetter);
+        instance->SetNativeDataProperty(
+            v8::String::NewFromUtf8Literal(isolate, "dataset"),
+            NodeDatasetGetter);
       };
   for (v8::Local<v8::FunctionTemplate> interface_template :
        {node_template, element_template, html_element_template, text_template,
@@ -3441,6 +4770,10 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
          expose_interface("HTMLElement", html_element_template) &&
          expose_interface("Text", text_template) &&
          expose_interface("Document", document_template) &&
+         expose_interface("NodeList", node_list_template) &&
+         expose_interface("HTMLCollection", html_collection_template) &&
+         expose_interface("DOMTokenList", token_list_template) &&
+         expose_interface("DOMStringMap", dataset_template) &&
          global
              ->Set(context, v8::String::NewFromUtf8Literal(isolate, "window"),
                    global)
@@ -3637,12 +4970,17 @@ void ClearRealmHandles(gossamer_v8_realm *realm) {
   realm->keyboard_event_template.Reset();
   realm->input_event_template.Reset();
   realm->focus_event_template.Reset();
+  realm->node_list_template.Reset();
+  realm->html_collection_template.Reset();
+  realm->token_list_template.Reset();
+  realm->dataset_template.Reset();
   realm->node_template.Reset();
   realm->element_template.Reset();
   realm->html_element_template.Reset();
   realm->text_template.Reset();
   realm->document_template.Reset();
   realm->style_template.Reset();
+  realm->collection_iterator_template.Reset();
   realm->document_wrapper.Reset();
   realm->document_bound = false;
   realm->document_key = WrapperKey{};

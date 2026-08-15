@@ -95,6 +95,12 @@ typedef struct gossamer_v8_host {
   int (*has_attribute)(uint64_t execution_id, uint64_t document, uint32_t node,
                        const char *name, size_t name_length, int *found_out,
                        char **error_out);
+  int (*attribute_count)(uint64_t execution_id, uint64_t document,
+                         uint32_t node, size_t *count_out, char **error_out);
+  int (*attribute_name)(uint64_t execution_id, uint64_t document,
+                        uint32_t node, size_t index, char **name_out,
+                        size_t *name_length_out, int *found_out,
+                        char **error_out);
   int (*style_css_text)(uint64_t execution_id, uint64_t document,
                         uint32_t node, char **value_out,
                         size_t *value_length_out, char **error_out);

@@ -101,6 +101,14 @@ extern int goGossamerV8HostHasAttribute(uint64_t execution_id,
                                         uint64_t document, uint32_t node,
                                         const char *name, size_t name_length,
                                         int *found_out, char **error_out);
+extern int goGossamerV8HostAttributeCount(uint64_t execution_id,
+                                          uint64_t document, uint32_t node,
+                                          size_t *count_out,
+                                          char **error_out);
+extern int goGossamerV8HostAttributeName(
+    uint64_t execution_id, uint64_t document, uint32_t node, size_t index,
+    char **name_out, size_t *name_length_out, int *found_out,
+    char **error_out);
 extern int goGossamerV8HostStyleCSSText(uint64_t execution_id,
                                         uint64_t document, uint32_t node,
                                         char **value_out,
@@ -177,6 +185,8 @@ static gossamer_v8_host gossamer_v8_go_host(uint64_t execution_id) {
       .node_value = goGossamerV8HostNodeValue,
       .set_node_value = goGossamerV8HostSetNodeValue,
       .has_attribute = goGossamerV8HostHasAttribute,
+      .attribute_count = goGossamerV8HostAttributeCount,
+      .attribute_name = goGossamerV8HostAttributeName,
       .style_css_text = goGossamerV8HostStyleCSSText,
       .set_style_css_text = goGossamerV8HostSetStyleCSSText,
       .style_property = goGossamerV8HostStyleProperty,

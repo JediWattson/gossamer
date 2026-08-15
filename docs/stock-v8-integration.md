@@ -103,7 +103,12 @@ The wrapper layer now adds:
 - one weakly cached V8 object per numeric node identity;
 - `textContent` reads and replacement mutations;
 - `appendChild()`, `insertBefore()`, and `removeChild()` with stable identity;
-- `getAttribute()`, `setAttribute()`, and `removeAttribute()`;
+- live `[SameObject]` `NodeList` and `HTMLCollection` child views with indexed,
+  named, iterable, `item()`, and `forEach()` behavior as appropriate;
+- live `[SameObject]` `DOMTokenList` and `DOMStringMap` objects for `classList`
+  and `dataset`, including token mutation and named-property enumeration;
+- `getAttribute()`, `setAttribute()`, `removeAttribute()`, and
+  `getAttributeNames()` with insertion-order snapshots;
 - generic `addEventListener()`, `removeEventListener()`, and synchronous
   `dispatchEvent()` with boolean or `{capture, once, passive}` options;
 - capture, target, and bubble phases with stable `target`, changing
@@ -126,14 +131,16 @@ microtask callbacks continue to use one-shot numeric `ValueHandle` entries.
 
 The wrapper cache is weak. One cached wrapper for a detached node contributes
 one root to a wrapper-owned region, regardless of how many JavaScript aliases
-reference it. Listener claims share that reconciled ownership region but are
-counted independently, so collecting a wrapper cannot reclaim a detached
+reference it. Live facade objects cache on that canonical wrapper and retain it
+through a V8 internal field; they do not introduce another Go ownership claim
+or native identity. Listener claims share the reconciled ownership region but
+are counted independently, so collecting a wrapper cannot reclaim a detached
 target that still owns a listener. A connected wrapper or listener needs no
 duplicate claim because the document already owns its graph; detachment
 activates the necessary root before the document claim is released. V8 weak
 collection queues numeric identities back to Go, and a detached subgraph whose
-final wrapper and listener roots disappeared is reclaimed from the `NodeStore`
-without reusing `NodeID`.
+final wrapper, facade, and listener roots disappeared is reclaimed from the
+`NodeStore` without reusing `NodeID`.
 
 ## Short-lived DOM construction regions
 
@@ -229,6 +236,14 @@ composed path, once/passive/removal behavior, and the pointer, keyboard, input,
 focus, and change event families. No listener callback creates an extra Go
 task or `ValueHandle`.
 
+The live-facade integration test holds one cached object per node and verifies
+that child collections, class tokens, datasets, named properties, indices, and
+iterators re-read the current Go DOM after mutation. It then detaches a
+parent/child component and retains only its `NodeList`, followed by a detached
+element retained only through `classList`. Forced V8 collection preserves each
+native component while the facade remains reachable and returns both the Go
+node store and V8 wrapper cache to baseline after the final facade is released.
+
 The mutation-churn test runs 64 framework-shaped subtree cycles through stock
 V8. Every cycle creates elements and text, writes and removes attributes,
 reorders children, detaches and reinserts a child, briefly connects the
@@ -256,7 +271,8 @@ reclaimed IDs become tombstones and are never reused within the document.
 The next slice should preserve the same ownership socket while expanding the
 standards surface used by framework renderers:
 
-1. selectors plus `classList`, `dataset`, and live collection behavior;
+1. selector traversal APIs such as `querySelector(All)`, `matches()`, and
+   `closest()` over the existing Go selector engine;
 2. fragment parsing through `innerHTML` and adjacent insertion APIs;
 3. form-control state and default actions layered over the new input events;
 4. a real React bundle after the framework-shaped delegation and churn
