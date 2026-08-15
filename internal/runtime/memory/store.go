@@ -23,6 +23,7 @@ var (
 	ErrStaleRef             = errors.New("memory: stale reference")
 	ErrTypeMismatch         = errors.New("memory: heap object type mismatch")
 	ErrInvalidField         = errors.New("memory: invalid field")
+	ErrInvalidIndex         = errors.New("memory: invalid array index")
 	ErrObjectReferenced     = errors.New("memory: heap object still has incoming references")
 	ErrCellReferenced       = ErrObjectReferenced
 	ErrRegionReferenced     = errors.New("memory: region still has incoming references")
@@ -39,6 +40,7 @@ type Stats struct {
 	LiveCells          uint64
 	LiveStrings        uint64
 	LiveObjects        uint64
+	LiveArrays         uint64
 	LiveBytes          uint64
 	LiveRegions        uint64
 	BulkRegionReleases uint64
@@ -61,6 +63,8 @@ func (kind HeapKind) String() string {
 		return "String"
 	case HeapObject:
 		return "Object"
+	case HeapArray:
+		return "Array"
 	default:
 		return fmt.Sprintf("HeapKind(%d)", kind)
 	}
@@ -190,7 +194,7 @@ func (store *Store) allocLocked(owner ownership.OwnerID, regionID RegionID, inte
 }
 
 func (store *Store) allocKindLocked(owner ownership.OwnerID, regionID RegionID, kind HeapKind, internal bool) (Ref, error) {
-	if kind != HeapCell && kind != HeapString && kind != HeapObject {
+	if kind < HeapCell || kind > HeapArray {
 		return Ref{}, fmt.Errorf("%w: heap kind %d", ErrTypeMismatch, kind)
 	}
 	region, err := store.mutableRegionLocked(owner, regionID, internal)
@@ -612,6 +616,8 @@ func (store *Store) recordKindAllocationLocked(kind HeapKind, bytes uint64) {
 		store.stats.LiveStrings++
 	case HeapObject:
 		store.stats.LiveObjects++
+	case HeapArray:
+		store.stats.LiveArrays++
 	}
 	store.stats.LiveBytes += bytes
 }
@@ -628,6 +634,8 @@ func (store *Store) recordKindFreeLocked(slot *Slot) {
 		store.stats.LiveBytes -= uint64(len(slot.String.Text))
 	case HeapObject:
 		store.stats.LiveObjects--
+	case HeapArray:
+		store.stats.LiveArrays--
 	}
 }
 
@@ -1125,6 +1133,17 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 				name := mapping[property.Name]
 				value := remapValue(property.Value, mapping)
 				if err := store.setPropertyLocked(to, copyRef, name, value, true); err != nil {
+					_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
+					return nil, err
+				}
+			}
+		case HeapArray:
+			if err := store.setArrayLengthLocked(to, copyRef, sourceSlot.Array.Length, true); err != nil {
+				_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
+				return nil, err
+			}
+			for _, element := range sourceSlot.Array.Elements {
+				if err := store.setArrayElementLocked(to, copyRef, element.Index, remapValue(element.Value, mapping), true); err != nil {
 					_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
 					return nil, err
 				}

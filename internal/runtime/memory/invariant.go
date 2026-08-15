@@ -32,6 +32,7 @@ func (store *Store) CheckInvariants() error {
 	liveCells := uint64(0)
 	liveStrings := uint64(0)
 	liveObjects := uint64(0)
+	liveArrays := uint64(0)
 	liveBytes := uint64(0)
 	liveRegions := uint64(0)
 	for owner, claim := range store.ownerClaims {
@@ -147,18 +148,18 @@ func (store *Store) CheckInvariants() error {
 			switch slot.Kind {
 			case HeapCell:
 				liveCells++
-				if slot.String.Text != "" || slot.Object.Prototype != (Value{}) || len(slot.Object.Properties) != 0 {
+				if slot.String.Text != "" || slot.Object.Prototype != (Value{}) || len(slot.Object.Properties) != 0 || slot.Array.Length != 0 || len(slot.Array.Elements) != 0 {
 					return invariantError("Cell %s retains another typed payload", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
 				}
 			case HeapString:
 				liveStrings++
 				liveBytes += uint64(len(slot.String.Text))
-				if len(slot.Cell.Fields) != 0 || slot.Object.Prototype != (Value{}) || len(slot.Object.Properties) != 0 {
+				if len(slot.Cell.Fields) != 0 || slot.Object.Prototype != (Value{}) || len(slot.Object.Properties) != 0 || slot.Array.Length != 0 || len(slot.Array.Elements) != 0 {
 					return invariantError("String %s retains another typed payload", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
 				}
 			case HeapObject:
 				liveObjects++
-				if len(slot.Cell.Fields) != 0 || slot.String.Text != "" {
+				if len(slot.Cell.Fields) != 0 || slot.String.Text != "" || slot.Array.Length != 0 || len(slot.Array.Elements) != 0 {
 					return invariantError("Object %s retains another typed payload", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
 				}
 				if slot.Object.Prototype.Kind() != ValueNull && !slot.Object.Prototype.IsRef() {
@@ -189,6 +190,21 @@ func (store *Store) CheckInvariants() error {
 						return invariantError("Object %s has duplicate property %q", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, nameSlot.String.Text)
 					}
 					names[nameSlot.String.Text] = struct{}{}
+				}
+			case HeapArray:
+				liveArrays++
+				if len(slot.Cell.Fields) != 0 || slot.String.Text != "" || slot.Object.Prototype != (Value{}) || len(slot.Object.Properties) != 0 {
+					return invariantError("Array %s retains another typed payload", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
+				}
+				var previous uint32
+				for elementIndex, element := range slot.Array.Elements {
+					if element.Index >= slot.Array.Length {
+						return invariantError("Array %s element %d index %d is outside length %d", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, elementIndex, element.Index, slot.Array.Length)
+					}
+					if elementIndex != 0 && element.Index <= previous {
+						return invariantError("Array %s elements are not strictly ordered at %d", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, elementIndex)
+					}
+					previous = element.Index
 				}
 			default:
 				return invariantError("R%d occupied slot %d has unknown heap kind %d", id, index, slot.Kind)
@@ -260,8 +276,8 @@ func (store *Store) CheckInvariants() error {
 			return invariantError("ledger object %d edges %v, want %v", object, snapshot.Edges, wantTargets)
 		}
 	}
-	if store.stats.LiveSlots != liveSlots || store.stats.LiveCells != liveCells || store.stats.LiveStrings != liveStrings || store.stats.LiveObjects != liveObjects || store.stats.LiveBytes != liveBytes || store.stats.LiveRegions != liveRegions {
-		return invariantError("stats slots/cells/strings/objects/bytes/regions = %d/%d/%d/%d/%d/%d, derived %d/%d/%d/%d/%d/%d", store.stats.LiveSlots, store.stats.LiveCells, store.stats.LiveStrings, store.stats.LiveObjects, store.stats.LiveBytes, store.stats.LiveRegions, liveSlots, liveCells, liveStrings, liveObjects, liveBytes, liveRegions)
+	if store.stats.LiveSlots != liveSlots || store.stats.LiveCells != liveCells || store.stats.LiveStrings != liveStrings || store.stats.LiveObjects != liveObjects || store.stats.LiveArrays != liveArrays || store.stats.LiveBytes != liveBytes || store.stats.LiveRegions != liveRegions {
+		return invariantError("stats slots/cells/strings/objects/arrays/bytes/regions = %d/%d/%d/%d/%d/%d/%d, derived %d/%d/%d/%d/%d/%d/%d", store.stats.LiveSlots, store.stats.LiveCells, store.stats.LiveStrings, store.stats.LiveObjects, store.stats.LiveArrays, store.stats.LiveBytes, store.stats.LiveRegions, liveSlots, liveCells, liveStrings, liveObjects, liveArrays, liveBytes, liveRegions)
 	}
 	if store.closed && (liveSlots != 0 || liveRegions != 0) {
 		return invariantError("closed store retains %d slots in %d regions", liveSlots, liveRegions)

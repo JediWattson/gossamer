@@ -31,6 +31,7 @@ const (
 	HeapCell
 	HeapString
 	HeapObject
+	HeapArray
 )
 
 // StringObject is the first real typed native-heap payload. Text is immutable;
@@ -46,6 +47,7 @@ type Slot struct {
 	Cell       Cell
 	String     StringObject
 	Object     Object
+	Array      Array
 	Occupied   bool
 
 	object ownership.ObjectID
@@ -78,6 +80,7 @@ func cloneSlot(slot Slot) Slot {
 		Cell:       cloneCell(slot.Cell),
 		String:     cloneString(slot.String),
 		Object:     cloneObject(slot.Object),
+		Array:      cloneArray(slot.Array),
 		Occupied:   slot.Occupied,
 	}
 }
@@ -97,11 +100,18 @@ func slotReferences(slot *Slot) []Value {
 		}
 		return values
 	}
+	if slot.Kind == HeapArray {
+		values := make([]Value, len(slot.Array.Elements))
+		for index, element := range slot.Array.Elements {
+			values[index] = element.Value
+		}
+		return values
+	}
 	return nil
 }
 
 func slotStorageEmpty(slot *Slot) bool {
-	return slot != nil && slot.Kind == HeapInvalid && len(slot.Cell.Fields) == 0 && slot.String.Text == "" && slot.Object.Prototype == (Value{}) && len(slot.Object.Properties) == 0
+	return slot != nil && slot.Kind == HeapInvalid && len(slot.Cell.Fields) == 0 && slot.String.Text == "" && slot.Object.Prototype == (Value{}) && len(slot.Object.Properties) == 0 && slot.Array.Length == 0 && len(slot.Array.Elements) == 0
 }
 
 func clearSlotPayload(slot *Slot) {
@@ -109,6 +119,7 @@ func clearSlotPayload(slot *Slot) {
 	slot.Cell = Cell{}
 	slot.String = StringObject{}
 	slot.Object = Object{}
+	slot.Array = Array{}
 }
 
 func cloneRegion(region *Region) Region {

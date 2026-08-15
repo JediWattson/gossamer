@@ -36,6 +36,16 @@ name, and value references all pass through the counted write barrier.
 own storage only. Prototype-chain lookup, descriptors, accessors, coercion, and
 ECMAScript key ordering belong above RegionStore.
 
+### Array
+
+Native Arrays store a uint32 length and insertion-independent, index-sorted
+sparse elements. A missing index is a hole and remains distinct from a present
+`UndefinedValue`. Setting an element can extend length, deleting preserves
+length, and shrinking length removes and unlinks every truncated element.
+
+Array element references use the ordinary counted barrier. Copy and Promote
+preserve holes, length, ordering, and shared aliases.
+
 ## Deliberate boundaries
 
 These native payloads are not yet ECMAScript implementations. String

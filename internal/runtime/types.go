@@ -120,6 +120,48 @@ func (context *TaskContext) DeleteProperty(object, name memory.Ref) (bool, error
 	return context.Realm.store.DeleteProperty(context.Owner, object, name)
 }
 
+func (context *TaskContext) NewArray(length uint32) (memory.Ref, error) {
+	if context == nil || context.Realm == nil {
+		return memory.Ref{}, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.AllocArray(context.Owner, context.MemoryRegion, length)
+}
+
+func (context *TaskContext) DerefArray(ref memory.Ref) (memory.Array, error) {
+	if context == nil || context.Realm == nil {
+		return memory.Array{}, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.DerefArray(context.Owner, ref)
+}
+
+func (context *TaskContext) ArrayElement(array memory.Ref, index uint32) (memory.Value, bool, error) {
+	if context == nil || context.Realm == nil {
+		return memory.Value{}, false, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.ArrayElement(context.Owner, array, index)
+}
+
+func (context *TaskContext) SetArrayElement(array memory.Ref, index uint32, value memory.Value) error {
+	if context == nil || context.Realm == nil {
+		return fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.SetArrayElement(context.Owner, array, index, value)
+}
+
+func (context *TaskContext) DeleteArrayElement(array memory.Ref, index uint32) (bool, error) {
+	if context == nil || context.Realm == nil {
+		return false, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.DeleteArrayElement(context.Owner, array, index)
+}
+
+func (context *TaskContext) SetArrayLength(array memory.Ref, length uint32) error {
+	if context == nil || context.Realm == nil {
+		return fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.SetArrayLength(context.Owner, array, length)
+}
+
 func (context *TaskContext) Set(ref memory.Ref, field int, value memory.Value) error {
 	if context == nil || context.Realm == nil {
 		return fmt.Errorf("runtime: nil task context")
