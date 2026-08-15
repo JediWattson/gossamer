@@ -230,6 +230,12 @@ func TestComplexSelectorLogicalPseudoClasses(t *testing.T) {
 			wantSpecificity: css.Specificity{Types: 1},
 		},
 		{
+			name:            "empty is argument is valid and matches nothing",
+			selector:        "article:is()",
+			wantMatch:       false,
+			wantSpecificity: css.Specificity{Types: 1},
+		},
+		{
 			name:            "forgiving lists trim only CSS whitespace",
 			selector:        "article:is(.hit\u00a0)",
 			wantMatch:       false,
@@ -242,6 +248,12 @@ func TestComplexSelectorLogicalPseudoClasses(t *testing.T) {
 			wantSpecificity: css.Specificity{Types: 1},
 		},
 		{
+			name:            "comment-only where argument is valid and matches nothing",
+			selector:        "article:where(/**/)",
+			wantMatch:       false,
+			wantSpecificity: css.Specificity{Types: 1},
+		},
+		{
 			name:            "not uses the static greatest argument specificity",
 			selector:        "article:not(.miss, #never)",
 			wantMatch:       true,
@@ -249,7 +261,7 @@ func TestComplexSelectorLogicalPseudoClasses(t *testing.T) {
 		},
 		{
 			name:            "not can negate a forgiving list that matches nothing",
-			selector:        "article:not(:is(:future))",
+			selector:        "article:not(:is())",
 			wantMatch:       true,
 			wantSpecificity: css.Specificity{Types: 1},
 		},
@@ -318,8 +330,12 @@ func TestComplexSelectorNthPseudoClasses(t *testing.T) {
 		want     bool
 	}{
 		{name: "odd keyword", selector: "li:nth-child(odd)", node: a, want: true},
+		{name: "comments around odd keyword", selector: "li:nth-child(/**/odd/**/)", node: b, want: true},
 		{name: "even keyword", selector: "li:nth-child(even)", node: c, want: true},
 		{name: "odd formula", selector: "li:nth-child(2n+1)", node: b, want: true},
+		{name: "comment before formula offset", selector: "li:nth-child(2n/**/+1)", node: b, want: true},
+		{name: "comment after formula offset sign", selector: "li:nth-child(2n+/**/1)", node: b, want: true},
+		{name: "comment after leading plus token", selector: "li:nth-child(+/**/n)", node: d, want: true},
 		{name: "even formula with whitespace", selector: "li:nth-child(2n + 2)", node: c, want: true},
 		{name: "negative coefficient includes prefix", selector: "li:nth-child(-n+4)", node: c, want: true},
 		{name: "negative coefficient excludes suffix", selector: "li:nth-child(-n+4)", node: d, want: false},
@@ -333,6 +349,7 @@ func TestComplexSelectorNthPseudoClasses(t *testing.T) {
 		{name: "later of type", selector: "li:nth-of-type(3)", node: c, want: true},
 		{name: "last of type", selector: "li:nth-last-of-type(1)", node: d, want: true},
 		{name: "filtered child", selector: "li:nth-child(3 of .item)", node: c, want: true},
+		{name: "comments around of keyword", selector: "li:nth-child(3/**/of/**/.item)", node: c, want: true},
 		{name: "filtered last child", selector: "li:nth-last-child(1 of .item)", node: d, want: true},
 		{name: "filtered selector list", selector: "span:nth-child(4 of .item, .featured)", node: y, want: true},
 		{name: "filtered list counts nonmatching type", selector: "li:nth-child(4 of .item)", node: d, want: true},
@@ -420,6 +437,8 @@ func TestComplexSelectorRejectsMalformedGrammar(t *testing.T) {
 		":nth-child(2n+-1)",
 		":nth-child(2n + -1)",
 		":nth-child(2.5n)",
+		":nth-child(+/**/2)",
+		":nth-child(-/**/n)",
 		":nth-child(n+)",
 		":nth-child(odd+1)",
 		":nth-child(999999999999999999999999n)",
@@ -427,6 +446,8 @@ func TestComplexSelectorRejectsMalformedGrammar(t *testing.T) {
 		":nth-of-type(2 of .ok)",
 		"div::before",
 		"div/**/span",
+		":is/**/()",
+		":where/**/()",
 		":nth-child/**/(2)",
 		"svg|circle",
 		`div.escaped\ name`,
