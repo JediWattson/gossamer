@@ -124,6 +124,10 @@ typedef struct gossamer_v8_host {
                              char **error_out);
   int (*retain_node_wrapper)(uint64_t execution_id, uint64_t document,
                              uint32_t node, char **error_out);
+  int (*retain_node_event_target)(uint64_t execution_id, uint64_t document,
+                                  uint32_t node, char **error_out);
+  int (*release_node_event_target)(uint64_t execution_id, uint64_t document,
+                                   uint32_t node, char **error_out);
   int (*queue_callback)(uint64_t execution_id, uint64_t callback,
                         char **error_out);
   int (*queue_microtask)(uint64_t execution_id, uint64_t callback,
@@ -138,6 +142,36 @@ typedef struct gossamer_v8_node_handle {
   uint64_t document;
   uint32_t node;
 } gossamer_v8_node_handle;
+
+typedef struct gossamer_v8_input_event {
+  uint8_t type;
+  uint64_t document;
+  uint32_t node;
+  uint64_t related_document;
+  uint32_t related_node;
+  double x;
+  double y;
+  int32_t button;
+  uint32_t buttons;
+  int32_t pointer_id;
+  const char *pointer_type;
+  size_t pointer_type_length;
+  const char *key;
+  size_t key_length;
+  const char *code;
+  size_t code_length;
+  const char *data;
+  size_t data_length;
+  const char *input_type;
+  size_t input_type_length;
+  int is_primary;
+  int repeat;
+  int is_composing;
+  int alt_key;
+  int ctrl_key;
+  int meta_key;
+  int shift_key;
+} gossamer_v8_input_event;
 
 typedef struct gossamer_v8_heap_statistics {
   uint64_t total_heap_size;
@@ -194,9 +228,8 @@ gossamer_v8_realm_evaluate(gossamer_v8_realm *realm,
                            size_t source_length, const char *source_url,
                            size_t source_url_length, char **error_out);
 GOSSAMER_V8_EXPORT int gossamer_v8_realm_dispatch_event(
-    gossamer_v8_realm *realm, const gossamer_v8_host *host, uint8_t event_type,
-    uint64_t document, uint32_t node, double x, double y, int32_t button,
-    char **error_out);
+    gossamer_v8_realm *realm, const gossamer_v8_host *host,
+    const gossamer_v8_input_event *event, char **error_out);
 GOSSAMER_V8_EXPORT int gossamer_v8_realm_invoke(gossamer_v8_realm *realm,
                                                 const gossamer_v8_host *host,
                                                 uint64_t callback,

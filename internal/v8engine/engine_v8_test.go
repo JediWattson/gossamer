@@ -307,25 +307,12 @@ func TestStockV8DOMWrapperClickMutatesThroughQueuedCallbackAndPaint(t *testing.T
 	if err != nil {
 		t.Fatalf("Profile after dispatch: %v", err)
 	}
-	if afterDispatch.EventsDispatched != 1 || afterDispatch.CallbacksCreated != 1 || afterDispatch.LiveCallbacks != 1 {
-		t.Fatalf("callback publication profile = %#v", afterDispatch)
-	}
-	if got, err := document.TextContent(counterID); err != nil || got != "0" {
-		t.Fatalf("counter before callback = %q, %v; want 0", got, err)
-	}
-
-	if err := page.Realm.RunOne(context.Background()); err != nil {
-		t.Fatalf("invoke click listener: %v", err)
-	}
-	afterInvoke, err := realm.Profile()
-	if err != nil {
-		t.Fatalf("Profile after invoke: %v", err)
-	}
-	if afterInvoke.CallbacksInvoked != 1 || afterInvoke.LiveCallbacks != 0 {
-		t.Fatalf("callback consumption profile = %#v", afterInvoke)
+	if afterDispatch.EventsDispatched != 1 || afterDispatch.CallbacksCreated != 0 ||
+		afterDispatch.CallbacksInvoked != 0 || afterDispatch.LiveCallbacks != 0 {
+		t.Fatalf("synchronous event dispatch profile = %#v", afterDispatch)
 	}
 	if got, err := document.TextContent(counterID); err != nil || got != "1" {
-		t.Fatalf("counter after callback = %q, %v; want 1", got, err)
+		t.Fatalf("counter after synchronous listener = %q, %v; want 1", got, err)
 	}
 	if !page.Dirty() || v8FrameContainsText(page.Frame(), "1") {
 		t.Fatal("DOM mutation did not wait behind the queued render boundary")
@@ -719,6 +706,235 @@ func TestStockV8DOMPrototypesDocumentNamespaceIdentityAndTeardown(t *testing.T) 
 	}
 	if stats := browserRuntime.Ledger().Stats(); stats.LiveObjects != 0 || stats.PersistentObjects != 0 {
 		t.Fatalf("realm teardown ownership = %#v", stats)
+	}
+}
+
+func TestStockV8EventPropagationFamiliesAndReactStyleRootDelegation(t *testing.T) {
+	engine := newTestEngine(t)
+	browserRuntime, err := browser.NewWithEngine(engine)
+	if err != nil {
+		t.Fatalf("NewWithEngine: %v", err)
+	}
+	defer func() {
+		if err := browserRuntime.Close(); err != nil {
+			t.Errorf("Close browser: %v", err)
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	page, err := browserRuntime.LoadPage(
+		ctx,
+		"https://gossamer.test/events",
+		staticDocumentLoader{document: `<!doctype html>
+			<html><body style="margin:0">
+				<div id="root" style="display:block;width:160px;height:60px">
+					<button id="leaf" style="display:block;width:120px;height:40px">delegate</button>
+					<input id="other">
+				</div>
+				<script>
+					globalThis.__eventLog = [];
+					globalThis.__families = [];
+					globalThis.__root = document.getElementById("root");
+					globalThis.__leaf = document.getElementById("leaf");
+					globalThis.__other = document.getElementById("other");
+
+					const record = (label) => (event) => {
+						if (event.target !== __leaf) throw new Error(label + " target identity");
+						if (event.currentTarget === null) throw new Error(label + " missing currentTarget");
+						__eventLog.push(label + ":" + event.eventPhase);
+					};
+					document.addEventListener("click", record("document-capture"), true);
+					__root.addEventListener("click", record("root-capture"), {capture:true});
+					__leaf.addEventListener("click", record("leaf-capture"), true);
+					__leaf.addEventListener("click", record("leaf-bubble"));
+					__root.addEventListener("click", (event) => {
+						if (!(event instanceof MouseEvent) || !(event instanceof Event) ||
+							event.currentTarget !== __root || event.target !== __leaf ||
+							event.eventPhase !== Event.BUBBLING_PHASE || !event.isTrusted ||
+							event.composedPath()[0] !== __leaf ||
+							event.composedPath().indexOf(__root) < 0 ||
+							event.composedPath().indexOf(document) < 0) {
+							throw new Error("delegated root listener received the wrong native event");
+						}
+						globalThis.__lastClick = event;
+						__eventLog.push("root-bubble:" + event.eventPhase);
+					});
+					document.addEventListener("click", record("document-bubble"));
+
+					let customCaptureCount = 0;
+					const onceCapture = () => { customCaptureCount++; };
+					__root.addEventListener("gossamer-custom", onceCapture, {capture:true, once:true});
+					__leaf.addEventListener("gossamer-custom", (event) => event.preventDefault());
+					const custom = new Event("gossamer-custom", {bubbles:true, cancelable:true});
+					if (__leaf.dispatchEvent(custom) !== false || !custom.defaultPrevented ||
+						custom.target !== __leaf || custom.currentTarget !== null ||
+						custom.eventPhase !== Event.NONE) {
+						throw new Error("synthetic generic Event dispatch state is wrong");
+					}
+					__leaf.dispatchEvent(new Event("gossamer-custom", {bubbles:true}));
+					if (customCaptureCount !== 1) throw new Error("once listener lifecycle failed");
+
+					const removed = () => { throw new Error("removed listener ran"); };
+					__leaf.addEventListener("removed", removed, true);
+					__leaf.removeEventListener("removed", removed, true);
+					__leaf.dispatchEvent(new Event("removed"));
+					let passiveEvent = new Event("passive", {cancelable:true});
+					__leaf.addEventListener("passive", (event) => event.preventDefault(), {passive:true});
+					if (!__leaf.dispatchEvent(passiveEvent) || passiveEvent.defaultPrevented) {
+						throw new Error("passive listener canceled its event");
+					}
+					const stopped = [];
+					const stopFirst = (event) => { stopped.push("first"); event.stopPropagation(); };
+					const stopSecond = () => stopped.push("second");
+					const stopRoot = () => stopped.push("root");
+					__leaf.addEventListener("stopped", stopFirst);
+					__leaf.addEventListener("stopped", stopSecond);
+					__root.addEventListener("stopped", stopRoot);
+					__leaf.dispatchEvent(new Event("stopped", {bubbles:true}));
+					if (stopped.join("|") !== "first|second") {
+						throw new Error("stopPropagation listener order failed");
+					}
+					__leaf.removeEventListener("stopped", stopFirst);
+					__leaf.removeEventListener("stopped", stopSecond);
+					__root.removeEventListener("stopped", stopRoot);
+					const immediate = [];
+					const immediateFirst = (event) => { immediate.push("first"); event.stopImmediatePropagation(); };
+					const immediateSecond = () => immediate.push("second");
+					const immediateRoot = () => immediate.push("root");
+					__leaf.addEventListener("immediate", immediateFirst);
+					__leaf.addEventListener("immediate", immediateSecond);
+					__root.addEventListener("immediate", immediateRoot);
+					__leaf.dispatchEvent(new Event("immediate", {bubbles:true}));
+					if (immediate.join("|") !== "first") {
+						throw new Error("stopImmediatePropagation listener order failed");
+					}
+					__leaf.removeEventListener("immediate", immediateFirst);
+					__leaf.removeEventListener("immediate", immediateSecond);
+					__root.removeEventListener("immediate", immediateRoot);
+
+					for (const type of ["pointerdown", "keydown", "input", "focus", "change"]) {
+						__root.addEventListener(type, (event) => {
+							if (event.target !== __leaf || event.currentTarget !== __root) {
+								throw new Error(type + " delegation identity failed");
+							}
+							if (type === "pointerdown" && (!(event instanceof PointerEvent) ||
+								event.pointerId !== 7 || event.pointerType !== "pen" || !event.isPrimary ||
+								event.clientX !== 12 || event.clientY !== 14 || event.buttons !== 1)) {
+								throw new Error("pointer event payload failed");
+							}
+							if (type === "keydown" && (!(event instanceof KeyboardEvent) ||
+								event.key !== "Enter" || event.code !== "Enter" || !event.ctrlKey || event.repeat)) {
+								throw new Error("keyboard event payload failed");
+							}
+							if (type === "input" && (!(event instanceof InputEvent) ||
+								event.data !== "x" || event.inputType !== "insertText" || !event.isComposing)) {
+								throw new Error("input event payload failed");
+							}
+							if (type === "focus" && (!(event instanceof FocusEvent) ||
+								event.relatedTarget !== __other || event.bubbles ||
+								event.eventPhase !== Event.CAPTURING_PHASE)) {
+								throw new Error("focus event payload failed");
+							}
+							if (type === "change" && event.constructor !== Event) {
+								throw new Error("change event interface failed");
+							}
+							__families.push(type);
+						}, type === "focus");
+					}
+				</script>
+			</body></html>`},
+	)
+	if err != nil {
+		t.Fatalf("LoadPage: %v", err)
+	}
+	document := page.Document()
+	leafID, found := document.ElementByID("leaf")
+	if !found {
+		t.Fatal("event target is missing")
+	}
+	otherID, found := document.ElementByID("other")
+	if !found {
+		t.Fatal("related event target is missing")
+	}
+	leaf, ok := document.Resolve(leafID)
+	if !ok {
+		t.Fatal("event target does not resolve")
+	}
+	leafBox := findV8BoxForNode(page.Frame().Root, leaf)
+	if leafBox == nil {
+		t.Fatal("event target has no rendered box")
+	}
+	if _, err := page.QueueClick(leafBox.Bounds.X+2, leafBox.Bounds.Y+2, 0); err != nil {
+		t.Fatalf("QueueClick: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("dispatch delegated click: %v", err)
+	}
+
+	target := browser.NodeHandle{Document: page.DocumentGeneration(), Node: leafID}
+	related := browser.NodeHandle{Document: page.DocumentGeneration(), Node: otherID}
+	events := []browser.InputEvent{
+		{Type: browser.InputPointerDown, Target: target, X: 12, Y: 14, Button: 0, Buttons: 1, PointerID: 7, PointerType: "pen", IsPrimary: true},
+		{Type: browser.InputKeyDown, Target: target, Key: "Enter", Code: "Enter", CtrlKey: true},
+		{Type: browser.InputInput, Target: target, Data: "x", InputType: "insertText", IsComposing: true},
+		{Type: browser.InputFocus, Target: target, RelatedTarget: related},
+		{Type: browser.InputChange, Target: target},
+	}
+	for _, event := range events {
+		if _, err := page.QueueInputEvent(event); err != nil {
+			t.Fatalf("QueueInputEvent(%s): %v", event.Type, err)
+		}
+	}
+	for _, event := range events {
+		if err := page.Realm.RunOne(context.Background()); err != nil {
+			t.Fatalf("dispatch %s: %v", event.Type, err)
+		}
+	}
+
+	if _, err := page.QueueScript(browser.ScriptSource{
+		URL: "https://gossamer.test/events-assert.js",
+		Source: `
+			const expected = [
+				"document-capture:1", "root-capture:1", "leaf-capture:2",
+				"leaf-bubble:2", "root-bubble:3", "document-bubble:3"
+			];
+			if (__eventLog.join("|") !== expected.join("|")) {
+				throw new Error("propagation order: " + __eventLog.join("|"));
+			}
+			if (__families.join("|") !== "pointerdown|keydown|input|focus|change") {
+				throw new Error("event families: " + __families.join("|"));
+			}
+			if (__lastClick.target !== __leaf || __lastClick.currentTarget !== null ||
+				__lastClick.eventPhase !== Event.NONE) {
+				throw new Error("post-dispatch Event state was not cleared");
+			}
+		`,
+	}); err != nil {
+		t.Fatalf("QueueScript assertions: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("event assertions: %v", err)
+	}
+
+	realm, ok := engine.LatestRealm()
+	if !ok {
+		t.Fatal("stock V8 engine has no live event Realm")
+	}
+	profile, err := realm.Profile()
+	if err != nil {
+		t.Fatalf("Profile after events: %v", err)
+	}
+	if profile.EventsDispatched != 12 || profile.CallbacksCreated != 0 ||
+		profile.CallbacksInvoked != 0 || profile.LiveCallbacks != 0 ||
+		profile.EventListeners != 13 {
+		t.Fatalf("event dispatch profile = %#v", profile)
+	}
+	if err := page.Close(); err != nil {
+		t.Fatalf("Close event page: %v", err)
+	}
+	if stats := browserRuntime.Ledger().Stats(); stats.LiveObjects != 0 || stats.PersistentObjects != 0 {
+		t.Fatalf("event document teardown ownership = %#v", stats)
 	}
 }
 

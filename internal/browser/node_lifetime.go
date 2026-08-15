@@ -16,9 +16,9 @@ var (
 )
 
 // nodeLifetimeState mirrors one Document's stable-ID tree in the semantic
-// ownership ledger. The document and the live V8 wrapper set are independent
-// roots, so detachment or wrapper collection can release one claim without
-// disturbing the other.
+// ownership ledger. The document and the V8-facing wrapper/listener set are
+// independent roots, so detachment, wrapper collection, or listener removal
+// can release one claim without disturbing the other.
 type nodeLifetimeState struct {
 	generation DocumentGeneration
 	document   *dom.Document
@@ -29,6 +29,7 @@ type nodeLifetimeState struct {
 	wrapperRoot   ownership.ObjectID
 	wrappers      map[dom.NodeID]struct{}
 	wrapperRoots  map[dom.NodeID]struct{}
+	listeners     map[dom.NodeID]uint64
 
 	documentOwner  ownership.OwnerID
 	documentRegion ownership.RegionID
@@ -55,6 +56,7 @@ func newNodeLifetimeState(
 		documentOwner: ownership.OwnerID{Kind: ownership.OwnerDocument, Value: nextDocumentOwner.Add(1)},
 		wrappers:      make(map[dom.NodeID]struct{}),
 		wrapperRoots:  make(map[dom.NodeID]struct{}),
+		listeners:     make(map[dom.NodeID]uint64),
 		nodes:         make(map[dom.NodeID]ownership.ObjectID),
 		reverse:       make(map[ownership.ObjectID]dom.NodeID),
 		parents:       make(map[dom.NodeID]dom.NodeID),
@@ -203,13 +205,53 @@ func (state *nodeLifetimeState) releaseWrappers(handles []NodeHandle) error {
 			delete(state.wrappers, handle.Node)
 			continue
 		}
-		if _, rooted := state.wrapperRoots[handle.Node]; rooted {
-			if err := state.ledger.RemoveReference(state.wrapperRoot, object); err != nil {
-				return err
-			}
-			delete(state.wrapperRoots, handle.Node)
-		}
 		delete(state.wrappers, handle.Node)
+	}
+	if err := state.reconcileWrapperRoots(); err != nil {
+		return err
+	}
+	destroyed, err := state.ledger.ReconcileRegion(state.wrapperOwner, []ownership.ObjectID{state.wrapperRoot})
+	if err != nil {
+		return err
+	}
+	return state.reclaim(destroyed)
+}
+
+func (state *nodeLifetimeState) retainEventTarget(handle NodeHandle) error {
+	if state == nil || handle.Document != state.generation || handle.Node == dom.InvalidNodeID {
+		return ErrStaleNodeHandle
+	}
+	if state.nodes[handle.Node] == 0 {
+		return dom.ErrUnknownNode
+	}
+	state.listeners[handle.Node]++
+	if err := state.reconcileWrapperRoots(); err != nil {
+		state.listeners[handle.Node]--
+		if state.listeners[handle.Node] == 0 {
+			delete(state.listeners, handle.Node)
+		}
+		return err
+	}
+	_, err := state.ledger.ReconcileRegion(state.wrapperOwner, []ownership.ObjectID{state.wrapperRoot})
+	return err
+}
+
+func (state *nodeLifetimeState) releaseEventTarget(handle NodeHandle) error {
+	if state == nil || handle.Document != state.generation || handle.Node == dom.InvalidNodeID {
+		return ErrStaleNodeHandle
+	}
+	count := state.listeners[handle.Node]
+	if count == 0 {
+		return nil
+	}
+	if count == 1 {
+		delete(state.listeners, handle.Node)
+	} else {
+		state.listeners[handle.Node] = count - 1
+	}
+	if err := state.reconcileWrapperRoots(); err != nil {
+		state.listeners[handle.Node] = count
+		return err
 	}
 	destroyed, err := state.ledger.ReconcileRegion(state.wrapperOwner, []ownership.ObjectID{state.wrapperRoot})
 	if err != nil {
@@ -219,17 +261,28 @@ func (state *nodeLifetimeState) releaseWrappers(handles []NodeHandle) error {
 }
 
 func (state *nodeLifetimeState) reconcileWrapperRoots() error {
+	candidates := make(map[dom.NodeID]struct{}, len(state.wrappers)+len(state.listeners)+len(state.wrapperRoots))
 	for node := range state.wrappers {
+		candidates[node] = struct{}{}
+	}
+	for node := range state.listeners {
+		candidates[node] = struct{}{}
+	}
+	for node := range state.wrapperRoots {
+		candidates[node] = struct{}{}
+	}
+	for node := range candidates {
 		_, rooted := state.wrapperRoots[node]
-		detached := !state.connected(node)
-		if detached == rooted {
+		_, wrapped := state.wrappers[node]
+		needsRoot := !state.connected(node) && (wrapped || state.listeners[node] != 0)
+		if needsRoot == rooted {
 			continue
 		}
 		object := state.nodes[node]
 		if object == 0 {
 			return dom.ErrUnknownNode
 		}
-		if detached {
+		if needsRoot {
 			if err := state.ledger.AddReference(state.wrapperRoot, object); err != nil {
 				return err
 			}
@@ -287,6 +340,7 @@ func (state *nodeLifetimeState) reclaim(objects []ownership.ObjectID) error {
 		delete(state.parents, node)
 		delete(state.wrappers, node)
 		delete(state.wrapperRoots, node)
+		delete(state.listeners, node)
 	}
 	return nil
 }

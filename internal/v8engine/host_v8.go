@@ -937,6 +937,38 @@ func goGossamerV8HostRetainNodeWrapper(
 	}, executionID)
 }
 
+//export goGossamerV8HostRetainNodeEventTarget
+func goGossamerV8HostRetainNodeEventTarget(
+	executionID C.uint64_t,
+	document C.uint64_t,
+	node C.uint32_t,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		lifetimes, ok := host.(browser.NodeEventListenerLifetimeHost)
+		if !ok {
+			return fmt.Errorf("V8 host does not support event listener lifetimes")
+		}
+		return lifetimes.RetainNodeEventTarget(browserNodeHandle(document, node))
+	}, executionID)
+}
+
+//export goGossamerV8HostReleaseNodeEventTarget
+func goGossamerV8HostReleaseNodeEventTarget(
+	executionID C.uint64_t,
+	document C.uint64_t,
+	node C.uint32_t,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		lifetimes, ok := host.(browser.NodeEventListenerLifetimeHost)
+		if !ok {
+			return fmt.Errorf("V8 host does not support event listener lifetimes")
+		}
+		return lifetimes.ReleaseNodeEventTarget(browserNodeHandle(document, node))
+	}, executionID)
+}
+
 //export goGossamerV8HostQueueCallback
 func goGossamerV8HostQueueCallback(executionID C.uint64_t, callback C.uint64_t, errorOut **C.char) C.int {
 	return runHostCall(errorOut, func(host browser.Host) error {

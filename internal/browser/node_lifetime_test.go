@@ -141,3 +141,62 @@ func TestConnectedWrapperActivatesBeforeDocumentDetachment(t *testing.T) {
 		t.Fatal("detached subtree survived its final wrapper root")
 	}
 }
+
+func TestDetachedEventTargetOutlivesWrapperUntilFinalListenerRelease(t *testing.T) {
+	browserRuntime, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer browserRuntime.Close()
+	page, err := browserRuntime.NewPage(dom.NewDocument(), &url.URL{Scheme: "https", Host: "gossamer.test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	document := page.Document()
+	baselineNodes := document.Store().LiveLen()
+	baseline := browserRuntime.Ledger().Stats()
+	var target NodeHandle
+
+	if _, err := page.Realm.EnqueueTask(func(task *browserruntime.TaskContext) error {
+		host := &taskHost{page: page, task: task, generation: page.DocumentGeneration()}
+		target, err = host.CreateElement("button")
+		if err != nil {
+			return err
+		}
+		if err := host.RetainNodeWrapper(target); err != nil {
+			return err
+		}
+		if err := host.RetainNodeEventTarget(target); err != nil {
+			return err
+		}
+		return host.RetainNodeEventTarget(target)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.ReleaseNodeWrappers([]NodeHandle{target}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := document.Resolve(target.Node); !ok {
+		t.Fatal("listener-owned detached target died with its weak wrapper")
+	}
+	if err := page.ReleaseNodeEventTarget(target); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := document.Resolve(target.Node); !ok {
+		t.Fatal("first listener release removed a target with another listener")
+	}
+	if err := page.ReleaseNodeEventTarget(target); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := document.Resolve(target.Node); ok || document.Store().LiveLen() != baselineNodes {
+		t.Fatal("detached target survived its final listener claim")
+	}
+	after := browserRuntime.Ledger().Stats()
+	if after.LiveObjects != baseline.LiveObjects ||
+		after.ObjectsDestroyed-baseline.ObjectsDestroyed != 1 {
+		t.Fatalf("listener lifetime ownership = before:%#v after:%#v", baseline, after)
+	}
+}

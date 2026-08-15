@@ -137,6 +137,12 @@ extern int goGossamerV8HostStylePropertyName(
 extern int goGossamerV8HostRetainNodeWrapper(uint64_t execution_id,
                                              uint64_t document, uint32_t node,
                                              char **error_out);
+extern int goGossamerV8HostRetainNodeEventTarget(
+    uint64_t execution_id, uint64_t document, uint32_t node,
+    char **error_out);
+extern int goGossamerV8HostReleaseNodeEventTarget(
+    uint64_t execution_id, uint64_t document, uint32_t node,
+    char **error_out);
 extern int goGossamerV8HostQueueCallback(uint64_t execution_id,
                                          uint64_t callback, char **error_out);
 extern int goGossamerV8HostQueueMicrotask(uint64_t execution_id,
@@ -179,6 +185,8 @@ static gossamer_v8_host gossamer_v8_go_host(uint64_t execution_id) {
       .style_property_count = goGossamerV8HostStylePropertyCount,
       .style_property_name = goGossamerV8HostStylePropertyName,
       .retain_node_wrapper = goGossamerV8HostRetainNodeWrapper,
+      .retain_node_event_target = goGossamerV8HostRetainNodeEventTarget,
+      .release_node_event_target = goGossamerV8HostReleaseNodeEventTarget,
       .queue_callback = goGossamerV8HostQueueCallback,
       .queue_microtask = goGossamerV8HostQueueMicrotask,
       .set_timeout = goGossamerV8HostSetTimeout,
@@ -198,12 +206,10 @@ int gossamer_v8_go_realm_evaluate(gossamer_v8_realm *realm,
 
 int gossamer_v8_go_realm_dispatch_event(gossamer_v8_realm *realm,
                                         uint64_t execution_id,
-                                        uint8_t event_type, uint64_t document,
-                                        uint32_t node, double x, double y,
-                                        int32_t button, char **error_out) {
+                                        const gossamer_v8_input_event *event,
+                                        char **error_out) {
   gossamer_v8_host host = gossamer_v8_go_host(execution_id);
-  return gossamer_v8_realm_dispatch_event(realm, &host, event_type, document,
-                                          node, x, y, button, error_out);
+  return gossamer_v8_realm_dispatch_event(realm, &host, event, error_out);
 }
 
 int gossamer_v8_go_realm_invoke(gossamer_v8_realm *realm, uint64_t execution_id,

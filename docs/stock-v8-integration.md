@@ -30,7 +30,12 @@ The heaps remain deliberately separate:
   identity in two V8 internal fields. It is not a Go pointer and ordinary
   JavaScript aliases do not change ARC.
 - A `ValueHandle` indexes a V8-owned persistent-function table. Publishing
-  that handle to a Gossamer timer or queue is the semantic lifetime boundary.
+  that handle to a Gossamer timer or microtask queue is the semantic lifetime
+  boundary. DOM listeners instead run synchronously on the dispatch stack of
+  the already-published browser input task.
+- Each registered DOM listener contributes one semantic target claim. That
+  claim is independent from weak wrapper ownership and keeps a detached target
+  alive until the listener is removed or the document Realm is torn down.
 - Realm close resets the V8 context and persistent tables, notifies the V8
   platform, disposes the isolate, and then lets the Go Realm release its claims.
 
@@ -88,6 +93,8 @@ The wrapper layer now adds:
   root;
 - inherited `EventTarget`, `Node`, `Element`, `HTMLElement`, `Text`, and
   `Document` prototypes with interface-correct `instanceof` behavior;
+- constructible `Event`, `MouseEvent`, `PointerEvent`, `KeyboardEvent`,
+  `InputEvent`, and `FocusEvent` objects;
 - `document.getElementById()` over connected, generation-scoped Go nodes;
 - `document.createElement()`, `document.createElementNS()`, and
   `document.createTextNode()` for detached, task-local construction nodes;
@@ -97,26 +104,36 @@ The wrapper layer now adds:
 - `textContent` reads and replacement mutations;
 - `appendChild()`, `insertBefore()`, and `removeChild()` with stable identity;
 - `getAttribute()`, `setAttribute()`, and `removeAttribute()`;
-- `addEventListener("click", fn)` and `removeEventListener()`;
+- generic `addEventListener()`, `removeEventListener()`, and synchronous
+  `dispatchEvent()` with boolean or `{capture, once, passive}` options;
+- capture, target, and bubble phases with stable `target`, changing
+  `currentTarget`, `eventPhase`, `composedPath()`, cancellation, and propagation
+  controls;
+- browser-dispatched click, pointer, keyboard, input, focus, and change events
+  with their first payload fields and interface-correct `instanceof` behavior;
 - `queueMicrotask(fn)`, `setTimeout(fn, delay)`, and `clearTimeout()`;
 - execution-scoped C callback tables that carry a numeric registry ID, never a
   Go pointer, into an engine entry; and
 - wrapper, callback, listener, and dispatch counts alongside V8 heap metrics.
 
-Listener functions remain in V8-owned persistent handles. Dispatch clones each
-listener into a one-shot callback entry and publishes only its numeric
-`ValueHandle` into Gossamer. Invocation consumes that entry before calling the
-function, so the Go queue is the explicit cross-owner retention point. Timer
-and Gossamer microtask callbacks use the same table.
+Listener functions remain in V8-owned persistent handles attached to numeric
+`NodeHandle` targets. External input crosses the Go task queue once, then V8
+builds the target-to-document path and invokes the capture, target, and bubble
+listeners synchronously in registration order. This preserves DOM propagation
+state and lets `stopPropagation()`, `stopImmediatePropagation()`, once removal,
+and `preventDefault()` affect the current dispatch. Timer and Gossamer
+microtask callbacks continue to use one-shot numeric `ValueHandle` entries.
 
 The wrapper cache is weak. One cached wrapper for a detached node contributes
 one root to a wrapper-owned region, regardless of how many JavaScript aliases
-reference it. A connected wrapper needs no duplicate claim because the
-document already owns its graph; detachment activates its wrapper root before
-the document claim is released. V8 weak collection queues numeric identities
-back to Go, and the wrapper region is reconciled from its remaining roots. A
-detached subgraph whose final wrapper root disappeared is reclaimed from the
-`NodeStore` without reusing `NodeID`.
+reference it. Listener claims share that reconciled ownership region but are
+counted independently, so collecting a wrapper cannot reclaim a detached
+target that still owns a listener. A connected wrapper or listener needs no
+duplicate claim because the document already owns its graph; detachment
+activates the necessary root before the document claim is released. V8 weak
+collection queues numeric identities back to Go, and a detached subgraph whose
+final wrapper and listener roots disappeared is reclaimed from the `NodeStore`
+without reusing `NodeID`.
 
 ## Short-lived DOM construction regions
 
@@ -138,13 +155,19 @@ appendChild() into connected document
 V8 weak wrapper collection
   -> remove numeric wrapper root
   -> reconcile wrapper-region reachability
-  -> reclaim nodes with no document or wrapper claim
+  -> reclaim nodes with no document, wrapper, or listener claim
+
+addEventListener() on detached node
+  -> retain one listener target claim
+  -> removeEventListener() / once invocation releases that claim
+  -> document Realm teardown releases every remaining listener together
 ```
 
-The connected DOM and live-wrapper cache are separate semantic owners.
-Ordinary tree edges and aliases do not themselves increment ARC. Root
+The connected DOM and V8-facing wrapper/listener region are separate semantic
+owners. Ordinary tree edges and aliases do not themselves increment ARC. Root
 reconciliation is the explicit boundary that retains newly reachable nodes or
-releases an unreachable component after connectivity or wrapper roots change.
+releases an unreachable component after connectivity, wrapper roots, or
+listener claims change.
 
 V8 platform initialization is process-wide. V8 documents `V8::Dispose()` as
 permanent and disallows reinitialization, so closing a Gossamer `Engine` closes
@@ -188,15 +211,23 @@ The wrapper integration test proves the complete browser sequence:
 JavaScript document.getElementById
   -> weak V8 wrapper with numeric Go identity
   -> click hit test resolves the same NodeHandle
-  -> V8 listener becomes a one-shot ValueHandle
-  -> Gossamer queue publishes and transfers the callback claim
-  -> V8 invokes and consumes the callback
+  -> Gossamer publishes one browser input task
+  -> V8 builds the target-to-document propagation path
+  -> capture, target, and bubble listeners run synchronously
   -> textContent mutates the Go Document
   -> separate render task publishes the updated Frame
 ```
 
 It also forces V8 collection and verifies that an unreferenced transient
 wrapper disappears while the listener-retained wrapper remains live.
+
+The event integration test uses the delegation shape employed by React: one
+listener on a root container receives a click whose native target is a nested
+button. It verifies document/root capture, target capture and bubble, root and
+document bubbling, wrapper identity in `target` and `currentTarget`, the
+composed path, once/passive/removal behavior, and the pointer, keyboard, input,
+focus, and change event families. No listener callback creates an extra Go
+task or `ValueHandle`.
 
 The mutation-churn test runs 64 framework-shaped subtree cycles through stock
 V8. Every cycle creates elements and text, writes and removes attributes,
@@ -225,7 +256,8 @@ reclaimed IDs become tombstones and are never reused within the document.
 The next slice should preserve the same ownership socket while expanding the
 standards surface used by framework renderers:
 
-1. browser `Event` objects, target/currentTarget state, and propagation;
-2. selectors plus `classList`, `dataset`, and live collection behavior;
-3. fragment parsing through `innerHTML` and adjacent insertion APIs; and
-4. a real React bundle after the framework-shaped churn harness remains stable.
+1. selectors plus `classList`, `dataset`, and live collection behavior;
+2. fragment parsing through `innerHTML` and adjacent insertion APIs;
+3. form-control state and default actions layered over the new input events;
+4. a real React bundle after the framework-shaped delegation and churn
+   harnesses remain stable.

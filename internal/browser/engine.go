@@ -14,15 +14,94 @@ type InputEventType uint8
 
 const (
 	InputClick InputEventType = iota + 1
+	InputPointerDown
+	InputPointerUp
+	InputPointerMove
+	InputPointerCancel
+	InputPointerOver
+	InputPointerOut
+	InputPointerEnter
+	InputPointerLeave
+	InputKeyDown
+	InputKeyUp
+	InputBeforeInput
+	InputInput
+	InputFocus
+	InputBlur
+	InputFocusIn
+	InputFocusOut
+	InputChange
 )
 
 // InputEvent contains browser-normalized input and a generation-safe target.
 type InputEvent struct {
-	Type   InputEventType
-	Target NodeHandle
-	X      float64
-	Y      float64
-	Button int
+	Type          InputEventType
+	Target        NodeHandle
+	RelatedTarget NodeHandle
+	X             float64
+	Y             float64
+	Button        int
+	Buttons       uint
+	PointerID     int
+	PointerType   string
+	IsPrimary     bool
+	Key           string
+	Code          string
+	Data          string
+	InputType     string
+	Repeat        bool
+	IsComposing   bool
+	AltKey        bool
+	CtrlKey       bool
+	MetaKey       bool
+	ShiftKey      bool
+}
+
+func (eventType InputEventType) String() string {
+	switch eventType {
+	case InputClick:
+		return "click"
+	case InputPointerDown:
+		return "pointerdown"
+	case InputPointerUp:
+		return "pointerup"
+	case InputPointerMove:
+		return "pointermove"
+	case InputPointerCancel:
+		return "pointercancel"
+	case InputPointerOver:
+		return "pointerover"
+	case InputPointerOut:
+		return "pointerout"
+	case InputPointerEnter:
+		return "pointerenter"
+	case InputPointerLeave:
+		return "pointerleave"
+	case InputKeyDown:
+		return "keydown"
+	case InputKeyUp:
+		return "keyup"
+	case InputBeforeInput:
+		return "beforeinput"
+	case InputInput:
+		return "input"
+	case InputFocus:
+		return "focus"
+	case InputBlur:
+		return "blur"
+	case InputFocusIn:
+		return "focusin"
+	case InputFocusOut:
+		return "focusout"
+	case InputChange:
+		return "change"
+	default:
+		return ""
+	}
+}
+
+func (eventType InputEventType) pointerTargeted() bool {
+	return eventType >= InputClick && eventType <= InputPointerLeave
 }
 
 // ScriptSource is an engine-neutral unit of source evaluation. URL is the
@@ -78,6 +157,15 @@ type Host interface {
 type NodeWrapperLifetimeHost interface {
 	RetainNodeWrapper(NodeHandle) error
 	ReleaseNodeWrappers([]NodeHandle) error
+}
+
+// NodeEventListenerLifetimeHost lets an engine publish native listener roots
+// independently from weak wrapper roots. A detached target with a registered
+// listener remains alive until its final listener is removed or its document
+// Realm is torn down.
+type NodeEventListenerLifetimeHost interface {
+	RetainNodeEventTarget(NodeHandle) error
+	ReleaseNodeEventTarget(NodeHandle) error
 }
 
 // NodeRelation identifies one traversal property on a JavaScript Node or

@@ -9,9 +9,8 @@ int gossamer_v8_go_realm_evaluate(gossamer_v8_realm *realm,
                                   size_t source_url_length, char **error_out);
 int gossamer_v8_go_realm_dispatch_event(gossamer_v8_realm *realm,
                                         uint64_t execution_id,
-                                        uint8_t event_type, uint64_t document,
-                                        uint32_t node, double x, double y,
-                                        int32_t button, char **error_out);
+                                        const gossamer_v8_input_event *event,
+                                        char **error_out);
 int gossamer_v8_go_realm_invoke(gossamer_v8_realm *realm, uint64_t execution_id,
                                 uint64_t callback, char **error_out);
 int gossamer_v8_go_realm_drain_microtasks(gossamer_v8_realm *realm,

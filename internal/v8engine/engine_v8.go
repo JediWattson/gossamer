@@ -193,17 +193,61 @@ func (realm *Realm) DispatchEvent(host browser.Host, event browser.InputEvent) e
 	}
 	executionID := registerHostExecution(host)
 	defer unregisterHostExecution(executionID)
+	stringData := func(value string) *C.char {
+		if value == "" {
+			return nil
+		}
+		return (*C.char)(unsafe.Pointer(unsafe.StringData(value)))
+	}
+	native := C.gossamer_v8_input_event{
+		_type:               C.uint8_t(event.Type),
+		document:            C.uint64_t(event.Target.Document),
+		node:                C.uint32_t(event.Target.Node),
+		related_document:    C.uint64_t(event.RelatedTarget.Document),
+		related_node:        C.uint32_t(event.RelatedTarget.Node),
+		x:                   C.double(event.X),
+		y:                   C.double(event.Y),
+		button:              C.int32_t(event.Button),
+		buttons:             C.uint32_t(event.Buttons),
+		pointer_id:          C.int32_t(event.PointerID),
+		pointer_type:        stringData(event.PointerType),
+		pointer_type_length: C.size_t(len(event.PointerType)),
+		key:                 stringData(event.Key),
+		key_length:          C.size_t(len(event.Key)),
+		code:                stringData(event.Code),
+		code_length:         C.size_t(len(event.Code)),
+		data:                stringData(event.Data),
+		data_length:         C.size_t(len(event.Data)),
+		input_type:          stringData(event.InputType),
+		input_type_length:   C.size_t(len(event.InputType)),
+	}
+	if event.IsPrimary {
+		native.is_primary = 1
+	}
+	if event.Repeat {
+		native.repeat = 1
+	}
+	if event.IsComposing {
+		native.is_composing = 1
+	}
+	if event.AltKey {
+		native.alt_key = 1
+	}
+	if event.CtrlKey {
+		native.ctrl_key = 1
+	}
+	if event.MetaKey {
+		native.meta_key = 1
+	}
+	if event.ShiftKey {
+		native.shift_key = 1
+	}
 	var failure *C.char
 	var operationErr error
 	if C.gossamer_v8_go_realm_dispatch_event(
 		realm.pointer,
 		C.uint64_t(executionID),
-		C.uint8_t(event.Type),
-		C.uint64_t(event.Target.Document),
-		C.uint32_t(event.Target.Node),
-		C.double(event.X),
-		C.double(event.Y),
-		C.int32_t(event.Button),
+		&native,
 		&failure,
 	) == 0 {
 		operationErr = takeError(failure)

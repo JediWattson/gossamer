@@ -167,7 +167,8 @@ func (page *Page) RetainNodeWrapper(handle NodeHandle) error {
 }
 
 // ReleaseNodeWrappers removes weak wrappers reported by an engine GC and
-// reclaims detached Go nodes whose wrapper claim was their final owner.
+// reclaims detached Go nodes whose wrapper claim was their final owner. A live
+// listener claim keeps the target rooted independently.
 func (page *Page) ReleaseNodeWrappers(handles []NodeHandle) error {
 	if page == nil {
 		return fmt.Errorf("browser: nil page")
@@ -181,6 +182,44 @@ func (page *Page) ReleaseNodeWrappers(handles []NodeHandle) error {
 		return nil
 	}
 	return page.nodeLifetimes.releaseWrappers(handles)
+}
+
+// RetainNodeEventTarget adds one listener claim for a native EventTarget.
+// Repeated registrations are counted so removing one event type cannot release
+// a target that still owns other listeners.
+func (page *Page) RetainNodeEventTarget(handle NodeHandle) error {
+	if page == nil {
+		return fmt.Errorf("browser: nil page")
+	}
+	page.mutex.Lock()
+	defer page.mutex.Unlock()
+	if page.closed {
+		return ErrPageClosed
+	}
+	if page.nodeLifetimes == nil || handle.Document != page.documentGeneration {
+		return ErrStaleNodeHandle
+	}
+	if _, ok := page.document.Resolve(handle.Node); !ok {
+		return dom.ErrUnknownNode
+	}
+	return page.nodeLifetimes.retainEventTarget(handle)
+}
+
+// ReleaseNodeEventTarget removes one listener claim and reconciles detached
+// reachability when the target's final listener disappears.
+func (page *Page) ReleaseNodeEventTarget(handle NodeHandle) error {
+	if page == nil {
+		return fmt.Errorf("browser: nil page")
+	}
+	page.mutex.Lock()
+	defer page.mutex.Unlock()
+	if page.closed {
+		return ErrPageClosed
+	}
+	if page.nodeLifetimes == nil || handle.Document != page.documentGeneration {
+		return ErrStaleNodeHandle
+	}
+	return page.nodeLifetimes.releaseEventTarget(handle)
 }
 
 // Render synchronously renders the current document through the existing

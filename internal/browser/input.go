@@ -46,14 +46,28 @@ func (page *Page) hitTestLocked(x, y float64) (NodeHandle, bool) {
 // QueueClick publishes external input through the Page task queue. Hit testing
 // happens when that task executes, after all earlier Page work.
 func (page *Page) QueueClick(x, y float64, button int) (browserruntime.TaskID, error) {
+	return page.QueueInputEvent(InputEvent{Type: InputClick, X: x, Y: y, Button: button})
+}
+
+// QueueInputEvent publishes one normalized input record through the Page task
+// queue. Pointer-family events may omit Target and resolve it by hit testing
+// when their task runs; keyboard, input, focus, and change events carry an
+// explicit generation-safe target.
+func (page *Page) QueueInputEvent(event InputEvent) (browserruntime.TaskID, error) {
 	if page == nil {
 		return 0, fmt.Errorf("browser: nil page")
 	}
-	if math.IsNaN(x) || math.IsNaN(y) || math.IsInf(x, 0) || math.IsInf(y, 0) {
+	if event.Type.String() == "" {
+		return 0, fmt.Errorf("browser: unsupported input event type %d", event.Type)
+	}
+	if math.IsNaN(event.X) || math.IsNaN(event.Y) || math.IsInf(event.X, 0) || math.IsInf(event.Y, 0) {
 		return 0, fmt.Errorf("browser: invalid input coordinate")
 	}
+	if event.Target.Node == dom.InvalidNodeID && !event.Type.pointerTargeted() {
+		return 0, fmt.Errorf("browser: %s input requires a target", event.Type)
+	}
 	task, _, err := page.browser.scheduler.EnqueueExternalTask(page.Realm, func(context *browserruntime.TaskContext) error {
-		return page.dispatchInput(context, InputEvent{Type: InputClick, X: x, Y: y, Button: button})
+		return page.dispatchInput(context, event)
 	})
 	return task, err
 }
@@ -64,7 +78,23 @@ func (page *Page) dispatchInput(context *browserruntime.TaskContext, event Input
 		page.mutex.RUnlock()
 		return ErrPageClosed
 	}
-	target, ok := page.hitTestLocked(event.X, event.Y)
+	target := event.Target
+	ok := false
+	if target.Node == dom.InvalidNodeID {
+		target, ok = page.hitTestLocked(event.X, event.Y)
+	} else if target.Document == page.documentGeneration {
+		_, ok = page.document.Resolve(target.Node)
+	}
+	if event.RelatedTarget.Node != dom.InvalidNodeID {
+		if event.RelatedTarget.Document != page.documentGeneration {
+			page.mutex.RUnlock()
+			return nil
+		}
+		if _, relatedOK := page.document.Resolve(event.RelatedTarget.Node); !relatedOK {
+			page.mutex.RUnlock()
+			return nil
+		}
+	}
 	script := page.script
 	generation := page.documentGeneration
 	page.mutex.RUnlock()
@@ -623,6 +653,14 @@ func (host *taskHost) RetainNodeWrapper(handle NodeHandle) error {
 
 func (host *taskHost) ReleaseNodeWrappers(handles []NodeHandle) error {
 	return host.page.ReleaseNodeWrappers(handles)
+}
+
+func (host *taskHost) RetainNodeEventTarget(handle NodeHandle) error {
+	return host.page.RetainNodeEventTarget(handle)
+}
+
+func (host *taskHost) ReleaseNodeEventTarget(handle NodeHandle) error {
+	return host.page.ReleaseNodeEventTarget(handle)
 }
 
 func (host *taskHost) finish() error {

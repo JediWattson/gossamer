@@ -11,6 +11,7 @@
 #include <mutex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -19,6 +20,7 @@
 #include "include/v8-context.h"
 #include "include/v8-container.h"
 #include "include/v8-exception.h"
+#include "include/v8-external.h"
 #include "include/v8-function.h"
 #include "include/v8-initialization.h"
 #include "include/v8-isolate.h"
@@ -35,11 +37,15 @@
 
 namespace {
 
-constexpr uint8_t kClickEvent = 1;
 constexpr int kNodeDocumentField = 0;
 constexpr int kNodeIDField = 1;
 constexpr int kNodeStyleField = 2;
 constexpr int kStyleNodeField = 0;
+constexpr int kEventStateField = 0;
+constexpr uint8_t kEventPhaseNone = 0;
+constexpr uint8_t kEventPhaseCapturing = 1;
+constexpr uint8_t kEventPhaseAtTarget = 2;
+constexpr uint8_t kEventPhaseBubbling = 3;
 constexpr int64_t kMaximumDelayMilliseconds =
     std::numeric_limits<int64_t>::max() / 1000000;
 
@@ -67,7 +73,7 @@ struct WrapperKeyHash {
 
 struct ListenerKey {
   WrapperKey target;
-  uint8_t type = 0;
+  std::string type;
 
   bool operator==(const ListenerKey &other) const {
     return target == other.target && type == other.type;
@@ -77,12 +83,71 @@ struct ListenerKey {
 struct ListenerKeyHash {
   size_t operator()(const ListenerKey &key) const {
     size_t target = WrapperKeyHash{}(key.target);
-    size_t type = std::hash<uint8_t>{}(key.type);
+    size_t type = std::hash<std::string>{}(key.type);
     return target ^ (type + 0x9e3779b9U + (target << 6U) + (target >> 2U));
   }
 };
 
+struct ListenerRecord {
+  uint64_t id = 0;
+  v8::Global<v8::Function> callback;
+  bool capture = false;
+  bool once = false;
+  bool passive = false;
+  bool removed = false;
+};
+
+enum class EventInterface : uint8_t {
+  Event,
+  MouseEvent,
+  PointerEvent,
+  KeyboardEvent,
+  InputEvent,
+  FocusEvent,
+};
+
+struct EventState {
+  EventInterface interface = EventInterface::Event;
+  std::string type;
+  bool bubbles = false;
+  bool cancelable = false;
+  bool composed = false;
+  bool default_prevented = false;
+  bool propagation_stopped = false;
+  bool immediate_stopped = false;
+  bool dispatching = false;
+  bool in_passive_listener = false;
+  bool trusted = false;
+  uint8_t phase = kEventPhaseNone;
+  bool has_target = false;
+  bool has_current_target = false;
+  bool has_related_target = false;
+  WrapperKey target;
+  WrapperKey current_target;
+  WrapperKey related_target;
+  std::vector<WrapperKey> path;
+  double timestamp = 0;
+  double client_x = 0;
+  double client_y = 0;
+  int32_t button = 0;
+  uint32_t buttons = 0;
+  int32_t pointer_id = 0;
+  std::string pointer_type;
+  bool is_primary = false;
+  std::string key;
+  std::string code;
+  std::string data;
+  std::string input_type;
+  bool repeat = false;
+  bool is_composing = false;
+  bool alt_key = false;
+  bool ctrl_key = false;
+  bool meta_key = false;
+  bool shift_key = false;
+};
+
 struct WrapperWeakData;
+struct EventWeakData;
 
 struct WrapperEntry {
   v8::Global<v8::Object> object;
@@ -211,6 +276,12 @@ struct gossamer_v8_realm {
   v8::Global<v8::FunctionTemplate> html_element_template;
   v8::Global<v8::FunctionTemplate> text_template;
   v8::Global<v8::FunctionTemplate> document_template;
+  v8::Global<v8::FunctionTemplate> event_template;
+  v8::Global<v8::FunctionTemplate> mouse_event_template;
+  v8::Global<v8::FunctionTemplate> pointer_event_template;
+  v8::Global<v8::FunctionTemplate> keyboard_event_template;
+  v8::Global<v8::FunctionTemplate> input_event_template;
+  v8::Global<v8::FunctionTemplate> focus_event_template;
   v8::Global<v8::ObjectTemplate> style_template;
   v8::Global<v8::Object> document_wrapper;
   const gossamer_v8_host *active_host = nullptr;
@@ -222,9 +293,12 @@ struct gossamer_v8_realm {
 
   std::unordered_map<WrapperKey, WrapperEntry, WrapperKeyHash> wrappers;
   std::vector<WrapperKey> collected_wrappers;
-  std::unordered_map<ListenerKey, std::vector<v8::Global<v8::Function>>,
+  std::unordered_map<ListenerKey, std::vector<std::unique_ptr<ListenerRecord>>,
                      ListenerKeyHash>
       listeners;
+  std::unordered_set<EventWeakData *> events;
+  uint64_t next_listener = 1;
+  uint32_t dispatch_depth = 0;
   uint64_t event_listener_count = 0;
   uint64_t next_callback = 1;
   std::unordered_map<uint64_t, v8::Global<v8::Function>> callbacks;
@@ -254,6 +328,12 @@ namespace {
 struct WrapperWeakData {
   gossamer_v8_realm *realm;
   WrapperKey key;
+};
+
+struct EventWeakData {
+  gossamer_v8_realm *realm;
+  EventState *state;
+  v8::Global<v8::Object> object;
 };
 
 class HostScope {
@@ -474,18 +554,12 @@ std::string CSSPropertyNameFromJS(const std::string &name) {
 }
 
 bool EventTypeFromValue(v8::Isolate *isolate, v8::Local<v8::Value> value,
-                        uint8_t *event_type) {
+                        std::string *event_type) {
   if (!value->IsString()) {
     ThrowError(isolate, "event type must be a string");
     return false;
   }
-  std::string name = UTF8Value(isolate, value);
-  if (name != "click") {
-    ThrowError(isolate,
-               "only click event listeners are supported in this milestone");
-    return false;
-  }
-  *event_type = kClickEvent;
+  *event_type = UTF8Value(isolate, value);
   return true;
 }
 void WrapperCollected(const v8::WeakCallbackInfo<WrapperWeakData> &info) {
@@ -2049,6 +2123,426 @@ void StyleDirectPropertySetter(
   info.GetReturnValue().Set(true);
 }
 
+bool ReadBooleanOption(v8::Local<v8::Context> context,
+                       v8::Local<v8::Object> options, const char *name,
+                       bool fallback, bool *value) {
+  v8::Local<v8::Value> property;
+  v8::Isolate *isolate = v8::Isolate::GetCurrent();
+  if (!options
+           ->Get(context,
+                 v8::String::NewFromUtf8(isolate, name)
+                     .ToLocalChecked())
+           .ToLocal(&property))
+    return false;
+  *value = property->IsUndefined() ? fallback : property->BooleanValue(isolate);
+  return true;
+}
+
+bool ReadStringOption(v8::Local<v8::Context> context,
+                      v8::Local<v8::Object> options, const char *name,
+                      std::string *value) {
+  v8::Local<v8::Value> property;
+  v8::Isolate *isolate = v8::Isolate::GetCurrent();
+  if (!options
+           ->Get(context,
+                 v8::String::NewFromUtf8(isolate, name)
+                     .ToLocalChecked())
+           .ToLocal(&property))
+    return false;
+  if (property->IsUndefined() || property->IsNull()) {
+    value->clear();
+    return true;
+  }
+  return StringFromValue(isolate, property, value);
+}
+
+bool ReadNumberOption(v8::Local<v8::Context> context,
+                      v8::Local<v8::Object> options, const char *name,
+                      double fallback, double *value) {
+  v8::Local<v8::Value> property;
+  v8::Isolate *isolate = v8::Isolate::GetCurrent();
+  if (!options
+           ->Get(context,
+                 v8::String::NewFromUtf8(isolate, name)
+                     .ToLocalChecked())
+           .ToLocal(&property))
+    return false;
+  if (property->IsUndefined()) {
+    *value = fallback;
+    return true;
+  }
+  return property->NumberValue(context).To(value);
+}
+
+bool ReadListenerOptions(v8::Local<v8::Context> context,
+                         v8::Local<v8::Value> value, bool *capture,
+                         bool *once, bool *passive) {
+  *capture = false;
+  *once = false;
+  *passive = false;
+  if (value.IsEmpty() || value->IsUndefined() || value->IsNull())
+    return true;
+  if (value->IsBoolean()) {
+    *capture = value->BooleanValue(v8::Isolate::GetCurrent());
+    return true;
+  }
+  if (!value->IsObject())
+    return true;
+  v8::Local<v8::Object> options = value.As<v8::Object>();
+  return ReadBooleanOption(context, options, "capture", false, capture) &&
+         ReadBooleanOption(context, options, "once", false, once) &&
+         ReadBooleanOption(context, options, "passive", false, passive);
+}
+
+EventState *ReadEventState(v8::Isolate *isolate,
+                           v8::Local<v8::Object> receiver) {
+  if (receiver.IsEmpty() || receiver->InternalFieldCount() != 1) {
+    ThrowError(isolate, "Event method receiver is not a Gossamer Event");
+    return nullptr;
+  }
+  v8::Local<v8::Data> data = receiver->GetInternalField(kEventStateField);
+  if (!data->IsValue() || !data.As<v8::Value>()->IsExternal()) {
+    ThrowError(isolate, "Gossamer Event lost its native state");
+    return nullptr;
+  }
+  return static_cast<EventState *>(
+      data.As<v8::Value>().As<v8::External>()->Value(
+          v8::kExternalPointerTypeTagDefault));
+}
+
+void EventCollected(const v8::WeakCallbackInfo<EventWeakData> &info) {
+  EventWeakData *weak = info.GetParameter();
+  if (weak == nullptr)
+    return;
+  if (weak->realm != nullptr)
+    weak->realm->events.erase(weak);
+  weak->object.Reset();
+  delete weak->state;
+  delete weak;
+}
+
+bool TrackEventObject(gossamer_v8_realm *realm, v8::Local<v8::Object> object,
+                      EventState *state) {
+  std::unique_ptr<EventWeakData> weak(new EventWeakData{realm, state, {}});
+  object->SetInternalField(kEventStateField,
+                           v8::External::New(
+                               realm->isolate, state,
+                               v8::kExternalPointerTypeTagDefault));
+  weak->object.Reset(realm->isolate, object);
+  weak->object.SetWeak(weak.get(), EventCollected,
+                       v8::WeakCallbackType::kParameter);
+  realm->events.insert(weak.get());
+  weak.release();
+  return true;
+}
+
+bool ParseEventOptions(v8::Local<v8::Context> context,
+                       v8::Local<v8::Value> value, EventState *state) {
+  if (value.IsEmpty() || value->IsUndefined() || value->IsNull())
+    return true;
+  if (!value->IsObject())
+    return true;
+  v8::Local<v8::Object> options = value.As<v8::Object>();
+  double number = 0;
+  if (!ReadBooleanOption(context, options, "bubbles", false,
+                         &state->bubbles) ||
+      !ReadBooleanOption(context, options, "cancelable", false,
+                         &state->cancelable) ||
+      !ReadBooleanOption(context, options, "composed", false,
+                         &state->composed) ||
+      !ReadNumberOption(context, options, "clientX", 0, &state->client_x) ||
+      !ReadNumberOption(context, options, "clientY", 0, &state->client_y) ||
+      !ReadNumberOption(context, options, "button", 0, &number))
+    return false;
+  state->button = static_cast<int32_t>(number);
+  if (!ReadNumberOption(context, options, "buttons", 0, &number))
+    return false;
+  state->buttons = static_cast<uint32_t>(number);
+  if (!ReadNumberOption(context, options, "pointerId", 0, &number))
+    return false;
+  state->pointer_id = static_cast<int32_t>(number);
+  return ReadStringOption(context, options, "pointerType",
+                          &state->pointer_type) &&
+         ReadStringOption(context, options, "key", &state->key) &&
+         ReadStringOption(context, options, "code", &state->code) &&
+         ReadStringOption(context, options, "data", &state->data) &&
+         ReadStringOption(context, options, "inputType", &state->input_type) &&
+         ReadBooleanOption(context, options, "isPrimary", false,
+                           &state->is_primary) &&
+         ReadBooleanOption(context, options, "repeat", false,
+                           &state->repeat) &&
+         ReadBooleanOption(context, options, "isComposing", false,
+                           &state->is_composing) &&
+         ReadBooleanOption(context, options, "altKey", false,
+                           &state->alt_key) &&
+         ReadBooleanOption(context, options, "ctrlKey", false,
+                           &state->ctrl_key) &&
+         ReadBooleanOption(context, options, "metaKey", false,
+                           &state->meta_key) &&
+         ReadBooleanOption(context, options, "shiftKey", false,
+                           &state->shift_key);
+}
+
+void EventConstructor(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  if (!info.IsConstructCall()) {
+    ThrowError(isolate, "Event constructor must be called with new");
+    return;
+  }
+  if (info.Length() == 0 || !info[0]->IsString()) {
+    ThrowError(isolate, "Event constructor requires a type");
+    return;
+  }
+  std::string type = UTF8Value(isolate, info[0]);
+  auto state = std::make_unique<EventState>();
+  state->type = std::move(type);
+  state->timestamp = static_cast<double>(MonotonicNanos()) / 1000000.0;
+  if (!info.Data().IsEmpty() && info.Data()->IsInt32()) {
+    state->interface = static_cast<EventInterface>(
+        info.Data().As<v8::Int32>()->Value());
+  }
+  if (!ParseEventOptions(isolate->GetCurrentContext(),
+                         info.Length() > 1 ? info[1]
+                                           : v8::Undefined(isolate),
+                         state.get()))
+    return;
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  TrackEventObject(realm, info.This(), state.release());
+  info.GetReturnValue().Set(info.This());
+}
+
+void EventPropertyGetter(v8::Local<v8::Name> property,
+                         const v8::PropertyCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  EventState *state = ReadEventState(isolate, info.Holder());
+  if (state == nullptr)
+    return;
+  std::string name = UTF8Value(isolate, property.As<v8::Value>());
+  if (name == "type") {
+    info.GetReturnValue().Set(
+        v8::String::NewFromUtf8(isolate, state->type.data(),
+                                v8::NewStringType::kNormal,
+                                static_cast<int>(state->type.size()))
+            .ToLocalChecked());
+  } else if (name == "bubbles") {
+    info.GetReturnValue().Set(state->bubbles);
+  } else if (name == "cancelable") {
+    info.GetReturnValue().Set(state->cancelable);
+  } else if (name == "composed") {
+    info.GetReturnValue().Set(state->composed);
+  } else if (name == "defaultPrevented") {
+    info.GetReturnValue().Set(state->default_prevented);
+  } else if (name == "eventPhase") {
+    info.GetReturnValue().Set(state->phase);
+  } else if (name == "isTrusted") {
+    info.GetReturnValue().Set(state->trusted);
+  } else if (name == "timeStamp") {
+    info.GetReturnValue().Set(state->timestamp);
+  } else if (name == "cancelBubble") {
+    info.GetReturnValue().Set(state->propagation_stopped);
+  } else if (name == "returnValue") {
+    info.GetReturnValue().Set(!state->default_prevented);
+  } else if (name == "clientX") {
+    info.GetReturnValue().Set(state->client_x);
+  } else if (name == "clientY") {
+    info.GetReturnValue().Set(state->client_y);
+  } else if (name == "button") {
+    info.GetReturnValue().Set(state->button);
+  } else if (name == "buttons") {
+    info.GetReturnValue().Set(state->buttons);
+  } else if (name == "pointerId") {
+    info.GetReturnValue().Set(state->pointer_id);
+  } else if (name == "isPrimary") {
+    info.GetReturnValue().Set(state->is_primary);
+  } else if (name == "repeat") {
+    info.GetReturnValue().Set(state->repeat);
+  } else if (name == "isComposing") {
+    info.GetReturnValue().Set(state->is_composing);
+  } else if (name == "altKey") {
+    info.GetReturnValue().Set(state->alt_key);
+  } else if (name == "ctrlKey") {
+    info.GetReturnValue().Set(state->ctrl_key);
+  } else if (name == "metaKey") {
+    info.GetReturnValue().Set(state->meta_key);
+  } else if (name == "shiftKey") {
+    info.GetReturnValue().Set(state->shift_key);
+  } else if (name == "pointerType" || name == "key" || name == "code" ||
+             name == "data" || name == "inputType") {
+    const std::string *value = &state->pointer_type;
+    if (name == "key")
+      value = &state->key;
+    else if (name == "code")
+      value = &state->code;
+    else if (name == "data")
+      value = &state->data;
+    else if (name == "inputType")
+      value = &state->input_type;
+    info.GetReturnValue().Set(
+        v8::String::NewFromUtf8(isolate, value->data(),
+                                v8::NewStringType::kNormal,
+                                static_cast<int>(value->size()))
+            .ToLocalChecked());
+  } else if (name == "target" || name == "currentTarget" ||
+             name == "relatedTarget") {
+    bool present = state->has_target;
+    WrapperKey key = state->target;
+    if (name == "currentTarget") {
+      present = state->has_current_target;
+      key = state->current_target;
+    } else if (name == "relatedTarget") {
+      present = state->has_related_target;
+      key = state->related_target;
+    }
+    if (!present) {
+      info.GetReturnValue().Set(v8::Null(isolate));
+      return;
+    }
+    gossamer_v8_realm *realm = CurrentRealm(isolate);
+    std::string error;
+    v8::Local<v8::Object> wrapper;
+    if (!GetOrCreateNodeWrapper(realm, isolate->GetCurrentContext(), key,
+                                &error)
+             .ToLocal(&wrapper)) {
+      ThrowError(isolate, error.empty() ? "V8 failed to wrap an Event target"
+                                        : error);
+      return;
+    }
+    info.GetReturnValue().Set(wrapper);
+  }
+}
+
+void EventPropertySetter(v8::Local<v8::Name> property,
+                         v8::Local<v8::Value> value,
+                         const v8::PropertyCallbackInfo<v8::Boolean> &info) {
+  EventState *state = ReadEventState(info.GetIsolate(), info.Holder());
+  if (state == nullptr) {
+    info.GetReturnValue().Set(false);
+    return;
+  }
+  std::string name = UTF8Value(info.GetIsolate(), property.As<v8::Value>());
+  bool rendered = value->BooleanValue(info.GetIsolate());
+  if (name == "cancelBubble" && rendered)
+    state->propagation_stopped = true;
+  if (name == "returnValue" && !rendered && state->cancelable &&
+      !state->in_passive_listener)
+    state->default_prevented = true;
+  info.GetReturnValue().Set(true);
+}
+
+void EventStopPropagation(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  EventState *state = ReadEventState(info.GetIsolate(), info.This());
+  if (state != nullptr)
+    state->propagation_stopped = true;
+}
+
+void EventStopImmediatePropagation(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  EventState *state = ReadEventState(info.GetIsolate(), info.This());
+  if (state != nullptr) {
+    state->propagation_stopped = true;
+    state->immediate_stopped = true;
+  }
+}
+
+void EventPreventDefault(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  EventState *state = ReadEventState(info.GetIsolate(), info.This());
+  if (state != nullptr && state->cancelable && !state->in_passive_listener)
+    state->default_prevented = true;
+}
+
+void EventComposedPath(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  EventState *state = ReadEventState(isolate, info.This());
+  if (state == nullptr)
+    return;
+  v8::Local<v8::Context> context = isolate->GetCurrentContext();
+  v8::Local<v8::Array> result = v8::Array::New(
+      isolate, state->dispatching ? static_cast<int>(state->path.size()) : 0);
+  if (state->dispatching) {
+    gossamer_v8_realm *realm = CurrentRealm(isolate);
+    for (size_t index = 0; index < state->path.size(); ++index) {
+      std::string error;
+      v8::Local<v8::Object> wrapper;
+      if (!GetOrCreateNodeWrapper(realm, context, state->path[index], &error)
+               .ToLocal(&wrapper) ||
+          !result->Set(context, static_cast<uint32_t>(index), wrapper)
+               .FromMaybe(false)) {
+        ThrowError(isolate, error.empty() ? "V8 failed to build composedPath"
+                                          : error);
+        return;
+      }
+    }
+  }
+  info.GetReturnValue().Set(result);
+}
+
+bool RetainListenerTarget(gossamer_v8_realm *realm, const WrapperKey &key,
+                          std::string *error) {
+  if (!RequireHost(realm, error))
+    return false;
+  char *host_error = nullptr;
+  if (realm->active_host->retain_node_event_target(
+          realm->active_host->execution_id, key.document, key.node,
+          &host_error) == 0) {
+    *error = TakeCString(host_error);
+    if (error->empty())
+      *error = "Go host rejected the EventTarget lifetime";
+    return false;
+  }
+  std::free(host_error);
+  return true;
+}
+
+bool ReleaseListenerTarget(gossamer_v8_realm *realm, const WrapperKey &key,
+                           std::string *error) {
+  if (!RequireHost(realm, error))
+    return false;
+  char *host_error = nullptr;
+  if (realm->active_host->release_node_event_target(
+          realm->active_host->execution_id, key.document, key.node,
+          &host_error) == 0) {
+    *error = TakeCString(host_error);
+    if (error->empty())
+      *error = "Go host rejected the EventTarget release";
+    return false;
+  }
+  std::free(host_error);
+  return true;
+}
+
+bool RemoveListenerRecord(gossamer_v8_realm *realm, const ListenerKey &key,
+                          ListenerRecord *listener, std::string *error) {
+  if (listener->removed)
+    return true;
+  if (!ReleaseListenerTarget(realm, key.target, error))
+    return false;
+  listener->removed = true;
+  --realm->event_listener_count;
+  return true;
+}
+
+void CleanupRemovedListeners(gossamer_v8_realm *realm) {
+  if (realm->dispatch_depth != 0)
+    return;
+  for (auto entry = realm->listeners.begin(); entry != realm->listeners.end();) {
+    auto &listeners = entry->second;
+    listeners.erase(
+        std::remove_if(listeners.begin(), listeners.end(),
+                       [](const std::unique_ptr<ListenerRecord> &listener) {
+                         if (!listener->removed)
+                           return false;
+                         listener->callback.Reset();
+                         return true;
+                       }),
+        listeners.end());
+    if (listeners.empty())
+      entry = realm->listeners.erase(entry);
+    else
+      ++entry;
+  }
+}
+
 void NodeAddEventListener(const v8::FunctionCallbackInfo<v8::Value> &info) {
   v8::Isolate *isolate = info.GetIsolate();
   gossamer_v8_realm *realm = CurrentRealm(isolate);
@@ -2059,16 +2553,39 @@ void NodeAddEventListener(const v8::FunctionCallbackInfo<v8::Value> &info) {
     ThrowError(isolate, "addEventListener requires an event type and function");
     return;
   }
-  uint8_t event_type = 0;
+  std::string event_type;
   if (!EventTypeFromValue(isolate, info[0], &event_type))
     return;
+  bool capture = false;
+  bool once = false;
+  bool passive = false;
+  if (!ReadListenerOptions(isolate->GetCurrentContext(),
+                           info.Length() > 2 ? info[2]
+                                             : v8::Undefined(isolate),
+                           &capture, &once, &passive))
+    return;
   v8::Local<v8::Function> function = info[1].As<v8::Function>();
-  auto &listeners = realm->listeners[ListenerKey{key, event_type}];
-  for (const auto &listener : listeners) {
-    if (listener == function)
-      return;
+  ListenerKey listener_key{key, event_type};
+  auto found = realm->listeners.find(listener_key);
+  if (found != realm->listeners.end()) {
+    for (const auto &listener : found->second) {
+      if (!listener->removed && listener->capture == capture &&
+          listener->callback == function)
+        return;
+    }
   }
-  listeners.emplace_back(isolate, function);
+  std::string error;
+  if (!RetainListenerTarget(realm, key, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  auto listener = std::make_unique<ListenerRecord>();
+  listener->id = realm->next_listener++;
+  listener->callback.Reset(isolate, function);
+  listener->capture = capture;
+  listener->once = once;
+  listener->passive = passive;
+  realm->listeners[listener_key].push_back(std::move(listener));
   ++realm->event_listener_count;
 }
 
@@ -2080,25 +2597,262 @@ void NodeRemoveEventListener(const v8::FunctionCallbackInfo<v8::Value> &info) {
     return;
   if (info.Length() < 2 || !info[1]->IsFunction())
     return;
-  uint8_t event_type = 0;
+  std::string event_type;
   if (!EventTypeFromValue(isolate, info[0], &event_type))
     return;
-  auto found = realm->listeners.find(ListenerKey{key, event_type});
+  bool capture = false;
+  bool once = false;
+  bool passive = false;
+  if (!ReadListenerOptions(isolate->GetCurrentContext(),
+                           info.Length() > 2 ? info[2]
+                                             : v8::Undefined(isolate),
+                           &capture, &once, &passive))
+    return;
+  ListenerKey listener_key{key, event_type};
+  auto found = realm->listeners.find(listener_key);
   if (found == realm->listeners.end())
     return;
   v8::Local<v8::Function> function = info[1].As<v8::Function>();
-  auto &listeners = found->second;
-  for (auto listener = listeners.begin(); listener != listeners.end();
-       ++listener) {
-    if (*listener == function) {
-      listener->Reset();
-      listeners.erase(listener);
-      --realm->event_listener_count;
+  for (const auto &listener : found->second) {
+    if (!listener->removed && listener->capture == capture &&
+        listener->callback == function) {
+      std::string error;
+      if (!RemoveListenerRecord(realm, listener_key, listener.get(), &error)) {
+        ThrowError(isolate, error);
+        return;
+      }
       break;
     }
   }
-  if (listeners.empty())
-    realm->listeners.erase(found);
+  CleanupRemovedListeners(realm);
+}
+
+bool ReadEventParent(gossamer_v8_realm *realm, const WrapperKey &key,
+                     WrapperKey *parent, bool *found, std::string *error) {
+  if (!RequireHost(realm, error))
+    return false;
+  uint32_t related_node = 0;
+  int related_found = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->related_node(
+          realm->active_host->execution_id, key.document, key.node, 1,
+          &related_node, &related_found, &host_error) == 0) {
+    *error = TakeCString(host_error);
+    if (error->empty())
+      *error = "reading the EventTarget parent failed";
+    return false;
+  }
+  std::free(host_error);
+  *found = related_found != 0;
+  *parent = WrapperKey{key.document, related_node};
+  return true;
+}
+
+bool BuildEventPath(gossamer_v8_realm *realm, const WrapperKey &target,
+                    std::vector<WrapperKey> *path, std::string *error) {
+  path->clear();
+  std::unordered_set<WrapperKey, WrapperKeyHash> seen;
+  WrapperKey current = target;
+  while (true) {
+    if (!seen.insert(current).second) {
+      *error = "DOM parent cycle encountered during event dispatch";
+      return false;
+    }
+    path->push_back(current);
+    WrapperKey parent;
+    bool found = false;
+    if (!ReadEventParent(realm, current, &parent, &found, error))
+      return false;
+    if (!found)
+      return true;
+    current = parent;
+  }
+}
+
+bool InvokeEventListeners(gossamer_v8_realm *realm,
+                          v8::Local<v8::Context> context,
+                          v8::Local<v8::Object> event_object,
+                          EventState *state, const WrapperKey &target,
+                          uint8_t phase, bool capture, uint64_t maximum_id,
+                          std::string *error) {
+  ListenerKey key{target, state->type};
+  auto found = realm->listeners.find(key);
+  if (found == realm->listeners.end())
+    return true;
+  std::vector<ListenerRecord *> snapshot;
+  snapshot.reserve(found->second.size());
+  for (const auto &listener : found->second) {
+    if (!listener->removed && listener->capture == capture &&
+        listener->id <= maximum_id)
+      snapshot.push_back(listener.get());
+  }
+  if (snapshot.empty())
+    return true;
+
+  state->phase = phase;
+  state->current_target = target;
+  state->has_current_target = true;
+  std::string wrapper_error;
+  v8::Local<v8::Object> current_target;
+  if (!GetOrCreateNodeWrapper(realm, context, target, &wrapper_error)
+           .ToLocal(&current_target)) {
+    *error = wrapper_error.empty() ? "V8 failed to wrap currentTarget"
+                                   : wrapper_error;
+    return false;
+  }
+  v8::Local<v8::Value> arguments[] = {event_object};
+  for (ListenerRecord *listener : snapshot) {
+    if (listener->removed)
+      continue;
+    if (listener->once &&
+        !RemoveListenerRecord(realm, key, listener, error))
+      return false;
+    state->in_passive_listener = listener->passive;
+    v8::TryCatch caught(realm->isolate);
+    v8::Local<v8::Value> result;
+    bool called = listener->callback.Get(realm->isolate)
+                      ->Call(context, current_target, 1, arguments)
+                      .ToLocal(&result);
+    state->in_passive_listener = false;
+    if (!called) {
+      *error = DescribeException(realm->isolate, context, caught);
+      return false;
+    }
+    if (state->immediate_stopped)
+      break;
+  }
+  return true;
+}
+
+void FinishEventDispatch(gossamer_v8_realm *realm, EventState *state) {
+  state->phase = kEventPhaseNone;
+  state->has_current_target = false;
+  state->current_target = WrapperKey{};
+  state->path.clear();
+  state->dispatching = false;
+  state->in_passive_listener = false;
+  state->immediate_stopped = false;
+  if (realm->dispatch_depth != 0)
+    --realm->dispatch_depth;
+  CleanupRemovedListeners(realm);
+}
+
+bool DispatchEventState(gossamer_v8_realm *realm,
+                        v8::Local<v8::Context> context,
+                        const WrapperKey &target,
+                        v8::Local<v8::Object> event_object,
+                        EventState *state, std::string *error) {
+  if (state->dispatching) {
+    *error = "Event is already being dispatched";
+    return false;
+  }
+  if (!BuildEventPath(realm, target, &state->path, error))
+    return false;
+  state->target = target;
+  state->has_target = true;
+  state->propagation_stopped = false;
+  state->immediate_stopped = false;
+  state->dispatching = true;
+  ++realm->dispatch_depth;
+  realm->events_dispatched.fetch_add(1, std::memory_order_relaxed);
+  uint64_t maximum_id = realm->next_listener - 1;
+  bool ok = true;
+
+  for (size_t index = state->path.size(); index > 1; --index) {
+    state->immediate_stopped = false;
+    if (!InvokeEventListeners(realm, context, event_object, state,
+                              state->path[index - 1], kEventPhaseCapturing,
+                              true, maximum_id, error)) {
+      ok = false;
+      break;
+    }
+    if (state->propagation_stopped)
+      break;
+  }
+
+  if (ok && !state->propagation_stopped) {
+    state->immediate_stopped = false;
+    ok = InvokeEventListeners(realm, context, event_object, state, target,
+                              kEventPhaseAtTarget, true, maximum_id, error);
+    if (ok && !state->immediate_stopped) {
+      ok = InvokeEventListeners(realm, context, event_object, state, target,
+                                kEventPhaseAtTarget, false, maximum_id, error);
+    }
+  }
+
+  if (ok && state->bubbles && !state->propagation_stopped) {
+    for (size_t index = 1; index < state->path.size(); ++index) {
+      state->immediate_stopped = false;
+      if (!InvokeEventListeners(realm, context, event_object, state,
+                                state->path[index], kEventPhaseBubbling, false,
+                                maximum_id, error)) {
+        ok = false;
+        break;
+      }
+      if (state->propagation_stopped)
+        break;
+    }
+  }
+
+  FinishEventDispatch(realm, state);
+  return ok;
+}
+
+void EventTargetDispatchEvent(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey target;
+  if (!ReadReceiverKey(isolate, info.This(), &target))
+    return;
+  if (info.Length() == 0 || !info[0]->IsObject()) {
+    ThrowError(isolate, "dispatchEvent requires an Event");
+    return;
+  }
+  v8::Local<v8::Object> event_object = info[0].As<v8::Object>();
+  EventState *state = ReadEventState(isolate, event_object);
+  if (state == nullptr)
+    return;
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  std::string error;
+  if (!DispatchEventState(realm, isolate->GetCurrentContext(), target,
+                          event_object, state, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  info.GetReturnValue().Set(!state->default_prevented);
+}
+
+v8::Local<v8::FunctionTemplate>
+EventTemplateForInterface(gossamer_v8_realm *realm,
+                          EventInterface interface) {
+  switch (interface) {
+  case EventInterface::MouseEvent:
+    return realm->mouse_event_template.Get(realm->isolate);
+  case EventInterface::PointerEvent:
+    return realm->pointer_event_template.Get(realm->isolate);
+  case EventInterface::KeyboardEvent:
+    return realm->keyboard_event_template.Get(realm->isolate);
+  case EventInterface::InputEvent:
+    return realm->input_event_template.Get(realm->isolate);
+  case EventInterface::FocusEvent:
+    return realm->focus_event_template.Get(realm->isolate);
+  case EventInterface::Event:
+  default:
+    return realm->event_template.Get(realm->isolate);
+  }
+}
+
+v8::MaybeLocal<v8::Object>
+NewEventObject(gossamer_v8_realm *realm, v8::Local<v8::Context> context,
+               std::unique_ptr<EventState> state) {
+  v8::Local<v8::Object> object;
+  if (!EventTemplateForInterface(realm, state->interface)
+           ->InstanceTemplate()
+           ->NewInstance(context)
+           .ToLocal(&object))
+    return {};
+  TrackEventObject(realm, object, state.release());
+  return object;
 }
 void QueueMicrotaskCallback(const v8::FunctionCallbackInfo<v8::Value> &info) {
   v8::Isolate *isolate = info.GetIsolate();
@@ -2218,6 +2972,24 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
       v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
   v8::Local<v8::FunctionTemplate> document_template =
       v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
+  auto new_event_template =
+      [isolate](EventInterface interface) {
+        return v8::FunctionTemplate::New(
+            isolate, EventConstructor,
+            v8::Integer::New(isolate, static_cast<int>(interface)));
+      };
+  v8::Local<v8::FunctionTemplate> event_template =
+      new_event_template(EventInterface::Event);
+  v8::Local<v8::FunctionTemplate> mouse_event_template =
+      new_event_template(EventInterface::MouseEvent);
+  v8::Local<v8::FunctionTemplate> pointer_event_template =
+      new_event_template(EventInterface::PointerEvent);
+  v8::Local<v8::FunctionTemplate> keyboard_event_template =
+      new_event_template(EventInterface::KeyboardEvent);
+  v8::Local<v8::FunctionTemplate> input_event_template =
+      new_event_template(EventInterface::InputEvent);
+  v8::Local<v8::FunctionTemplate> focus_event_template =
+      new_event_template(EventInterface::FocusEvent);
 
   event_target_template->SetClassName(
       v8::String::NewFromUtf8Literal(isolate, "EventTarget"));
@@ -2229,15 +3001,37 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   text_template->SetClassName(v8::String::NewFromUtf8Literal(isolate, "Text"));
   document_template->SetClassName(
       v8::String::NewFromUtf8Literal(isolate, "Document"));
+  event_template->SetClassName(
+      v8::String::NewFromUtf8Literal(isolate, "Event"));
+  mouse_event_template->SetClassName(
+      v8::String::NewFromUtf8Literal(isolate, "MouseEvent"));
+  pointer_event_template->SetClassName(
+      v8::String::NewFromUtf8Literal(isolate, "PointerEvent"));
+  keyboard_event_template->SetClassName(
+      v8::String::NewFromUtf8Literal(isolate, "KeyboardEvent"));
+  input_event_template->SetClassName(
+      v8::String::NewFromUtf8Literal(isolate, "InputEvent"));
+  focus_event_template->SetClassName(
+      v8::String::NewFromUtf8Literal(isolate, "FocusEvent"));
   node_template->Inherit(event_target_template);
   element_template->Inherit(node_template);
   html_element_template->Inherit(element_template);
   text_template->Inherit(node_template);
   document_template->Inherit(node_template);
+  mouse_event_template->Inherit(event_template);
+  pointer_event_template->Inherit(mouse_event_template);
+  keyboard_event_template->Inherit(event_template);
+  input_event_template->Inherit(event_template);
+  focus_event_template->Inherit(event_template);
   for (v8::Local<v8::FunctionTemplate> interface_template :
        {node_template, element_template, html_element_template, text_template,
         document_template}) {
     interface_template->InstanceTemplate()->SetInternalFieldCount(3);
+  }
+  for (v8::Local<v8::FunctionTemplate> interface_template :
+       {event_template, mouse_event_template, pointer_event_template,
+        keyboard_event_template, input_event_template, focus_event_template}) {
+    interface_template->InstanceTemplate()->SetInternalFieldCount(1);
   }
 
   v8::Local<v8::ObjectTemplate> event_target_prototype =
@@ -2248,6 +3042,104 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   event_target_prototype->Set(
       isolate, "removeEventListener",
       v8::FunctionTemplate::New(isolate, NodeRemoveEventListener));
+  event_target_prototype->Set(
+      isolate, "dispatchEvent",
+      v8::FunctionTemplate::New(isolate, EventTargetDispatchEvent));
+
+  auto install_event_surface =
+      [isolate](v8::Local<v8::ObjectTemplate> object) {
+        for (const char *name : {"type", "target", "currentTarget",
+                                 "eventPhase", "bubbles", "cancelable",
+                                 "composed", "defaultPrevented", "isTrusted",
+                                 "timeStamp", "relatedTarget"}) {
+          object->SetNativeDataProperty(
+              v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
+              EventPropertyGetter);
+        }
+        for (const char *name : {"cancelBubble", "returnValue"}) {
+          object->SetNativeDataProperty(
+              v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
+              EventPropertyGetter, EventPropertySetter);
+        }
+        object->Set(isolate, "stopPropagation",
+                    v8::FunctionTemplate::New(isolate,
+                                              EventStopPropagation));
+        object->Set(isolate, "stopImmediatePropagation",
+                    v8::FunctionTemplate::New(
+                        isolate, EventStopImmediatePropagation));
+        object->Set(isolate, "preventDefault",
+                    v8::FunctionTemplate::New(isolate, EventPreventDefault));
+        object->Set(isolate, "composedPath",
+                    v8::FunctionTemplate::New(isolate, EventComposedPath));
+      };
+  auto install_mouse_event_surface =
+      [isolate](v8::Local<v8::ObjectTemplate> object) {
+        for (const char *name : {"clientX", "clientY", "button", "buttons",
+                                 "altKey", "ctrlKey", "metaKey",
+                                 "shiftKey"}) {
+          object->SetNativeDataProperty(
+              v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
+              EventPropertyGetter);
+        }
+      };
+  auto install_pointer_event_surface =
+      [isolate](v8::Local<v8::ObjectTemplate> object) {
+        for (const char *name : {"pointerId", "pointerType", "isPrimary"}) {
+          object->SetNativeDataProperty(
+              v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
+              EventPropertyGetter);
+        }
+      };
+  auto install_keyboard_event_surface =
+      [isolate](v8::Local<v8::ObjectTemplate> object) {
+        for (const char *name : {"key", "code", "repeat", "isComposing",
+                                 "altKey", "ctrlKey", "metaKey",
+                                 "shiftKey"}) {
+          object->SetNativeDataProperty(
+              v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
+              EventPropertyGetter);
+        }
+      };
+  auto install_input_event_surface =
+      [isolate](v8::Local<v8::ObjectTemplate> object) {
+        for (const char *name : {"data", "inputType", "isComposing"}) {
+          object->SetNativeDataProperty(
+              v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
+              EventPropertyGetter);
+        }
+      };
+
+  install_event_surface(event_template->PrototypeTemplate());
+  install_mouse_event_surface(mouse_event_template->PrototypeTemplate());
+  install_pointer_event_surface(pointer_event_template->PrototypeTemplate());
+  install_keyboard_event_surface(keyboard_event_template->PrototypeTemplate());
+  install_input_event_surface(input_event_template->PrototypeTemplate());
+  for (v8::Local<v8::FunctionTemplate> interface_template :
+       {event_template, mouse_event_template, pointer_event_template,
+        keyboard_event_template, input_event_template, focus_event_template}) {
+    install_event_surface(interface_template->InstanceTemplate());
+  }
+  for (v8::Local<v8::FunctionTemplate> interface_template :
+       {mouse_event_template, pointer_event_template}) {
+    install_mouse_event_surface(interface_template->InstanceTemplate());
+  }
+  install_pointer_event_surface(pointer_event_template->InstanceTemplate());
+  install_keyboard_event_surface(keyboard_event_template->InstanceTemplate());
+  install_input_event_surface(input_event_template->InstanceTemplate());
+  for (const auto &constant :
+       {std::pair<const char *, int>{"NONE", kEventPhaseNone},
+        {"CAPTURING_PHASE", kEventPhaseCapturing},
+        {"AT_TARGET", kEventPhaseAtTarget},
+        {"BUBBLING_PHASE", kEventPhaseBubbling}}) {
+    event_template->Set(
+        v8::String::NewFromUtf8(isolate, constant.first).ToLocalChecked(),
+        v8::Integer::New(isolate, constant.second),
+        static_cast<v8::PropertyAttribute>(v8::ReadOnly | v8::DontDelete));
+    event_template->PrototypeTemplate()->Set(
+        v8::String::NewFromUtf8(isolate, constant.first).ToLocalChecked(),
+        v8::Integer::New(isolate, constant.second),
+        static_cast<v8::PropertyAttribute>(v8::ReadOnly | v8::DontDelete));
+  }
 
   v8::Local<v8::ObjectTemplate> node_prototype =
       node_template->PrototypeTemplate();
@@ -2463,6 +3355,12 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   realm->html_element_template.Reset(isolate, html_element_template);
   realm->text_template.Reset(isolate, text_template);
   realm->document_template.Reset(isolate, document_template);
+  realm->event_template.Reset(isolate, event_template);
+  realm->mouse_event_template.Reset(isolate, mouse_event_template);
+  realm->pointer_event_template.Reset(isolate, pointer_event_template);
+  realm->keyboard_event_template.Reset(isolate, keyboard_event_template);
+  realm->input_event_template.Reset(isolate, input_event_template);
+  realm->focus_event_template.Reset(isolate, focus_event_template);
 
   v8::Local<v8::ObjectTemplate> style_template =
       v8::ObjectTemplate::New(isolate);
@@ -2532,6 +3430,12 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
                    .FromMaybe(false);
       };
   return expose_interface("EventTarget", event_target_template) &&
+         expose_interface("Event", event_template) &&
+         expose_interface("MouseEvent", mouse_event_template) &&
+         expose_interface("PointerEvent", pointer_event_template) &&
+         expose_interface("KeyboardEvent", keyboard_event_template) &&
+         expose_interface("InputEvent", input_event_template) &&
+         expose_interface("FocusEvent", focus_event_template) &&
          expose_interface("Node", node_template) &&
          expose_interface("Element", element_template) &&
          expose_interface("HTMLElement", html_element_template) &&
@@ -2562,6 +3466,142 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
              .FromMaybe(false);
 }
 
+bool ConfigureNativeEvent(const gossamer_v8_input_event *input,
+                          EventState *state, std::string *error) {
+  if (input == nullptr) {
+    *error = "V8 received a null browser event";
+    return false;
+  }
+  state->trusted = true;
+  state->timestamp = static_cast<double>(MonotonicNanos()) / 1000000.0;
+  switch (input->type) {
+  case 1:
+    state->type = "click";
+    state->interface = EventInterface::MouseEvent;
+    state->bubbles = true;
+    state->cancelable = true;
+    state->composed = true;
+    break;
+  case 2:
+    state->type = "pointerdown";
+    state->interface = EventInterface::PointerEvent;
+    state->bubbles = state->cancelable = state->composed = true;
+    break;
+  case 3:
+    state->type = "pointerup";
+    state->interface = EventInterface::PointerEvent;
+    state->bubbles = state->cancelable = state->composed = true;
+    break;
+  case 4:
+    state->type = "pointermove";
+    state->interface = EventInterface::PointerEvent;
+    state->bubbles = state->cancelable = state->composed = true;
+    break;
+  case 5:
+    state->type = "pointercancel";
+    state->interface = EventInterface::PointerEvent;
+    state->bubbles = state->composed = true;
+    break;
+  case 6:
+    state->type = "pointerover";
+    state->interface = EventInterface::PointerEvent;
+    state->bubbles = state->cancelable = state->composed = true;
+    break;
+  case 7:
+    state->type = "pointerout";
+    state->interface = EventInterface::PointerEvent;
+    state->bubbles = state->cancelable = state->composed = true;
+    break;
+  case 8:
+    state->type = "pointerenter";
+    state->interface = EventInterface::PointerEvent;
+    break;
+  case 9:
+    state->type = "pointerleave";
+    state->interface = EventInterface::PointerEvent;
+    break;
+  case 10:
+    state->type = "keydown";
+    state->interface = EventInterface::KeyboardEvent;
+    state->bubbles = state->cancelable = state->composed = true;
+    break;
+  case 11:
+    state->type = "keyup";
+    state->interface = EventInterface::KeyboardEvent;
+    state->bubbles = state->cancelable = state->composed = true;
+    break;
+  case 12:
+    state->type = "beforeinput";
+    state->interface = EventInterface::InputEvent;
+    state->bubbles = state->cancelable = state->composed = true;
+    break;
+  case 13:
+    state->type = "input";
+    state->interface = EventInterface::InputEvent;
+    state->bubbles = state->composed = true;
+    break;
+  case 14:
+    state->type = "focus";
+    state->interface = EventInterface::FocusEvent;
+    state->composed = true;
+    break;
+  case 15:
+    state->type = "blur";
+    state->interface = EventInterface::FocusEvent;
+    state->composed = true;
+    break;
+  case 16:
+    state->type = "focusin";
+    state->interface = EventInterface::FocusEvent;
+    state->bubbles = state->composed = true;
+    break;
+  case 17:
+    state->type = "focusout";
+    state->interface = EventInterface::FocusEvent;
+    state->bubbles = state->composed = true;
+    break;
+  case 18:
+    state->type = "change";
+    state->interface = EventInterface::Event;
+    state->bubbles = true;
+    break;
+  default:
+    *error = "V8 received an unsupported browser event type";
+    return false;
+  }
+  auto assign = [](const char *data, size_t length, std::string *output) {
+    if (data == nullptr) {
+      output->clear();
+      return;
+    }
+    output->assign(data, length);
+  };
+  state->client_x = input->x;
+  state->client_y = input->y;
+  state->button = input->button;
+  state->buttons = input->buttons;
+  state->pointer_id = input->pointer_id;
+  state->is_primary = input->is_primary != 0;
+  state->repeat = input->repeat != 0;
+  state->is_composing = input->is_composing != 0;
+  state->alt_key = input->alt_key != 0;
+  state->ctrl_key = input->ctrl_key != 0;
+  state->meta_key = input->meta_key != 0;
+  state->shift_key = input->shift_key != 0;
+  assign(input->pointer_type, input->pointer_type_length,
+         &state->pointer_type);
+  assign(input->key, input->key_length, &state->key);
+  assign(input->code, input->code_length, &state->code);
+  assign(input->data, input->data_length, &state->data);
+  assign(input->input_type, input->input_type_length, &state->input_type);
+  if (input->related_document != 0 && input->related_node != 0) {
+    state->has_related_target = true;
+    state->related_target =
+        WrapperKey{input->related_document, input->related_node};
+  }
+  return true;
+}
+
 void ClearRealmHandles(gossamer_v8_realm *realm) {
   for (auto &wrapper : realm->wrappers) {
     if (wrapper.second.object.IsWeak())
@@ -2573,16 +3613,30 @@ void ClearRealmHandles(gossamer_v8_realm *realm) {
   realm->wrappers.clear();
   for (auto &listeners : realm->listeners) {
     for (auto &listener : listeners.second)
-      listener.Reset();
+      listener->callback.Reset();
   }
   realm->listeners.clear();
   realm->event_listener_count = 0;
+  for (EventWeakData *event : realm->events) {
+    if (event->object.IsWeak())
+      event->object.ClearWeak<EventWeakData>();
+    event->object.Reset();
+    delete event->state;
+    delete event;
+  }
+  realm->events.clear();
   for (auto &callback : realm->callbacks)
     callback.second.Reset();
   realm->callbacks.clear();
   realm->timer_callbacks.clear();
   realm->callback_timers.clear();
   realm->event_target_template.Reset();
+  realm->event_template.Reset();
+  realm->mouse_event_template.Reset();
+  realm->pointer_event_template.Reset();
+  realm->keyboard_event_template.Reset();
+  realm->input_event_template.Reset();
+  realm->focus_event_template.Reset();
   realm->node_template.Reset();
   realm->element_template.Reset();
   realm->html_element_template.Reset();
@@ -2754,17 +3808,17 @@ gossamer_v8_realm_evaluate(gossamer_v8_realm *realm,
 
 extern "C" int gossamer_v8_realm_dispatch_event(gossamer_v8_realm *realm,
                                                 const gossamer_v8_host *host,
-                                                uint8_t event_type,
-                                                uint64_t document,
-                                                uint32_t node, double, double,
-                                                int32_t, char **error_out) {
+                                                const gossamer_v8_input_event *input,
+                                                char **error_out) {
   if (!RequireRealm(realm, error_out))
     return 0;
   std::lock_guard<std::mutex> guard(realm->mutex);
   if (!RequireRealm(realm, error_out))
     return 0;
-  if (event_type != kClickEvent) {
-    SetError(error_out, "V8 received an unsupported browser event type");
+  auto state = std::make_unique<EventState>();
+  std::string error;
+  if (!ConfigureNativeEvent(input, state.get(), &error)) {
+    SetError(error_out, error);
     return 0;
   }
 
@@ -2774,26 +3828,21 @@ extern "C" int gossamer_v8_realm_dispatch_event(gossamer_v8_realm *realm,
   v8::Local<v8::Context> context = realm->context.Get(realm->isolate);
   v8::Context::Scope context_scope(context);
   HostScope host_scope(realm, host);
-  std::string binding_error;
-  if (!EnsureDocumentBinding(realm, context, &binding_error)) {
-    SetError(error_out, binding_error);
+  if (!EnsureDocumentBinding(realm, context, &error)) {
+    SetError(error_out, error);
     return 0;
   }
-  auto found = realm->listeners.find(
-      ListenerKey{WrapperKey{document, node}, event_type});
-  realm->events_dispatched.fetch_add(1, std::memory_order_relaxed);
-  if (found == realm->listeners.end())
-    return 1;
-
-  for (const auto &listener : found->second) {
-    uint64_t callback =
-        StoreOneShotCallback(realm, listener.Get(realm->isolate));
-    std::string error;
-    if (!QueuePublishedCallback(realm, callback, false, &error)) {
-      RemoveCallback(realm, callback);
-      SetError(error_out, error);
-      return 0;
-    }
+  v8::Local<v8::Object> event_object;
+  EventState *event_state = state.get();
+  if (!NewEventObject(realm, context, std::move(state)).ToLocal(&event_object)) {
+    SetError(error_out, "V8 failed to allocate a browser Event");
+    return 0;
+  }
+  WrapperKey target{input->document, input->node};
+  if (!DispatchEventState(realm, context, target, event_object, event_state,
+                          &error)) {
+    SetError(error_out, error);
+    return 0;
   }
   return 1;
 }
