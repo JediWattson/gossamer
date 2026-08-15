@@ -141,6 +141,16 @@ engine as Map. Adding an equivalent value is idempotent and preserves the
 original Ref and position. Delete and Clear unlink removed members; Copy and
 Promote preserve order and semantic equality.
 
+### Date
+
+Native Dates store mutable TimeClip milliseconds. Finite inputs within
+`+-8.64e15` are truncated toward zero; non-finite or out-of-range inputs become
+the invalid-date `NaN` value. Copy and Promote snapshot the numeric value, and
+published Dates reject mutation.
+
+Calendar calculations, parsing, formatting, and time zones remain language and
+host-library concerns.
+
 ## Deliberate boundaries
 
 These native payloads are not yet ECMAScript implementations. String

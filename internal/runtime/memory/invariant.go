@@ -42,6 +42,7 @@ func (store *Store) CheckInvariants() error {
 	liveTypedArrays := uint64(0)
 	liveMaps := uint64(0)
 	liveSets := uint64(0)
+	liveDates := uint64(0)
 	liveBytes := uint64(0)
 	liveRegions := uint64(0)
 	for owner, claim := range store.ownerClaims {
@@ -377,6 +378,15 @@ func (store *Store) CheckInvariants() error {
 						}
 					}
 				}
+			case HeapDate:
+				liveDates++
+				if slotHasOtherPayload(slot, HeapDate) {
+					return invariantError("Date %s retains another typed payload", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
+				}
+				milliseconds := slot.Date.Milliseconds
+				if !math.IsNaN(milliseconds) && (math.IsInf(milliseconds, 0) || math.Abs(milliseconds) > maxDateMilliseconds || milliseconds != math.Trunc(milliseconds)) {
+					return invariantError("Date %s has unclipped milliseconds %v", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, milliseconds)
+				}
 			default:
 				return invariantError("R%d occupied slot %d has unknown heap kind %d", id, index, slot.Kind)
 			}
@@ -447,8 +457,8 @@ func (store *Store) CheckInvariants() error {
 			return invariantError("ledger object %d edges %v, want %v", object, snapshot.Edges, wantTargets)
 		}
 	}
-	if store.stats.LiveSlots != liveSlots || store.stats.LiveCells != liveCells || store.stats.LiveStrings != liveStrings || store.stats.LiveObjects != liveObjects || store.stats.LiveArrays != liveArrays || store.stats.LiveContexts != liveContexts || store.stats.LiveFunctions != liveFunctions || store.stats.LivePromises != livePromises || store.stats.LiveBigInts != liveBigInts || store.stats.LiveSymbols != liveSymbols || store.stats.LiveArrayBuffers != liveArrayBuffers || store.stats.LiveTypedArrays != liveTypedArrays || store.stats.LiveMaps != liveMaps || store.stats.LiveSets != liveSets || store.stats.LiveBytes != liveBytes || store.stats.LiveRegions != liveRegions {
-		return invariantError("stats slots/cells/strings/objects/arrays/contexts/functions/promises/bigints/symbols/buffers/views/maps/sets/bytes/regions = %d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d, derived %d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d", store.stats.LiveSlots, store.stats.LiveCells, store.stats.LiveStrings, store.stats.LiveObjects, store.stats.LiveArrays, store.stats.LiveContexts, store.stats.LiveFunctions, store.stats.LivePromises, store.stats.LiveBigInts, store.stats.LiveSymbols, store.stats.LiveArrayBuffers, store.stats.LiveTypedArrays, store.stats.LiveMaps, store.stats.LiveSets, store.stats.LiveBytes, store.stats.LiveRegions, liveSlots, liveCells, liveStrings, liveObjects, liveArrays, liveContexts, liveFunctions, livePromises, liveBigInts, liveSymbols, liveArrayBuffers, liveTypedArrays, liveMaps, liveSets, liveBytes, liveRegions)
+	if store.stats.LiveSlots != liveSlots || store.stats.LiveCells != liveCells || store.stats.LiveStrings != liveStrings || store.stats.LiveObjects != liveObjects || store.stats.LiveArrays != liveArrays || store.stats.LiveContexts != liveContexts || store.stats.LiveFunctions != liveFunctions || store.stats.LivePromises != livePromises || store.stats.LiveBigInts != liveBigInts || store.stats.LiveSymbols != liveSymbols || store.stats.LiveArrayBuffers != liveArrayBuffers || store.stats.LiveTypedArrays != liveTypedArrays || store.stats.LiveMaps != liveMaps || store.stats.LiveSets != liveSets || store.stats.LiveDates != liveDates || store.stats.LiveBytes != liveBytes || store.stats.LiveRegions != liveRegions {
+		return invariantError("stats slots/cells/strings/objects/arrays/contexts/functions/promises/bigints/symbols/buffers/views/maps/sets/dates/bytes/regions = %d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d, derived %d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d", store.stats.LiveSlots, store.stats.LiveCells, store.stats.LiveStrings, store.stats.LiveObjects, store.stats.LiveArrays, store.stats.LiveContexts, store.stats.LiveFunctions, store.stats.LivePromises, store.stats.LiveBigInts, store.stats.LiveSymbols, store.stats.LiveArrayBuffers, store.stats.LiveTypedArrays, store.stats.LiveMaps, store.stats.LiveSets, store.stats.LiveDates, store.stats.LiveBytes, store.stats.LiveRegions, liveSlots, liveCells, liveStrings, liveObjects, liveArrays, liveContexts, liveFunctions, livePromises, liveBigInts, liveSymbols, liveArrayBuffers, liveTypedArrays, liveMaps, liveSets, liveDates, liveBytes, liveRegions)
 	}
 	if store.closed && (liveSlots != 0 || liveRegions != 0) {
 		return invariantError("closed store retains %d slots in %d regions", liveSlots, liveRegions)
@@ -550,6 +560,9 @@ func slotHasOtherPayload(slot *Slot, kind HeapKind) bool {
 		return true
 	}
 	if kind != HeapSet && len(slot.Set.Values) != 0 {
+		return true
+	}
+	if kind != HeapDate && slot.Date.Milliseconds != 0 {
 		return true
 	}
 	return false

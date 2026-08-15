@@ -456,6 +456,27 @@ func (context *TaskContext) SetClear(ref memory.Ref) error {
 	return context.Realm.store.SetClear(context.Owner, ref)
 }
 
+func (context *TaskContext) NewDate(milliseconds float64) (memory.Ref, error) {
+	if context == nil || context.Realm == nil {
+		return memory.Ref{}, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.AllocDate(context.Owner, context.MemoryRegion, milliseconds)
+}
+
+func (context *TaskContext) DerefDate(ref memory.Ref) (memory.Date, error) {
+	if context == nil || context.Realm == nil {
+		return memory.Date{}, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.DerefDate(context.Owner, ref)
+}
+
+func (context *TaskContext) SetDateTime(ref memory.Ref, milliseconds float64) error {
+	if context == nil || context.Realm == nil {
+		return fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.SetDateTime(context.Owner, ref, milliseconds)
+}
+
 func (context *TaskContext) Set(ref memory.Ref, field int, value memory.Value) error {
 	if context == nil || context.Realm == nil {
 		return fmt.Errorf("runtime: nil task context")

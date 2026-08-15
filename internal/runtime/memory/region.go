@@ -41,6 +41,7 @@ const (
 	HeapTypedArray
 	HeapMap
 	HeapSet
+	HeapDate
 )
 
 // StringObject is the first real typed native-heap payload. Text is immutable;
@@ -66,6 +67,7 @@ type Slot struct {
 	TypedArray  TypedArray
 	Map         Map
 	Set         Set
+	Date        Date
 	Occupied    bool
 
 	object ownership.ObjectID
@@ -108,6 +110,7 @@ func cloneSlot(slot Slot) Slot {
 		TypedArray:  cloneTypedArray(slot.TypedArray),
 		Map:         cloneMap(slot.Map),
 		Set:         cloneSet(slot.Set),
+		Date:        slot.Date,
 		Occupied:    slot.Occupied,
 	}
 }
@@ -184,7 +187,7 @@ func slotReferences(slot *Slot) []Value {
 }
 
 func slotStorageEmpty(slot *Slot) bool {
-	return slot != nil && slot.Kind == HeapInvalid && len(slot.Cell.Fields) == 0 && slot.String.Text == "" && slot.Object.Prototype == (Value{}) && len(slot.Object.Properties) == 0 && slot.Array.Length == 0 && len(slot.Array.Elements) == 0 && slot.Context.Parent == (Value{}) && len(slot.Context.Bindings) == 0 && slot.Function.Kind == 0 && slot.Function.Name == (Value{}) && slot.Function.Environment == (Value{}) && slot.Function.Arity == 0 && len(slot.Function.Code) == 0 && len(slot.Function.Constants) == 0 && slot.Function.NativeID == 0 && slot.Promise.State == PromisePending && slot.Promise.Result == (Value{}) && len(slot.Promise.Reactions) == 0 && !slot.Promise.Handled && !slot.BigInt.Negative && len(slot.BigInt.Magnitude) == 0 && slot.Symbol.ID == 0 && slot.Symbol.Description == (Value{}) && len(slot.ArrayBuffer.Bytes) == 0 && !slot.ArrayBuffer.Detached && slot.TypedArray == (TypedArray{}) && len(slot.Map.Entries) == 0 && len(slot.Set.Values) == 0
+	return slot != nil && slot.Kind == HeapInvalid && len(slot.Cell.Fields) == 0 && slot.String.Text == "" && slot.Object.Prototype == (Value{}) && len(slot.Object.Properties) == 0 && slot.Array.Length == 0 && len(slot.Array.Elements) == 0 && slot.Context.Parent == (Value{}) && len(slot.Context.Bindings) == 0 && slot.Function.Kind == 0 && slot.Function.Name == (Value{}) && slot.Function.Environment == (Value{}) && slot.Function.Arity == 0 && len(slot.Function.Code) == 0 && len(slot.Function.Constants) == 0 && slot.Function.NativeID == 0 && slot.Promise.State == PromisePending && slot.Promise.Result == (Value{}) && len(slot.Promise.Reactions) == 0 && !slot.Promise.Handled && !slot.BigInt.Negative && len(slot.BigInt.Magnitude) == 0 && slot.Symbol.ID == 0 && slot.Symbol.Description == (Value{}) && len(slot.ArrayBuffer.Bytes) == 0 && !slot.ArrayBuffer.Detached && slot.TypedArray == (TypedArray{}) && len(slot.Map.Entries) == 0 && len(slot.Set.Values) == 0 && slot.Date.Milliseconds == 0
 }
 
 func clearSlotPayload(slot *Slot) {
@@ -202,6 +205,7 @@ func clearSlotPayload(slot *Slot) {
 	slot.TypedArray = TypedArray{}
 	slot.Map = Map{}
 	slot.Set = Set{}
+	slot.Date = Date{}
 }
 
 func initializeSlotPayload(slot *Slot, kind HeapKind) {

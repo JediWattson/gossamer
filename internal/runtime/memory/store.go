@@ -65,6 +65,7 @@ type Stats struct {
 	LiveTypedArrays    uint64
 	LiveMaps           uint64
 	LiveSets           uint64
+	LiveDates          uint64
 	LiveBytes          uint64
 	LiveRegions        uint64
 	BulkRegionReleases uint64
@@ -107,6 +108,8 @@ func (kind HeapKind) String() string {
 		return "Map"
 	case HeapSet:
 		return "Set"
+	case HeapDate:
+		return "Date"
 	default:
 		return fmt.Sprintf("HeapKind(%d)", kind)
 	}
@@ -236,7 +239,7 @@ func (store *Store) allocLocked(owner ownership.OwnerID, regionID RegionID, inte
 }
 
 func (store *Store) allocKindLocked(owner ownership.OwnerID, regionID RegionID, kind HeapKind, internal bool) (Ref, error) {
-	if kind < HeapCell || kind > HeapSet {
+	if kind < HeapCell || kind > HeapDate {
 		return Ref{}, fmt.Errorf("%w: heap kind %d", ErrTypeMismatch, kind)
 	}
 	region, err := store.mutableRegionLocked(owner, regionID, internal)
@@ -682,6 +685,8 @@ func (store *Store) recordKindAllocationLocked(kind HeapKind, bytes uint64) {
 		store.stats.LiveMaps++
 	case HeapSet:
 		store.stats.LiveSets++
+	case HeapDate:
+		store.stats.LiveDates++
 	}
 	store.stats.LiveBytes += bytes
 }
@@ -721,6 +726,8 @@ func (store *Store) recordKindFreeLocked(slot *Slot) {
 		store.stats.LiveMaps--
 	case HeapSet:
 		store.stats.LiveSets--
+	case HeapDate:
+		store.stats.LiveDates--
 	}
 }
 
@@ -1325,6 +1332,11 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 					_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
 					return nil, err
 				}
+			}
+		case HeapDate:
+			if err := store.setDateTimeLocked(to, copyRef, sourceSlot.Date.Milliseconds, true); err != nil {
+				_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
+				return nil, err
 			}
 		default:
 			_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
