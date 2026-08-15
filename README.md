@@ -88,8 +88,10 @@ region edges, and private refs can cross Realm queues only through explicit
 Transfer, Publish, or Copy operations. Task and microtask queues use the same
 Ref boundary. Explicit promotion copies only a reachable subgraph into
 immutable shared storage, allowing the original temporary region to be
-released. Immutable native Strings are the first payload whose bytes follow
-region lifetime. This remains independent from JavaScript semantics, garbage
+released. The first typed ladder now covers Strings, Objects, Arrays, lexical
+Contexts, Function descriptors, Promises, BigInts, Symbols, ArrayBuffers,
+TypedArrays, Maps, Sets, Dates, RegExps, and Errors. These remain storage and
+ownership primitives independent from JavaScript execution semantics, garbage
 collection, and V8 internals. See
 [`docs/phase-0-kernel.md`](docs/phase-0-kernel.md) for the invariants and
 [`docs/native-heap-types.md`](docs/native-heap-types.md) for the typed payload
