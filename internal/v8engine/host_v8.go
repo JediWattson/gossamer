@@ -991,6 +991,92 @@ func goGossamerV8HostCloneNode(
 	}, executionID)
 }
 
+//export goGossamerV8HostTemplateContent
+func goGossamerV8HostTemplateContent(
+	executionID C.uint64_t,
+	document C.uint64_t,
+	node C.uint32_t,
+	contentDocumentOut *C.uint64_t,
+	contentNodeOut *C.uint32_t,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domElementHost(host)
+		if err != nil {
+			return err
+		}
+		content, err := domHost.TemplateContent(browserNodeHandle(document, node))
+		if err != nil {
+			return err
+		}
+		writeNodeHandle(content, contentDocumentOut, contentNodeOut)
+		return nil
+	}, executionID)
+}
+
+//export goGossamerV8HostSplitText
+func goGossamerV8HostSplitText(
+	executionID C.uint64_t,
+	document C.uint64_t,
+	node C.uint32_t,
+	offset C.int32_t,
+	splitDocumentOut *C.uint64_t,
+	splitNodeOut *C.uint32_t,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domElementHost(host)
+		if err != nil {
+			return err
+		}
+		split, err := domHost.SplitText(browserNodeHandle(document, node), int(offset))
+		if err != nil {
+			return err
+		}
+		writeNodeHandle(split, splitDocumentOut, splitNodeOut)
+		return nil
+	}, executionID)
+}
+
+//export goGossamerV8HostNormalizeNode
+func goGossamerV8HostNormalizeNode(
+	executionID C.uint64_t,
+	document C.uint64_t,
+	node C.uint32_t,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domElementHost(host)
+		if err != nil {
+			return err
+		}
+		return domHost.Normalize(browserNodeHandle(document, node))
+	}, executionID)
+}
+
+//export goGossamerV8HostAdoptNode
+func goGossamerV8HostAdoptNode(
+	executionID C.uint64_t,
+	document C.uint64_t,
+	node C.uint32_t,
+	adoptedDocumentOut *C.uint64_t,
+	adoptedNodeOut *C.uint32_t,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domElementHost(host)
+		if err != nil {
+			return err
+		}
+		adopted, err := domHost.AdoptNode(browserNodeHandle(document, node))
+		if err != nil {
+			return err
+		}
+		writeNodeHandle(adopted, adoptedDocumentOut, adoptedNodeOut)
+		return nil
+	}, executionID)
+}
+
 //export goGossamerV8HostInnerHTML
 func goGossamerV8HostInnerHTML(
 	executionID C.uint64_t,

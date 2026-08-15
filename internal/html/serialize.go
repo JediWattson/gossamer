@@ -73,7 +73,11 @@ func serializeNode(output *strings.Builder, node *dom.Node, rawText bool) {
 			return
 		}
 		raw := node.NamespaceURI == dom.HTMLNamespace && isRawTextElement(node.Data)
-		for _, child := range node.Children {
+		children := node.Children
+		if node.NamespaceURI == dom.HTMLNamespace && node.Data == "template" && node.TemplateContent != nil {
+			children = node.TemplateContent.Children
+		}
+		for _, child := range children {
 			serializeNode(output, child, raw)
 		}
 		output.WriteString("</")

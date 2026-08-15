@@ -677,6 +677,54 @@ func (host *taskHost) CloneNode(handle NodeHandle, deep bool) (NodeHandle, error
 	return NodeHandle{Document: host.generation, Node: clone}, nil
 }
 
+func (host *taskHost) TemplateContent(handle NodeHandle) (NodeHandle, error) {
+	host.page.mutex.Lock()
+	defer host.page.mutex.Unlock()
+	if err := host.validateHandleLocked(handle); err != nil {
+		return NodeHandle{}, err
+	}
+	content, err := host.page.document.TemplateContent(handle.Node)
+	if err != nil {
+		return NodeHandle{}, err
+	}
+	if err := host.page.nodeLifetimes.sync(host.task); err != nil {
+		return NodeHandle{}, err
+	}
+	return NodeHandle{Document: host.generation, Node: content}, nil
+}
+
+func (host *taskHost) SplitText(handle NodeHandle, offset int) (NodeHandle, error) {
+	var split dom.NodeID
+	err := host.mutateNodes(handle, NodeHandle{}, NodeHandle{}, func() error {
+		var err error
+		split, err = host.page.document.SplitText(handle.Node, offset)
+		return err
+	})
+	if err != nil {
+		return NodeHandle{}, err
+	}
+	return NodeHandle{Document: host.generation, Node: split}, nil
+}
+
+func (host *taskHost) Normalize(handle NodeHandle) error {
+	return host.mutateNodes(handle, NodeHandle{}, NodeHandle{}, func() error {
+		return host.page.document.Normalize(handle.Node)
+	})
+}
+
+func (host *taskHost) AdoptNode(handle NodeHandle) (NodeHandle, error) {
+	var adopted dom.NodeID
+	err := host.mutateNodes(handle, NodeHandle{}, NodeHandle{}, func() error {
+		var err error
+		adopted, err = host.page.document.AdoptNode(handle.Node)
+		return err
+	})
+	if err != nil {
+		return NodeHandle{}, err
+	}
+	return NodeHandle{Document: host.generation, Node: adopted}, nil
+}
+
 func (host *taskHost) InnerHTML(handle NodeHandle) (string, error) {
 	host.page.mutex.RLock()
 	defer host.page.mutex.RUnlock()
@@ -689,6 +737,9 @@ func (host *taskHost) InnerHTML(handle NodeHandle) (string, error) {
 	}
 	if node.Type != dom.ElementNode {
 		return "", fmt.Errorf("%w: innerHTML target is not an element", dom.ErrWrongNodeKind)
+	}
+	if node.TemplateContent != nil {
+		node = node.TemplateContent
 	}
 	return htmlparser.SerializeChildren(node), nil
 }
@@ -705,13 +756,22 @@ func (host *taskHost) SetInnerHTML(handle NodeHandle, source string) error {
 		return fmt.Errorf("%w: innerHTML target is not an element", dom.ErrWrongNodeKind)
 	}
 	contextName := node.Data
+	targetID := handle.Node
+	if node.TemplateContent != nil {
+		contentID, contentErr := host.page.document.TemplateContent(handle.Node)
+		if contentErr != nil {
+			host.page.mutex.RUnlock()
+			return contentErr
+		}
+		targetID = contentID
+	}
 	host.page.mutex.RUnlock()
 	fragment, err := htmlparser.ParseFragment(strings.NewReader(source), contextName)
 	if err != nil {
 		return err
 	}
 	return host.mutateNodes(handle, NodeHandle{}, NodeHandle{}, func() error {
-		return host.page.document.ReplaceChildrenFromFragment(handle.Node, fragment)
+		return host.page.document.ReplaceChildrenFromFragment(targetID, fragment)
 	})
 }
 

@@ -238,8 +238,9 @@ func (view ReadView) Resolve(id NodeID) (*Node, bool) {
 }
 
 // IdentitySnapshot is the stable-ID graph shape needed by the browser's
-// semantic ownership ledger. Parent is zero for the document root and for
-// detached subtree roots.
+// semantic ownership ledger. Parent follows DOM parentage plus non-DOM
+// ownership edges such as an HTMLTemplateElement retaining its content
+// fragment. It is zero for the document root and detached ownership roots.
 type IdentitySnapshot struct {
 	ID     NodeID
 	Parent NodeID
@@ -378,6 +379,12 @@ func (document *Document) IdentitySnapshots() []IdentitySnapshot {
 	}
 	document.store.mutex.RLock()
 	defer document.store.mutex.RUnlock()
+	semanticParents := make(map[*Node]*Node)
+	for _, node := range document.store.nodes {
+		if node != nil && node.TemplateContent != nil {
+			semanticParents[node.TemplateContent] = node
+		}
+	}
 	result := make([]IdentitySnapshot, 0, len(document.store.nodes))
 	for index, node := range document.store.nodes {
 		if node == nil {
@@ -386,6 +393,8 @@ func (document *Document) IdentitySnapshots() []IdentitySnapshot {
 		parent := InvalidNodeID
 		if node.Parent != nil {
 			parent = document.store.ids[node.Parent]
+		} else if semanticParent := semanticParents[node]; semanticParent != nil {
+			parent = document.store.ids[semanticParent]
 		}
 		result = append(result, IdentitySnapshot{ID: NodeID(index + 1), Parent: parent})
 	}
@@ -573,6 +582,14 @@ func (document *Document) CloneNode(id NodeID, deep bool) (NodeID, error) {
 		if node.Control != nil {
 			state := *node.Control
 			copy.Control = &state
+		}
+		if node.TemplateContent != nil {
+			copy.TemplateContent = &Node{Type: DocumentFragmentNode}
+			if deep {
+				for _, child := range node.TemplateContent.Children {
+					copy.TemplateContent.AppendChild(clone(child))
+				}
+			}
 		}
 		if deep {
 			for _, child := range node.Children {
@@ -1155,6 +1172,14 @@ func collectSubtree(root *Node) ([]*Node, error) {
 				return fmt.Errorf("%w: inconsistent parent link", ErrInvalidTree)
 			}
 			if err := visit(child); err != nil {
+				return err
+			}
+		}
+		if node.TemplateContent != nil {
+			if node.TemplateContent.Parent != nil {
+				return fmt.Errorf("%w: template content has a parent", ErrInvalidTree)
+			}
+			if err := visit(node.TemplateContent); err != nil {
 				return err
 			}
 		}

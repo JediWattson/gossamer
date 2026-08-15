@@ -25,6 +25,39 @@ func TestParseFragmentBuildsDetachedChildren(t *testing.T) {
 	}
 }
 
+func TestTemplateChildrenUseInertContentFragment(t *testing.T) {
+	document, err := Parse(strings.NewReader(`<template id="card"><article><span>inside</span></article></template><p>outside</p>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	indexed, err := dom.IndexDocument(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	templateID, found := indexed.ElementByID("card")
+	if !found {
+		t.Fatal("template element is missing")
+	}
+	if children, err := indexed.ChildNodes(templateID, false); err != nil || len(children) != 0 {
+		t.Fatalf("template light children = %#v, %v", children, err)
+	}
+	contentID, err := indexed.TemplateContent(templateID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	children, err := indexed.ChildNodes(contentID, false)
+	if err != nil || len(children) != 1 {
+		t.Fatalf("template content children = %#v, %v", children, err)
+	}
+	article, _ := indexed.Snapshot(children[0])
+	if article.Data != "article" || article.Connected {
+		t.Fatalf("inert article snapshot = %#v", article)
+	}
+	if got := SerializeNode(document); got != `<html><head></head><body><template id="card"><article><span>inside</span></article></template><p>outside</p></body></html>` {
+		t.Fatalf("serialized template document = %q", got)
+	}
+}
+
 func TestParseBuildsImplicitDocumentStructure(t *testing.T) {
 	t.Parallel()
 

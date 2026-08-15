@@ -2909,6 +2909,176 @@ func TestStockV8MutationObserverFiltersRecordsAndOwnsDetachedTargets(t *testing.
 	}
 }
 
+func TestStockV8TemplateConstructionRangeAndTraversalObjects(t *testing.T) {
+	engine := newTestEngine(t)
+	browserRuntime, err := browser.NewWithEngine(engine)
+	if err != nil {
+		t.Fatalf("NewWithEngine: %v", err)
+	}
+	defer func() {
+		if err := browserRuntime.Close(); err != nil {
+			t.Errorf("Close browser: %v", err)
+		}
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	page, err := browserRuntime.LoadPage(ctx, "https://gossamer.test/construction", staticDocumentLoader{
+		document: `<!doctype html><html><body><template id="card"><span data-part="inside">one</span></template><div id="range"><i>a</i><b>b</b><u>c</u></div></body></html>`,
+	})
+	if err != nil {
+		t.Fatalf("LoadPage: %v", err)
+	}
+	realm, ok := engine.LatestRealm()
+	if !ok {
+		t.Fatal("stock V8 engine has no construction realm")
+	}
+	_, err = page.QueueScript(browser.ScriptSource{
+		URL: "https://gossamer.test/construction/assert.js",
+		Source: `
+			(() => {
+				const template = document.getElementById("card");
+				const content = template.content;
+				if (!(content instanceof DocumentFragment) || template.content !== content ||
+					template.childNodes.length !== 0 || content.firstElementChild.localName !== "span" ||
+					template.innerHTML !== '<span data-part="inside">one</span>') {
+					throw new Error("template content parsing or SameObject identity failed");
+				}
+				template.innerHTML = "<em>two</em><strong>three</strong>";
+				if (content.children.length !== 2 || template.content !== content ||
+					template.innerHTML !== "<em>two</em><strong>three</strong>") {
+					throw new Error("template innerHTML did not mutate the inert fragment");
+				}
+				const clonedTemplate = template.cloneNode(true);
+				if (clonedTemplate.content === content || clonedTemplate.content.children.length !== 2 ||
+					clonedTemplate.content.firstElementChild === content.firstElementChild) {
+					throw new Error("deep template cloning aliased source content");
+				}
+
+				const textHost = document.createElement("div");
+				const text = document.createTextNode("A😀B");
+				textHost.append(text, document.createTextNode("C"), document.createTextNode(""));
+				const tail = text.splitText(3);
+				if (text.data !== "A😀" || tail.data !== "B" || text.nextSibling !== tail) {
+					throw new Error("Text.splitText did not use UTF-16 offsets");
+				}
+				textHost.normalize();
+				if (textHost.childNodes.length !== 1 || textHost.firstChild !== text || text.data !== "A😀BC") {
+					throw new Error("Node.normalize did not merge adjacent text nodes");
+				}
+
+				const imported = document.importNode(template, true);
+				if (imported === template || imported.content.children.length !== 2) {
+					throw new Error("Document.importNode did not clone template content");
+				}
+				const adoptionParent = document.createElement("section");
+				const adopted = document.createElement("aside");
+				adoptionParent.append(adopted);
+				if (document.adoptNode(adopted) !== adopted || adopted.parentNode !== null ||
+					adoptionParent.childNodes.length !== 0) {
+					throw new Error("same-document adoptNode did not detach and preserve identity");
+				}
+
+				const rangeRoot = document.getElementById("range");
+				const range = document.createRange();
+				if (!(range instanceof Range)) throw new Error("Range interface missing");
+				range.setStart(rangeRoot, 0);
+				range.setEnd(rangeRoot, 2);
+				if (range.startContainer !== rangeRoot || range.startOffset !== 0 || range.endOffset !== 2 ||
+					range.collapsed || range.commonAncestorContainer !== rangeRoot) {
+					throw new Error("Range boundary state failed");
+				}
+				const rangeClone = range.cloneRange();
+				const clonedContents = range.cloneContents();
+				if (rangeClone.startContainer !== rangeRoot || clonedContents.children.length !== 2 ||
+					clonedContents.firstElementChild === rangeRoot.firstElementChild || range.collapsed) {
+					throw new Error("Range cloning failed");
+				}
+				const extractRoot = document.createElement("div");
+				extractRoot.innerHTML = "<q>x</q><q>y</q><q>z</q>";
+				const extractedY = extractRoot.children[1];
+				const extractRange = document.createRange();
+				extractRange.setStart(extractRoot, 1);
+				extractRange.setEnd(extractRoot, 3);
+				const extracted = extractRange.extractContents();
+				if (extractRoot.children.length !== 1 || extracted.children.length !== 2 ||
+					extracted.firstElementChild !== extractedY || !extractRange.collapsed) {
+					throw new Error("Range.extractContents did not move selected children");
+				}
+				const inserted = document.createElement("mark");
+				range.collapse(true);
+				range.insertNode(inserted);
+				if (rangeRoot.firstElementChild !== inserted) throw new Error("Range.insertNode failed");
+
+				const traversalRoot = document.createElement("div");
+				traversalRoot.innerHTML = '<section id="one"><span id="nested"></span></section><section id="skip"><b id="kept"></b></section>';
+				const filter = node => node.id === "skip" ? NodeFilter.FILTER_SKIP : NodeFilter.FILTER_ACCEPT;
+				const walker = document.createTreeWalker(traversalRoot, NodeFilter.SHOW_ELEMENT, filter);
+				if (!(walker instanceof TreeWalker) || walker.root !== traversalRoot ||
+					walker.currentNode !== traversalRoot || walker.whatToShow !== NodeFilter.SHOW_ELEMENT ||
+					walker.filter !== filter) {
+					throw new Error("TreeWalker interface state failed");
+				}
+				const walked = [];
+				for (let node = walker.nextNode(); node; node = walker.nextNode()) walked.push(node.id);
+				if (walked.join(",") !== "one,nested,kept") throw new Error("TreeWalker order: " + walked);
+				walker.currentNode = traversalRoot.firstElementChild;
+				if (walker.firstChild().id !== "nested" || walker.parentNode().id !== "one" ||
+					walker.nextSibling() !== null) {
+					throw new Error("TreeWalker relation methods failed");
+				}
+				const iterator = document.createNodeIterator(traversalRoot, NodeFilter.SHOW_ELEMENT);
+				if (!(iterator instanceof NodeIterator) || iterator.referenceNode !== traversalRoot ||
+					!iterator.pointerBeforeReferenceNode || iterator.nextNode() !== traversalRoot ||
+					iterator.pointerBeforeReferenceNode || iterator.nextNode().id !== "one") {
+					throw new Error("NodeIterator cursor semantics failed");
+				}
+				iterator.detach();
+
+				globalThis.__milestone13Content = content;
+				globalThis.__milestone13Range = rangeClone;
+				globalThis.__milestone13Walker = document.createTreeWalker(traversalRoot, NodeFilter.SHOW_ELEMENT);
+			})();
+		`,
+	})
+	if err != nil {
+		t.Fatalf("QueueScript assertions: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("run construction assertions: %v", err)
+	}
+	if err := realm.CollectGarbage(page); err != nil {
+		t.Fatalf("CollectGarbage with facade-only roots: %v", err)
+	}
+	_, err = page.QueueScript(browser.ScriptSource{
+		URL: "https://gossamer.test/construction/gc.js",
+		Source: `
+			if (__milestone13Content.firstElementChild.localName !== "em" ||
+				__milestone13Range.startContainer.id !== "range" ||
+				__milestone13Walker.root.children.length !== 2) {
+				throw new Error("construction facade lost its native root across GC");
+			}
+			globalThis.__milestone13Content = undefined;
+			globalThis.__milestone13Range = undefined;
+			globalThis.__milestone13Walker = undefined;
+		`,
+	})
+	if err != nil {
+		t.Fatalf("QueueScript GC assertion: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("run construction GC assertion: %v", err)
+	}
+	if err := realm.CollectGarbage(page); err != nil {
+		t.Fatalf("CollectGarbage after construction release: %v", err)
+	}
+	if err := page.Close(); err != nil {
+		t.Fatalf("Close page: %v", err)
+	}
+	if ledger := browserRuntime.Ledger().Stats(); ledger.LiveObjects != 0 || ledger.PersistentObjects != 0 {
+		t.Fatalf("Milestone 13 teardown ownership = %#v", ledger)
+	}
+}
+
 func newTestEngine(t *testing.T) *Engine {
 	t.Helper()
 	icuData := os.Getenv("GOSSAMER_V8_ICU_DATA")

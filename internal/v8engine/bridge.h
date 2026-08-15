@@ -143,6 +143,17 @@ typedef struct gossamer_v8_host {
   int (*clone_node)(uint64_t execution_id, uint64_t document, uint32_t node,
                     int deep, uint64_t *clone_document_out,
                     uint32_t *clone_node_out, char **error_out);
+  int (*template_content)(uint64_t execution_id, uint64_t document,
+                          uint32_t node, uint64_t *content_document_out,
+                          uint32_t *content_node_out, char **error_out);
+  int (*split_text)(uint64_t execution_id, uint64_t document, uint32_t node,
+                    int32_t offset, uint64_t *split_document_out,
+                    uint32_t *split_node_out, char **error_out);
+  int (*normalize_node)(uint64_t execution_id, uint64_t document,
+                        uint32_t node, char **error_out);
+  int (*adopt_node)(uint64_t execution_id, uint64_t document, uint32_t node,
+                    uint64_t *adopted_document_out,
+                    uint32_t *adopted_node_out, char **error_out);
   int (*inner_html)(uint64_t execution_id, uint64_t document, uint32_t node,
                     char **value_out, size_t *value_length_out,
                     char **error_out);

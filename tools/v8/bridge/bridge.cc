@@ -59,6 +59,8 @@ constexpr int kIteratorSourceKindField = 2;
 constexpr int kIteratorModeField = 3;
 constexpr int kEventStateField = 0;
 constexpr int kMutationObserverStateField = 0;
+constexpr int kRangeStateField = 0;
+constexpr int kTraversalStateField = 0;
 constexpr uint8_t kEventPhaseNone = 0;
 constexpr uint8_t kEventPhaseCapturing = 1;
 constexpr uint8_t kEventPhaseAtTarget = 2;
@@ -191,6 +193,8 @@ struct EventState {
 struct WrapperWeakData;
 struct EventWeakData;
 struct MutationObserverWeakData;
+struct RangeWeakData;
+struct TraversalWeakData;
 
 struct MutationObserverOptions {
   bool child_list = false;
@@ -230,6 +234,30 @@ struct MutationObserverState {
   std::vector<MutationObserverRegistration> registrations;
   std::vector<ObserverMutationRecord> records;
   uint64_t cursor = 0;
+};
+
+struct RangeState {
+  gossamer_v8_realm *realm = nullptr;
+  RangeWeakData *weak = nullptr;
+  WrapperKey start;
+  WrapperKey end;
+  uint32_t start_offset = 0;
+  uint32_t end_offset = 0;
+  v8::Global<v8::Object> start_object;
+  v8::Global<v8::Object> end_object;
+};
+
+struct TraversalState {
+  gossamer_v8_realm *realm = nullptr;
+  TraversalWeakData *weak = nullptr;
+  WrapperKey root;
+  std::vector<WrapperKey> nodes;
+  size_t index = 0;
+  bool node_iterator = false;
+  uint32_t what_to_show = 0xffffffffu;
+  bool pointer_before_reference = true;
+  v8::Global<v8::Object> root_object;
+  v8::Global<v8::Value> filter;
 };
 
 struct WrapperEntry {
@@ -377,6 +405,9 @@ struct gossamer_v8_realm {
   v8::Global<v8::FunctionTemplate> focus_event_template;
   v8::Global<v8::FunctionTemplate> mutation_observer_template;
   v8::Global<v8::FunctionTemplate> mutation_record_template;
+  v8::Global<v8::FunctionTemplate> range_template;
+  v8::Global<v8::FunctionTemplate> tree_walker_template;
+  v8::Global<v8::FunctionTemplate> node_iterator_template;
   v8::Global<v8::FunctionTemplate> node_list_template;
   v8::Global<v8::FunctionTemplate> html_collection_template;
   v8::Global<v8::FunctionTemplate> token_list_template;
@@ -398,6 +429,8 @@ struct gossamer_v8_realm {
       listeners;
   std::unordered_set<EventWeakData *> events;
   std::unordered_set<MutationObserverWeakData *> mutation_observers;
+  std::unordered_set<RangeWeakData *> ranges;
+  std::unordered_set<TraversalWeakData *> traversals;
   uint64_t next_listener = 1;
   uint32_t dispatch_depth = 0;
   uint64_t event_listener_count = 0;
@@ -440,6 +473,18 @@ struct EventWeakData {
 struct MutationObserverWeakData {
   gossamer_v8_realm *realm;
   MutationObserverState *state;
+  v8::Global<v8::Object> object;
+};
+
+struct RangeWeakData {
+  gossamer_v8_realm *realm;
+  RangeState *state;
+  v8::Global<v8::Object> object;
+};
+
+struct TraversalWeakData {
+  gossamer_v8_realm *realm;
+  TraversalState *state;
   v8::Global<v8::Object> object;
 };
 
@@ -648,6 +693,11 @@ void ThrowError(v8::Isolate *isolate, const std::string &message) {
     rendered = v8::String::NewFromUtf8Literal(isolate, "host binding failed");
   }
   isolate->ThrowException(v8::Exception::Error(rendered));
+}
+
+void ThrowDOMException(v8::Isolate *isolate, const std::string &name,
+                       const std::string &message) {
+  ThrowError(isolate, std::string(kDOMExceptionPrefix) + name + ":" + message);
 }
 
 void ThrowTypeError(v8::Isolate *isolate, const std::string &message) {
@@ -1405,6 +1455,142 @@ void NodeCloneNode(const v8::FunctionCallbackInfo<v8::Value> &info) {
   v8::Local<v8::Object> wrapper;
   if (!GetOrCreateNodeWrapper(realm, isolate->GetCurrentContext(),
                               WrapperKey{clone_document, clone_node}, &error)
+           .ToLocal(&wrapper)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  info.GetReturnValue().Set(wrapper);
+}
+
+void HTMLTemplateElementContentGetter(
+    v8::Local<v8::Name>, const v8::PropertyCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.Holder(), &key))
+    return;
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  uint64_t document = 0;
+  uint32_t node = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->template_content(
+          realm->active_host->execution_id, key.document, key.node, &document,
+          &node, &host_error) == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate, error.empty() ? "reading template.content failed"
+                                      : error);
+    return;
+  }
+  std::free(host_error);
+  v8::Local<v8::Object> wrapper;
+  if (!GetOrCreateNodeWrapper(realm, isolate->GetCurrentContext(),
+                              WrapperKey{document, node}, &error)
+           .ToLocal(&wrapper)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  info.GetReturnValue().Set(wrapper);
+}
+
+void TextSplitText(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  int32_t offset = 0;
+  if (!ReadReceiverKey(isolate, info.This(), &key) || info.Length() == 0 ||
+      !info[0]->Int32Value(isolate->GetCurrentContext()).To(&offset))
+    return;
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  uint64_t document = 0;
+  uint32_t node = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->split_text(realm->active_host->execution_id,
+                                     key.document, key.node, offset,
+                                     &document, &node, &host_error) == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate, error.empty() ? "splitText failed" : error);
+    return;
+  }
+  std::free(host_error);
+  v8::Local<v8::Object> wrapper;
+  if (!GetOrCreateNodeWrapper(realm, isolate->GetCurrentContext(),
+                              WrapperKey{document, node}, &error)
+           .ToLocal(&wrapper)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  info.GetReturnValue().Set(wrapper);
+}
+
+void NodeNormalize(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.This(), &key))
+    return;
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  char *host_error = nullptr;
+  if (realm->active_host->normalize_node(
+          realm->active_host->execution_id, key.document, key.node,
+          &host_error) == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate, error.empty() ? "normalize failed" : error);
+    return;
+  }
+  std::free(host_error);
+}
+
+void DocumentImportOrAdoptNode(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (info.Length() == 0 || !info[0]->IsObject() ||
+      !ReadWrapperKey(info[0].As<v8::Object>(), &key)) {
+    ThrowTypeError(isolate, "importNode/adoptNode requires a native Node");
+    return;
+  }
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  uint64_t document = 0;
+  uint32_t node = 0;
+  char *host_error = nullptr;
+  bool adopt = info.Data()->IsTrue();
+  int ok = adopt
+               ? realm->active_host->adopt_node(
+                     realm->active_host->execution_id, key.document, key.node,
+                     &document, &node, &host_error)
+               : realm->active_host->clone_node(
+                     realm->active_host->execution_id, key.document, key.node,
+                     info.Length() > 1 && info[1]->BooleanValue(isolate) ? 1
+                                                                         : 0,
+                     &document, &node, &host_error);
+  if (ok == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate, error.empty() ? (adopt ? "adoptNode failed"
+                                               : "importNode failed")
+                                      : error);
+    return;
+  }
+  std::free(host_error);
+  v8::Local<v8::Object> wrapper;
+  if (!GetOrCreateNodeWrapper(realm, isolate->GetCurrentContext(),
+                              WrapperKey{document, node}, &error)
            .ToLocal(&wrapper)) {
     ThrowError(isolate, error);
     return;
@@ -6047,6 +6233,865 @@ bool DeliverMutationObservers(gossamer_v8_realm *realm,
   return false;
 }
 
+RangeState *ReadRangeState(v8::Isolate *isolate,
+                           v8::Local<v8::Object> receiver) {
+  if (receiver.IsEmpty() || receiver->InternalFieldCount() != 1) {
+    ThrowTypeError(isolate, "Range receiver is invalid");
+    return nullptr;
+  }
+  v8::Local<v8::Data> data = receiver->GetInternalField(kRangeStateField);
+  if (!data->IsValue() || !data.As<v8::Value>()->IsExternal()) {
+    ThrowTypeError(isolate, "Range lost its native state");
+    return nullptr;
+  }
+  return static_cast<RangeState *>(
+      data.As<v8::Value>().As<v8::External>()->Value(
+          v8::kExternalPointerTypeTagDefault));
+}
+
+void RangeCollected(const v8::WeakCallbackInfo<RangeWeakData> &info) {
+  RangeWeakData *weak = info.GetParameter();
+  if (weak == nullptr)
+    return;
+  if (weak->realm != nullptr)
+    weak->realm->ranges.erase(weak);
+  weak->object.Reset();
+  if (weak->state != nullptr) {
+    weak->state->start_object.Reset();
+    weak->state->end_object.Reset();
+    delete weak->state;
+  }
+  delete weak;
+}
+
+bool TrackRangeObject(gossamer_v8_realm *realm, v8::Local<v8::Object> object,
+                      RangeState *state) {
+  auto weak = std::make_unique<RangeWeakData>();
+  weak->realm = realm;
+  weak->state = state;
+  weak->object.Reset(realm->isolate, object);
+  state->weak = weak.get();
+  object->SetInternalField(
+      kRangeStateField,
+      v8::External::New(realm->isolate, state,
+                        v8::kExternalPointerTypeTagDefault));
+  weak->object.SetWeak(weak.get(), RangeCollected,
+                       v8::WeakCallbackType::kParameter);
+  realm->ranges.insert(weak.get());
+  weak.release();
+  return true;
+}
+
+void RangeConstructor(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  if (!info.IsConstructCall()) {
+    ThrowTypeError(isolate, "Range constructor must be called with new");
+    return;
+  }
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  if (!realm->document_bound) {
+    ThrowError(isolate, "Range requires a bound document");
+    return;
+  }
+  auto state = std::make_unique<RangeState>();
+  state->realm = realm;
+  state->start = state->end = realm->document_key;
+  v8::Local<v8::Object> document = realm->document_wrapper.Get(isolate);
+  state->start_object.Reset(isolate, document);
+  state->end_object.Reset(isolate, document);
+  TrackRangeObject(realm, info.This(), state.release());
+  info.GetReturnValue().Set(info.This());
+}
+
+bool RangeParent(gossamer_v8_realm *realm, const WrapperKey &key,
+                 WrapperKey *parent, bool *found, std::string *error) {
+  uint32_t node = 0;
+  int host_found = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->related_node(
+          realm->active_host->execution_id, key.document, key.node, 1, &node,
+          &host_found, &host_error) == 0) {
+    *error = TakeCString(host_error);
+    if (error->empty())
+      *error = "reading Range parent failed";
+    return false;
+  }
+  std::free(host_error);
+  *found = host_found != 0;
+  if (*found)
+    *parent = WrapperKey{key.document, node};
+  return true;
+}
+
+bool RangeBoundaryLimit(gossamer_v8_realm *realm, const WrapperKey &key,
+                        uint32_t *limit, std::string *error) {
+  NodeMetadata metadata;
+  if (!ReadNodeMetadata(realm, key, &metadata, error))
+    return false;
+  if (metadata.type == 3 || metadata.type == 8 || metadata.type == 7) {
+    char *value = nullptr;
+    size_t length = 0;
+    int non_null = 0;
+    char *host_error = nullptr;
+    if (realm->active_host->node_value(
+            realm->active_host->execution_id, key.document, key.node, &value,
+            &length, &non_null, &host_error) == 0) {
+      *error = TakeCString(host_error);
+      std::free(value);
+      if (error->empty())
+        *error = "reading Range character data failed";
+      return false;
+    }
+    std::free(host_error);
+    std::free(value);
+    *limit = static_cast<uint32_t>(std::min(
+        length, static_cast<size_t>(std::numeric_limits<uint32_t>::max())));
+    return true;
+  }
+  std::vector<uint32_t> children;
+  if (!ReadChildNodes(realm, key, false, &children, error))
+    return false;
+  *limit = static_cast<uint32_t>(children.size());
+  return true;
+}
+
+bool SetRangeBoundary(RangeState *state, bool start,
+                      v8::Local<v8::Object> object, const WrapperKey &key,
+                      uint32_t offset, std::string *error) {
+  uint32_t limit = 0;
+  if (!RangeBoundaryLimit(state->realm, key, &limit, error))
+    return false;
+  if (offset > limit) {
+    *error = "Range boundary offset exceeds the node length";
+    return false;
+  }
+  if (start) {
+    state->start = key;
+    state->start_offset = offset;
+    state->start_object.Reset(state->realm->isolate, object);
+  } else {
+    state->end = key;
+    state->end_offset = offset;
+    state->end_object.Reset(state->realm->isolate, object);
+  }
+  return true;
+}
+
+void RangeSetBoundary(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  RangeState *state = ReadRangeState(isolate, info.This());
+  WrapperKey key;
+  uint32_t offset = 0;
+  if (state == nullptr || info.Length() < 2 || !info[0]->IsObject() ||
+      !ReadWrapperKey(info[0].As<v8::Object>(), &key) ||
+      !info[1]->Uint32Value(isolate->GetCurrentContext()).To(&offset)) {
+    if (state != nullptr)
+      ThrowTypeError(isolate, "Range boundary requires a native Node and offset");
+    return;
+  }
+  std::string error;
+  if (!SetRangeBoundary(state, info.Data()->IsTrue(),
+                        info[0].As<v8::Object>(), key, offset, &error))
+    ThrowDOMException(isolate, "IndexSizeError", error);
+}
+
+bool RangeNodeIndex(gossamer_v8_realm *realm, const WrapperKey &node,
+                    WrapperKey *parent, uint32_t *index,
+                    std::string *error) {
+  bool found = false;
+  if (!RangeParent(realm, node, parent, &found, error))
+    return false;
+  if (!found) {
+    *error = "Range node has no parent";
+    return false;
+  }
+  std::vector<uint32_t> children;
+  if (!ReadChildNodes(realm, *parent, false, &children, error))
+    return false;
+  auto position = std::find(children.begin(), children.end(), node.node);
+  if (position == children.end()) {
+    *error = "Range node is missing from its parent";
+    return false;
+  }
+  *index = static_cast<uint32_t>(position - children.begin());
+  return true;
+}
+
+void RangeSelectNode(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  RangeState *state = ReadRangeState(isolate, info.This());
+  WrapperKey node;
+  if (state == nullptr || info.Length() == 0 || !info[0]->IsObject() ||
+      !ReadWrapperKey(info[0].As<v8::Object>(), &node)) {
+    if (state != nullptr)
+      ThrowTypeError(isolate, "selectNode requires a native Node");
+    return;
+  }
+  WrapperKey parent;
+  uint32_t index = 0;
+  std::string error;
+  if (!RangeNodeIndex(state->realm, node, &parent, &index, &error)) {
+    ThrowDOMException(isolate, "InvalidNodeTypeError", error);
+    return;
+  }
+  v8::Local<v8::Object> parent_wrapper;
+  if (!GetOrCreateNodeWrapper(state->realm, isolate->GetCurrentContext(),
+                              parent, &error)
+           .ToLocal(&parent_wrapper)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  state->start = state->end = parent;
+  state->start_offset = index;
+  state->end_offset = index + 1;
+  state->start_object.Reset(isolate, parent_wrapper);
+  state->end_object.Reset(isolate, parent_wrapper);
+}
+
+void RangeSelectNodeContents(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  RangeState *state = ReadRangeState(isolate, info.This());
+  WrapperKey node;
+  if (state == nullptr || info.Length() == 0 || !info[0]->IsObject() ||
+      !ReadWrapperKey(info[0].As<v8::Object>(), &node)) {
+    if (state != nullptr)
+      ThrowTypeError(isolate, "selectNodeContents requires a native Node");
+    return;
+  }
+  uint32_t limit = 0;
+  std::string error;
+  if (!RangeBoundaryLimit(state->realm, node, &limit, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  state->start = state->end = node;
+  state->start_offset = 0;
+  state->end_offset = limit;
+  state->start_object.Reset(isolate, info[0].As<v8::Object>());
+  state->end_object.Reset(isolate, info[0].As<v8::Object>());
+}
+
+void RangeCollapse(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  RangeState *state = ReadRangeState(info.GetIsolate(), info.This());
+  if (state == nullptr)
+    return;
+  bool to_start = info.Length() != 0 && info[0]->BooleanValue(info.GetIsolate());
+  if (to_start) {
+    state->end = state->start;
+    state->end_offset = state->start_offset;
+    state->end_object.Reset(info.GetIsolate(),
+                            state->start_object.Get(info.GetIsolate()));
+  } else {
+    state->start = state->end;
+    state->start_offset = state->end_offset;
+    state->start_object.Reset(info.GetIsolate(),
+                              state->end_object.Get(info.GetIsolate()));
+  }
+}
+
+bool RangeCommonAncestor(RangeState *state, WrapperKey *common,
+                         std::string *error) {
+  std::unordered_set<WrapperKey, WrapperKeyHash> start_ancestors;
+  WrapperKey cursor = state->start;
+  for (;;) {
+    start_ancestors.insert(cursor);
+    WrapperKey parent;
+    bool found = false;
+    if (!RangeParent(state->realm, cursor, &parent, &found, error))
+      return false;
+    if (!found)
+      break;
+    cursor = parent;
+  }
+  cursor = state->end;
+  for (;;) {
+    if (start_ancestors.find(cursor) != start_ancestors.end()) {
+      *common = cursor;
+      return true;
+    }
+    WrapperKey parent;
+    bool found = false;
+    if (!RangeParent(state->realm, cursor, &parent, &found, error))
+      return false;
+    if (!found)
+      break;
+    cursor = parent;
+  }
+  *error = "Range boundaries do not share a document tree";
+  return false;
+}
+
+void RangePropertyFunctionGetter(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  RangeState *state = ReadRangeState(isolate, info.This());
+  if (state == nullptr)
+    return;
+  int property = info.Data().As<v8::Int32>()->Value();
+  if (property == 2) {
+    info.GetReturnValue().Set(
+        v8::Integer::NewFromUnsigned(isolate, state->start_offset));
+    return;
+  }
+  if (property == 4) {
+    info.GetReturnValue().Set(
+        v8::Integer::NewFromUnsigned(isolate, state->end_offset));
+    return;
+  }
+  if (property == 5) {
+    info.GetReturnValue().Set(state->start == state->end &&
+                              state->start_offset == state->end_offset);
+    return;
+  }
+  WrapperKey key = property == 1 ? state->start : state->end;
+  std::string error;
+  if (property == 6 && !RangeCommonAncestor(state, &key, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  v8::Local<v8::Object> wrapper;
+  if (!GetOrCreateNodeWrapper(state->realm, isolate->GetCurrentContext(), key,
+                              &error)
+           .ToLocal(&wrapper)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  info.GetReturnValue().Set(wrapper);
+}
+
+bool NewRangeObject(gossamer_v8_realm *realm,
+                    v8::Local<v8::Context> context,
+                    const RangeState &source, v8::Local<v8::Object> *result,
+                    std::string *error) {
+  if (!realm->range_template.Get(realm->isolate)
+           ->InstanceTemplate()
+           ->NewInstance(context)
+           .ToLocal(result)) {
+    *error = "V8 failed to allocate a Range";
+    return false;
+  }
+  auto state = std::make_unique<RangeState>();
+  state->realm = realm;
+  state->start = source.start;
+  state->end = source.end;
+  state->start_offset = source.start_offset;
+  state->end_offset = source.end_offset;
+  state->start_object.Reset(realm->isolate,
+                            source.start_object.Get(realm->isolate));
+  state->end_object.Reset(realm->isolate,
+                          source.end_object.Get(realm->isolate));
+  TrackRangeObject(realm, *result, state.release());
+  return true;
+}
+
+void RangeCloneRange(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  RangeState *state = ReadRangeState(isolate, info.This());
+  if (state == nullptr)
+    return;
+  v8::Local<v8::Object> clone;
+  std::string error;
+  if (!NewRangeObject(state->realm, isolate->GetCurrentContext(), *state,
+                      &clone, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  info.GetReturnValue().Set(clone);
+}
+
+bool CreateRangeFragment(RangeState *state, bool clone, bool remove,
+                         v8::Local<v8::Context> context,
+                         v8::Local<v8::Object> *fragment_wrapper,
+                         std::string *error) {
+  if (state->start != state->end) {
+    *error = "cross-container Range contents are not implemented";
+    return false;
+  }
+  std::vector<uint32_t> children;
+  if (!ReadChildNodes(state->realm, state->start, false, &children, error))
+    return false;
+  uint32_t start = std::min(state->start_offset,
+                            static_cast<uint32_t>(children.size()));
+  uint32_t end = std::min(state->end_offset,
+                          static_cast<uint32_t>(children.size()));
+  if (end < start)
+    end = start;
+  uint64_t fragment_document = 0;
+  uint32_t fragment_node = 0;
+  char *host_error = nullptr;
+  if ((clone || !remove) &&
+      state->realm->active_host->create_document_fragment(
+          state->realm->active_host->execution_id, &fragment_document,
+          &fragment_node, &host_error) == 0) {
+    *error = TakeCString(host_error);
+    if (error->empty())
+      *error = "creating Range fragment failed";
+    return false;
+  }
+  std::free(host_error);
+  for (uint32_t index = start; index < end; ++index) {
+    uint64_t node_document = state->start.document;
+    uint32_t node = children[index];
+    if (clone) {
+      host_error = nullptr;
+      if (state->realm->active_host->clone_node(
+              state->realm->active_host->execution_id, state->start.document,
+              node, 1, &node_document, &node, &host_error) == 0) {
+        *error = TakeCString(host_error);
+        return false;
+      }
+      std::free(host_error);
+    }
+    host_error = nullptr;
+    if (clone || !remove) {
+      if (state->realm->active_host->append_child(
+              state->realm->active_host->execution_id, fragment_document,
+              fragment_node, node_document, node, &host_error) == 0) {
+        *error = TakeCString(host_error);
+        return false;
+      }
+    } else if (state->realm->active_host->remove_child(
+                   state->realm->active_host->execution_id,
+                   state->start.document, state->start.node,
+                   state->start.document, node, &host_error) == 0) {
+      *error = TakeCString(host_error);
+      return false;
+    }
+    std::free(host_error);
+  }
+  if (!clone)
+    state->end_offset = state->start_offset;
+  if (clone || !remove) {
+    if (!GetOrCreateNodeWrapper(
+             state->realm, context,
+             WrapperKey{fragment_document, fragment_node}, error)
+             .ToLocal(fragment_wrapper))
+      return false;
+  }
+  return true;
+}
+
+void RangeContents(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  RangeState *state = ReadRangeState(isolate, info.This());
+  if (state == nullptr)
+    return;
+  int operation = info.Data().As<v8::Int32>()->Value();
+  v8::Local<v8::Object> fragment;
+  std::string error;
+  bool clone = operation == 1;
+  bool remove = operation == 3;
+  if (!CreateRangeFragment(state, clone, remove,
+                           isolate->GetCurrentContext(), &fragment, &error)) {
+    ThrowDOMException(isolate, "InvalidStateError", error);
+    return;
+  }
+  if (operation != 3)
+    info.GetReturnValue().Set(fragment);
+}
+
+void RangeInsertNode(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  RangeState *state = ReadRangeState(isolate, info.This());
+  WrapperKey node;
+  if (state == nullptr || info.Length() == 0 || !info[0]->IsObject() ||
+      !ReadWrapperKey(info[0].As<v8::Object>(), &node)) {
+    if (state != nullptr)
+      ThrowTypeError(isolate, "insertNode requires a native Node");
+    return;
+  }
+  std::vector<uint32_t> children;
+  std::string error;
+  if (!ReadChildNodes(state->realm, state->start, false, &children, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  char *host_error = nullptr;
+  int ok = state->start_offset < children.size()
+               ? state->realm->active_host->insert_before(
+                     state->realm->active_host->execution_id,
+                     state->start.document, state->start.node, node.document,
+                     node.node, state->start.document,
+                     children[state->start_offset], &host_error)
+               : state->realm->active_host->append_child(
+                     state->realm->active_host->execution_id,
+                     state->start.document, state->start.node, node.document,
+                     node.node, &host_error);
+  if (ok == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate, error.empty() ? "Range insertNode failed" : error);
+    return;
+  }
+  std::free(host_error);
+}
+
+void RangeDetach(const v8::FunctionCallbackInfo<v8::Value> &) {}
+
+void DocumentCreateRange(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  v8::Local<v8::Function> constructor;
+  v8::Local<v8::Object> range;
+  if (!realm->range_template.Get(isolate)
+           ->GetFunction(isolate->GetCurrentContext())
+           .ToLocal(&constructor) ||
+      !constructor->NewInstance(isolate->GetCurrentContext(), 0, nullptr)
+           .ToLocal(&range)) {
+    ThrowError(isolate, "V8 failed to create a Range");
+    return;
+  }
+  info.GetReturnValue().Set(range);
+}
+
+TraversalState *ReadTraversalState(v8::Isolate *isolate,
+                                   v8::Local<v8::Object> receiver) {
+  if (receiver.IsEmpty() || receiver->InternalFieldCount() != 1) {
+    ThrowTypeError(isolate, "DOM traversal receiver is invalid");
+    return nullptr;
+  }
+  v8::Local<v8::Data> data =
+      receiver->GetInternalField(kTraversalStateField);
+  if (!data->IsValue() || !data.As<v8::Value>()->IsExternal()) {
+    ThrowTypeError(isolate, "DOM traversal object lost its native state");
+    return nullptr;
+  }
+  return static_cast<TraversalState *>(
+      data.As<v8::Value>().As<v8::External>()->Value(
+          v8::kExternalPointerTypeTagDefault));
+}
+
+void TraversalCollected(const v8::WeakCallbackInfo<TraversalWeakData> &info) {
+  TraversalWeakData *weak = info.GetParameter();
+  if (weak == nullptr)
+    return;
+  if (weak->realm != nullptr)
+    weak->realm->traversals.erase(weak);
+  weak->object.Reset();
+  if (weak->state != nullptr) {
+    weak->state->root_object.Reset();
+    weak->state->filter.Reset();
+    delete weak->state;
+  }
+  delete weak;
+}
+
+bool TraversalAccepts(TraversalState *state, const WrapperKey &key,
+                      v8::Local<v8::Context> context, bool *accept,
+                      std::string *error) {
+  NodeMetadata metadata;
+  if (!ReadNodeMetadata(state->realm, key, &metadata, error))
+    return false;
+  if (metadata.type == 0 || metadata.type > 32 ||
+      (state->what_to_show & (1u << (metadata.type - 1))) == 0) {
+    *accept = false;
+    return true;
+  }
+  if (state->filter.IsEmpty() ||
+      state->filter.Get(state->realm->isolate)->IsNull() ||
+      state->filter.Get(state->realm->isolate)->IsUndefined()) {
+    *accept = true;
+    return true;
+  }
+  v8::Local<v8::Value> filter = state->filter.Get(state->realm->isolate);
+  v8::Local<v8::Function> function;
+  v8::Local<v8::Value> receiver = v8::Undefined(state->realm->isolate);
+  if (filter->IsFunction()) {
+    function = filter.As<v8::Function>();
+  } else if (filter->IsObject()) {
+    receiver = filter;
+    v8::Local<v8::Value> method;
+    if (!filter.As<v8::Object>()
+             ->Get(context, v8::String::NewFromUtf8Literal(
+                                state->realm->isolate, "acceptNode"))
+             .ToLocal(&method) ||
+        !method->IsFunction()) {
+      *error = "NodeFilter object requires acceptNode()";
+      return false;
+    }
+    function = method.As<v8::Function>();
+  } else {
+    *error = "NodeFilter is not callable";
+    return false;
+  }
+  v8::Local<v8::Object> wrapper;
+  if (!GetOrCreateNodeWrapper(state->realm, context, key, error)
+           .ToLocal(&wrapper))
+    return false;
+  v8::Local<v8::Value> arguments[] = {wrapper};
+  v8::Local<v8::Value> result;
+  if (!function->Call(context, receiver, 1, arguments).ToLocal(&result))
+    return false;
+  int32_t decision = 0;
+  if (!result->Int32Value(context).To(&decision))
+    return false;
+  *accept = decision == 1;
+  return true;
+}
+
+bool BuildTraversalNodes(TraversalState *state,
+                         v8::Local<v8::Context> context,
+                         std::string *error) {
+  state->nodes.clear();
+  state->nodes.push_back(state->root);
+  std::vector<WrapperKey> stack;
+  std::vector<uint32_t> root_children;
+  if (!ReadChildNodes(state->realm, state->root, false, &root_children,
+                      error))
+    return false;
+  for (auto iterator = root_children.rbegin(); iterator != root_children.rend();
+       ++iterator)
+    stack.push_back(WrapperKey{state->root.document, *iterator});
+  while (!stack.empty()) {
+    WrapperKey current = stack.back();
+    stack.pop_back();
+    bool accept = false;
+    if (!TraversalAccepts(state, current, context, &accept, error))
+      return false;
+    if (accept)
+      state->nodes.push_back(current);
+    std::vector<uint32_t> children;
+    if (!ReadChildNodes(state->realm, current, false, &children, error))
+      return false;
+    for (auto iterator = children.rbegin(); iterator != children.rend();
+         ++iterator)
+      stack.push_back(WrapperKey{current.document, *iterator});
+  }
+  return true;
+}
+
+bool TrackTraversalObject(gossamer_v8_realm *realm,
+                          v8::Local<v8::Object> object,
+                          TraversalState *state) {
+  auto weak = std::make_unique<TraversalWeakData>();
+  weak->realm = realm;
+  weak->state = state;
+  weak->object.Reset(realm->isolate, object);
+  state->weak = weak.get();
+  object->SetInternalField(
+      kTraversalStateField,
+      v8::External::New(realm->isolate, state,
+                        v8::kExternalPointerTypeTagDefault));
+  weak->object.SetWeak(weak.get(), TraversalCollected,
+                       v8::WeakCallbackType::kParameter);
+  realm->traversals.insert(weak.get());
+  weak.release();
+  return true;
+}
+
+void DocumentCreateTraversal(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey root;
+  if (info.Length() == 0 || !info[0]->IsObject() ||
+      !ReadWrapperKey(info[0].As<v8::Object>(), &root)) {
+    ThrowTypeError(isolate, "DOM traversal requires a native root Node");
+    return;
+  }
+  auto state = std::make_unique<TraversalState>();
+  state->realm = CurrentRealm(isolate);
+  state->root = root;
+  state->node_iterator = info.Data()->IsTrue();
+  state->root_object.Reset(isolate, info[0].As<v8::Object>());
+  if (info.Length() > 1 &&
+      !info[1]->Uint32Value(isolate->GetCurrentContext())
+           .To(&state->what_to_show))
+    return;
+  if (info.Length() > 2 && !info[2]->IsNull() && !info[2]->IsUndefined())
+    state->filter.Reset(isolate, info[2]);
+  std::string error;
+  if (!BuildTraversalNodes(state.get(), isolate->GetCurrentContext(),
+                           &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  v8::Local<v8::FunctionTemplate> traversal_template =
+      state->node_iterator
+          ? state->realm->node_iterator_template.Get(isolate)
+          : state->realm->tree_walker_template.Get(isolate);
+  v8::Local<v8::Object> result;
+  if (!traversal_template->InstanceTemplate()
+           ->NewInstance(isolate->GetCurrentContext())
+           .ToLocal(&result)) {
+    ThrowError(isolate, "V8 failed to allocate a DOM traversal object");
+    return;
+  }
+  TrackTraversalObject(state->realm, result, state.release());
+  info.GetReturnValue().Set(result);
+}
+
+void TraversalPropertyFunctionGetter(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  TraversalState *state = ReadTraversalState(isolate, info.This());
+  if (state == nullptr)
+    return;
+  int property = info.Data().As<v8::Int32>()->Value();
+  if (property == 3) {
+    info.GetReturnValue().Set(state->what_to_show);
+    return;
+  }
+  if (property == 4) {
+    info.GetReturnValue().Set(state->filter.IsEmpty()
+                                  ? v8::Null(isolate)
+                                  : state->filter.Get(isolate));
+    return;
+  }
+  if (property == 6) {
+    info.GetReturnValue().Set(state->pointer_before_reference);
+    return;
+  }
+  WrapperKey key = property == 1 ? state->root : state->nodes[state->index];
+  std::string error;
+  v8::Local<v8::Object> wrapper;
+  if (!GetOrCreateNodeWrapper(state->realm, isolate->GetCurrentContext(), key,
+                              &error)
+           .ToLocal(&wrapper)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  info.GetReturnValue().Set(wrapper);
+}
+
+void TreeWalkerCurrentNodeSetter(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  TraversalState *state = ReadTraversalState(isolate, info.This());
+  WrapperKey key;
+  if (state == nullptr || info.Length() == 0 || !info[0]->IsObject() ||
+      !ReadWrapperKey(info[0].As<v8::Object>(), &key))
+    return;
+  auto found = std::find(state->nodes.begin(), state->nodes.end(), key);
+  if (found == state->nodes.end()) {
+    ThrowDOMException(isolate, "NotSupportedError",
+                      "currentNode must be inside the TreeWalker root");
+    return;
+  }
+  state->index = static_cast<size_t>(found - state->nodes.begin());
+}
+
+void TraversalStep(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  TraversalState *state = ReadTraversalState(isolate, info.This());
+  if (state == nullptr || state->nodes.empty())
+    return;
+  bool forward = info.Data()->IsTrue();
+  if (state->node_iterator) {
+    if (forward) {
+      if (state->pointer_before_reference) {
+        state->pointer_before_reference = false;
+      } else if (state->index + 1 < state->nodes.size()) {
+        state->index++;
+      } else {
+        info.GetReturnValue().Set(v8::Null(isolate));
+        return;
+      }
+    } else {
+      if (!state->pointer_before_reference) {
+        state->pointer_before_reference = true;
+      } else if (state->index > 0) {
+        state->index--;
+      } else {
+        info.GetReturnValue().Set(v8::Null(isolate));
+        return;
+      }
+    }
+  } else if (forward) {
+    if (state->index + 1 >= state->nodes.size()) {
+      info.GetReturnValue().Set(v8::Null(isolate));
+      return;
+    }
+    state->index++;
+  } else {
+    if (state->index == 0) {
+      info.GetReturnValue().Set(v8::Null(isolate));
+      return;
+    }
+    state->index--;
+  }
+  std::string error;
+  v8::Local<v8::Object> wrapper;
+  if (!GetOrCreateNodeWrapper(state->realm, isolate->GetCurrentContext(),
+                              state->nodes[state->index], &error)
+           .ToLocal(&wrapper)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  info.GetReturnValue().Set(wrapper);
+}
+
+void TreeWalkerRelation(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  TraversalState *state = ReadTraversalState(isolate, info.This());
+  if (state == nullptr)
+    return;
+  int relation = info.Data().As<v8::Int32>()->Value();
+  WrapperKey current = state->nodes[state->index];
+  WrapperKey candidate;
+  bool found = false;
+  std::string error;
+  if (relation == 1) {
+    if (!RangeParent(state->realm, current, &candidate, &found, &error)) {
+      ThrowError(isolate, error);
+      return;
+    }
+  } else {
+    WrapperKey parent;
+    bool parent_found = false;
+    if (!RangeParent(state->realm, current, &parent, &parent_found, &error)) {
+      ThrowError(isolate, error);
+      return;
+    }
+    WrapperKey scope = (relation == 2 || relation == 3) ? current : parent;
+    if ((relation == 4 || relation == 5) && !parent_found) {
+      info.GetReturnValue().Set(v8::Null(isolate));
+      return;
+    }
+    std::vector<uint32_t> children;
+    if (!ReadChildNodes(state->realm, scope, false, &children, &error)) {
+      ThrowError(isolate, error);
+      return;
+    }
+    if (relation == 2 || relation == 3) {
+      if (!children.empty()) {
+        candidate = WrapperKey{scope.document,
+                               relation == 2 ? children.front()
+                                             : children.back()};
+        found = true;
+      }
+    } else {
+      auto position = std::find(children.begin(), children.end(), current.node);
+      if (position != children.end()) {
+        if (relation == 4 && position != children.begin()) {
+          candidate = WrapperKey{parent.document, *(position - 1)};
+          found = true;
+        } else if (relation == 5 && position + 1 != children.end()) {
+          candidate = WrapperKey{parent.document, *(position + 1)};
+          found = true;
+        }
+      }
+    }
+  }
+  if (found) {
+    auto position = std::find(state->nodes.begin(), state->nodes.end(), candidate);
+    if (position != state->nodes.end()) {
+      state->index = static_cast<size_t>(position - state->nodes.begin());
+      v8::Local<v8::Object> wrapper;
+      if (!GetOrCreateNodeWrapper(state->realm, isolate->GetCurrentContext(),
+                                  candidate, &error)
+               .ToLocal(&wrapper)) {
+        ThrowError(isolate, error);
+        return;
+      }
+      info.GetReturnValue().Set(wrapper);
+      return;
+    }
+  }
+  info.GetReturnValue().Set(v8::Null(isolate));
+}
+
+void NodeIteratorDetach(const v8::FunctionCallbackInfo<v8::Value> &) {}
+
 void EventPropertyGetter(v8::Local<v8::Name> property,
                          const v8::PropertyCallbackInfo<v8::Value> &info) {
   v8::Isolate *isolate = info.GetIsolate();
@@ -6734,6 +7779,12 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
       v8::FunctionTemplate::New(isolate, MutationObserverConstructor);
   v8::Local<v8::FunctionTemplate> mutation_record_template =
       v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
+  v8::Local<v8::FunctionTemplate> range_template =
+      v8::FunctionTemplate::New(isolate, RangeConstructor);
+  v8::Local<v8::FunctionTemplate> tree_walker_template =
+      v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
+  v8::Local<v8::FunctionTemplate> node_iterator_template =
+      v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
   v8::Local<v8::FunctionTemplate> node_list_template =
       v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
   v8::Local<v8::FunctionTemplate> html_collection_template =
@@ -6823,6 +7874,12 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
       v8::String::NewFromUtf8Literal(isolate, "MutationObserver"));
   mutation_record_template->SetClassName(
       v8::String::NewFromUtf8Literal(isolate, "MutationRecord"));
+  range_template->SetClassName(
+      v8::String::NewFromUtf8Literal(isolate, "Range"));
+  tree_walker_template->SetClassName(
+      v8::String::NewFromUtf8Literal(isolate, "TreeWalker"));
+  node_iterator_template->SetClassName(
+      v8::String::NewFromUtf8Literal(isolate, "NodeIterator"));
   node_list_template->SetClassName(
       v8::String::NewFromUtf8Literal(isolate, "NodeList"));
   html_collection_template->SetClassName(
@@ -6900,6 +7957,105 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   mutation_observer_template->PrototypeTemplate()->Set(
       isolate, "takeRecords",
       v8::FunctionTemplate::New(isolate, MutationObserverTakeRecords));
+  range_template->InstanceTemplate()->SetInternalFieldCount(1);
+  for (const auto &property :
+       {std::pair<const char *, int>{"startContainer", 1},
+        {"startOffset", 2}, {"endContainer", 3}, {"endOffset", 4},
+        {"collapsed", 5}, {"commonAncestorContainer", 6}}) {
+    range_template->PrototypeTemplate()->SetAccessorProperty(
+        v8::String::NewFromUtf8(isolate, property.first).ToLocalChecked(),
+        v8::FunctionTemplate::New(
+            isolate, RangePropertyFunctionGetter,
+            v8::Integer::New(isolate, property.second)));
+  }
+  range_template->PrototypeTemplate()->Set(
+      isolate, "setStart",
+      v8::FunctionTemplate::New(isolate, RangeSetBoundary,
+                                v8::True(isolate)));
+  range_template->PrototypeTemplate()->Set(
+      isolate, "setEnd",
+      v8::FunctionTemplate::New(isolate, RangeSetBoundary,
+                                v8::False(isolate)));
+  range_template->PrototypeTemplate()->Set(
+      isolate, "selectNode",
+      v8::FunctionTemplate::New(isolate, RangeSelectNode));
+  range_template->PrototypeTemplate()->Set(
+      isolate, "selectNodeContents",
+      v8::FunctionTemplate::New(isolate, RangeSelectNodeContents));
+  range_template->PrototypeTemplate()->Set(
+      isolate, "collapse",
+      v8::FunctionTemplate::New(isolate, RangeCollapse));
+  range_template->PrototypeTemplate()->Set(
+      isolate, "cloneRange",
+      v8::FunctionTemplate::New(isolate, RangeCloneRange));
+  range_template->PrototypeTemplate()->Set(
+      isolate, "cloneContents",
+      v8::FunctionTemplate::New(isolate, RangeContents,
+                                v8::Integer::New(isolate, 1)));
+  range_template->PrototypeTemplate()->Set(
+      isolate, "extractContents",
+      v8::FunctionTemplate::New(isolate, RangeContents,
+                                v8::Integer::New(isolate, 2)));
+  range_template->PrototypeTemplate()->Set(
+      isolate, "deleteContents",
+      v8::FunctionTemplate::New(isolate, RangeContents,
+                                v8::Integer::New(isolate, 3)));
+  range_template->PrototypeTemplate()->Set(
+      isolate, "insertNode",
+      v8::FunctionTemplate::New(isolate, RangeInsertNode));
+  range_template->PrototypeTemplate()->Set(
+      isolate, "detach", v8::FunctionTemplate::New(isolate, RangeDetach));
+  tree_walker_template->InstanceTemplate()->SetInternalFieldCount(1);
+  node_iterator_template->InstanceTemplate()->SetInternalFieldCount(1);
+  for (const auto &property :
+       {std::pair<const char *, int>{"root", 1}, {"whatToShow", 3},
+        {"filter", 4}}) {
+    v8::Local<v8::String> name =
+        v8::String::NewFromUtf8(isolate, property.first).ToLocalChecked();
+    v8::Local<v8::FunctionTemplate> getter = v8::FunctionTemplate::New(
+        isolate, TraversalPropertyFunctionGetter,
+        v8::Integer::New(isolate, property.second));
+    tree_walker_template->PrototypeTemplate()->SetAccessorProperty(name,
+                                                                    getter);
+    node_iterator_template->PrototypeTemplate()->SetAccessorProperty(name,
+                                                                      getter);
+  }
+  tree_walker_template->PrototypeTemplate()->SetAccessorProperty(
+      v8::String::NewFromUtf8Literal(isolate, "currentNode"),
+      v8::FunctionTemplate::New(isolate, TraversalPropertyFunctionGetter,
+                                v8::Integer::New(isolate, 2)),
+      v8::FunctionTemplate::New(isolate, TreeWalkerCurrentNodeSetter));
+  node_iterator_template->PrototypeTemplate()->SetAccessorProperty(
+      v8::String::NewFromUtf8Literal(isolate, "referenceNode"),
+      v8::FunctionTemplate::New(isolate, TraversalPropertyFunctionGetter,
+                                v8::Integer::New(isolate, 2)));
+  node_iterator_template->PrototypeTemplate()->SetAccessorProperty(
+      v8::String::NewFromUtf8Literal(isolate, "pointerBeforeReferenceNode"),
+      v8::FunctionTemplate::New(isolate, TraversalPropertyFunctionGetter,
+                                v8::Integer::New(isolate, 6)));
+  for (const auto &method :
+       {std::pair<const char *, int>{"parentNode", 1}, {"firstChild", 2},
+        {"lastChild", 3}, {"previousSibling", 4}, {"nextSibling", 5}}) {
+    tree_walker_template->PrototypeTemplate()->Set(
+        isolate, method.first,
+        v8::FunctionTemplate::New(isolate, TreeWalkerRelation,
+                                  v8::Integer::New(isolate, method.second)));
+  }
+  tree_walker_template->PrototypeTemplate()->Set(
+      isolate, "previousNode",
+      v8::FunctionTemplate::New(isolate, TraversalStep, v8::False(isolate)));
+  tree_walker_template->PrototypeTemplate()->Set(
+      isolate, "nextNode",
+      v8::FunctionTemplate::New(isolate, TraversalStep, v8::True(isolate)));
+  node_iterator_template->PrototypeTemplate()->Set(
+      isolate, "previousNode",
+      v8::FunctionTemplate::New(isolate, TraversalStep, v8::False(isolate)));
+  node_iterator_template->PrototypeTemplate()->Set(
+      isolate, "nextNode",
+      v8::FunctionTemplate::New(isolate, TraversalStep, v8::True(isolate)));
+  node_iterator_template->PrototypeTemplate()->Set(
+      isolate, "detach",
+      v8::FunctionTemplate::New(isolate, NodeIteratorDetach));
 
   auto facade_data = [isolate](FacadeKind kind) {
     return v8::Integer::New(isolate, static_cast<int>(kind));
@@ -7161,6 +8317,8 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
                       v8::FunctionTemplate::New(isolate, NodeContains));
   node_prototype->Set(isolate, "cloneNode",
                       v8::FunctionTemplate::New(isolate, NodeCloneNode));
+  node_prototype->Set(isolate, "normalize",
+                      v8::FunctionTemplate::New(isolate, NodeNormalize));
 
   auto install_parent_node_surface =
       [isolate](v8::Local<v8::ObjectTemplate> prototype) {
@@ -7391,6 +8549,12 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   text_template->PrototypeTemplate()->SetNativeDataProperty(
       v8::String::NewFromUtf8Literal(isolate, "data"), NodeValueGetter,
       NodeValueSetter);
+  text_template->PrototypeTemplate()->Set(
+      isolate, "splitText",
+      v8::FunctionTemplate::New(isolate, TextSplitText));
+  html_template_element_template->PrototypeTemplate()->SetNativeDataProperty(
+      v8::String::NewFromUtf8Literal(isolate, "content"),
+      HTMLTemplateElementContentGetter);
 
   v8::Local<v8::ObjectTemplate> document_prototype =
       document_template->PrototypeTemplate();
@@ -7429,6 +8593,25 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   document_prototype->Set(
       isolate, "createDocumentFragment",
       v8::FunctionTemplate::New(isolate, DocumentCreateDocumentFragment));
+  document_prototype->Set(
+      isolate, "importNode",
+      v8::FunctionTemplate::New(isolate, DocumentImportOrAdoptNode,
+                                v8::False(isolate)));
+  document_prototype->Set(
+      isolate, "adoptNode",
+      v8::FunctionTemplate::New(isolate, DocumentImportOrAdoptNode,
+                                v8::True(isolate)));
+  document_prototype->Set(
+      isolate, "createRange",
+      v8::FunctionTemplate::New(isolate, DocumentCreateRange));
+  document_prototype->Set(
+      isolate, "createTreeWalker",
+      v8::FunctionTemplate::New(isolate, DocumentCreateTraversal,
+                                v8::False(isolate)));
+  document_prototype->Set(
+      isolate, "createNodeIterator",
+      v8::FunctionTemplate::New(isolate, DocumentCreateTraversal,
+                                v8::True(isolate)));
 
   install_parent_node_surface(
       document_fragment_template->PrototypeTemplate());
@@ -7593,6 +8776,9 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
         v8::String::NewFromUtf8Literal(isolate, "form"),
         ElementFormOwnerGetter);
   }
+  html_template_element_template->InstanceTemplate()->SetNativeDataProperty(
+      v8::String::NewFromUtf8Literal(isolate, "content"),
+      HTMLTemplateElementContentGetter);
 
   auto install_instance_reflected_string =
       [isolate](v8::Local<v8::FunctionTemplate> interface_template,
@@ -7682,6 +8868,9 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   realm->mutation_observer_template.Reset(isolate,
                                            mutation_observer_template);
   realm->mutation_record_template.Reset(isolate, mutation_record_template);
+  realm->range_template.Reset(isolate, range_template);
+  realm->tree_walker_template.Reset(isolate, tree_walker_template);
+  realm->node_iterator_template.Reset(isolate, node_iterator_template);
 
   v8::Local<v8::ObjectTemplate> style_prototype =
       style_template->PrototypeTemplate();
@@ -7754,6 +8943,36 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
     return false;
   }
   v8::Local<v8::Object> global = context->Global();
+  v8::Local<v8::Object> node_filter = v8::Object::New(isolate);
+  for (const auto &constant :
+       {std::pair<const char *, uint32_t>{"FILTER_ACCEPT", 1},
+        {"FILTER_REJECT", 2},
+        {"FILTER_SKIP", 3},
+        {"SHOW_ALL", 0xffffffffu},
+        {"SHOW_ELEMENT", 0x1},
+        {"SHOW_ATTRIBUTE", 0x2},
+        {"SHOW_TEXT", 0x4},
+        {"SHOW_CDATA_SECTION", 0x8},
+        {"SHOW_ENTITY_REFERENCE", 0x10},
+        {"SHOW_ENTITY", 0x20},
+        {"SHOW_PROCESSING_INSTRUCTION", 0x40},
+        {"SHOW_COMMENT", 0x80},
+        {"SHOW_DOCUMENT", 0x100},
+        {"SHOW_DOCUMENT_TYPE", 0x200},
+        {"SHOW_DOCUMENT_FRAGMENT", 0x400},
+        {"SHOW_NOTATION", 0x800}}) {
+    if (!node_filter
+             ->DefineOwnProperty(
+                 context,
+                 v8::String::NewFromUtf8(isolate, constant.first)
+                     .ToLocalChecked(),
+                 v8::Integer::NewFromUnsigned(isolate, constant.second),
+                 static_cast<v8::PropertyAttribute>(v8::ReadOnly |
+                                                    v8::DontDelete))
+             .FromMaybe(false)) {
+      return false;
+    }
+  }
   auto expose_interface =
       [context, global, isolate](
           const char *name,
@@ -7777,6 +8996,9 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
          expose_interface("FocusEvent", focus_event_template) &&
          expose_interface("MutationObserver", mutation_observer_template) &&
          expose_interface("MutationRecord", mutation_record_template) &&
+         expose_interface("Range", range_template) &&
+         expose_interface("TreeWalker", tree_walker_template) &&
+         expose_interface("NodeIterator", node_iterator_template) &&
          expose_interface("Node", node_template) &&
          expose_interface("Element", element_template) &&
          expose_interface("HTMLElement", html_element_template) &&
@@ -7798,6 +9020,11 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
          expose_interface("DOMTokenList", token_list_template) &&
          expose_interface("DOMStringMap", dataset_template) &&
          expose_interface("CSSStyleDeclaration", style_template) &&
+         global
+             ->Set(context,
+                   v8::String::NewFromUtf8Literal(isolate, "NodeFilter"),
+                   node_filter)
+             .FromMaybe(false) &&
          global
              ->Set(context, v8::String::NewFromUtf8Literal(isolate, "window"),
                    global)
@@ -8015,6 +9242,30 @@ void ClearRealmHandles(gossamer_v8_realm *realm) {
     delete observer;
   }
   realm->mutation_observers.clear();
+  for (RangeWeakData *range : realm->ranges) {
+    if (range->object.IsWeak())
+      range->object.ClearWeak<RangeWeakData>();
+    range->object.Reset();
+    if (range->state != nullptr) {
+      range->state->start_object.Reset();
+      range->state->end_object.Reset();
+      delete range->state;
+    }
+    delete range;
+  }
+  realm->ranges.clear();
+  for (TraversalWeakData *traversal : realm->traversals) {
+    if (traversal->object.IsWeak())
+      traversal->object.ClearWeak<TraversalWeakData>();
+    traversal->object.Reset();
+    if (traversal->state != nullptr) {
+      traversal->state->root_object.Reset();
+      traversal->state->filter.Reset();
+      delete traversal->state;
+    }
+    delete traversal;
+  }
+  realm->traversals.clear();
   for (auto &callback : realm->callbacks)
     callback.second.Reset();
   realm->callbacks.clear();
@@ -8030,6 +9281,9 @@ void ClearRealmHandles(gossamer_v8_realm *realm) {
   realm->focus_event_template.Reset();
   realm->mutation_observer_template.Reset();
   realm->mutation_record_template.Reset();
+  realm->range_template.Reset();
+  realm->tree_walker_template.Reset();
+  realm->node_iterator_template.Reset();
   realm->node_list_template.Reset();
   realm->html_collection_template.Reset();
   realm->token_list_template.Reset();

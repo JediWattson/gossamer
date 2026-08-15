@@ -189,6 +189,20 @@ extern int goGossamerV8HostFocusNode(uint64_t execution_id, uint64_t document,
 extern int goGossamerV8HostActiveElement(
     uint64_t execution_id, uint64_t *document_out, uint32_t *node_out,
     int *found_out, char **error_out);
+extern int goGossamerV8HostTemplateContent(
+    uint64_t execution_id, uint64_t document, uint32_t node,
+    uint64_t *content_document_out, uint32_t *content_node_out,
+    char **error_out);
+extern int goGossamerV8HostSplitText(
+    uint64_t execution_id, uint64_t document, uint32_t node, int32_t offset,
+    uint64_t *split_document_out, uint32_t *split_node_out, char **error_out);
+extern int goGossamerV8HostNormalizeNode(uint64_t execution_id,
+                                         uint64_t document, uint32_t node,
+                                         char **error_out);
+extern int goGossamerV8HostAdoptNode(
+    uint64_t execution_id, uint64_t document, uint32_t node,
+    uint64_t *adopted_document_out, uint32_t *adopted_node_out,
+    char **error_out);
 extern int goGossamerV8HostMutationSequence(uint64_t execution_id,
                                             uint64_t *sequence_out,
                                             char **error_out);
@@ -293,6 +307,10 @@ static gossamer_v8_host gossamer_v8_go_host(uint64_t execution_id) {
       .matches_selector = goGossamerV8HostMatchesSelector,
       .closest_selector = goGossamerV8HostClosestSelector,
       .clone_node = goGossamerV8HostCloneNode,
+      .template_content = goGossamerV8HostTemplateContent,
+      .split_text = goGossamerV8HostSplitText,
+      .normalize_node = goGossamerV8HostNormalizeNode,
+      .adopt_node = goGossamerV8HostAdoptNode,
       .inner_html = goGossamerV8HostInnerHTML,
       .set_inner_html = goGossamerV8HostSetInnerHTML,
       .insert_adjacent_html = goGossamerV8HostInsertAdjacentHTML,

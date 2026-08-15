@@ -248,6 +248,10 @@ type DOMElementHost interface {
 	MatchesSelector(NodeHandle, string) (bool, error)
 	ClosestSelector(NodeHandle, string) (NodeHandle, bool, error)
 	CloneNode(NodeHandle, bool) (NodeHandle, error)
+	TemplateContent(NodeHandle) (NodeHandle, error)
+	SplitText(NodeHandle, int) (NodeHandle, error)
+	Normalize(NodeHandle) error
+	AdoptNode(NodeHandle) (NodeHandle, error)
 	InnerHTML(NodeHandle) (string, error)
 	SetInnerHTML(NodeHandle, string) error
 	InsertAdjacentHTML(NodeHandle, string, string) error

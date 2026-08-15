@@ -31,15 +31,16 @@ type Attribute struct {
 // Node is a node in a document tree. Data contains the doctype name, element
 // name, text, comment text, or processing-instruction data according to Type.
 type Node struct {
-	Type         NodeType
-	Data         string
-	Target       string
-	NamespaceURI string
-	Prefix       string
-	Attributes   []Attribute
-	Parent       *Node
-	Children     []*Node
-	Control      *ControlState
+	Type            NodeType
+	Data            string
+	Target          string
+	NamespaceURI    string
+	Prefix          string
+	Attributes      []Attribute
+	Parent          *Node
+	Children        []*Node
+	Control         *ControlState
+	TemplateContent *Node
 }
 
 // ControlState contains mutable state that is deliberately separate from
@@ -81,6 +82,7 @@ func NewElement(name string, attributes ...Attribute) *Node {
 		Attributes:   append([]Attribute(nil), attributes...),
 	}
 	initializeControlState(node)
+	initializeTemplateContent(node)
 	return node
 }
 
@@ -93,7 +95,14 @@ func newElementNS(namespaceURI, prefix, localName string, attributes ...Attribut
 		Attributes:   append([]Attribute(nil), attributes...),
 	}
 	initializeControlState(node)
+	initializeTemplateContent(node)
 	return node
+}
+
+func initializeTemplateContent(node *Node) {
+	if node != nil && node.Type == ElementNode && node.NamespaceURI == HTMLNamespace && node.Data == "template" {
+		node.TemplateContent = NewDocumentFragment()
+	}
 }
 
 func initializeControlState(node *Node) {

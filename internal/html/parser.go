@@ -96,8 +96,12 @@ func ParseFragment(reader io.Reader, contextName string) (*dom.Node, error) {
 		token, err := tokenizer.Next()
 		if err == io.EOF {
 			fragment := dom.NewDocumentFragment()
-			for len(container.Children) != 0 {
-				fragment.AppendChild(container.Children[0])
+			source := container
+			if container.TemplateContent != nil {
+				source = container.TemplateContent
+			}
+			for len(source.Children) != 0 {
+				fragment.AppendChild(source.Children[0])
 			}
 			return fragment, nil
 		}
@@ -195,10 +199,10 @@ func (parser *parser) processBeforeHead(token Token) bool {
 			return false
 		}
 	case CommentToken:
-		parser.currentNode().AppendChild(dom.NewComment(token.Data))
+		parser.insertionParent().AppendChild(dom.NewComment(token.Data))
 		return false
 	case ProcessingInstructionToken:
-		parser.currentNode().AppendChild(dom.NewProcessingInstruction(token.Target, token.Data))
+		parser.insertionParent().AppendChild(dom.NewProcessingInstruction(token.Target, token.Data))
 		return false
 	case DoctypeToken:
 		return false
@@ -232,10 +236,10 @@ func (parser *parser) processInHead(token Token) bool {
 		return true
 
 	case CommentToken:
-		parser.currentNode().AppendChild(dom.NewComment(token.Data))
+		parser.insertionParent().AppendChild(dom.NewComment(token.Data))
 		return false
 	case ProcessingInstructionToken:
-		parser.currentNode().AppendChild(dom.NewProcessingInstruction(token.Target, token.Data))
+		parser.insertionParent().AppendChild(dom.NewProcessingInstruction(token.Target, token.Data))
 		return false
 	case DoctypeToken:
 		return false
@@ -296,10 +300,10 @@ func (parser *parser) processAfterHead(token Token) bool {
 		token.Data = rest
 
 	case CommentToken:
-		parser.currentNode().AppendChild(dom.NewComment(token.Data))
+		parser.insertionParent().AppendChild(dom.NewComment(token.Data))
 		return false
 	case ProcessingInstructionToken:
-		parser.currentNode().AppendChild(dom.NewProcessingInstruction(token.Target, token.Data))
+		parser.insertionParent().AppendChild(dom.NewProcessingInstruction(token.Target, token.Data))
 		return false
 	case DoctypeToken:
 		return false
@@ -328,10 +332,10 @@ func (parser *parser) processInBody(token Token) bool {
 		parser.insertText(token.Data)
 
 	case CommentToken:
-		parser.currentNode().AppendChild(dom.NewComment(token.Data))
+		parser.insertionParent().AppendChild(dom.NewComment(token.Data))
 
 	case ProcessingInstructionToken:
-		parser.currentNode().AppendChild(dom.NewProcessingInstruction(token.Target, token.Data))
+		parser.insertionParent().AppendChild(dom.NewProcessingInstruction(token.Target, token.Data))
 
 	case DoctypeToken:
 
@@ -545,7 +549,7 @@ func (parser *parser) startTextElement(token Token, mode textMode) {
 
 func (parser *parser) insertElement(token Token) *dom.Node {
 	element := parser.elementFromToken(token)
-	parser.currentNode().AppendChild(element)
+	parser.insertionParent().AppendChild(element)
 	parser.open = append(parser.open, element)
 	return element
 }
@@ -570,7 +574,7 @@ func (parser *parser) insertText(data string) {
 		}
 	}
 
-	parent := parser.currentNode()
+	parent := parser.insertionParent()
 	if len(parent.Children) > 0 {
 		last := parent.Children[len(parent.Children)-1]
 		if last.Type == dom.TextNode {
@@ -586,6 +590,14 @@ func (parser *parser) currentNode() *dom.Node {
 		return parser.document
 	}
 	return parser.open[len(parser.open)-1]
+}
+
+func (parser *parser) insertionParent() *dom.Node {
+	current := parser.currentNode()
+	if current != nil && current.TemplateContent != nil {
+		return current.TemplateContent
+	}
+	return current
 }
 
 func (parser *parser) mergeAttributes(element *dom.Node, token Token) {
