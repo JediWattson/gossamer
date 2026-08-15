@@ -1,6 +1,7 @@
 package dom
 
 import (
+	"errors"
 	"reflect"
 	"testing"
 )
@@ -82,5 +83,46 @@ func TestNodeValueAndHasAttribute(t *testing.T) {
 	}
 	if value, nonNull, err := document.NodeValue(textID); err != nil || !nonNull || value != "after" {
 		t.Fatalf("text NodeValue = %q, %t, %v", value, nonNull, err)
+	}
+}
+
+func TestNamespaceMetadataAndDocumentRelations(t *testing.T) {
+	root := NewDocument()
+	html := NewElement("html")
+	head := NewElement("head")
+	body := NewElement("body")
+	root.AppendChild(html)
+	html.AppendChild(head)
+	html.AppendChild(body)
+	document, err := IndexDocument(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for relation, want := range map[NodeRelation]*Node{
+		DocumentElement: html,
+		DocumentHead:    head,
+		DocumentBody:    body,
+	} {
+		got, found, err := document.RelatedNode(document.RootID(), relation)
+		wantID, _ := document.ID(want)
+		if err != nil || !found || got != wantID {
+			t.Fatalf("RelatedNode(%d) = %d, %t, %v; want %d", relation, got, found, err, wantID)
+		}
+	}
+
+	svgID, err := document.CreateElementNS(SVGNamespace, "svg:rect")
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := document.Snapshot(svgID)
+	if err != nil || snapshot.NamespaceURI != SVGNamespace || snapshot.Prefix != "svg" || snapshot.Data != "rect" {
+		t.Fatalf("namespaced snapshot = %#v, %v", snapshot, err)
+	}
+	if _, err := document.CreateElementNS("", "svg:rect"); !errors.Is(err, ErrNamespace) {
+		t.Fatalf("prefix without namespace error = %v, want %v", err, ErrNamespace)
+	}
+	if _, err := document.CreateElementNS(SVGNamespace, "svg:bad:name"); !errors.Is(err, ErrInvalidName) {
+		t.Fatalf("invalid qualified name error = %v, want %v", err, ErrInvalidName)
 	}
 }

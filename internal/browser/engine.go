@@ -95,6 +95,9 @@ const (
 	RelationLastElementChild
 	RelationPreviousElementSibling
 	RelationNextElementSibling
+	RelationDocumentElement
+	RelationDocumentHead
+	RelationDocumentBody
 )
 
 // DOMNodeType uses the numeric values exposed by the web Node interface.
@@ -111,10 +114,17 @@ const (
 
 // NodeMetadata is the scalar node state exposed through JavaScript traversal.
 type NodeMetadata struct {
-	Type      DOMNodeType
-	NodeName  string
-	LocalName string
-	Connected bool
+	Type         DOMNodeType
+	NodeName     string
+	LocalName    string
+	NamespaceURI string
+	Prefix       string
+	Connected    bool
+}
+
+type DocumentMetadata struct {
+	Root    NodeHandle
+	BaseURI string
 }
 
 // DOMElementHost is an optional extension implemented by browser hosts that
@@ -138,13 +148,28 @@ type DOMElementHost interface {
 	StylePropertyNames(NodeHandle) ([]string, error)
 }
 
+// DOMDocumentHost is the optional document interface needed to bind one
+// canonical JavaScript Document wrapper to a Page's native document root.
+type DOMDocumentHost interface {
+	DocumentMetadata() (DocumentMetadata, error)
+	CreateElementNS(string, string) (NodeHandle, error)
+}
+
 func domNodeMetadata(snapshot dom.NodeSnapshot) NodeMetadata {
 	metadata := NodeMetadata{Connected: snapshot.Connected}
 	switch snapshot.Type {
 	case dom.ElementNode:
 		metadata.Type = DOMElementNode
 		metadata.LocalName = snapshot.Data
-		metadata.NodeName = asciiUpper(snapshot.Data)
+		metadata.NamespaceURI = snapshot.NamespaceURI
+		metadata.Prefix = snapshot.Prefix
+		metadata.NodeName = snapshot.Data
+		if snapshot.Prefix != "" {
+			metadata.NodeName = snapshot.Prefix + ":" + snapshot.Data
+		}
+		if snapshot.NamespaceURI == dom.HTMLNamespace {
+			metadata.NodeName = asciiUpper(metadata.NodeName)
+		}
 	case dom.TextNode:
 		metadata.Type = DOMTextNode
 		metadata.NodeName = "#text"

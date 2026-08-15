@@ -20,6 +20,7 @@ var (
 	ErrInvalidTree     = errors.New("dom: invalid node tree")
 	ErrWrongNodeKind   = errors.New("dom: wrong node kind")
 	ErrInvalidName     = errors.New("dom: invalid name")
+	ErrNamespace       = errors.New("dom: invalid namespace")
 )
 
 // Document adds stable identity and mutation versioning around the existing
@@ -247,6 +248,31 @@ func (document *Document) CreateElement(name string) (NodeID, error) {
 	document.store.mutex.Lock()
 	defer document.store.mutex.Unlock()
 	return document.store.assignLocked(NewElement(name)), nil
+}
+
+// CreateElementNS indexes a detached namespace-aware element. Qualified names
+// preserve their case; createElement remains the HTML-lowercasing entry point.
+func (document *Document) CreateElementNS(namespaceURI, qualifiedName string) (NodeID, error) {
+	if document == nil || document.store == nil {
+		return InvalidNodeID, ErrInvalidDocument
+	}
+	prefix, localName, err := parseQualifiedName(qualifiedName)
+	if err != nil {
+		return InvalidNodeID, err
+	}
+	if prefix != "" && namespaceURI == "" {
+		return InvalidNodeID, fmt.Errorf("%w: prefix %q requires a namespace", ErrNamespace, prefix)
+	}
+	if prefix == "xml" && namespaceURI != XMLNamespace {
+		return InvalidNodeID, fmt.Errorf("%w: xml prefix requires %q", ErrNamespace, XMLNamespace)
+	}
+	usesXMLNS := qualifiedName == "xmlns" || prefix == "xmlns"
+	if usesXMLNS != (namespaceURI == XMLNSNamespace) {
+		return InvalidNodeID, fmt.Errorf("%w: xmlns name and namespace must agree", ErrNamespace)
+	}
+	document.store.mutex.Lock()
+	defer document.store.mutex.Unlock()
+	return document.store.assignLocked(newElementNS(namespaceURI, prefix, localName)), nil
 }
 
 // CreateTextNode indexes detached character data in the document's lifetime
@@ -631,6 +657,23 @@ func validDOMName(name string) bool {
 		}
 	}
 	return true
+}
+
+func parseQualifiedName(name string) (prefix, localName string, err error) {
+	if !validDOMName(name) {
+		return "", "", fmt.Errorf("%w: element %q", ErrInvalidName, name)
+	}
+	if strings.Count(name, ":") > 1 {
+		return "", "", fmt.Errorf("%w: qualified name %q", ErrInvalidName, name)
+	}
+	prefix, localName, found := strings.Cut(name, ":")
+	if !found {
+		return "", name, nil
+	}
+	if prefix == "" || localName == "" || !validDOMName(prefix) || !validDOMName(localName) {
+		return "", "", fmt.Errorf("%w: qualified name %q", ErrInvalidName, name)
+	}
+	return prefix, localName, nil
 }
 
 func (store *NodeStore) Resolve(id NodeID) (*Node, bool) {

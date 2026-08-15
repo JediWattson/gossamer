@@ -109,10 +109,11 @@ proves the full click-to-paint flow without a JavaScript parser. See
 
 An optional stock V8 15.2 adapter now occupies that socket on Apple Silicon.
 The pinned, symbolized build keeps JavaScript values under V8 GC while browser
-objects remain under Go regions and queue ARC. Its first wrapper slice exposes
-stable numeric node identity, `getElementById`, `textContent`, click listeners,
-node creation, tree mutation, attributes, microtasks, and timers without
-passing Go pointers into V8. Profiling covers heap totals, sampled allocations,
+objects remain under Go regions and queue ARC. Its wrapper layer exposes stable
+numeric node identity, canonical `Document`/`Node`/`Element`/`HTMLElement`/`Text`
+prototypes, namespace-aware creation, traversal, inline style, click listeners,
+tree mutation, attributes, microtasks, and timers without passing Go pointers
+into V8. Profiling covers heap totals, sampled allocations,
 GC callbacks, weak-wrapper collection, wrapper-root region sweeps, callback
 publication, explicit Promise checkpoints, and isolate teardown. Task-created
 DOM nodes now begin in short-lived construction regions; after task close they

@@ -262,7 +262,7 @@ func TestStockV8DOMWrapperClickMutatesThroughQueuedCallbackAndPaint(t *testing.T
 	if err != nil {
 		t.Fatalf("Profile after navigation: %v", err)
 	}
-	if profile.WrappersCreated != 2 || profile.WrapperCacheHits == 0 || profile.EventListeners != 1 {
+	if profile.WrappersCreated != 3 || profile.WrapperCacheHits == 0 || profile.EventListeners != 1 {
 		t.Fatalf("wrapper profile after navigation = %#v", profile)
 	}
 
@@ -277,7 +277,7 @@ func TestStockV8DOMWrapperClickMutatesThroughQueuedCallbackAndPaint(t *testing.T
 	if err != nil {
 		t.Fatalf("Profile after wrapper collection: %v", err)
 	}
-	if afterGC.WrappersCollected == 0 || afterGC.LiveWrappers != 1 {
+	if afterGC.WrappersCollected == 0 || afterGC.LiveWrappers != 2 {
 		t.Fatalf("weak wrapper cache after GC = %#v", afterGC)
 	}
 
@@ -539,6 +539,189 @@ func TestStockV8ElementTraversalReflectionInlineStyleAndLifetime(t *testing.T) {
 	}
 }
 
+func TestStockV8DOMPrototypesDocumentNamespaceIdentityAndTeardown(t *testing.T) {
+	engine := newTestEngine(t)
+	browserRuntime, err := browser.NewWithEngine(engine)
+	if err != nil {
+		t.Fatalf("NewWithEngine: %v", err)
+	}
+	defer func() {
+		if err := browserRuntime.Close(); err != nil {
+			t.Errorf("Close browser: %v", err)
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	page, err := browserRuntime.LoadPage(
+		ctx,
+		"https://gossamer.test/interfaces/index.html?mode=prototype",
+		staticDocumentLoader{document: `<!doctype html><html><head><title>Interfaces</title></head><body><main id="mount"></main></body></html>`},
+	)
+	if err != nil {
+		t.Fatalf("LoadPage: %v", err)
+	}
+	realm, ok := engine.LatestRealm()
+	if !ok {
+		t.Fatal("stock V8 engine has no live document realm")
+	}
+	documentStore := page.Document().Store()
+	baselineLiveNodes := documentStore.LiveLen()
+
+	_, err = page.QueueScript(browser.ScriptSource{
+		URL: "https://gossamer.test/interfaces/prototypes.js",
+		Source: `
+			(() => {
+				if (Object.getPrototypeOf(Node.prototype) !== EventTarget.prototype ||
+					Object.getPrototypeOf(Element.prototype) !== Node.prototype ||
+					Object.getPrototypeOf(HTMLElement.prototype) !== Element.prototype ||
+					Object.getPrototypeOf(Text.prototype) !== Node.prototype ||
+					Object.getPrototypeOf(Document.prototype) !== Node.prototype) {
+					throw new Error("DOM prototype inheritance is incorrect");
+				}
+				if (!Object.prototype.hasOwnProperty.call(EventTarget.prototype, "addEventListener") ||
+					!Object.prototype.hasOwnProperty.call(Node.prototype, "appendChild") ||
+					!Object.prototype.hasOwnProperty.call(Element.prototype, "getAttribute") ||
+					!Object.prototype.hasOwnProperty.call(Text.prototype, "data") ||
+					!Object.prototype.hasOwnProperty.call(Document.prototype, "createElementNS")) {
+					throw new Error("DOM prototype surface is incomplete");
+				}
+
+				if (!(document instanceof Document) || !(document instanceof Node) ||
+					!(document instanceof EventTarget) || document instanceof Element ||
+					Object.getPrototypeOf(document) !== Document.prototype ||
+					document.nodeType !== 9 || document.nodeName !== "#document") {
+					throw new Error("canonical document wrapper has the wrong interface");
+				}
+				if (document.ownerDocument !== null || document.defaultView !== window ||
+					document.baseURI !== "https://gossamer.test/interfaces/index.html?mode=prototype") {
+					throw new Error("document metadata is incorrect");
+				}
+				const html = document.documentElement;
+				if (html !== document.firstElementChild || html.ownerDocument !== document ||
+					!(html instanceof HTMLElement) || !(html instanceof Element) ||
+					!(html instanceof Node) || !(html instanceof EventTarget) ||
+					Object.getPrototypeOf(html) !== HTMLElement.prototype ||
+					html.namespaceURI !== "http://www.w3.org/1999/xhtml" ||
+					html.prefix !== null || html.localName !== "html" || html.tagName !== "HTML") {
+					throw new Error("HTML document element metadata or identity is incorrect");
+				}
+				if (document.head !== html.firstElementChild ||
+					document.body !== html.lastElementChild ||
+					document.head.ownerDocument !== document || document.body.ownerDocument !== document) {
+					throw new Error("document head/body identity is incorrect");
+				}
+
+				const text = document.createTextNode("namespaced text");
+				if (!(text instanceof Text) || !(text instanceof Node) ||
+					!(text instanceof EventTarget) || text instanceof Element ||
+					Object.getPrototypeOf(text) !== Text.prototype || text.ownerDocument !== document) {
+					throw new Error("Text wrapper has the wrong interface");
+				}
+				const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg:rect");
+				if (!(svg instanceof Element) || !(svg instanceof Node) ||
+					!(svg instanceof EventTarget) || svg instanceof HTMLElement ||
+					Object.getPrototypeOf(svg) !== Element.prototype ||
+					svg.namespaceURI !== "http://www.w3.org/2000/svg" ||
+					svg.prefix !== "svg" || svg.localName !== "rect" ||
+					svg.nodeName !== "svg:rect" || svg.tagName !== "svg:rect") {
+					throw new Error("namespaced Element wrapper metadata is incorrect");
+				}
+				const htmlByNamespace = document.createElementNS(
+					"http://www.w3.org/1999/xhtml", "x-panel",
+				);
+				if (!(htmlByNamespace instanceof HTMLElement) || htmlByNamespace.localName !== "x-panel") {
+					throw new Error("HTML namespace did not select HTMLElement");
+				}
+				svg.id = "namespaced-node";
+				svg.appendChild(text);
+				document.body.appendChild(svg);
+				if (document.getElementById("namespaced-node") !== svg ||
+					svg.firstChild !== text || text.ownerDocument !== document) {
+					throw new Error("one NodeHandle produced multiple wrappers");
+				}
+				globalThis.__heldNamespacedElement = document.getElementById("namespaced-node");
+				svg.remove();
+				if (__heldNamespacedElement !== svg || svg.isConnected) {
+					throw new Error("detachment changed wrapper identity");
+				}
+			})();
+		`,
+	})
+	if err != nil {
+		t.Fatalf("QueueScript prototypes: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("run prototype script: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("render prototype result: %v", err)
+	}
+	if err := realm.CollectGarbage(page); err != nil {
+		t.Fatalf("CollectGarbage with detached namespaced wrapper: %v", err)
+	}
+	if got := documentStore.LiveLen(); got <= baselineLiveNodes {
+		t.Fatalf("held detached namespaced component live nodes = %d, baseline %d", got, baselineLiveNodes)
+	}
+
+	_, err = page.QueueScript(browser.ScriptSource{
+		URL: "https://gossamer.test/interfaces/release.js",
+		Source: `
+			if (!(__heldNamespacedElement instanceof Element) ||
+				__heldNamespacedElement.ownerDocument !== document ||
+				__heldNamespacedElement.firstChild.ownerDocument !== document) {
+				throw new Error("forced GC changed detached wrapper identity");
+			}
+			document.body.appendChild(__heldNamespacedElement);
+			if (document.getElementById("namespaced-node") !== __heldNamespacedElement) {
+				throw new Error("reattachment changed canonical wrapper identity");
+			}
+			__heldNamespacedElement.remove();
+			globalThis.__heldNamespacedElement = undefined;
+		`,
+	})
+	if err != nil {
+		t.Fatalf("QueueScript release: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("run release script: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("render release result: %v", err)
+	}
+	if err := realm.CollectGarbage(page); err != nil {
+		t.Fatalf("CollectGarbage after detached release: %v", err)
+	}
+	if got := documentStore.LiveLen(); got != baselineLiveNodes {
+		t.Fatalf("live nodes after detached release = %d, want baseline %d", got, baselineLiveNodes)
+	}
+	profile, err := realm.Profile()
+	if err != nil {
+		t.Fatalf("Profile after prototype GC: %v", err)
+	}
+	if profile.LiveWrappers != 1 {
+		t.Fatalf("canonical document should be the sole live wrapper after GC: %#v", profile)
+	}
+
+	beforeClose := engine.Profile()
+	if err := page.Close(); err != nil {
+		t.Fatalf("Close prototype page: %v", err)
+	}
+	if err := realm.CollectGarbage(page); err != ErrRealmClosed {
+		t.Fatalf("CollectGarbage after realm teardown = %v, want %v", err, ErrRealmClosed)
+	}
+	if _, live := engine.LatestRealm(); live {
+		t.Fatal("document realm remained registered after teardown")
+	}
+	afterClose := engine.Profile()
+	if afterClose.RealmsClosed != beforeClose.RealmsClosed+1 {
+		t.Fatalf("realm teardown profile = %#v, before %#v", afterClose, beforeClose)
+	}
+	if stats := browserRuntime.Ledger().Stats(); stats.LiveObjects != 0 || stats.PersistentObjects != 0 {
+		t.Fatalf("realm teardown ownership = %#v", stats)
+	}
+}
+
 func TestStockV8NodeMutationChurnPreservesOwnershipBoundaries(t *testing.T) {
 	const iterations = 64
 
@@ -685,7 +868,7 @@ func TestStockV8NodeMutationChurnPreservesOwnershipBoundaries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Profile after churn: %v", err)
 	}
-	const createdWrappers = 1 + iterations*5 + 1
+	const createdWrappers = 1 + 1 + iterations*5 + 1
 	if got := afterRenderProfile.WrappersCreated - baselineProfile.WrappersCreated; got != createdWrappers {
 		t.Fatalf("wrappers created by churn = %d, want %d", got, createdWrappers)
 	}
@@ -711,8 +894,8 @@ func TestStockV8NodeMutationChurnPreservesOwnershipBoundaries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Profile after churn GC: %v", err)
 	}
-	if afterGC.WrappersCollected-baselineProfile.WrappersCollected != createdWrappers ||
-		afterGC.LiveWrappers != baselineProfile.LiveWrappers {
+	if afterGC.WrappersCollected-baselineProfile.WrappersCollected != createdWrappers-1 ||
+		afterGC.LiveWrappers != baselineProfile.LiveWrappers+1 {
 		t.Fatalf("wrapper reclamation after churn = %#v, baseline=%#v", afterGC, baselineProfile)
 	}
 
@@ -722,7 +905,7 @@ func TestStockV8NodeMutationChurnPreservesOwnershipBoundaries(t *testing.T) {
 	closedProfile := engine.Profile()
 	if closedProfile.RealmsCreated != 2 || closedProfile.RealmsClosed != 2 ||
 		closedProfile.ClosedRealms.WrappersCreated < createdWrappers ||
-		closedProfile.ClosedRealms.LiveWrappers != 0 {
+		closedProfile.ClosedRealms.LiveWrappers != 1 {
 		t.Fatalf("churn teardown profile = %#v", closedProfile)
 	}
 	if finalLedger := browserRuntime.Ledger().Stats(); finalLedger.LiveObjects != 0 || finalLedger.PersistentObjects != 0 {

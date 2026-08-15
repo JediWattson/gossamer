@@ -113,6 +113,41 @@ func domElementHost(host browser.Host) (browser.DOMElementHost, error) {
 	return domHost, nil
 }
 
+func domDocumentHost(host browser.Host) (browser.DOMDocumentHost, bool) {
+	domHost, ok := host.(browser.DOMDocumentHost)
+	return domHost, ok
+}
+
+//export goGossamerV8HostDocumentMetadata
+func goGossamerV8HostDocumentMetadata(
+	executionID C.uint64_t,
+	documentOut *C.uint64_t,
+	nodeOut *C.uint32_t,
+	baseURIOut **C.char,
+	baseURILengthOut *C.size_t,
+	foundOut *C.int,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, supported := domDocumentHost(host)
+		if !supported {
+			if foundOut != nil {
+				*foundOut = 0
+			}
+			return writeHostString("", baseURIOut, baseURILengthOut)
+		}
+		metadata, err := domHost.DocumentMetadata()
+		if err != nil {
+			return err
+		}
+		writeNodeHandle(metadata.Root, documentOut, nodeOut)
+		if foundOut != nil {
+			*foundOut = 1
+		}
+		return writeHostString(metadata.BaseURI, baseURIOut, baseURILengthOut)
+	}, executionID)
+}
+
 //export goGossamerV8HostGetElementByID
 func goGossamerV8HostGetElementByID(
 	executionID C.uint64_t,
@@ -172,6 +207,34 @@ func goGossamerV8HostCreateElement(
 ) C.int {
 	return runHostCall(errorOut, func(host browser.Host) error {
 		handle, err := host.CreateElement(goString(name, nameLength))
+		if err != nil {
+			return err
+		}
+		writeNodeHandle(handle, documentOut, nodeOut)
+		return nil
+	}, executionID)
+}
+
+//export goGossamerV8HostCreateElementNS
+func goGossamerV8HostCreateElementNS(
+	executionID C.uint64_t,
+	namespaceURI *C.char,
+	namespaceURILength C.size_t,
+	qualifiedName *C.char,
+	qualifiedNameLength C.size_t,
+	documentOut *C.uint64_t,
+	nodeOut *C.uint32_t,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, supported := domDocumentHost(host)
+		if !supported {
+			return fmt.Errorf("V8 host does not support DOM document bindings")
+		}
+		handle, err := domHost.CreateElementNS(
+			goString(namespaceURI, namespaceURILength),
+			goString(qualifiedName, qualifiedNameLength),
+		)
 		if err != nil {
 			return err
 		}
@@ -385,6 +448,10 @@ func goGossamerV8HostNodeMetadata(
 	nodeNameLengthOut *C.size_t,
 	localNameOut **C.char,
 	localNameLengthOut *C.size_t,
+	namespaceURIOut **C.char,
+	namespaceURILengthOut *C.size_t,
+	prefixOut **C.char,
+	prefixLengthOut *C.size_t,
 	connectedOut *C.int,
 	errorOut **C.char,
 ) C.int {
@@ -417,8 +484,26 @@ func goGossamerV8HostNodeMetadata(
 			}
 			return err
 		}
+		if err := writeHostString(metadata.NamespaceURI, namespaceURIOut, namespaceURILengthOut); err != nil {
+			freeHostStrings(nodeNameOut, localNameOut)
+			return err
+		}
+		if err := writeHostString(metadata.Prefix, prefixOut, prefixLengthOut); err != nil {
+			freeHostStrings(nodeNameOut, localNameOut, namespaceURIOut)
+			return err
+		}
 		return nil
 	}, executionID)
+}
+
+func freeHostStrings(outputs ...**C.char) {
+	for _, output := range outputs {
+		if output == nil || *output == nil {
+			continue
+		}
+		C.free(unsafe.Pointer(*output))
+		*output = nil
+	}
 }
 
 //export goGossamerV8HostRelatedNode

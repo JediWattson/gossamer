@@ -187,6 +187,44 @@ func (host *taskHost) CreateElement(name string) (NodeHandle, error) {
 	return NodeHandle{Document: host.generation, Node: node}, nil
 }
 
+func (host *taskHost) CreateElementNS(namespaceURI, qualifiedName string) (NodeHandle, error) {
+	host.page.mutex.Lock()
+	defer host.page.mutex.Unlock()
+	if host.page.closed {
+		return NodeHandle{}, ErrPageClosed
+	}
+	if host.page.documentGeneration != host.generation {
+		return NodeHandle{}, ErrStaleNodeHandle
+	}
+	node, err := host.page.document.CreateElementNS(namespaceURI, qualifiedName)
+	if err != nil {
+		return NodeHandle{}, err
+	}
+	if err := host.page.nodeLifetimes.sync(host.task); err != nil {
+		return NodeHandle{}, err
+	}
+	return NodeHandle{Document: host.generation, Node: node}, nil
+}
+
+func (host *taskHost) DocumentMetadata() (DocumentMetadata, error) {
+	host.page.mutex.RLock()
+	defer host.page.mutex.RUnlock()
+	if host.page.closed {
+		return DocumentMetadata{}, ErrPageClosed
+	}
+	if host.page.documentGeneration != host.generation {
+		return DocumentMetadata{}, ErrStaleNodeHandle
+	}
+	baseURI := "about:blank"
+	if host.page.location != nil {
+		baseURI = host.page.location.String()
+	}
+	return DocumentMetadata{
+		Root:    NodeHandle{Document: host.generation, Node: host.page.document.RootID()},
+		BaseURI: baseURI,
+	}, nil
+}
+
 func (host *taskHost) CreateTextNode(data string) (NodeHandle, error) {
 	host.page.mutex.Lock()
 	defer host.page.mutex.Unlock()
@@ -487,6 +525,12 @@ func browserNodeRelation(relation NodeRelation) (dom.NodeRelation, bool) {
 		return dom.PreviousElementSibling, true
 	case RelationNextElementSibling:
 		return dom.NextElementSibling, true
+	case RelationDocumentElement:
+		return dom.DocumentElement, true
+	case RelationDocumentHead:
+		return dom.DocumentHead, true
+	case RelationDocumentBody:
+		return dom.DocumentBody, true
 	default:
 		return 0, false
 	}

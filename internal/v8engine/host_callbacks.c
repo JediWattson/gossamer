@@ -2,6 +2,11 @@
 
 #include "host_callbacks.h"
 
+extern int goGossamerV8HostDocumentMetadata(
+    uint64_t execution_id, uint64_t *document_out, uint32_t *node_out,
+    char **base_uri_out, size_t *base_uri_length_out, int *found_out,
+    char **error_out);
+
 extern int goGossamerV8HostGetElementByID(uint64_t execution_id,
                                           const char *value,
                                           size_t value_length,
@@ -12,6 +17,11 @@ extern int goGossamerV8HostCreateElement(uint64_t execution_id,
                                          const char *name, size_t name_length,
                                          uint64_t *document_out,
                                          uint32_t *node_out, char **error_out);
+extern int goGossamerV8HostCreateElementNS(
+    uint64_t execution_id, const char *namespace_uri,
+    size_t namespace_uri_length, const char *qualified_name,
+    size_t qualified_name_length, uint64_t *document_out, uint32_t *node_out,
+    char **error_out);
 extern int goGossamerV8HostCreateTextNode(uint64_t execution_id,
                                           const char *data, size_t data_length,
                                           uint64_t *document_out,
@@ -58,7 +68,9 @@ extern int goGossamerV8HostRemoveAttribute(uint64_t execution_id,
 extern int goGossamerV8HostNodeMetadata(
     uint64_t execution_id, uint64_t document, uint32_t node,
     uint8_t *type_out, char **node_name_out, size_t *node_name_length_out,
-    char **local_name_out, size_t *local_name_length_out, int *connected_out,
+    char **local_name_out, size_t *local_name_length_out,
+    char **namespace_uri_out, size_t *namespace_uri_length_out,
+    char **prefix_out, size_t *prefix_length_out, int *connected_out,
     char **error_out);
 extern int goGossamerV8HostRelatedNode(uint64_t execution_id,
                                        uint64_t document, uint32_t node,
@@ -138,8 +150,10 @@ extern int goGossamerV8HostClearTimeout(uint64_t execution_id, uint64_t timer,
 static gossamer_v8_host gossamer_v8_go_host(uint64_t execution_id) {
   gossamer_v8_host host = {
       .execution_id = execution_id,
+      .document_metadata = goGossamerV8HostDocumentMetadata,
       .get_element_by_id = goGossamerV8HostGetElementByID,
       .create_element = goGossamerV8HostCreateElement,
+      .create_element_ns = goGossamerV8HostCreateElementNS,
       .create_text_node = goGossamerV8HostCreateTextNode,
       .text_content = goGossamerV8HostTextContent,
       .set_text_content = goGossamerV8HostSetTextContent,

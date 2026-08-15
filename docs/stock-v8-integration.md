@@ -82,12 +82,17 @@ The adapter implements the engine-independent runtime and profiling calls:
 - forced low-memory collection for repeatable profiling; and
 - context reset, platform isolate-shutdown notification, and isolate disposal.
 
-The first wrapper slice adds:
+The wrapper layer now adds:
 
-- `window`, `self`, and `document` globals;
+- `window`, `self`, and a canonical `document` wrapper for the native document
+  root;
+- inherited `EventTarget`, `Node`, `Element`, `HTMLElement`, `Text`, and
+  `Document` prototypes with interface-correct `instanceof` behavior;
 - `document.getElementById()` over connected, generation-scoped Go nodes;
-- `document.createElement()` and `document.createTextNode()` for detached,
-  task-local construction nodes;
+- `document.createElement()`, `document.createElementNS()`, and
+  `document.createTextNode()` for detached, task-local construction nodes;
+- `ownerDocument`, `documentElement`, `head`, `body`, `defaultView`, `baseURI`,
+  `namespaceURI`, `prefix`, and `localName` metadata;
 - one weakly cached V8 object per numeric node identity;
 - `textContent` reads and replacement mutations;
 - `appendChild()`, `insertBefore()`, and `removeChild()` with stable identity;
@@ -200,15 +205,16 @@ subtree, and removes it. One final survivor reaches the renderer. The test
 separately verifies:
 
 - 322 new Go nodes begin in the script task's construction region;
-- 322 V8 wrappers are reclaimed after JavaScript drops its aliases;
+- 323 V8 wrappers are created, including the canonical document wrapper, and
+  the other 322 are reclaimed after JavaScript drops its aliases;
 - 320 detached Go nodes are reclaimed with those wrappers, while the connected
   survivor element and its text keep their document claims;
 - ordinary JavaScript aliases create no additional claims, while each wrapper
   and document region claims a reachable node at most once;
 - script publication and render invalidation still cross exactly two queue
   boundaries, independent of mutation count; and
-- Realm teardown ends with no live wrappers, callback handles, or persistent
-  shadow ownership objects.
+- Realm teardown clears the canonical wrapper and every other V8 handle, and
+  ends with no callback handles or persistent shadow ownership objects.
 
 This makes the reclamation boundary explicit. Stable numeric identity is
 unchanged by promotion, detachment, wrapper collection, or physical removal;
@@ -216,11 +222,10 @@ reclaimed IDs become tombstones and are never reused within the document.
 
 ## Next wrapper milestone
 
-This is deliberately not enough DOM for React or general JSX output yet. The
-next slice should preserve the same ownership socket while adding the mutation
-surface a renderer needs:
+The next slice should preserve the same ownership socket while expanding the
+standards surface used by framework renderers:
 
-1. parent/child/sibling traversal and property reflection required by JSX;
-2. a style declaration wrapper that feeds the existing CSS pipeline;
-3. browser event objects and propagation;
+1. browser `Event` objects, target/currentTarget state, and propagation;
+2. selectors plus `classList`, `dataset`, and live collection behavior;
+3. fragment parsing through `innerHTML` and adjacent insertion APIs; and
 4. a real React bundle after the framework-shaped churn harness remains stable.

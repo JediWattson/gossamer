@@ -20,6 +20,10 @@ typedef struct gossamer_v8_realm gossamer_v8_realm;
 // execution identity and C callbacks; no Go pointer is stored in V8.
 typedef struct gossamer_v8_host {
   uint64_t execution_id;
+  int (*document_metadata)(uint64_t execution_id, uint64_t *document_out,
+                           uint32_t *node_out, char **base_uri_out,
+                           size_t *base_uri_length_out, int *found_out,
+                           char **error_out);
   int (*get_element_by_id)(uint64_t execution_id, const char *value,
                            size_t value_length, uint64_t *document_out,
                            uint32_t *node_out, int *found_out,
@@ -27,6 +31,12 @@ typedef struct gossamer_v8_host {
   int (*create_element)(uint64_t execution_id, const char *name,
                         size_t name_length, uint64_t *document_out,
                         uint32_t *node_out, char **error_out);
+  int (*create_element_ns)(uint64_t execution_id, const char *namespace_uri,
+                           size_t namespace_uri_length,
+                           const char *qualified_name,
+                           size_t qualified_name_length,
+                           uint64_t *document_out, uint32_t *node_out,
+                           char **error_out);
   int (*create_text_node)(uint64_t execution_id, const char *data,
                           size_t data_length, uint64_t *document_out,
                           uint32_t *node_out, char **error_out);
@@ -59,7 +69,9 @@ typedef struct gossamer_v8_host {
   int (*node_metadata)(uint64_t execution_id, uint64_t document, uint32_t node,
                        uint8_t *type_out, char **node_name_out,
                        size_t *node_name_length_out, char **local_name_out,
-                       size_t *local_name_length_out, int *connected_out,
+                       size_t *local_name_length_out, char **namespace_uri_out,
+                       size_t *namespace_uri_length_out, char **prefix_out,
+                       size_t *prefix_length_out, int *connected_out,
                        char **error_out);
   int (*related_node)(uint64_t execution_id, uint64_t document, uint32_t node,
                       uint8_t relation, uint32_t *related_node_out,

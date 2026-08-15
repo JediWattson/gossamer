@@ -205,11 +205,20 @@ struct gossamer_v8_realm {
   std::unique_ptr<v8::ArrayBuffer::Allocator> allocator;
   v8::Isolate *isolate = nullptr;
   v8::Global<v8::Context> context;
-  v8::Global<v8::ObjectTemplate> node_template;
+  v8::Global<v8::FunctionTemplate> event_target_template;
+  v8::Global<v8::FunctionTemplate> node_template;
+  v8::Global<v8::FunctionTemplate> element_template;
+  v8::Global<v8::FunctionTemplate> html_element_template;
+  v8::Global<v8::FunctionTemplate> text_template;
+  v8::Global<v8::FunctionTemplate> document_template;
   v8::Global<v8::ObjectTemplate> style_template;
+  v8::Global<v8::Object> document_wrapper;
   const gossamer_v8_host *active_host = nullptr;
   bool sampling = false;
   bool closed = false;
+  bool document_bound = false;
+  WrapperKey document_key;
+  std::string base_uri;
 
   std::unordered_map<WrapperKey, WrapperEntry, WrapperKeyHash> wrappers;
   std::vector<WrapperKey> collected_wrappers;
@@ -396,6 +405,8 @@ struct NodeMetadata {
   uint8_t type = 0;
   std::string node_name;
   std::string local_name;
+  std::string namespace_uri;
+  std::string prefix;
   bool connected = false;
 };
 
@@ -407,16 +418,23 @@ bool ReadNodeMetadata(gossamer_v8_realm *realm, const WrapperKey &key,
   size_t node_name_length = 0;
   char *local_name = nullptr;
   size_t local_name_length = 0;
+  char *namespace_uri = nullptr;
+  size_t namespace_uri_length = 0;
+  char *prefix = nullptr;
+  size_t prefix_length = 0;
   int connected = 0;
   char *host_error = nullptr;
   int ok = realm->active_host->node_metadata(
       realm->active_host->execution_id, key.document, key.node,
       &metadata->type, &node_name, &node_name_length, &local_name,
-      &local_name_length, &connected, &host_error);
+      &local_name_length, &namespace_uri, &namespace_uri_length, &prefix,
+      &prefix_length, &connected, &host_error);
   if (ok == 0) {
     *error = TakeCString(host_error);
     std::free(node_name);
     std::free(local_name);
+    std::free(namespace_uri);
+    std::free(prefix);
     if (error->empty())
       *error = "reading DOM node metadata failed";
     return false;
@@ -426,9 +444,14 @@ bool ReadNodeMetadata(gossamer_v8_realm *realm, const WrapperKey &key,
                              node_name_length);
   metadata->local_name.assign(local_name == nullptr ? "" : local_name,
                               local_name_length);
+  metadata->namespace_uri.assign(
+      namespace_uri == nullptr ? "" : namespace_uri, namespace_uri_length);
+  metadata->prefix.assign(prefix == nullptr ? "" : prefix, prefix_length);
   metadata->connected = connected != 0;
   std::free(node_name);
   std::free(local_name);
+  std::free(namespace_uri);
+  std::free(prefix);
   return true;
 }
 
@@ -489,10 +512,24 @@ GetOrCreateNodeWrapper(gossamer_v8_realm *realm, v8::Local<v8::Context> context,
     return cached->second.object.Get(realm->isolate);
   }
 
-  v8::Local<v8::ObjectTemplate> node_template =
-      realm->node_template.Get(realm->isolate);
+  NodeMetadata metadata;
+  if (!ReadNodeMetadata(realm, key, &metadata, error))
+    return {};
+  v8::Local<v8::FunctionTemplate> node_template;
+  if (metadata.type == 9) {
+    node_template = realm->document_template.Get(realm->isolate);
+  } else if (metadata.type == 3) {
+    node_template = realm->text_template.Get(realm->isolate);
+  } else if (metadata.type == 1) {
+    node_template =
+        metadata.namespace_uri == "http://www.w3.org/1999/xhtml"
+            ? realm->html_element_template.Get(realm->isolate)
+            : realm->element_template.Get(realm->isolate);
+  } else {
+    node_template = realm->node_template.Get(realm->isolate);
+  }
   v8::Local<v8::Object> object;
-  if (!node_template->NewInstance(context).ToLocal(&object))
+  if (!node_template->InstanceTemplate()->NewInstance(context).ToLocal(&object))
     return {};
   object->SetInternalField(
       kNodeDocumentField,
@@ -533,6 +570,64 @@ GetOrCreateNodeWrapper(gossamer_v8_realm *realm, v8::Local<v8::Context> context,
                        v8::WeakCallbackType::kParameter);
   realm->wrappers_created.fetch_add(1, std::memory_order_relaxed);
   return object;
+}
+
+bool EnsureDocumentBinding(gossamer_v8_realm *realm,
+                           v8::Local<v8::Context> context,
+                           std::string *error) {
+  if (realm->document_bound || realm->active_host == nullptr ||
+      realm->active_host->execution_id == 0)
+    return true;
+  uint64_t document = 0;
+  uint32_t node = 0;
+  char *base_uri = nullptr;
+  size_t base_uri_length = 0;
+  int found = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->document_metadata(
+          realm->active_host->execution_id, &document, &node, &base_uri,
+          &base_uri_length, &found, &host_error) == 0) {
+    *error = TakeCString(host_error);
+    std::free(base_uri);
+    if (error->empty())
+      *error = "reading document metadata failed";
+    return false;
+  }
+  std::free(host_error);
+  if (found == 0) {
+    std::free(base_uri);
+    return true;
+  }
+  realm->document_key = WrapperKey{document, node};
+  realm->base_uri.assign(base_uri == nullptr ? "" : base_uri, base_uri_length);
+  std::free(base_uri);
+  v8::Local<v8::Object> wrapper;
+  if (!GetOrCreateNodeWrapper(realm, context, realm->document_key, error)
+           .ToLocal(&wrapper))
+    return false;
+  if (!context->Global()
+           ->DefineOwnProperty(
+               context,
+               v8::String::NewFromUtf8Literal(realm->isolate, "document"),
+               wrapper,
+               static_cast<v8::PropertyAttribute>(v8::ReadOnly |
+                                                  v8::DontDelete))
+           .FromMaybe(false)) {
+    *error = "V8 failed to install the canonical document wrapper";
+    return false;
+  }
+  realm->document_wrapper.Reset(realm->isolate, wrapper);
+  realm->document_bound = true;
+  return true;
+}
+
+bool ReadCanonicalDocument(gossamer_v8_realm *realm,
+                           v8::Local<v8::Context> context,
+                           v8::Local<v8::Value> *document) {
+  if (!realm->document_bound || realm->document_wrapper.IsEmpty())
+    return false;
+  *document = realm->document_wrapper.Get(realm->isolate);
+  return true;
 }
 
 uint64_t StoreOneShotCallback(gossamer_v8_realm *realm,
@@ -674,6 +769,49 @@ void DocumentCreateNode(const v8::FunctionCallbackInfo<v8::Value> &info,
 
 void DocumentCreateElement(const v8::FunctionCallbackInfo<v8::Value> &info) {
   DocumentCreateNode(info, true);
+}
+
+void DocumentCreateElementNS(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  if (info.Length() < 2) {
+    ThrowError(isolate, "createElementNS requires a namespace and qualified name");
+    return;
+  }
+  std::string namespace_uri;
+  std::string qualified_name;
+  if (!info[0]->IsNull() && !StringFromValue(isolate, info[0], &namespace_uri))
+    return;
+  if (!StringFromValue(isolate, info[1], &qualified_name))
+    return;
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  uint64_t document = 0;
+  uint32_t node = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->create_element_ns(
+          realm->active_host->execution_id, namespace_uri.data(),
+          namespace_uri.size(), qualified_name.data(), qualified_name.size(),
+          &document, &node, &host_error) == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate, error.empty() ? "createElementNS failed" : error);
+    return;
+  }
+  std::free(host_error);
+  v8::Local<v8::Object> wrapper;
+  if (!GetOrCreateNodeWrapper(realm, isolate->GetCurrentContext(),
+                              WrapperKey{document, node}, &error)
+           .ToLocal(&wrapper)) {
+    ThrowError(isolate, error.empty()
+                            ? "V8 failed to allocate a namespaced DOM wrapper"
+                            : error);
+    return;
+  }
+  info.GetReturnValue().Set(wrapper);
 }
 
 void DocumentCreateTextNode(const v8::FunctionCallbackInfo<v8::Value> &info) {
@@ -988,6 +1126,34 @@ void NodeMetadataGetter(v8::Local<v8::Name> property,
     info.GetReturnValue().Set(value);
     return;
   }
+  if (name == "namespaceURI") {
+    if (metadata.type != 1 || metadata.namespace_uri.empty()) {
+      info.GetReturnValue().Set(v8::Null(isolate));
+      return;
+    }
+    v8::Local<v8::String> value;
+    if (!NewUTF8String(isolate, metadata.namespace_uri.data(),
+                       metadata.namespace_uri.size(), &value)) {
+      ThrowError(isolate, "V8 failed to allocate namespaceURI");
+      return;
+    }
+    info.GetReturnValue().Set(value);
+    return;
+  }
+  if (name == "prefix") {
+    if (metadata.type != 1 || metadata.prefix.empty()) {
+      info.GetReturnValue().Set(v8::Null(isolate));
+      return;
+    }
+    v8::Local<v8::String> value;
+    if (!NewUTF8String(isolate, metadata.prefix.data(), metadata.prefix.size(),
+                       &value)) {
+      ThrowError(isolate, "V8 failed to allocate prefix");
+      return;
+    }
+    info.GetReturnValue().Set(value);
+    return;
+  }
   if (name == "tagName" && metadata.type != 1) {
     info.GetReturnValue().Set(v8::Undefined(isolate));
     return;
@@ -999,6 +1165,43 @@ void NodeMetadataGetter(v8::Local<v8::Name> property,
     return;
   }
   info.GetReturnValue().Set(value);
+}
+
+void NodeOwnerDocumentGetter(
+    v8::Local<v8::Name>, const v8::PropertyCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.Holder(), &key))
+    return;
+  if (!realm->document_bound || key == realm->document_key) {
+    info.GetReturnValue().Set(v8::Null(isolate));
+    return;
+  }
+  v8::Local<v8::Value> document;
+  if (!ReadCanonicalDocument(realm, isolate->GetCurrentContext(), &document)) {
+    ThrowError(isolate, "Gossamer document wrapper is unavailable");
+    return;
+  }
+  info.GetReturnValue().Set(document);
+}
+
+void NodeBaseURIGetter(v8::Local<v8::Name>,
+                       const v8::PropertyCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  v8::Local<v8::String> value;
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  if (!NewUTF8String(isolate, realm->base_uri.data(), realm->base_uri.size(),
+                     &value)) {
+    ThrowError(isolate, "V8 failed to allocate baseURI");
+    return;
+  }
+  info.GetReturnValue().Set(value);
+}
+
+void DocumentDefaultViewGetter(
+    v8::Local<v8::Name>, const v8::PropertyCallbackInfo<v8::Value> &info) {
+  info.GetReturnValue().Set(info.GetIsolate()->GetCurrentContext()->Global());
 }
 
 bool RelationFromProperty(const std::string &name, uint8_t *relation) {
@@ -1022,6 +1225,12 @@ bool RelationFromProperty(const std::string &name, uint8_t *relation) {
     *relation = 9;
   else if (name == "nextElementSibling")
     *relation = 10;
+  else if (name == "documentElement")
+    *relation = 11;
+  else if (name == "head")
+    *relation = 12;
+  else if (name == "body")
+    *relation = 13;
   else
     return false;
   return true;
@@ -1990,78 +2199,270 @@ void ClearTimeoutCallback(const v8::FunctionCallbackInfo<v8::Value> &info) {
     RemoveCallback(realm, callback->second);
 }
 
+void IllegalDOMConstructor(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  ThrowError(info.GetIsolate(), "Illegal constructor");
+}
+
 bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   v8::Isolate *isolate = realm->isolate;
-  v8::Local<v8::ObjectTemplate> node_template =
-      v8::ObjectTemplate::New(isolate);
-  node_template->SetInternalFieldCount(3);
-  node_template->SetNativeDataProperty(
+  v8::Local<v8::FunctionTemplate> event_target_template =
+      v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
+  v8::Local<v8::FunctionTemplate> node_template =
+      v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
+  v8::Local<v8::FunctionTemplate> element_template =
+      v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
+  v8::Local<v8::FunctionTemplate> html_element_template =
+      v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
+  v8::Local<v8::FunctionTemplate> text_template =
+      v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
+  v8::Local<v8::FunctionTemplate> document_template =
+      v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
+
+  event_target_template->SetClassName(
+      v8::String::NewFromUtf8Literal(isolate, "EventTarget"));
+  node_template->SetClassName(v8::String::NewFromUtf8Literal(isolate, "Node"));
+  element_template->SetClassName(
+      v8::String::NewFromUtf8Literal(isolate, "Element"));
+  html_element_template->SetClassName(
+      v8::String::NewFromUtf8Literal(isolate, "HTMLElement"));
+  text_template->SetClassName(v8::String::NewFromUtf8Literal(isolate, "Text"));
+  document_template->SetClassName(
+      v8::String::NewFromUtf8Literal(isolate, "Document"));
+  node_template->Inherit(event_target_template);
+  element_template->Inherit(node_template);
+  html_element_template->Inherit(element_template);
+  text_template->Inherit(node_template);
+  document_template->Inherit(node_template);
+  for (v8::Local<v8::FunctionTemplate> interface_template :
+       {node_template, element_template, html_element_template, text_template,
+        document_template}) {
+    interface_template->InstanceTemplate()->SetInternalFieldCount(3);
+  }
+
+  v8::Local<v8::ObjectTemplate> event_target_prototype =
+      event_target_template->PrototypeTemplate();
+  event_target_prototype->Set(
+      isolate, "addEventListener",
+      v8::FunctionTemplate::New(isolate, NodeAddEventListener));
+  event_target_prototype->Set(
+      isolate, "removeEventListener",
+      v8::FunctionTemplate::New(isolate, NodeRemoveEventListener));
+
+  v8::Local<v8::ObjectTemplate> node_prototype =
+      node_template->PrototypeTemplate();
+  node_prototype->SetNativeDataProperty(
       v8::String::NewFromUtf8Literal(isolate, "textContent"),
       NodeTextContentGetter, NodeTextContentSetter);
-  node_template->SetNativeDataProperty(
+  node_prototype->SetNativeDataProperty(
       v8::String::NewFromUtf8Literal(isolate, "nodeValue"), NodeValueGetter,
       NodeValueSetter);
-  node_template->SetNativeDataProperty(
-      v8::String::NewFromUtf8Literal(isolate, "data"), NodeValueGetter,
-      NodeValueSetter);
-  for (const char *name : {"nodeType", "nodeName", "tagName", "localName",
-                           "isConnected"}) {
-    node_template->SetNativeDataProperty(
+  for (const char *name : {"nodeType", "nodeName", "localName",
+                           "namespaceURI", "prefix", "isConnected"}) {
+    node_prototype->SetNativeDataProperty(
         v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
         NodeMetadataGetter);
   }
+  node_prototype->SetNativeDataProperty(
+      v8::String::NewFromUtf8Literal(isolate, "ownerDocument"),
+      NodeOwnerDocumentGetter);
+  node_prototype->SetNativeDataProperty(
+      v8::String::NewFromUtf8Literal(isolate, "baseURI"), NodeBaseURIGetter);
   for (const char *name : {"parentNode", "parentElement", "firstChild",
-                           "lastChild", "previousSibling", "nextSibling",
-                           "firstElementChild", "lastElementChild",
-                           "previousElementSibling", "nextElementSibling"}) {
-    node_template->SetNativeDataProperty(
+                           "lastChild", "previousSibling", "nextSibling"}) {
+    node_prototype->SetNativeDataProperty(
         v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
         NodeRelationGetter);
   }
-  node_template->SetNativeDataProperty(
+  node_prototype->SetNativeDataProperty(
       v8::String::NewFromUtf8Literal(isolate, "childNodes"),
       NodeChildrenGetter);
-  node_template->SetNativeDataProperty(
-      v8::String::NewFromUtf8Literal(isolate, "children"), NodeChildrenGetter);
-  node_template->SetNativeDataProperty(
-      v8::String::NewFromUtf8Literal(isolate, "childElementCount"),
-      NodeChildElementCountGetter);
-  node_template->SetNativeDataProperty(
+  node_prototype->Set(isolate, "appendChild",
+                      v8::FunctionTemplate::New(isolate, NodeAppendChild));
+  node_prototype->Set(isolate, "insertBefore",
+                      v8::FunctionTemplate::New(isolate, NodeInsertBefore));
+  node_prototype->Set(isolate, "removeChild",
+                      v8::FunctionTemplate::New(isolate, NodeRemoveChild));
+  node_prototype->Set(isolate, "replaceChild",
+                      v8::FunctionTemplate::New(isolate, NodeReplaceChild));
+  node_prototype->Set(isolate, "hasChildNodes",
+                      v8::FunctionTemplate::New(isolate, NodeHasChildNodes));
+  node_prototype->Set(isolate, "contains",
+                      v8::FunctionTemplate::New(isolate, NodeContains));
+  node_prototype->Set(isolate, "remove",
+                      v8::FunctionTemplate::New(isolate, NodeRemove));
+
+  auto install_parent_node_surface =
+      [isolate](v8::Local<v8::ObjectTemplate> prototype) {
+        for (const char *name : {"firstElementChild", "lastElementChild"}) {
+          prototype->SetNativeDataProperty(
+              v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
+              NodeRelationGetter);
+        }
+        prototype->SetNativeDataProperty(
+            v8::String::NewFromUtf8Literal(isolate, "children"),
+            NodeChildrenGetter);
+        prototype->SetNativeDataProperty(
+            v8::String::NewFromUtf8Literal(isolate, "childElementCount"),
+            NodeChildElementCountGetter);
+      };
+
+  v8::Local<v8::ObjectTemplate> element_prototype =
+      element_template->PrototypeTemplate();
+  install_parent_node_surface(element_prototype);
+  for (const char *name : {"tagName"}) {
+    element_prototype->SetNativeDataProperty(
+        v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
+        NodeMetadataGetter);
+  }
+  for (const char *name : {"previousElementSibling", "nextElementSibling"}) {
+    element_prototype->SetNativeDataProperty(
+        v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
+        NodeRelationGetter);
+  }
+  element_prototype->SetNativeDataProperty(
       v8::String::NewFromUtf8Literal(isolate, "id"),
       NodeReflectedAttributeGetter, NodeReflectedAttributeSetter);
-  node_template->SetNativeDataProperty(
+  element_prototype->SetNativeDataProperty(
       v8::String::NewFromUtf8Literal(isolate, "className"),
       NodeReflectedAttributeGetter, NodeReflectedAttributeSetter);
-  node_template->SetNativeDataProperty(
+  element_prototype->SetNativeDataProperty(
       v8::String::NewFromUtf8Literal(isolate, "style"), NodeStyleGetter);
-  node_template->Set(isolate, "appendChild",
-                     v8::FunctionTemplate::New(isolate, NodeAppendChild));
-  node_template->Set(isolate, "insertBefore",
-                     v8::FunctionTemplate::New(isolate, NodeInsertBefore));
-  node_template->Set(isolate, "removeChild",
-                     v8::FunctionTemplate::New(isolate, NodeRemoveChild));
-  node_template->Set(isolate, "replaceChild",
-                     v8::FunctionTemplate::New(isolate, NodeReplaceChild));
-  node_template->Set(isolate, "hasChildNodes",
-                     v8::FunctionTemplate::New(isolate, NodeHasChildNodes));
-  node_template->Set(isolate, "contains",
-                     v8::FunctionTemplate::New(isolate, NodeContains));
-  node_template->Set(isolate, "remove",
-                     v8::FunctionTemplate::New(isolate, NodeRemove));
-  node_template->Set(isolate, "getAttribute",
-                     v8::FunctionTemplate::New(isolate, NodeGetAttribute));
-  node_template->Set(isolate, "setAttribute",
-                     v8::FunctionTemplate::New(isolate, NodeSetAttribute));
-  node_template->Set(isolate, "removeAttribute",
-                     v8::FunctionTemplate::New(isolate, NodeRemoveAttribute));
-  node_template->Set(isolate, "hasAttribute",
-                     v8::FunctionTemplate::New(isolate, NodeHasAttribute));
-  node_template->Set(isolate, "addEventListener",
-                     v8::FunctionTemplate::New(isolate, NodeAddEventListener));
-  node_template->Set(
-      isolate, "removeEventListener",
-      v8::FunctionTemplate::New(isolate, NodeRemoveEventListener));
+  element_prototype->Set(isolate, "getAttribute",
+                         v8::FunctionTemplate::New(isolate, NodeGetAttribute));
+  element_prototype->Set(isolate, "setAttribute",
+                         v8::FunctionTemplate::New(isolate, NodeSetAttribute));
+  element_prototype->Set(
+      isolate, "removeAttribute",
+      v8::FunctionTemplate::New(isolate, NodeRemoveAttribute));
+  element_prototype->Set(isolate, "hasAttribute",
+                         v8::FunctionTemplate::New(isolate, NodeHasAttribute));
+
+  text_template->PrototypeTemplate()->SetNativeDataProperty(
+      v8::String::NewFromUtf8Literal(isolate, "data"), NodeValueGetter,
+      NodeValueSetter);
+
+  v8::Local<v8::ObjectTemplate> document_prototype =
+      document_template->PrototypeTemplate();
+  install_parent_node_surface(document_prototype);
+  for (const char *name : {"documentElement", "head", "body"}) {
+    document_prototype->SetNativeDataProperty(
+        v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
+        NodeRelationGetter);
+  }
+  document_prototype->SetNativeDataProperty(
+      v8::String::NewFromUtf8Literal(isolate, "defaultView"),
+      DocumentDefaultViewGetter);
+  document_prototype->Set(
+      isolate, "getElementById",
+      v8::FunctionTemplate::New(isolate, DocumentGetElementByID));
+  document_prototype->Set(
+      isolate, "createElement",
+      v8::FunctionTemplate::New(isolate, DocumentCreateElement));
+  document_prototype->Set(
+      isolate, "createElementNS",
+      v8::FunctionTemplate::New(isolate, DocumentCreateElementNS));
+  document_prototype->Set(
+      isolate, "createTextNode",
+      v8::FunctionTemplate::New(isolate, DocumentCreateTextNode));
+
+  // Current V8 native-data callbacks expose Holder rather than the original
+  // receiver. Keep the standards-shaped accessors on the prototypes for
+  // reflection, and mirror them onto each concrete instance template so host
+  // calls always receive the wrapper carrying the native NodeHandle fields.
+  auto install_node_instance_surface =
+      [isolate](v8::Local<v8::ObjectTemplate> instance) {
+        instance->SetNativeDataProperty(
+            v8::String::NewFromUtf8Literal(isolate, "textContent"),
+            NodeTextContentGetter, NodeTextContentSetter);
+        instance->SetNativeDataProperty(
+            v8::String::NewFromUtf8Literal(isolate, "nodeValue"),
+            NodeValueGetter, NodeValueSetter);
+        for (const char *name : {"nodeType", "nodeName", "localName",
+                                 "namespaceURI", "prefix", "isConnected"}) {
+          instance->SetNativeDataProperty(
+              v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
+              NodeMetadataGetter);
+        }
+        instance->SetNativeDataProperty(
+            v8::String::NewFromUtf8Literal(isolate, "ownerDocument"),
+            NodeOwnerDocumentGetter);
+        instance->SetNativeDataProperty(
+            v8::String::NewFromUtf8Literal(isolate, "baseURI"),
+            NodeBaseURIGetter);
+        for (const char *name : {"parentNode", "parentElement", "firstChild",
+                                 "lastChild", "previousSibling",
+                                 "nextSibling"}) {
+          instance->SetNativeDataProperty(
+              v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
+              NodeRelationGetter);
+        }
+        instance->SetNativeDataProperty(
+            v8::String::NewFromUtf8Literal(isolate, "childNodes"),
+            NodeChildrenGetter);
+      };
+  auto install_parent_instance_surface =
+      [isolate](v8::Local<v8::ObjectTemplate> instance) {
+        for (const char *name : {"firstElementChild", "lastElementChild"}) {
+          instance->SetNativeDataProperty(
+              v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
+              NodeRelationGetter);
+        }
+        instance->SetNativeDataProperty(
+            v8::String::NewFromUtf8Literal(isolate, "children"),
+            NodeChildrenGetter);
+        instance->SetNativeDataProperty(
+            v8::String::NewFromUtf8Literal(isolate, "childElementCount"),
+            NodeChildElementCountGetter);
+      };
+  auto install_element_instance_surface =
+      [isolate, install_parent_instance_surface](
+          v8::Local<v8::ObjectTemplate> instance) {
+        install_parent_instance_surface(instance);
+        instance->SetNativeDataProperty(
+            v8::String::NewFromUtf8Literal(isolate, "tagName"),
+            NodeMetadataGetter);
+        for (const char *name : {"previousElementSibling",
+                                 "nextElementSibling"}) {
+          instance->SetNativeDataProperty(
+              v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
+              NodeRelationGetter);
+        }
+        instance->SetNativeDataProperty(
+            v8::String::NewFromUtf8Literal(isolate, "id"),
+            NodeReflectedAttributeGetter, NodeReflectedAttributeSetter);
+        instance->SetNativeDataProperty(
+            v8::String::NewFromUtf8Literal(isolate, "className"),
+            NodeReflectedAttributeGetter, NodeReflectedAttributeSetter);
+        instance->SetNativeDataProperty(
+            v8::String::NewFromUtf8Literal(isolate, "style"), NodeStyleGetter);
+      };
+  for (v8::Local<v8::FunctionTemplate> interface_template :
+       {node_template, element_template, html_element_template, text_template,
+        document_template}) {
+    install_node_instance_surface(interface_template->InstanceTemplate());
+  }
+  install_element_instance_surface(element_template->InstanceTemplate());
+  install_element_instance_surface(html_element_template->InstanceTemplate());
+  text_template->InstanceTemplate()->SetNativeDataProperty(
+      v8::String::NewFromUtf8Literal(isolate, "data"), NodeValueGetter,
+      NodeValueSetter);
+  install_parent_instance_surface(document_template->InstanceTemplate());
+  for (const char *name : {"documentElement", "head", "body"}) {
+    document_template->InstanceTemplate()->SetNativeDataProperty(
+        v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
+        NodeRelationGetter);
+  }
+  document_template->InstanceTemplate()->SetNativeDataProperty(
+      v8::String::NewFromUtf8Literal(isolate, "defaultView"),
+      DocumentDefaultViewGetter);
+
+  realm->event_target_template.Reset(isolate, event_target_template);
   realm->node_template.Reset(isolate, node_template);
+  realm->element_template.Reset(isolate, element_template);
+  realm->html_element_template.Reset(isolate, html_element_template);
+  realm->text_template.Reset(isolate, text_template);
+  realm->document_template.Reset(isolate, document_template);
 
   v8::Local<v8::ObjectTemplate> style_template =
       v8::ObjectTemplate::New(isolate);
@@ -2107,20 +2508,10 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   }
   realm->style_template.Reset(isolate, style_template);
 
-  v8::Local<v8::Object> document = v8::Object::New(isolate);
-  v8::Local<v8::Function> get_element_by_id;
-  v8::Local<v8::Function> create_element;
-  v8::Local<v8::Function> create_text_node;
   v8::Local<v8::Function> queue_microtask;
   v8::Local<v8::Function> set_timeout;
   v8::Local<v8::Function> clear_timeout;
-  if (!v8::Function::New(context, DocumentGetElementByID)
-           .ToLocal(&get_element_by_id) ||
-      !v8::Function::New(context, DocumentCreateElement)
-           .ToLocal(&create_element) ||
-      !v8::Function::New(context, DocumentCreateTextNode)
-           .ToLocal(&create_text_node) ||
-      !v8::Function::New(context, QueueMicrotaskCallback)
+  if (!v8::Function::New(context, QueueMicrotaskCallback)
            .ToLocal(&queue_microtask) ||
       !v8::Function::New(context, SetTimeoutCallback).ToLocal(&set_timeout) ||
       !v8::Function::New(context, ClearTimeoutCallback)
@@ -2128,25 +2519,24 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
     return false;
   }
   v8::Local<v8::Object> global = context->Global();
-  return document
-             ->Set(context,
-                   v8::String::NewFromUtf8Literal(isolate, "getElementById"),
-                   get_element_by_id)
-             .FromMaybe(false) &&
-         document
-             ->Set(context,
-                   v8::String::NewFromUtf8Literal(isolate, "createElement"),
-                   create_element)
-             .FromMaybe(false) &&
-         document
-             ->Set(context,
-                   v8::String::NewFromUtf8Literal(isolate, "createTextNode"),
-                   create_text_node)
-             .FromMaybe(false) &&
-         global
-             ->Set(context, v8::String::NewFromUtf8Literal(isolate, "document"),
-                   document)
-             .FromMaybe(false) &&
+  auto expose_interface =
+      [context, global, isolate](
+          const char *name,
+          v8::Local<v8::FunctionTemplate> interface_template) {
+        v8::Local<v8::Function> constructor;
+        return interface_template->GetFunction(context).ToLocal(&constructor) &&
+               global
+                   ->Set(context,
+                         v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
+                         constructor)
+                   .FromMaybe(false);
+      };
+  return expose_interface("EventTarget", event_target_template) &&
+         expose_interface("Node", node_template) &&
+         expose_interface("Element", element_template) &&
+         expose_interface("HTMLElement", html_element_template) &&
+         expose_interface("Text", text_template) &&
+         expose_interface("Document", document_template) &&
          global
              ->Set(context, v8::String::NewFromUtf8Literal(isolate, "window"),
                    global)
@@ -2192,8 +2582,17 @@ void ClearRealmHandles(gossamer_v8_realm *realm) {
   realm->callbacks.clear();
   realm->timer_callbacks.clear();
   realm->callback_timers.clear();
+  realm->event_target_template.Reset();
   realm->node_template.Reset();
+  realm->element_template.Reset();
+  realm->html_element_template.Reset();
+  realm->text_template.Reset();
+  realm->document_template.Reset();
   realm->style_template.Reset();
+  realm->document_wrapper.Reset();
+  realm->document_bound = false;
+  realm->document_key = WrapperKey{};
+  realm->base_uri.clear();
 }
 
 } // namespace
@@ -2309,6 +2708,11 @@ gossamer_v8_realm_evaluate(gossamer_v8_realm *realm,
   v8::Local<v8::Context> context = realm->context.Get(realm->isolate);
   v8::Context::Scope context_scope(context);
   HostScope host_scope(realm, host);
+  std::string binding_error;
+  if (!EnsureDocumentBinding(realm, context, &binding_error)) {
+    SetError(error_out, binding_error);
+    return 0;
+  }
   v8::TryCatch caught(realm->isolate);
 
   v8::Local<v8::String> source_string;
@@ -2370,6 +2774,11 @@ extern "C" int gossamer_v8_realm_dispatch_event(gossamer_v8_realm *realm,
   v8::Local<v8::Context> context = realm->context.Get(realm->isolate);
   v8::Context::Scope context_scope(context);
   HostScope host_scope(realm, host);
+  std::string binding_error;
+  if (!EnsureDocumentBinding(realm, context, &binding_error)) {
+    SetError(error_out, binding_error);
+    return 0;
+  }
   auto found = realm->listeners.find(
       ListenerKey{WrapperKey{document, node}, event_type});
   realm->events_dispatched.fetch_add(1, std::memory_order_relaxed);
@@ -2404,6 +2813,11 @@ extern "C" int gossamer_v8_realm_invoke(gossamer_v8_realm *realm,
   v8::Local<v8::Context> context = realm->context.Get(realm->isolate);
   v8::Context::Scope context_scope(context);
   HostScope host_scope(realm, host);
+  std::string binding_error;
+  if (!EnsureDocumentBinding(realm, context, &binding_error)) {
+    SetError(error_out, binding_error);
+    return 0;
+  }
   auto found = realm->callbacks.find(callback);
   if (found == realm->callbacks.end()) {
     SetError(error_out, "V8 callback handle is unknown or already consumed");
@@ -2438,6 +2852,11 @@ extern "C" int gossamer_v8_realm_drain_microtasks(gossamer_v8_realm *realm,
   v8::Local<v8::Context> context = realm->context.Get(realm->isolate);
   v8::Context::Scope context_scope(context);
   HostScope host_scope(realm, host);
+  std::string binding_error;
+  if (!EnsureDocumentBinding(realm, context, &binding_error)) {
+    SetError(error_out, binding_error);
+    return 0;
+  }
   realm->isolate->PerformMicrotaskCheckpoint();
   realm->microtask_checkpoints.fetch_add(1, std::memory_order_relaxed);
   while (v8::platform::PumpMessageLoop(

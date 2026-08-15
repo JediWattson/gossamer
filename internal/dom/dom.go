@@ -13,6 +13,14 @@ const (
 	ProcessingInstructionNode
 )
 
+const (
+	HTMLNamespace   = "http://www.w3.org/1999/xhtml"
+	SVGNamespace    = "http://www.w3.org/2000/svg"
+	MathMLNamespace = "http://www.w3.org/1998/Math/MathML"
+	XMLNamespace    = "http://www.w3.org/XML/1998/namespace"
+	XMLNSNamespace  = "http://www.w3.org/2000/xmlns/"
+)
+
 // Attribute is a name-value pair on an element.
 type Attribute struct {
 	Name  string
@@ -22,12 +30,14 @@ type Attribute struct {
 // Node is a node in a document tree. Data contains the doctype name, element
 // name, text, comment text, or processing-instruction data according to Type.
 type Node struct {
-	Type       NodeType
-	Data       string
-	Target     string
-	Attributes []Attribute
-	Parent     *Node
-	Children   []*Node
+	Type         NodeType
+	Data         string
+	Target       string
+	NamespaceURI string
+	Prefix       string
+	Attributes   []Attribute
+	Parent       *Node
+	Children     []*Node
 }
 
 // NewDocument creates an empty document node.
@@ -43,10 +53,31 @@ func NewDoctype(name string) *Node {
 // NewElement creates an element node. The node owns a copy of attributes.
 func NewElement(name string, attributes ...Attribute) *Node {
 	return &Node{
-		Type:       ElementNode,
-		Data:       name,
-		Attributes: append([]Attribute(nil), attributes...),
+		Type:         ElementNode,
+		Data:         name,
+		NamespaceURI: HTMLNamespace,
+		Attributes:   append([]Attribute(nil), attributes...),
 	}
+}
+
+func newElementNS(namespaceURI, prefix, localName string, attributes ...Attribute) *Node {
+	return &Node{
+		Type:         ElementNode,
+		Data:         localName,
+		NamespaceURI: namespaceURI,
+		Prefix:       prefix,
+		Attributes:   append([]Attribute(nil), attributes...),
+	}
+}
+
+func (node *Node) QualifiedName() string {
+	if node == nil || node.Prefix == "" {
+		if node == nil {
+			return ""
+		}
+		return node.Data
+	}
+	return node.Prefix + ":" + node.Data
 }
 
 // NewText creates a text node.

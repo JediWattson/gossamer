@@ -19,16 +19,21 @@ const (
 	LastElementChild
 	PreviousElementSibling
 	NextElementSibling
+	DocumentElement
+	DocumentHead
+	DocumentBody
 )
 
 // NodeSnapshot contains the immutable metadata needed to expose a DOM node to
 // a JavaScript engine. Connected reports whether the node reaches this
 // document's root through parent edges.
 type NodeSnapshot struct {
-	Type      NodeType
-	Data      string
-	Target    string
-	Connected bool
+	Type         NodeType
+	Data         string
+	Target       string
+	NamespaceURI string
+	Prefix       string
+	Connected    bool
 }
 
 // Snapshot returns node metadata without exposing its backing pointer.
@@ -54,10 +59,12 @@ func (document *Document) Snapshot(id NodeID) (NodeSnapshot, error) {
 		}
 	}
 	return NodeSnapshot{
-		Type:      node.Type,
-		Data:      node.Data,
-		Target:    node.Target,
-		Connected: connected,
+		Type:         node.Type,
+		Data:         node.Data,
+		Target:       node.Target,
+		NamespaceURI: node.NamespaceURI,
+		Prefix:       node.Prefix,
+		Connected:    connected,
 	}, nil
 }
 
@@ -101,6 +108,26 @@ func (document *Document) RelatedNode(id NodeID, relation NodeRelation) (NodeID,
 		related = sibling(node, -1, true)
 	case NextElementSibling:
 		related = sibling(node, 1, true)
+	case DocumentElement:
+		if node.Type == DocumentNode {
+			related = elementChild(node.Children, false)
+		}
+	case DocumentHead, DocumentBody:
+		if node.Type == DocumentNode {
+			documentElement := elementChild(node.Children, false)
+			if documentElement != nil {
+				name := "head"
+				if relation == DocumentBody {
+					name = "body"
+				}
+				for _, child := range documentElement.Children {
+					if child.Type == ElementNode && child.NamespaceURI == HTMLNamespace && strings.EqualFold(child.Data, name) {
+						related = child
+						break
+					}
+				}
+			}
+		}
 	default:
 		return InvalidNodeID, false, fmt.Errorf("dom: unknown node relation %d", relation)
 	}
