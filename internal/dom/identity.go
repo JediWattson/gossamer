@@ -566,10 +566,10 @@ func (document *Document) CloneNode(id NodeID, deep bool) (NodeID, error) {
 			NamespaceURI: node.NamespaceURI,
 			Prefix:       node.Prefix,
 			Attributes:   append([]Attribute(nil), node.Attributes...),
-			FormValue:    node.FormValue,
-			ValueDirty:   node.ValueDirty,
-			FormChecked:  node.FormChecked,
-			CheckedDirty: node.CheckedDirty,
+		}
+		if node.Control != nil {
+			state := *node.Control
+			copy.Control = &state
 		}
 		if deep {
 			for _, child := range node.Children {
@@ -995,108 +995,6 @@ func (document *Document) RemoveAttribute(id NodeID, name string) error {
 		return nil
 	}
 	return nil
-}
-
-// FormValue returns the current mutable value state for controls. Before the
-// value becomes dirty it follows the markup default, matching the browser
-// distinction between the value property and value attribute.
-func (document *Document) FormValue(id NodeID) (string, error) {
-	if document == nil || document.store == nil {
-		return "", ErrInvalidDocument
-	}
-	document.store.mutex.RLock()
-	defer document.store.mutex.RUnlock()
-	node, ok := document.store.resolveLocked(id)
-	if !ok {
-		return "", fmt.Errorf("%w: %d", ErrUnknownNode, id)
-	}
-	if !isValueControl(node) {
-		return "", fmt.Errorf("%w: node %d has no form value", ErrWrongNodeKind, id)
-	}
-	if node.ValueDirty {
-		return node.FormValue, nil
-	}
-	if node.Data == "textarea" {
-		return descendantText(node), nil
-	}
-	value, _ := attributeValue(node, "value")
-	return value, nil
-}
-
-func (document *Document) SetFormValue(id NodeID, value string) error {
-	if document == nil || document.store == nil {
-		return ErrInvalidDocument
-	}
-	document.store.mutex.Lock()
-	defer document.store.mutex.Unlock()
-	node, ok := document.store.resolveLocked(id)
-	if !ok {
-		return fmt.Errorf("%w: %d", ErrUnknownNode, id)
-	}
-	if !isValueControl(node) {
-		return fmt.Errorf("%w: node %d has no form value", ErrWrongNodeKind, id)
-	}
-	if node.ValueDirty && node.FormValue == value {
-		return nil
-	}
-	node.FormValue = value
-	node.ValueDirty = true
-	document.version.Add(1)
-	return nil
-}
-
-func (document *Document) FormChecked(id NodeID) (bool, error) {
-	if document == nil || document.store == nil {
-		return false, ErrInvalidDocument
-	}
-	document.store.mutex.RLock()
-	defer document.store.mutex.RUnlock()
-	node, ok := document.store.resolveLocked(id)
-	if !ok {
-		return false, fmt.Errorf("%w: %d", ErrUnknownNode, id)
-	}
-	if node.Type != ElementNode || node.Data != "input" {
-		return false, fmt.Errorf("%w: node %d has no checked state", ErrWrongNodeKind, id)
-	}
-	if node.CheckedDirty {
-		return node.FormChecked, nil
-	}
-	_, found := attributeValue(node, "checked")
-	return found, nil
-}
-
-func (document *Document) SetFormChecked(id NodeID, checked bool) error {
-	if document == nil || document.store == nil {
-		return ErrInvalidDocument
-	}
-	document.store.mutex.Lock()
-	defer document.store.mutex.Unlock()
-	node, ok := document.store.resolveLocked(id)
-	if !ok {
-		return fmt.Errorf("%w: %d", ErrUnknownNode, id)
-	}
-	if node.Type != ElementNode || node.Data != "input" {
-		return fmt.Errorf("%w: node %d has no checked state", ErrWrongNodeKind, id)
-	}
-	if node.CheckedDirty && node.FormChecked == checked {
-		return nil
-	}
-	node.FormChecked = checked
-	node.CheckedDirty = true
-	document.version.Add(1)
-	return nil
-}
-
-func isValueControl(node *Node) bool {
-	if node == nil || node.Type != ElementNode {
-		return false
-	}
-	switch node.Data {
-	case "input", "textarea", "option", "select", "button":
-		return true
-	default:
-		return false
-	}
 }
 
 func attributeValue(node *Node, name string) (string, bool) {

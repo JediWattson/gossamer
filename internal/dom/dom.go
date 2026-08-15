@@ -39,10 +39,18 @@ type Node struct {
 	Attributes   []Attribute
 	Parent       *Node
 	Children     []*Node
-	FormValue    string
-	ValueDirty   bool
-	FormChecked  bool
-	CheckedDirty bool
+	Control      *ControlState
+}
+
+// ControlState contains mutable state that is deliberately separate from
+// content attributes. It is allocated only for stateful HTML controls.
+type ControlState struct {
+	Value         string
+	ValueDirty    bool
+	Checked       bool
+	CheckedDirty  bool
+	Selected      bool
+	SelectedDirty bool
 }
 
 // NewDocument creates an empty document node.
@@ -63,21 +71,35 @@ func NewDoctype(name string) *Node {
 
 // NewElement creates an element node. The node owns a copy of attributes.
 func NewElement(name string, attributes ...Attribute) *Node {
-	return &Node{
+	node := &Node{
 		Type:         ElementNode,
 		Data:         name,
 		NamespaceURI: HTMLNamespace,
 		Attributes:   append([]Attribute(nil), attributes...),
 	}
+	initializeControlState(node)
+	return node
 }
 
 func newElementNS(namespaceURI, prefix, localName string, attributes ...Attribute) *Node {
-	return &Node{
+	node := &Node{
 		Type:         ElementNode,
 		Data:         localName,
 		NamespaceURI: namespaceURI,
 		Prefix:       prefix,
 		Attributes:   append([]Attribute(nil), attributes...),
+	}
+	initializeControlState(node)
+	return node
+}
+
+func initializeControlState(node *Node) {
+	if node == nil || node.Type != ElementNode || node.NamespaceURI != HTMLNamespace {
+		return
+	}
+	switch node.Data {
+	case "input", "textarea", "select", "option", "button":
+		node.Control = &ControlState{}
 	}
 }
 

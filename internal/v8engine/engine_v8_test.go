@@ -1296,7 +1296,7 @@ func TestStockV8FormStateFocusAndCancelableDefaultActions(t *testing.T) {
 	page, err := browserRuntime.LoadPage(
 		ctx,
 		"https://gossamer.test/forms",
-		staticDocumentLoader{document: `<!doctype html><html><body><input id="text" value="seed"><input id="check" type="checkbox" checked><input id="cancel" type="checkbox"></body></html>`},
+		staticDocumentLoader{document: `<!doctype html><html><body><input id="text" value="seed"><input id="check" type="checkbox" checked><input id="cancel" type="checkbox"><input id="radio-a" type="radio" name="pick" checked><input id="radio-b" type="radio" name="pick"><input id="radio-cancel" type="radio" name="pick"></body></html>`},
 	)
 	if err != nil {
 		t.Fatalf("LoadPage: %v", err)
@@ -1309,6 +1309,9 @@ func TestStockV8FormStateFocusAndCancelableDefaultActions(t *testing.T) {
 				const text = document.getElementById("text");
 				const check = document.getElementById("check");
 				const cancel = document.getElementById("cancel");
+				const radioA = document.getElementById("radio-a");
+				const radioB = document.getElementById("radio-b");
+				const radioCancel = document.getElementById("radio-cancel");
 				const valueDescriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value");
 				const checkedDescriptor = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "checked");
 				if (!valueDescriptor || typeof valueDescriptor.get !== "function" ||
@@ -1337,9 +1340,18 @@ func TestStockV8FormStateFocusAndCancelableDefaultActions(t *testing.T) {
 				}
 				globalThis.__checkedDuringClick = false;
 				globalThis.__checkedDuringCanceledClick = false;
+				globalThis.__radioDuringClick = false;
+				globalThis.__radioDuringCanceledClick = false;
 				check.addEventListener("click", () => { __checkedDuringClick = check.checked; });
 				cancel.addEventListener("click", event => {
 					__checkedDuringCanceledClick = cancel.checked;
+					event.preventDefault();
+				});
+				radioB.addEventListener("click", () => {
+					__radioDuringClick = radioB.checked && !radioA.checked;
+				});
+				radioCancel.addEventListener("click", event => {
+					__radioDuringCanceledClick = radioCancel.checked && !radioB.checked;
 					event.preventDefault();
 				});
 			})();
@@ -1360,17 +1372,21 @@ func TestStockV8FormStateFocusAndCancelableDefaultActions(t *testing.T) {
 	textID, _ := page.Document().ElementByID("text")
 	checkID, _ := page.Document().ElementByID("check")
 	cancelID, _ := page.Document().ElementByID("cancel")
+	radioBID, _ := page.Document().ElementByID("radio-b")
+	radioCancelID, _ := page.Document().ElementByID("radio-cancel")
 	generation := page.DocumentGeneration()
 	for _, event := range []browser.InputEvent{
 		{Type: browser.InputClick, Target: browser.NodeHandle{Document: generation, Node: checkID}},
 		{Type: browser.InputClick, Target: browser.NodeHandle{Document: generation, Node: cancelID}},
+		{Type: browser.InputClick, Target: browser.NodeHandle{Document: generation, Node: radioBID}},
+		{Type: browser.InputClick, Target: browser.NodeHandle{Document: generation, Node: radioCancelID}},
 		{Type: browser.InputInput, Target: browser.NodeHandle{Document: generation, Node: textID}, Data: "X", InputType: "insertText"},
 	} {
 		if _, err := page.QueueInputEvent(event); err != nil {
 			t.Fatalf("QueueInputEvent(%s): %v", event.Type, err)
 		}
 	}
-	for range 3 {
+	for range 5 {
 		if err := page.Realm.RunOne(context.Background()); err != nil {
 			t.Fatalf("run form input: %v", err)
 		}
@@ -1385,10 +1401,16 @@ func TestStockV8FormStateFocusAndCancelableDefaultActions(t *testing.T) {
 			if (!__checkedDuringCanceledClick || document.getElementById("cancel").checked) {
 				throw new Error("preventDefault did not roll checkbox activation back");
 			}
+			if (!__radioDuringClick || !__radioDuringCanceledClick ||
+				document.getElementById("radio-a").checked ||
+				!document.getElementById("radio-b").checked ||
+				document.getElementById("radio-cancel").checked) {
+				throw new Error("radio activation or cancel rollback failed");
+			}
 			if (document.getElementById("text").value !== "userX") {
 				throw new Error("input event did not update current value");
 			}
-			if (document.activeElement !== document.getElementById("check")) {
+			if (document.activeElement !== document.getElementById("radio-b")) {
 				throw new Error("uncanceled click did not preserve focus");
 			}
 		`,
@@ -2465,6 +2487,148 @@ func TestStockV8SpecializedHTMLElementInterfacesPreserveCanonicalIdentity(t *tes
 	}
 	if ledger := browserRuntime.Ledger().Stats(); ledger.LiveObjects != 0 || ledger.PersistentObjects != 0 {
 		t.Fatalf("Milestone 9 teardown ownership = %#v", ledger)
+	}
+}
+
+func TestStockV8CoordinatedFormStateAndLiveControlCollections(t *testing.T) {
+	engine := newTestEngine(t)
+	browserRuntime, err := browser.NewWithEngine(engine)
+	if err != nil {
+		t.Fatalf("NewWithEngine: %v", err)
+	}
+	defer func() {
+		if err := browserRuntime.Close(); err != nil {
+			t.Errorf("Close browser: %v", err)
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	page, err := browserRuntime.LoadPage(ctx, "https://gossamer.test/forms", staticDocumentLoader{
+		document: `<!doctype html><html><body>
+			<form id="account">
+				<input id="first" name="choice" type="radio" checked>
+				<input id="second" name="choice" type="radio">
+				<textarea id="notes" name="notes">default notes</textarea>
+				<select id="kind" name="kind">
+					<option id="one" value="one">One</option>
+					<option id="two" value="two" selected>Two</option>
+				</select>
+				<button id="save" name="save">Save</button>
+			</form>
+			<input id="external" name="external" form="account" value="outside">
+		</body></html>`,
+	})
+	if err != nil {
+		t.Fatalf("LoadPage: %v", err)
+	}
+	realm, ok := engine.LatestRealm()
+	if !ok {
+		t.Fatal("stock V8 engine has no live form realm")
+	}
+
+	_, err = page.QueueScript(browser.ScriptSource{
+		URL: "https://gossamer.test/forms/assert.js",
+		Source: `
+			(() => {
+				const form = document.getElementById("account");
+				const first = document.getElementById("first");
+				const second = document.getElementById("second");
+				const notes = document.getElementById("notes");
+				const select = document.getElementById("kind");
+				const one = document.getElementById("one");
+				const two = document.getElementById("two");
+				const external = document.getElementById("external");
+				const elements = form.elements;
+				const options = select.options;
+
+				if (!(elements instanceof HTMLCollection) || form.elements !== elements ||
+					elements.length !== 6 || elements.namedItem("notes") !== notes ||
+					elements.external !== external || elements[3] !== select ||
+					!(options instanceof HTMLCollection) || select.options !== options ||
+					options.length !== 2 || options[1] !== two || options.namedItem("one") !== one) {
+					throw new Error("live form collection shape or canonical identity failed");
+				}
+				if (first.form !== form || notes.form !== form || select.form !== form ||
+					external.form !== form || document.createElement("input").form !== null) {
+					throw new Error("form owner association failed");
+				}
+				if (!first.checked || second.checked || notes.value !== "default notes" ||
+					select.value !== "two" || select.selectedIndex !== 1 || one.selected || !two.selected ||
+					!two.defaultSelected) {
+					throw new Error("initial control state failed");
+				}
+
+				second.checked = true;
+				if (first.checked || !second.checked) throw new Error("radio coordination failed");
+				notes.value = "user notes";
+				select.value = "one";
+				if (select.selectedIndex !== 0 || !one.selected || two.selected ||
+					select.value !== "one" || !two.defaultSelected) {
+					throw new Error("select current/default state split failed");
+				}
+				one.selected = false;
+				if (select.selectedIndex !== -1 || select.value !== "") {
+					throw new Error("explicit empty selection failed");
+				}
+				const three = document.createElement("option");
+				three.id = "three";
+				three.value = "three";
+				three.textContent = "Three";
+				select.append(three);
+				if (options.length !== 3 || options[2] !== three || options.three !== three) {
+					throw new Error("select.options is not live");
+				}
+
+				form.reset();
+				if (!first.checked || second.checked || notes.value !== "default notes" ||
+					select.value !== "two" || select.selectedIndex !== 1 || !two.selected) {
+					throw new Error("form.reset did not restore markup defaults");
+				}
+
+				form.remove();
+				if (elements.length !== 5 || elements[2] !== notes || options.length !== 3) {
+					throw new Error("detached live form collections lost their owner subtree");
+				}
+				globalThis.__heldMilestone10Elements = elements;
+				globalThis.__heldMilestone10Options = options;
+			})();
+		`,
+	})
+	if err != nil {
+		t.Fatalf("QueueScript: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("run form assertions: %v", err)
+	}
+	if err := realm.CollectGarbage(page); err != nil {
+		t.Fatalf("CollectGarbage with live form collections: %v", err)
+	}
+	_, err = page.QueueScript(browser.ScriptSource{
+		URL: "https://gossamer.test/forms/release.js",
+		Source: `
+			if (__heldMilestone10Elements.namedItem("notes").value !== "default notes" ||
+				__heldMilestone10Options[1].value !== "two") {
+				throw new Error("collection-only reachability lost native form state");
+			}
+			globalThis.__heldMilestone10Elements = undefined;
+			globalThis.__heldMilestone10Options = undefined;
+		`,
+	})
+	if err != nil {
+		t.Fatalf("QueueScript release: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("release live form collections: %v", err)
+	}
+	if err := realm.CollectGarbage(page); err != nil {
+		t.Fatalf("CollectGarbage after collection release: %v", err)
+	}
+	if err := page.Close(); err != nil {
+		t.Fatalf("Close page: %v", err)
+	}
+	if ledger := browserRuntime.Ledger().Stats(); ledger.LiveObjects != 0 || ledger.PersistentObjects != 0 {
+		t.Fatalf("Milestone 10 teardown ownership = %#v", ledger)
 	}
 }
 

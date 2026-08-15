@@ -44,7 +44,8 @@ constexpr int kNodeChildNodesField = 3;
 constexpr int kNodeChildrenField = 4;
 constexpr int kNodeClassListField = 5;
 constexpr int kNodeDatasetField = 6;
-constexpr int kNodeInternalFieldCount = 7;
+constexpr int kNodeFormCollectionField = 7;
+constexpr int kNodeInternalFieldCount = 8;
 constexpr int kStyleNodeField = 0;
 constexpr int kStyleComputedField = 1;
 constexpr int kStylePseudoField = 2;
@@ -125,6 +126,8 @@ enum class FacadeKind : int32_t {
   NodeList = 1,
   HTMLCollection = 2,
   ClassList = 3,
+  SelectOptions = 4,
+  FormElements = 5,
 };
 
 enum class IteratorMode : int32_t {
@@ -1845,6 +1848,42 @@ bool ReadChildNodes(gossamer_v8_realm *realm, const WrapperKey &key,
   return true;
 }
 
+bool ReadFormControlNodes(gossamer_v8_realm *realm, const WrapperKey &key,
+                          FacadeKind kind, std::vector<uint32_t> *nodes,
+                          std::string *error) {
+  if (!RequireHost(realm, error))
+    return false;
+  uint8_t host_kind = kind == FacadeKind::SelectOptions ? 1 : 2;
+  uint32_t *host_nodes = nullptr;
+  size_t count = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->form_control_nodes(
+          realm->active_host->execution_id, key.document, key.node, host_kind,
+          &host_nodes, &count, &host_error) == 0) {
+    *error = TakeCString(host_error);
+    std::free(host_nodes);
+    if (error->empty())
+      *error = "reading form controls failed";
+    return false;
+  }
+  std::free(host_error);
+  if (count == 0)
+    nodes->clear();
+  else
+    nodes->assign(host_nodes, host_nodes + count);
+  std::free(host_nodes);
+  return true;
+}
+
+bool ReadCollectionNodes(gossamer_v8_realm *realm, const WrapperKey &key,
+                         FacadeKind kind, std::vector<uint32_t> *nodes,
+                         std::string *error) {
+  if (kind == FacadeKind::SelectOptions || kind == FacadeKind::FormElements)
+    return ReadFormControlNodes(realm, key, kind, nodes, error);
+  return ReadChildNodes(realm, key, kind == FacadeKind::HTMLCollection, nodes,
+                        error);
+}
+
 bool ReadAttributeNames(gossamer_v8_realm *realm, const WrapperKey &key,
                         std::vector<std::string> *names,
                         std::string *error) {
@@ -2106,6 +2145,18 @@ FacadeKind FacadeKindFromData(v8::Local<v8::Value> data) {
   return static_cast<FacadeKind>(data.As<v8::Int32>()->Value());
 }
 
+FacadeKind FacadeKindForObject(v8::Local<v8::Object> facade,
+                               FacadeKind fallback) {
+  if (facade.IsEmpty() ||
+      facade->InternalFieldCount() < kFacadeInternalFieldCount)
+    return fallback;
+  v8::Local<v8::Data> data = facade->GetInternalField(kFacadeBackingField);
+  if (!data->IsValue() || !data.As<v8::Value>()->IsInt32())
+    return fallback;
+  return static_cast<FacadeKind>(
+      data.As<v8::Value>().As<v8::Int32>()->Value());
+}
+
 bool ReadStaticNodeListBacking(v8::Local<v8::Object> facade,
                                v8::Local<v8::Array> *backing) {
   if (facade.IsEmpty() ||
@@ -2138,8 +2189,7 @@ bool ReadFacadeLength(gossamer_v8_realm *realm, v8::Isolate *isolate,
     return true;
   }
   std::vector<uint32_t> nodes;
-  if (!ReadChildNodes(realm, key, kind == FacadeKind::HTMLCollection, &nodes,
-                      error))
+  if (!ReadCollectionNodes(realm, key, kind, &nodes, error))
     return false;
   *length = nodes.size();
   return true;
@@ -2175,8 +2225,7 @@ ReadFacadeValue(gossamer_v8_realm *realm, v8::Local<v8::Context> context,
     return value;
   }
   std::vector<uint32_t> nodes;
-  if (!ReadChildNodes(realm, key, kind == FacadeKind::HTMLCollection, &nodes,
-                      error))
+  if (!ReadCollectionNodes(realm, key, kind, &nodes, error))
     return {};
   *found = index < nodes.size();
   if (!*found)
@@ -2194,8 +2243,10 @@ void FacadeLengthGetter(v8::Local<v8::Name>,
   v8::Isolate *isolate = info.GetIsolate();
   size_t length = 0;
   std::string error;
-  if (!ReadFacadeLength(CurrentRealm(isolate), isolate, info.Holder(),
-                        FacadeKindFromData(info.Data()), &length, &error)) {
+  FacadeKind kind = FacadeKindForObject(
+      info.Holder(), FacadeKindFromData(info.Data()));
+  if (!ReadFacadeLength(CurrentRealm(isolate), isolate, info.Holder(), kind,
+                        &length, &error)) {
     if (!isolate->HasPendingException())
       ThrowError(isolate, error);
     return;
@@ -2209,9 +2260,10 @@ v8::Intercepted FacadeIndexedGetter(
   bool found = false;
   std::string error;
   v8::Local<v8::Value> value;
+  FacadeKind kind = FacadeKindForObject(
+      info.Holder(), FacadeKindFromData(info.Data()));
   if (!ReadFacadeValue(CurrentRealm(isolate), isolate->GetCurrentContext(),
-                       info.Holder(),
-                       FacadeKindFromData(info.Data()), index, &found, &error)
+                       info.Holder(), kind, index, &found, &error)
            .ToLocal(&value)) {
     ThrowError(isolate, error.empty() ? "reading live DOM facade failed"
                                       : error);
@@ -2228,8 +2280,10 @@ v8::Intercepted FacadeIndexedQuery(
   v8::Isolate *isolate = info.GetIsolate();
   size_t length = 0;
   std::string error;
-  if (!ReadFacadeLength(CurrentRealm(isolate), isolate, info.Holder(),
-                        FacadeKindFromData(info.Data()), &length, &error)) {
+  FacadeKind kind = FacadeKindForObject(
+      info.Holder(), FacadeKindFromData(info.Data()));
+  if (!ReadFacadeLength(CurrentRealm(isolate), isolate, info.Holder(), kind,
+                        &length, &error)) {
     if (!isolate->HasPendingException())
       ThrowError(isolate, error);
     return v8::Intercepted::kYes;
@@ -2245,8 +2299,10 @@ void FacadeIndexedEnumerator(
   v8::Isolate *isolate = info.GetIsolate();
   size_t length = 0;
   std::string error;
-  if (!ReadFacadeLength(CurrentRealm(isolate), isolate, info.Holder(),
-                        FacadeKindFromData(info.Data()), &length, &error)) {
+  FacadeKind kind = FacadeKindForObject(
+      info.Holder(), FacadeKindFromData(info.Data()));
+  if (!ReadFacadeLength(CurrentRealm(isolate), isolate, info.Holder(), kind,
+                        &length, &error)) {
     if (!isolate->HasPendingException())
       ThrowError(isolate, error);
     return;
@@ -2280,9 +2336,10 @@ void FacadeItem(const v8::FunctionCallbackInfo<v8::Value> &info) {
   bool found = false;
   std::string error;
   v8::Local<v8::Value> value;
+  FacadeKind kind = FacadeKindForObject(
+      info.This(), FacadeKindFromData(info.Data()));
   if (!ReadFacadeValue(CurrentRealm(isolate), isolate->GetCurrentContext(),
-                       info.This(),
-                       FacadeKindFromData(info.Data()), index, &found, &error)
+                       info.This(), kind, index, &found, &error)
            .ToLocal(&value)) {
     ThrowError(isolate, error.empty() ? "reading DOM facade item failed"
                                       : error);
@@ -2292,10 +2349,11 @@ void FacadeItem(const v8::FunctionCallbackInfo<v8::Value> &info) {
 }
 
 bool FindNamedCollectionItem(gossamer_v8_realm *realm, const WrapperKey &key,
-                             const std::string &name, uint32_t *node,
-                             bool *found, std::string *error) {
+                             FacadeKind kind, const std::string &name,
+                             uint32_t *node, bool *found,
+                             std::string *error) {
   std::vector<uint32_t> nodes;
-  if (!ReadChildNodes(realm, key, true, &nodes, error))
+  if (!ReadCollectionNodes(realm, key, kind, &nodes, error))
     return false;
   for (uint32_t candidate : nodes) {
     WrapperKey candidate_key{key.document, candidate};
@@ -2333,7 +2391,10 @@ void HTMLCollectionNamedItem(
   bool found = false;
   std::string error;
   gossamer_v8_realm *realm = CurrentRealm(isolate);
-  if (!FindNamedCollectionItem(realm, key, name, &node, &found, &error)) {
+  FacadeKind kind = FacadeKindForObject(info.This(),
+                                        FacadeKind::HTMLCollection);
+  if (!FindNamedCollectionItem(realm, key, kind, name, &node, &found,
+                               &error)) {
     ThrowError(isolate, error);
     return;
   }
@@ -2365,7 +2426,10 @@ v8::Intercepted HTMLCollectionNamedGetter(
   bool found = false;
   std::string error;
   gossamer_v8_realm *realm = CurrentRealm(isolate);
-  if (!FindNamedCollectionItem(realm, key, name, &node, &found, &error)) {
+  FacadeKind kind = FacadeKindForObject(info.Holder(),
+                                        FacadeKind::HTMLCollection);
+  if (!FindNamedCollectionItem(realm, key, kind, name, &node, &found,
+                               &error)) {
     ThrowError(isolate, error);
     return v8::Intercepted::kYes;
   }
@@ -2394,7 +2458,9 @@ v8::Intercepted HTMLCollectionNamedQuery(
   uint32_t node = 0;
   bool found = false;
   std::string error;
-  if (!FindNamedCollectionItem(CurrentRealm(isolate), key,
+  FacadeKind kind = FacadeKindForObject(info.Holder(),
+                                        FacadeKind::HTMLCollection);
+  if (!FindNamedCollectionItem(CurrentRealm(isolate), key, kind,
                                UTF8Value(isolate, property.As<v8::Value>()),
                                &node, &found, &error)) {
     ThrowError(isolate, error);
@@ -2415,7 +2481,9 @@ void HTMLCollectionNamedEnumerator(
   gossamer_v8_realm *realm = CurrentRealm(isolate);
   std::vector<uint32_t> nodes;
   std::string error;
-  if (!ReadChildNodes(realm, key, true, &nodes, &error)) {
+  FacadeKind kind = FacadeKindForObject(info.Holder(),
+                                        FacadeKind::HTMLCollection);
+  if (!ReadCollectionNodes(realm, key, kind, &nodes, &error)) {
     ThrowError(isolate, error);
     return;
   }
@@ -2550,7 +2618,8 @@ void FacadeIterator(const v8::FunctionCallbackInfo<v8::Value> &info) {
     return;
   }
   int encoded = info.Data().As<v8::Int32>()->Value();
-  FacadeKind kind = static_cast<FacadeKind>(encoded / 10);
+  FacadeKind kind = FacadeKindForObject(
+      info.This(), static_cast<FacadeKind>(encoded / 10));
   IteratorMode mode = static_cast<IteratorMode>(encoded % 10);
   gossamer_v8_realm *realm = CurrentRealm(isolate);
   v8::Local<v8::Object> iterator;
@@ -2584,7 +2653,8 @@ void FacadeForEach(const v8::FunctionCallbackInfo<v8::Value> &info) {
   v8::Local<v8::Function> callback = info[0].As<v8::Function>();
   v8::Local<v8::Value> receiver =
       info.Length() > 1 ? info[1] : v8::Undefined(isolate);
-  FacadeKind kind = FacadeKindFromData(info.Data());
+  FacadeKind kind = FacadeKindForObject(
+      info.This(), FacadeKindFromData(info.Data()));
   v8::Local<v8::Context> context = isolate->GetCurrentContext();
   for (uint32_t index = 0;; ++index) {
     bool found = false;
@@ -3463,6 +3533,213 @@ void ElementFormCheckedSetter(
   info.GetReturnValue().Set(true);
 }
 
+void ElementFormSelectedGetter(
+    v8::Local<v8::Name>, const v8::PropertyCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.Holder(), &key))
+    return;
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  int selected = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->form_selected(
+          realm->active_host->execution_id, key.document, key.node, &selected,
+          &host_error) == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate,
+               error.empty() ? "reading form selected state failed" : error);
+    return;
+  }
+  std::free(host_error);
+  info.GetReturnValue().Set(selected != 0);
+}
+
+void ElementFormSelectedSetter(
+    v8::Local<v8::Name>, v8::Local<v8::Value> value,
+    const v8::PropertyCallbackInfo<v8::Boolean> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.Holder(), &key)) {
+    info.GetReturnValue().Set(false);
+    return;
+  }
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    info.GetReturnValue().Set(false);
+    return;
+  }
+  char *host_error = nullptr;
+  if (realm->active_host->set_form_selected(
+          realm->active_host->execution_id, key.document, key.node,
+          value->BooleanValue(isolate) ? 1 : 0, &host_error) == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate,
+               error.empty() ? "setting form selected state failed" : error);
+    info.GetReturnValue().Set(false);
+    return;
+  }
+  std::free(host_error);
+  info.GetReturnValue().Set(true);
+}
+
+void ElementFormSelectedIndexGetter(
+    v8::Local<v8::Name>, const v8::PropertyCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.Holder(), &key))
+    return;
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  int32_t index = -1;
+  char *host_error = nullptr;
+  if (realm->active_host->form_selected_index(
+          realm->active_host->execution_id, key.document, key.node, &index,
+          &host_error) == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate,
+               error.empty() ? "reading selectedIndex failed" : error);
+    return;
+  }
+  std::free(host_error);
+  info.GetReturnValue().Set(v8::Integer::New(isolate, index));
+}
+
+void ElementFormSelectedIndexSetter(
+    v8::Local<v8::Name>, v8::Local<v8::Value> value,
+    const v8::PropertyCallbackInfo<v8::Boolean> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  int32_t index = -1;
+  if (!ReadReceiverKey(isolate, info.Holder(), &key) ||
+      !value->Int32Value(isolate->GetCurrentContext()).To(&index)) {
+    info.GetReturnValue().Set(false);
+    return;
+  }
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    info.GetReturnValue().Set(false);
+    return;
+  }
+  char *host_error = nullptr;
+  if (realm->active_host->set_form_selected_index(
+          realm->active_host->execution_id, key.document, key.node, index,
+          &host_error) == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate,
+               error.empty() ? "setting selectedIndex failed" : error);
+    info.GetReturnValue().Set(false);
+    return;
+  }
+  std::free(host_error);
+  info.GetReturnValue().Set(true);
+}
+
+void ElementFormOwnerGetter(
+    v8::Local<v8::Name>, const v8::PropertyCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.Holder(), &key))
+    return;
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  uint32_t owner = 0;
+  int found = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->form_owner(
+          realm->active_host->execution_id, key.document, key.node, &owner,
+          &found, &host_error) == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate, error.empty() ? "reading form owner failed" : error);
+    return;
+  }
+  std::free(host_error);
+  if (found == 0) {
+    info.GetReturnValue().Set(v8::Null(isolate));
+    return;
+  }
+  v8::Local<v8::Object> wrapper;
+  if (!GetOrCreateNodeWrapper(realm, isolate->GetCurrentContext(),
+                              WrapperKey{key.document, owner}, &error)
+           .ToLocal(&wrapper)) {
+    ThrowError(isolate, error.empty() ? "wrapping form owner failed" : error);
+    return;
+  }
+  info.GetReturnValue().Set(wrapper);
+}
+
+void ElementFormCollectionGetter(
+    v8::Local<v8::Name>, const v8::PropertyCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  v8::Local<v8::Object> node = info.Holder();
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, node, &key))
+    return;
+  v8::Local<v8::Data> cached_data =
+      node->GetInternalField(kNodeFormCollectionField);
+  if (cached_data->IsValue()) {
+    v8::Local<v8::Value> cached = cached_data.As<v8::Value>();
+    if (cached->IsObject()) {
+      info.GetReturnValue().Set(cached);
+      return;
+    }
+  }
+  FacadeKind kind = FacadeKindFromData(info.Data());
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  v8::Local<v8::Object> facade;
+  if (!realm->html_collection_template.Get(isolate)
+           ->InstanceTemplate()
+           ->NewInstance(isolate->GetCurrentContext())
+           .ToLocal(&facade)) {
+    ThrowError(isolate, "V8 failed to allocate a live form collection");
+    return;
+  }
+  facade->SetInternalField(kFacadeNodeField, node);
+  facade->SetInternalField(kFacadeBackingField,
+                           v8::Integer::New(isolate, static_cast<int>(kind)));
+  node->SetInternalField(kNodeFormCollectionField, facade);
+  info.GetReturnValue().Set(facade);
+}
+
+void HTMLFormElementReset(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.This(), &key))
+    return;
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  char *host_error = nullptr;
+  if (realm->active_host->reset_form(realm->active_host->execution_id,
+                                     key.document, key.node,
+                                     &host_error) == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate, error.empty() ? "resetting form failed" : error);
+    return;
+  }
+  std::free(host_error);
+}
+
 void ElementFormValueFunctionGetter(
     const v8::FunctionCallbackInfo<v8::Value> &info) {
   v8::Isolate *isolate = info.GetIsolate();
@@ -3878,6 +4155,8 @@ void NodeReflectedAttributeSetter(
 std::string ReflectedBooleanAttributeName(const std::string &property) {
   if (property == "defaultChecked")
     return "checked";
+  if (property == "defaultSelected")
+    return "selected";
   return property;
 }
 
@@ -6223,6 +6502,30 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
       v8::FunctionTemplate::New(isolate, ElementFormCheckedFunctionGetter),
       v8::FunctionTemplate::New(isolate,
                                 ElementFormCheckedFunctionSetter));
+  html_option_element_template->PrototypeTemplate()->SetNativeDataProperty(
+      v8::String::NewFromUtf8Literal(isolate, "selected"),
+      ElementFormSelectedGetter, ElementFormSelectedSetter);
+  html_select_element_template->PrototypeTemplate()->SetNativeDataProperty(
+      v8::String::NewFromUtf8Literal(isolate, "selectedIndex"),
+      ElementFormSelectedIndexGetter, ElementFormSelectedIndexSetter);
+  html_select_element_template->PrototypeTemplate()->SetNativeDataProperty(
+      v8::String::NewFromUtf8Literal(isolate, "options"),
+      ElementFormCollectionGetter, nullptr,
+      facade_data(FacadeKind::SelectOptions), v8::DontEnum);
+  html_form_element_template->PrototypeTemplate()->SetNativeDataProperty(
+      v8::String::NewFromUtf8Literal(isolate, "elements"),
+      ElementFormCollectionGetter, nullptr,
+      facade_data(FacadeKind::FormElements), v8::DontEnum);
+  html_form_element_template->PrototypeTemplate()->Set(
+      isolate, "reset",
+      v8::FunctionTemplate::New(isolate, HTMLFormElementReset));
+  for (v8::Local<v8::FunctionTemplate> interface_template :
+       {html_input_element_template, html_text_area_element_template,
+        html_select_element_template, html_button_element_template}) {
+    interface_template->PrototypeTemplate()->SetNativeDataProperty(
+        v8::String::NewFromUtf8Literal(isolate, "form"),
+        ElementFormOwnerGetter);
+  }
 
   auto install_reflected_string =
       [isolate](v8::Local<v8::FunctionTemplate> interface_template,
@@ -6250,7 +6553,8 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   install_reflected_string(html_select_element_template, "name");
   for (const char *name : {"disabled", "multiple", "required"})
     install_reflected_boolean(html_select_element_template, name);
-  install_reflected_boolean(html_option_element_template, "disabled");
+  for (const char *name : {"defaultSelected", "disabled"})
+    install_reflected_boolean(html_option_element_template, name);
   for (const char *name : {"name", "type"})
     install_reflected_string(html_button_element_template, name);
   install_reflected_boolean(html_button_element_template, "disabled");
@@ -6435,6 +6739,27 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   html_input_element_template->InstanceTemplate()->SetNativeDataProperty(
       v8::String::NewFromUtf8Literal(isolate, "checked"),
       ElementFormCheckedGetter, ElementFormCheckedSetter);
+  html_option_element_template->InstanceTemplate()->SetNativeDataProperty(
+      v8::String::NewFromUtf8Literal(isolate, "selected"),
+      ElementFormSelectedGetter, ElementFormSelectedSetter);
+  html_select_element_template->InstanceTemplate()->SetNativeDataProperty(
+      v8::String::NewFromUtf8Literal(isolate, "selectedIndex"),
+      ElementFormSelectedIndexGetter, ElementFormSelectedIndexSetter);
+  html_select_element_template->InstanceTemplate()->SetNativeDataProperty(
+      v8::String::NewFromUtf8Literal(isolate, "options"),
+      ElementFormCollectionGetter, nullptr,
+      facade_data(FacadeKind::SelectOptions), v8::DontEnum);
+  html_form_element_template->InstanceTemplate()->SetNativeDataProperty(
+      v8::String::NewFromUtf8Literal(isolate, "elements"),
+      ElementFormCollectionGetter, nullptr,
+      facade_data(FacadeKind::FormElements), v8::DontEnum);
+  for (v8::Local<v8::FunctionTemplate> interface_template :
+       {html_input_element_template, html_text_area_element_template,
+        html_select_element_template, html_button_element_template}) {
+    interface_template->InstanceTemplate()->SetNativeDataProperty(
+        v8::String::NewFromUtf8Literal(isolate, "form"),
+        ElementFormOwnerGetter);
+  }
 
   auto install_instance_reflected_string =
       [isolate](v8::Local<v8::FunctionTemplate> interface_template,
@@ -6462,8 +6787,8 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   install_instance_reflected_string(html_select_element_template, "name");
   for (const char *name : {"disabled", "multiple", "required"})
     install_instance_reflected_boolean(html_select_element_template, name);
-  install_instance_reflected_boolean(html_option_element_template,
-                                     "disabled");
+  for (const char *name : {"defaultSelected", "disabled"})
+    install_instance_reflected_boolean(html_option_element_template, name);
   for (const char *name : {"name", "type"})
     install_instance_reflected_string(html_button_element_template, name);
   install_instance_reflected_boolean(html_button_element_template,

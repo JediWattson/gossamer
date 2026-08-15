@@ -144,6 +144,25 @@ typedef struct gossamer_v8_host {
                       int *checked_out, char **error_out);
   int (*set_form_checked)(uint64_t execution_id, uint64_t document,
                           uint32_t node, int checked, char **error_out);
+  int (*form_selected)(uint64_t execution_id, uint64_t document,
+                       uint32_t node, int *selected_out, char **error_out);
+  int (*set_form_selected)(uint64_t execution_id, uint64_t document,
+                           uint32_t node, int selected, char **error_out);
+  int (*form_selected_index)(uint64_t execution_id, uint64_t document,
+                             uint32_t node, int32_t *index_out,
+                             char **error_out);
+  int (*set_form_selected_index)(uint64_t execution_id, uint64_t document,
+                                 uint32_t node, int32_t index,
+                                 char **error_out);
+  int (*form_control_nodes)(uint64_t execution_id, uint64_t document,
+                            uint32_t node, uint8_t kind,
+                            uint32_t **nodes_out, size_t *count_out,
+                            char **error_out);
+  int (*form_owner)(uint64_t execution_id, uint64_t document, uint32_t node,
+                    uint32_t *owner_node_out, int *found_out,
+                    char **error_out);
+  int (*reset_form)(uint64_t execution_id, uint64_t document, uint32_t node,
+                    char **error_out);
   int (*focus_node)(uint64_t execution_id, uint64_t document, uint32_t node,
                     int focused, char **error_out);
   int (*active_element)(uint64_t execution_id, uint64_t *document_out,

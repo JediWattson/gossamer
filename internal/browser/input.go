@@ -141,23 +141,60 @@ func (host *taskHost) applyInputStateBeforeDispatch(event InputEvent) (func() er
 			return nil, err
 		}
 		node, _ := host.page.document.Resolve(event.Target.Node)
-		isCheckbox := node.Type == dom.ElementNode && node.Data == "input"
+		isInput := node.Type == dom.ElementNode && node.Data == "input"
 		inputType := ""
-		if isCheckbox {
+		if isInput {
 			inputType, _, _ = host.page.document.GetAttribute(event.Target.Node, "type")
 		}
 		host.page.mutex.RUnlock()
-		if !isCheckbox || !strings.EqualFold(inputType, "checkbox") {
+		if !isInput {
 			return nil, nil
 		}
 		previous, err := host.FormChecked(event.Target)
 		if err != nil {
 			return nil, err
 		}
-		if err := host.SetFormChecked(event.Target, !previous); err != nil {
-			return nil, err
+		switch {
+		case strings.EqualFold(inputType, "checkbox"):
+			if err := host.SetFormChecked(event.Target, !previous); err != nil {
+				return nil, err
+			}
+			return func() error { return host.SetFormChecked(event.Target, previous) }, nil
+		case strings.EqualFold(inputType, "radio"):
+			if previous {
+				return nil, nil
+			}
+			host.page.mutex.RLock()
+			group, groupErr := host.page.document.RadioGroupNodes(event.Target.Node)
+			host.page.mutex.RUnlock()
+			if groupErr != nil {
+				return nil, groupErr
+			}
+			var prior NodeHandle
+			for _, candidate := range group {
+				handle := NodeHandle{Document: host.generation, Node: candidate}
+				checked, checkedErr := host.FormChecked(handle)
+				if checkedErr != nil {
+					return nil, checkedErr
+				}
+				if checked {
+					prior = handle
+					break
+				}
+			}
+			if err := host.SetFormChecked(event.Target, true); err != nil {
+				return nil, err
+			}
+			return func() error {
+				err := host.SetFormChecked(event.Target, false)
+				if prior.Node != dom.InvalidNodeID {
+					err = errors.Join(err, host.SetFormChecked(prior, true))
+				}
+				return err
+			}, nil
+		default:
+			return nil, nil
 		}
-		return func() error { return host.SetFormChecked(event.Target, previous) }, nil
 	default:
 		return nil, nil
 	}
@@ -779,6 +816,72 @@ func (host *taskHost) FormChecked(handle NodeHandle) (bool, error) {
 func (host *taskHost) SetFormChecked(handle NodeHandle, checked bool) error {
 	return host.mutateNodes(handle, NodeHandle{}, NodeHandle{}, func() error {
 		return host.page.document.SetFormChecked(handle.Node, checked)
+	})
+}
+
+func (host *taskHost) FormSelected(handle NodeHandle) (bool, error) {
+	host.page.mutex.RLock()
+	defer host.page.mutex.RUnlock()
+	if err := host.validateHandleLocked(handle); err != nil {
+		return false, err
+	}
+	return host.page.document.FormSelected(handle.Node)
+}
+
+func (host *taskHost) SetFormSelected(handle NodeHandle, selected bool) error {
+	return host.mutateNodes(handle, NodeHandle{}, NodeHandle{}, func() error {
+		return host.page.document.SetFormSelected(handle.Node, selected)
+	})
+}
+
+func (host *taskHost) FormSelectedIndex(handle NodeHandle) (int, error) {
+	host.page.mutex.RLock()
+	defer host.page.mutex.RUnlock()
+	if err := host.validateHandleLocked(handle); err != nil {
+		return -1, err
+	}
+	return host.page.document.FormSelectedIndex(handle.Node)
+}
+
+func (host *taskHost) SetFormSelectedIndex(handle NodeHandle, selectedIndex int) error {
+	return host.mutateNodes(handle, NodeHandle{}, NodeHandle{}, func() error {
+		return host.page.document.SetFormSelectedIndex(handle.Node, selectedIndex)
+	})
+}
+
+func (host *taskHost) FormControlNodes(handle NodeHandle, kind dom.FormCollectionKind) ([]NodeHandle, error) {
+	host.page.mutex.RLock()
+	defer host.page.mutex.RUnlock()
+	if err := host.validateHandleLocked(handle); err != nil {
+		return nil, err
+	}
+	ids, err := host.page.document.FormControlNodes(handle.Node, kind)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]NodeHandle, len(ids))
+	for index, id := range ids {
+		result[index] = NodeHandle{Document: host.generation, Node: id}
+	}
+	return result, nil
+}
+
+func (host *taskHost) FormOwner(handle NodeHandle) (NodeHandle, bool, error) {
+	host.page.mutex.RLock()
+	defer host.page.mutex.RUnlock()
+	if err := host.validateHandleLocked(handle); err != nil {
+		return NodeHandle{}, false, err
+	}
+	id, found, err := host.page.document.FormOwner(handle.Node)
+	if err != nil || !found {
+		return NodeHandle{}, false, err
+	}
+	return NodeHandle{Document: host.generation, Node: id}, true, nil
+}
+
+func (host *taskHost) ResetForm(handle NodeHandle) error {
+	return host.mutateNodes(handle, NodeHandle{}, NodeHandle{}, func() error {
+		return host.page.document.ResetForm(handle.Node)
 	})
 }
 

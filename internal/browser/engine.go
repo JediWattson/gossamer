@@ -246,6 +246,13 @@ type DOMElementHost interface {
 	SetFormValue(NodeHandle, string) error
 	FormChecked(NodeHandle) (bool, error)
 	SetFormChecked(NodeHandle, bool) error
+	FormSelected(NodeHandle) (bool, error)
+	SetFormSelected(NodeHandle, bool) error
+	FormSelectedIndex(NodeHandle) (int, error)
+	SetFormSelectedIndex(NodeHandle, int) error
+	FormControlNodes(NodeHandle, dom.FormCollectionKind) ([]NodeHandle, error)
+	FormOwner(NodeHandle) (NodeHandle, bool, error)
+	ResetForm(NodeHandle) error
 	Focus(NodeHandle) error
 	Blur(NodeHandle) error
 	ActiveElement() (NodeHandle, bool, error)

@@ -153,6 +153,28 @@ extern int goGossamerV8HostFormChecked(uint64_t execution_id,
 extern int goGossamerV8HostSetFormChecked(uint64_t execution_id,
                                           uint64_t document, uint32_t node,
                                           int checked, char **error_out);
+extern int goGossamerV8HostFormSelected(uint64_t execution_id,
+                                        uint64_t document, uint32_t node,
+                                        int *selected_out, char **error_out);
+extern int goGossamerV8HostSetFormSelected(uint64_t execution_id,
+                                           uint64_t document, uint32_t node,
+                                           int selected, char **error_out);
+extern int goGossamerV8HostFormSelectedIndex(
+    uint64_t execution_id, uint64_t document, uint32_t node,
+    int32_t *index_out, char **error_out);
+extern int goGossamerV8HostSetFormSelectedIndex(
+    uint64_t execution_id, uint64_t document, uint32_t node, int32_t index,
+    char **error_out);
+extern int goGossamerV8HostFormControlNodes(
+    uint64_t execution_id, uint64_t document, uint32_t node, uint8_t kind,
+    uint32_t **nodes_out, size_t *count_out, char **error_out);
+extern int goGossamerV8HostFormOwner(uint64_t execution_id,
+                                     uint64_t document, uint32_t node,
+                                     uint32_t *owner_node_out,
+                                     int *found_out, char **error_out);
+extern int goGossamerV8HostResetForm(uint64_t execution_id,
+                                     uint64_t document, uint32_t node,
+                                     char **error_out);
 extern int goGossamerV8HostFocusNode(uint64_t execution_id, uint64_t document,
                                      uint32_t node, int focused,
                                      char **error_out);
@@ -263,6 +285,13 @@ static gossamer_v8_host gossamer_v8_go_host(uint64_t execution_id) {
       .set_form_value = goGossamerV8HostSetFormValue,
       .form_checked = goGossamerV8HostFormChecked,
       .set_form_checked = goGossamerV8HostSetFormChecked,
+      .form_selected = goGossamerV8HostFormSelected,
+      .set_form_selected = goGossamerV8HostSetFormSelected,
+      .form_selected_index = goGossamerV8HostFormSelectedIndex,
+      .set_form_selected_index = goGossamerV8HostSetFormSelectedIndex,
+      .form_control_nodes = goGossamerV8HostFormControlNodes,
+      .form_owner = goGossamerV8HostFormOwner,
+      .reset_form = goGossamerV8HostResetForm,
       .focus_node = goGossamerV8HostFocusNode,
       .active_element = goGossamerV8HostActiveElement,
       .style_css_text = goGossamerV8HostStyleCSSText,
