@@ -281,6 +281,18 @@ func initialStyle(node *dom.Node, parent *styledNode) computedStyle {
 func applyAuthorStyles(style *computedStyle, node *dom.Node, sheets []css.Stylesheet, viewport Viewport, parentSize float64) {
 	winners := make(map[string]winningDeclaration)
 	sourceOrder := 0
+	record := func(declaration css.Declaration, specificity css.Specificity, order int) {
+		for _, expanded := range expandFontDeclaration(declaration, viewport) {
+			candidate := winningDeclaration{
+				declaration: expanded,
+				specificity: specificity,
+				order:       order,
+			}
+			if current, ok := winners[expanded.Property]; !ok || declarationWins(candidate, current) {
+				winners[expanded.Property] = candidate
+			}
+		}
+	}
 	for _, sheet := range sheets {
 		for _, rule := range sheet.Rules {
 			specificity, matches := rule.Match(node)
@@ -290,14 +302,7 @@ func applyAuthorStyles(style *computedStyle, node *dom.Node, sheets []css.Styles
 				if !matches {
 					continue
 				}
-				candidate := winningDeclaration{
-					declaration: declaration,
-					specificity: specificity,
-					order:       order,
-				}
-				if current, ok := winners[declaration.Property]; !ok || declarationWins(candidate, current) {
-					winners[declaration.Property] = candidate
-				}
+				record(declaration, specificity, order)
 			}
 		}
 	}
@@ -306,15 +311,8 @@ func applyAuthorStyles(style *computedStyle, node *dom.Node, sheets []css.Styles
 		inlineSheet, _ := css.Parse("*{" + source + "}")
 		if len(inlineSheet.Rules) != 0 {
 			for _, declaration := range inlineSheet.Rules[0].Declarations {
-				candidate := winningDeclaration{
-					declaration: declaration,
-					specificity: css.Specificity{IDs: 1_000_000},
-					order:       sourceOrder,
-				}
+				record(declaration, css.Specificity{IDs: 1_000_000}, sourceOrder)
 				sourceOrder++
-				if current, ok := winners[declaration.Property]; !ok || declarationWins(candidate, current) {
-					winners[declaration.Property] = candidate
-				}
 			}
 		}
 	}
@@ -341,6 +339,110 @@ func applyAuthorStyles(style *computedStyle, node *dom.Node, sheets []css.Styles
 	for _, winner := range orderedWinners {
 		applyDeclaration(style, winner.declaration.Property, winner.declaration.Value, viewport)
 	}
+}
+
+func expandFontDeclaration(declaration css.Declaration, viewport Viewport) []css.Declaration {
+	if declaration.Property != "font" {
+		return []css.Declaration{declaration}
+	}
+	size, lineHeight, weight, family, ok := parseFontShorthand(declaration.Value, viewport)
+	if !ok {
+		return nil
+	}
+	return []css.Declaration{
+		{Property: "font-size", Value: size, Important: declaration.Important},
+		{Property: "line-height", Value: lineHeight, Important: declaration.Important},
+		{Property: "font-weight", Value: weight, Important: declaration.Important},
+		{Property: "font-family", Value: family, Important: declaration.Important},
+	}
+}
+
+func parseFontShorthand(source string, viewport Viewport) (size, lineHeight, weight, family string, ok bool) {
+	fields := strings.Fields(strings.TrimSpace(source))
+	if len(fields) < 2 {
+		return "", "", "", "", false
+	}
+	weight = "normal"
+	lineHeight = "normal"
+	for index := 0; index < len(fields); index++ {
+		field := fields[index]
+		sizeSource := field
+		inlineLineHeight := ""
+		if slash := strings.IndexByte(field, '/'); slash >= 0 {
+			sizeSource = field[:slash]
+			inlineLineHeight = field[slash+1:]
+		}
+		parsedSize, validSize := parseLength(sizeSource, 1, 1, viewport)
+		if !validSize || parsedSize.unit == lengthAuto || !nonNegativeLength(parsedSize) {
+			if !parseFontPrefixToken(field, &weight) {
+				return "", "", "", "", false
+			}
+			continue
+		}
+
+		size = sizeSource
+		familyStart := index + 1
+		if strings.Contains(field, "/") {
+			if inlineLineHeight == "" {
+				if familyStart >= len(fields) {
+					return "", "", "", "", false
+				}
+				inlineLineHeight = fields[familyStart]
+				familyStart++
+			}
+			lineHeight = inlineLineHeight
+		} else if familyStart < len(fields) {
+			next := fields[familyStart]
+			switch {
+			case next == "/":
+				familyStart++
+				if familyStart >= len(fields) {
+					return "", "", "", "", false
+				}
+				lineHeight = fields[familyStart]
+				familyStart++
+			case strings.HasPrefix(next, "/"):
+				lineHeight = strings.TrimPrefix(next, "/")
+				familyStart++
+			}
+		}
+		if !validFontLineHeight(lineHeight, viewport) || familyStart >= len(fields) {
+			return "", "", "", "", false
+		}
+		family = strings.Join(fields[familyStart:], " ")
+		return size, lineHeight, weight, family, true
+	}
+	return "", "", "", "", false
+}
+
+func parseFontPrefixToken(token string, weight *string) bool {
+	token = strings.ToLower(token)
+	switch token {
+	case "normal":
+		*weight = "normal"
+		return true
+	case "bold", "bolder", "lighter":
+		*weight = token
+		return true
+	case "italic", "oblique", "small-caps", "condensed", "expanded":
+		return true
+	}
+	if numeric, err := strconv.Atoi(token); err == nil && numeric >= 1 && numeric <= 1000 {
+		*weight = token
+		return true
+	}
+	return false
+}
+
+func validFontLineHeight(source string, viewport Viewport) bool {
+	if strings.EqualFold(source, "normal") {
+		return true
+	}
+	if numeric, err := strconv.ParseFloat(source, 64); err == nil {
+		return numeric > 0 && isFinite(numeric)
+	}
+	parsed, ok := parseLength(source, 1, 1, viewport)
+	return ok && parsed.unit != lengthAuto && nonNegativeLength(parsed)
 }
 
 func authorStyleOwnerApplies(node *dom.Node) bool {
@@ -471,13 +573,19 @@ func applyDeclaration(style *computedStyle, property, source string, viewport Vi
 	case "font-weight":
 		if value == "bold" || value == "bolder" {
 			style.fontWeight = FontWeightBold
-		} else if numeric, err := strconv.Atoi(value); err == nil && numeric >= 600 {
-			style.fontWeight = FontWeightBold
+		} else if numeric, err := strconv.Atoi(value); err == nil && numeric >= 1 && numeric <= 1000 {
+			if numeric >= 600 {
+				style.fontWeight = FontWeightBold
+			} else {
+				style.fontWeight = FontWeightNormal
+			}
 		} else if value == "normal" || value == "lighter" {
 			style.fontWeight = FontWeightNormal
 		}
 	case "line-height":
-		if numeric, err := strconv.ParseFloat(value, 64); err == nil && numeric > 0 && isFinite(numeric) {
+		if value == "normal" {
+			style.lineHeight = computedLineHeight{value: 1.2}
+		} else if numeric, err := strconv.ParseFloat(value, 64); err == nil && numeric > 0 && isFinite(numeric) {
 			style.lineHeight = computedLineHeight{value: numeric}
 		} else if parsed, ok := parseLength(value, style.fontSize, style.fontSize, viewport); ok && parsed.unit != lengthAuto {
 			resolved := resolveLength(parsed, style.fontSize, viewport, style.lineHeight.pixels(style.fontSize))

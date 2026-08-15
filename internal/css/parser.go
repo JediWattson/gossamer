@@ -79,6 +79,17 @@ func (parser *stylesheetParser) parse() (Stylesheet, error) {
 
 func (parser *stylesheetParser) skipIgnorable() {
 	for parser.pos < len(parser.source) {
+		// CSS Syntax tokenizes legacy HTML comment delimiters as CDO/CDC and
+		// discards them at the top level of a stylesheet. Older sites still wrap
+		// inline CSS in these markers.
+		if strings.HasPrefix(parser.source[parser.pos:], "<!--") {
+			parser.pos += len("<!--")
+			continue
+		}
+		if strings.HasPrefix(parser.source[parser.pos:], "-->") {
+			parser.pos += len("-->")
+			continue
+		}
 		switch parser.source[parser.pos] {
 		case ' ', '\t', '\n', '\r', '\f', commentBoundary, ';', '}':
 			parser.pos++
