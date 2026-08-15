@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/JediWattson/gossamer/internal/runtime/memory"
 	"github.com/JediWattson/gossamer/internal/runtime/ownership"
 )
 
@@ -15,6 +16,7 @@ var nextBrowserID atomic.Uint64
 // Scheduler owns independent realm actors and their shared ownership ledger.
 type Scheduler struct {
 	ledger        *ownership.Ledger
+	store         *memory.Store
 	browserOwner  ownership.OwnerID
 	browserRegion ownership.RegionID
 
@@ -33,8 +35,14 @@ func NewScheduler(ledger *ownership.Ledger) (*Scheduler, error) {
 	if err != nil {
 		return nil, err
 	}
+	store := memory.NewStore(ledger)
+	if err := store.RegisterOwner(browser); err != nil {
+		_ = ledger.CloseRegion(region)
+		return nil, err
+	}
 	return &Scheduler{
 		ledger:        ledger,
+		store:         store,
 		browserOwner:  browser,
 		browserRegion: region,
 		realms:        make(map[RealmID]*Realm),
@@ -51,7 +59,7 @@ func (scheduler *Scheduler) NewRealm() (*Realm, error) {
 		return nil, ErrRealmClosed
 	}
 	scheduler.nextRealm++
-	realm, err := NewRealm(scheduler.nextRealm, scheduler.ledger)
+	realm, err := newRealm(scheduler.nextRealm, scheduler.ledger, scheduler.store, false)
 	if err != nil {
 		return nil, err
 	}
@@ -122,6 +130,13 @@ func (scheduler *Scheduler) Ledger() *ownership.Ledger {
 	return scheduler.ledger
 }
 
+func (scheduler *Scheduler) Store() *memory.Store {
+	if scheduler == nil {
+		return nil
+	}
+	return scheduler.store
+}
+
 func (scheduler *Scheduler) Close() error {
 	if scheduler == nil {
 		return nil
@@ -142,5 +157,5 @@ func (scheduler *Scheduler) Close() error {
 	for _, realm := range realms {
 		result = errors.Join(result, realm.Close())
 	}
-	return errors.Join(result, scheduler.ledger.CloseRegion(scheduler.browserRegion))
+	return errors.Join(result, scheduler.store.ReleaseOwner(scheduler.browserOwner), scheduler.store.Close())
 }

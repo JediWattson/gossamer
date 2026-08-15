@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync/atomic"
 
+	"github.com/JediWattson/gossamer/internal/runtime/memory"
 	"github.com/JediWattson/gossamer/internal/runtime/ownership"
 )
 
@@ -23,9 +24,11 @@ type Realm struct {
 	Tasks      *TaskQueue
 	Microtasks *TaskQueue
 
-	ledger *ownership.Ledger
-	owner  ownership.OwnerID
-	region ownership.RegionID
+	ledger    *ownership.Ledger
+	store     *memory.Store
+	owner     ownership.OwnerID
+	region    ownership.RegionID
+	ownsStore bool
 
 	executing atomic.Bool
 	closed    atomic.Bool
@@ -38,17 +41,29 @@ func NewRealm(id RealmID, ledger *ownership.Ledger) (*Realm, error) {
 	if ledger == nil {
 		ledger = ownership.NewLedger()
 	}
+	store := memory.NewStore(ledger)
+	return newRealm(id, ledger, store, true)
+}
+
+func newRealm(id RealmID, ledger *ownership.Ledger, store *memory.Store, ownsStore bool) (*Realm, error) {
+	if id == 0 {
+		return nil, fmt.Errorf("runtime: invalid realm id 0")
+	}
 	owner := ownership.OwnerID{Kind: ownership.OwnerRealm, Value: uint64(id)}
 	region, err := ledger.CreateRegion(owner)
 	if err != nil {
 		return nil, err
 	}
-	tasks, err := newTaskQueue(QueueID(nextQueueID.Add(1)), ledger)
+	if err := store.RegisterOwner(owner); err != nil {
+		_ = ledger.CloseRegion(region)
+		return nil, err
+	}
+	tasks, err := newTaskQueue(QueueID(nextQueueID.Add(1)), ledger, store)
 	if err != nil {
 		_ = ledger.CloseRegion(region)
 		return nil, err
 	}
-	microtasks, err := newTaskQueue(QueueID(nextQueueID.Add(1)), ledger)
+	microtasks, err := newTaskQueue(QueueID(nextQueueID.Add(1)), ledger, store)
 	if err != nil {
 		_ = tasks.close()
 		_ = ledger.CloseRegion(region)
@@ -59,9 +74,18 @@ func NewRealm(id RealmID, ledger *ownership.Ledger) (*Realm, error) {
 		Tasks:      tasks,
 		Microtasks: microtasks,
 		ledger:     ledger,
+		store:      store,
 		owner:      owner,
 		region:     region,
+		ownsStore:  ownsStore,
 	}, nil
+}
+
+func (realm *Realm) Store() *memory.Store {
+	if realm == nil {
+		return nil
+	}
+	return realm.store
 }
 
 func (realm *Realm) Owner() ownership.OwnerID {
@@ -103,13 +127,12 @@ func (realm *Realm) EnqueueRealmTask(run TaskFunc, objects ...ownership.ObjectID
 	}
 	id := TaskID(nextTaskID.Add(1))
 	owner := ownership.OwnerID{Kind: ownership.OwnerTask, Value: uint64(id)}
-	region, err := realm.ledger.CreateRegion(owner)
+	task, err := realm.newTask(id, owner, run, objects, nil)
 	if err != nil {
 		return 0, err
 	}
-	task := Task{ID: id, Run: run, owner: owner, region: region, objects: uniqueObjectIDs(objects)}
 	if err := realm.Tasks.enqueueTransfer(task, realm.owner); err != nil {
-		_ = realm.ledger.CloseRegion(region)
+		_ = realm.store.ReleaseOwner(owner)
 		return 0, err
 	}
 	return id, nil
@@ -127,16 +150,63 @@ func (realm *Realm) enqueue(queue *TaskQueue, run TaskFunc, publisher ownership.
 	}
 	id := TaskID(nextTaskID.Add(1))
 	owner := ownership.OwnerID{Kind: ownership.OwnerTask, Value: uint64(id)}
-	region, err := realm.ledger.CreateRegion(owner)
+	task, err := realm.newTask(id, owner, run, objects, nil)
 	if err != nil {
 		return 0, err
 	}
-	task := Task{ID: id, Run: run, owner: owner, region: region, objects: uniqueObjectIDs(objects)}
 	if err := queue.enqueue(task, publisher); err != nil {
-		_ = realm.ledger.CloseRegion(region)
+		_ = realm.store.ReleaseOwner(owner)
 		return 0, err
 	}
 	return id, nil
+}
+
+func (realm *Realm) enqueueMemory(queue *TaskQueue, run TaskFunc, publisher ownership.OwnerID, mode memorySendMode, refs []memory.Ref) (TaskID, error) {
+	if realm == nil {
+		return 0, fmt.Errorf("runtime: nil realm")
+	}
+	if realm.closed.Load() {
+		return 0, ErrRealmClosed
+	}
+	if run == nil {
+		return 0, ErrNilTask
+	}
+	id := TaskID(nextTaskID.Add(1))
+	owner := ownership.OwnerID{Kind: ownership.OwnerTask, Value: uint64(id)}
+	task, err := realm.newTask(id, owner, run, nil, refs)
+	if err != nil {
+		return 0, err
+	}
+	if err := queue.enqueueMemory(task, publisher, mode); err != nil {
+		_ = realm.store.ReleaseOwner(owner)
+		return 0, err
+	}
+	return id, nil
+}
+
+func (realm *Realm) newTask(id TaskID, owner ownership.OwnerID, run TaskFunc, objects []ownership.ObjectID, refs []memory.Ref) (Task, error) {
+	region, err := realm.ledger.CreateRegion(owner)
+	if err != nil {
+		return Task{}, err
+	}
+	if err := realm.store.RegisterOwner(owner); err != nil {
+		_ = realm.ledger.CloseRegion(region)
+		return Task{}, err
+	}
+	memoryRegion, err := realm.store.NewRegion(owner)
+	if err != nil {
+		_ = realm.store.ReleaseOwner(owner)
+		return Task{}, err
+	}
+	return Task{
+		ID:           id,
+		Run:          run,
+		owner:        owner,
+		region:       region,
+		memoryRegion: memoryRegion,
+		objects:      uniqueObjectIDs(objects),
+		refs:         append([]memory.Ref(nil), refs...),
+	}, nil
 }
 
 func uniqueObjectIDs(objects []ownership.ObjectID) []ownership.ObjectID {
@@ -202,9 +272,16 @@ func (realm *Realm) drainMicrotasks() error {
 }
 
 func (realm *Realm) execute(task Task) (result error) {
-	context := &TaskContext{Realm: realm, TaskID: task.ID, Owner: task.owner, Region: task.region}
+	context := &TaskContext{
+		Realm:        realm,
+		TaskID:       task.ID,
+		Owner:        task.owner,
+		Region:       task.region,
+		MemoryRegion: task.memoryRegion,
+		Refs:         append([]memory.Ref(nil), task.refs...),
+	}
 	defer func() {
-		result = errors.Join(result, realm.ledger.CloseRegion(task.region))
+		result = errors.Join(result, realm.store.ReleaseOwner(task.owner))
 	}()
 	return task.Run(context)
 }
@@ -226,9 +303,13 @@ func (realm *Realm) Close() error {
 	if realm == nil || realm.closed.Swap(true) {
 		return nil
 	}
-	return errors.Join(
+	result := errors.Join(
 		realm.Tasks.close(),
 		realm.Microtasks.close(),
-		realm.ledger.CloseRegion(realm.region),
+		realm.store.ReleaseOwner(realm.owner),
 	)
+	if realm.ownsStore {
+		result = errors.Join(result, realm.store.Close())
+	}
+	return result
 }

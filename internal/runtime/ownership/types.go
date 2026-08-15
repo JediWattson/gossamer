@@ -22,6 +22,7 @@ const (
 	OwnerDocument
 	OwnerRealm
 	OwnerBrowser
+	OwnerShared
 )
 
 // OwnerID identifies one task, queue, realm, or browser owner.
@@ -45,6 +46,8 @@ func (owner OwnerID) String() string {
 		kind = "realm"
 	case OwnerBrowser:
 		kind = "browser"
+	case OwnerShared:
+		kind = "shared"
 	default:
 		kind = fmt.Sprintf("owner(%d)", owner.Kind)
 	}

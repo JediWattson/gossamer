@@ -22,13 +22,13 @@ strictly ordered. Microtasks drain after each task before the next task begins.
 Task queues are explicit objects because enqueue and dequeue are semantic
 ownership boundaries.
 
-The ownership ledger is a shadow model. It does not replace Go's allocator or
-garbage collector. Fake runtime objects carry IDs and metadata so the kernel
-can prove publication, promotion, transfer, and release rules before those
-rules govern JavaScript values. A region has at most one ownership claim on an
-object. Local aliases and graph edges do not increment ARC. Publication and
-longer-lived write barriers retain each required reachable object once per
-destination region, including cyclic graphs.
+The ownership ledger remains the semantic claim model. A native `RegionStore`
+now uses it to own synthetic Cells in real generation-checked slots. Physical
+region identity is deliberately distinct from a movable ledger claim: a Ref
+keeps the same `RegionID + Slot + Generation` while its region moves from a
+task to a queue and then to the receiving task. Local aliases do not add a
+claim. Cross-region Cell fields update a counted region graph as well as the
+ledger's object graph.
 
 ```text
 RC(object) = number of claiming regions
@@ -39,7 +39,20 @@ claim(region, object) is either present or absent
 ## Implemented kernel slice
 
 - `internal/runtime/ownership` models task, queue, wrapper, document, realm,
-  and browser owners.
+  browser, and immutable shared owners.
+- `internal/runtime/memory` owns synthetic Cells in explicit regions and slots.
+- Freed slots advance their generation and exhausted generations are retired,
+  so a stale Ref cannot become valid again.
+- Every mutable physical region has exactly one owner. Published regions are
+  immutable, while regions held by a queue cannot be dereferenced.
+- Every cross-region field maintains a counted `from -> to` edge. Replacing or
+  clearing the field decrements the count and removes zero-count edges.
+- Destroying a referenced Cell or region fails before storage is reclaimed.
+- Unqualified queue sends accept only published refs. Private refs require an
+  explicit Transfer, Publish, or Copy operation.
+- Transfer moves the complete connected private region component through the
+  queue; Copy clones the reachable Cell graph; Publish makes the outgoing
+  region graph immutable and shared.
 - Every owner has a logical region.
 - Task-local fake objects receive an initial task reference.
 - Enqueue publishes carried objects to the destination queue.
@@ -83,3 +96,7 @@ stable IDs. See
 Physical allocation optimizations such as typed slabs or object pools should
 be evaluated later against the semantic telemetry. They are implementation
 details, not the Phase 0 ownership model.
+
+The RegionStore intentionally does not implement JavaScript objects, tracing
+garbage collection, automatic escape promotion, packed refs, or V8 heap
+integration. Those remain later milestones.

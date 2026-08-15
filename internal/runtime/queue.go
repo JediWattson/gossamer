@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/JediWattson/gossamer/internal/runtime/memory"
 	"github.com/JediWattson/gossamer/internal/runtime/ownership"
 )
 
@@ -14,6 +15,7 @@ type TaskQueue struct {
 	ID QueueID
 
 	ledger *ownership.Ledger
+	store  *memory.Store
 	owner  ownership.OwnerID
 	region ownership.RegionID
 
@@ -24,19 +26,25 @@ type TaskQueue struct {
 	notify chan struct{}
 }
 
-func newTaskQueue(id QueueID, ledger *ownership.Ledger) (*TaskQueue, error) {
+func newTaskQueue(id QueueID, ledger *ownership.Ledger, store *memory.Store) (*TaskQueue, error) {
 	owner := ownership.OwnerID{Kind: ownership.OwnerQueue, Value: uint64(id)}
 	region, err := ledger.CreateRegion(owner)
 	if err != nil {
 		return nil, err
 	}
-	return &TaskQueue{
+	queue := &TaskQueue{
 		ID:     id,
 		ledger: ledger,
+		store:  store,
 		owner:  owner,
 		region: region,
 		notify: make(chan struct{}, 1),
-	}, nil
+	}
+	if err := store.RegisterOwner(owner); err != nil {
+		_ = ledger.CloseRegion(region)
+		return nil, err
+	}
+	return queue, nil
 }
 
 func (queue *TaskQueue) Owner() ownership.OwnerID {
@@ -99,6 +107,39 @@ func (queue *TaskQueue) enqueueTransfer(task Task, publisher ownership.OwnerID) 
 	return nil
 }
 
+func (queue *TaskQueue) enqueueMemory(task Task, publisher ownership.OwnerID, mode memorySendMode) error {
+	if queue == nil {
+		return fmt.Errorf("runtime: nil task queue")
+	}
+	if task.Run == nil {
+		return ErrNilTask
+	}
+	queue.mutex.Lock()
+	defer queue.mutex.Unlock()
+	if queue.closed {
+		return ErrQueueClosed
+	}
+	var err error
+	switch mode {
+	case memorySend:
+		err = queue.store.ValidateSend(publisher, task.refs...)
+	case memoryTransfer:
+		err = queue.store.Transfer(publisher, queue.owner, task.refs...)
+	case memoryPublish:
+		err = queue.store.Publish(publisher, task.refs...)
+	case memoryCopy:
+		task.refs, err = queue.store.Copy(publisher, queue.owner, task.refs...)
+	default:
+		err = fmt.Errorf("runtime: unknown memory send mode %d", mode)
+	}
+	if err != nil {
+		return err
+	}
+	queue.items = append(queue.items, task)
+	queue.signal()
+	return nil
+}
+
 func (queue *TaskQueue) pop(ctx context.Context) (Task, error) {
 	for {
 		queue.mutex.Lock()
@@ -137,6 +178,9 @@ func (queue *TaskQueue) takeLocked() (Task, bool, error) {
 		return Task{}, false, nil
 	}
 	task := queue.items[queue.head]
+	if err := queue.store.Accept(queue.owner, task.owner, task.refs...); err != nil {
+		return Task{}, false, err
+	}
 	poppedGraph, err := queue.ledger.Reachable(task.objects)
 	if err != nil {
 		return Task{}, false, err
@@ -210,11 +254,14 @@ func (queue *TaskQueue) close() error {
 	queue.signal()
 	queue.mutex.Unlock()
 
-	closeErr := queue.ledger.CloseRegion(queue.region)
+	var closeErr error
 	for _, task := range pending {
-		if err := queue.ledger.CloseRegion(task.region); err != nil && closeErr == nil {
+		if err := queue.store.ReleaseOwner(task.owner); err != nil && closeErr == nil {
 			closeErr = err
 		}
+	}
+	if err := queue.store.ReleaseOwner(queue.owner); err != nil && closeErr == nil {
+		closeErr = err
 	}
 	return closeErr
 }

@@ -53,7 +53,7 @@ func (ledger *Ledger) CreateRegion(owner OwnerID) (RegionID, error) {
 	if ledger == nil {
 		return 0, fmt.Errorf("ownership: nil ledger")
 	}
-	if owner.Value == 0 || owner.Kind > OwnerBrowser {
+	if owner.Value == 0 || owner.Kind > OwnerShared {
 		return 0, fmt.Errorf("%w: %s", ErrInvalidOwner, owner)
 	}
 
@@ -459,6 +459,22 @@ func (ledger *Ledger) CloseRegion(regionID RegionID) error {
 		}
 	}
 	return nil
+}
+
+// OwnerRegion returns the active logical claim region registered for owner.
+// Physical heaps can use this to bind their storage regions to the existing
+// ownership ledger without conflating physical region identity with a claim.
+func (ledger *Ledger) OwnerRegion(owner OwnerID) (RegionID, error) {
+	if ledger == nil {
+		return 0, fmt.Errorf("ownership: nil ledger")
+	}
+	ledger.mutex.Lock()
+	defer ledger.mutex.Unlock()
+	region, err := ledger.activeOwnerRegionLocked(owner)
+	if err != nil {
+		return 0, err
+	}
+	return region.id, nil
 }
 
 func (ledger *Ledger) Object(objectID ObjectID) (ObjectSnapshot, error) {
