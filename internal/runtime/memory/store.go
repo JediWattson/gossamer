@@ -36,6 +36,8 @@ var (
 	ErrPromiseSelfResolution = errors.New("memory: promise cannot resolve to itself")
 	ErrInvalidBigInt         = errors.New("memory: invalid BigInt")
 	ErrInvalidSymbol         = errors.New("memory: invalid Symbol")
+	ErrDetachedBuffer        = errors.New("memory: ArrayBuffer is detached")
+	ErrBufferBounds          = errors.New("memory: buffer access is out of bounds")
 	ErrObjectReferenced      = errors.New("memory: heap object still has incoming references")
 	ErrCellReferenced        = ErrObjectReferenced
 	ErrRegionReferenced      = errors.New("memory: region still has incoming references")
@@ -58,6 +60,7 @@ type Stats struct {
 	LivePromises       uint64
 	LiveBigInts        uint64
 	LiveSymbols        uint64
+	LiveArrayBuffers   uint64
 	LiveBytes          uint64
 	LiveRegions        uint64
 	BulkRegionReleases uint64
@@ -92,6 +95,8 @@ func (kind HeapKind) String() string {
 		return "BigInt"
 	case HeapSymbol:
 		return "Symbol"
+	case HeapArrayBuffer:
+		return "ArrayBuffer"
 	default:
 		return fmt.Sprintf("HeapKind(%d)", kind)
 	}
@@ -221,7 +226,7 @@ func (store *Store) allocLocked(owner ownership.OwnerID, regionID RegionID, inte
 }
 
 func (store *Store) allocKindLocked(owner ownership.OwnerID, regionID RegionID, kind HeapKind, internal bool) (Ref, error) {
-	if kind < HeapCell || kind > HeapSymbol {
+	if kind < HeapCell || kind > HeapArrayBuffer {
 		return Ref{}, fmt.Errorf("%w: heap kind %d", ErrTypeMismatch, kind)
 	}
 	region, err := store.mutableRegionLocked(owner, regionID, internal)
@@ -659,6 +664,8 @@ func (store *Store) recordKindAllocationLocked(kind HeapKind, bytes uint64) {
 		store.stats.LiveBigInts++
 	case HeapSymbol:
 		store.stats.LiveSymbols++
+	case HeapArrayBuffer:
+		store.stats.LiveArrayBuffers++
 	}
 	store.stats.LiveBytes += bytes
 }
@@ -689,6 +696,9 @@ func (store *Store) recordKindFreeLocked(slot *Slot) {
 		store.stats.LiveBytes -= uint64(len(slot.BigInt.Magnitude))
 	case HeapSymbol:
 		store.stats.LiveSymbols--
+	case HeapArrayBuffer:
+		store.stats.LiveArrayBuffers--
+		store.stats.LiveBytes -= uint64(len(slot.ArrayBuffer.Bytes))
 	}
 }
 
@@ -1161,6 +1171,10 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 			_, copySlot, _ := store.slotLocked(copyRef)
 			copySlot.BigInt = cloneBigInt(sourceSlot.BigInt)
 			store.stats.LiveBytes += uint64(len(copySlot.BigInt.Magnitude))
+		} else if sourceSlot.Kind == HeapArrayBuffer {
+			_, copySlot, _ := store.slotLocked(copyRef)
+			copySlot.ArrayBuffer = cloneArrayBuffer(sourceSlot.ArrayBuffer)
+			store.stats.LiveBytes += uint64(len(copySlot.ArrayBuffer.Bytes))
 		}
 		mapping[source] = copyRef
 	}
@@ -1267,6 +1281,8 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 				_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
 				return nil, err
 			}
+		case HeapArrayBuffer:
+			// Mutable bytes were cloned during allocation.
 		default:
 			_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
 			return nil, fmt.Errorf("%w: cannot copy heap kind %d", ErrTypeMismatch, sourceSlot.Kind)

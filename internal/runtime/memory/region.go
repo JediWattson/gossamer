@@ -37,6 +37,7 @@ const (
 	HeapPromise
 	HeapBigInt
 	HeapSymbol
+	HeapArrayBuffer
 )
 
 // StringObject is the first real typed native-heap payload. Text is immutable;
@@ -47,18 +48,19 @@ type StringObject struct {
 
 // Slot holds one generation-checked typed heap payload.
 type Slot struct {
-	Generation uint32
-	Kind       HeapKind
-	Cell       Cell
-	String     StringObject
-	Object     Object
-	Array      Array
-	Context    Context
-	Function   Function
-	Promise    Promise
-	BigInt     BigInt
-	Symbol     Symbol
-	Occupied   bool
+	Generation  uint32
+	Kind        HeapKind
+	Cell        Cell
+	String      StringObject
+	Object      Object
+	Array       Array
+	Context     Context
+	Function    Function
+	Promise     Promise
+	BigInt      BigInt
+	Symbol      Symbol
+	ArrayBuffer ArrayBuffer
+	Occupied    bool
 
 	object ownership.ObjectID
 }
@@ -85,18 +87,19 @@ func cloneString(value StringObject) StringObject {
 
 func cloneSlot(slot Slot) Slot {
 	return Slot{
-		Generation: slot.Generation,
-		Kind:       slot.Kind,
-		Cell:       cloneCell(slot.Cell),
-		String:     cloneString(slot.String),
-		Object:     cloneObject(slot.Object),
-		Array:      cloneArray(slot.Array),
-		Context:    cloneContext(slot.Context),
-		Function:   cloneFunction(slot.Function),
-		Promise:    clonePromise(slot.Promise),
-		BigInt:     cloneBigInt(slot.BigInt),
-		Symbol:     cloneSymbol(slot.Symbol),
-		Occupied:   slot.Occupied,
+		Generation:  slot.Generation,
+		Kind:        slot.Kind,
+		Cell:        cloneCell(slot.Cell),
+		String:      cloneString(slot.String),
+		Object:      cloneObject(slot.Object),
+		Array:       cloneArray(slot.Array),
+		Context:     cloneContext(slot.Context),
+		Function:    cloneFunction(slot.Function),
+		Promise:     clonePromise(slot.Promise),
+		BigInt:      cloneBigInt(slot.BigInt),
+		Symbol:      cloneSymbol(slot.Symbol),
+		ArrayBuffer: cloneArrayBuffer(slot.ArrayBuffer),
+		Occupied:    slot.Occupied,
 	}
 }
 
@@ -156,7 +159,7 @@ func slotReferences(slot *Slot) []Value {
 }
 
 func slotStorageEmpty(slot *Slot) bool {
-	return slot != nil && slot.Kind == HeapInvalid && len(slot.Cell.Fields) == 0 && slot.String.Text == "" && slot.Object.Prototype == (Value{}) && len(slot.Object.Properties) == 0 && slot.Array.Length == 0 && len(slot.Array.Elements) == 0 && slot.Context.Parent == (Value{}) && len(slot.Context.Bindings) == 0 && slot.Function.Kind == 0 && slot.Function.Name == (Value{}) && slot.Function.Environment == (Value{}) && slot.Function.Arity == 0 && len(slot.Function.Code) == 0 && len(slot.Function.Constants) == 0 && slot.Function.NativeID == 0 && slot.Promise.State == PromisePending && slot.Promise.Result == (Value{}) && len(slot.Promise.Reactions) == 0 && !slot.Promise.Handled && !slot.BigInt.Negative && len(slot.BigInt.Magnitude) == 0 && slot.Symbol.ID == 0 && slot.Symbol.Description == (Value{})
+	return slot != nil && slot.Kind == HeapInvalid && len(slot.Cell.Fields) == 0 && slot.String.Text == "" && slot.Object.Prototype == (Value{}) && len(slot.Object.Properties) == 0 && slot.Array.Length == 0 && len(slot.Array.Elements) == 0 && slot.Context.Parent == (Value{}) && len(slot.Context.Bindings) == 0 && slot.Function.Kind == 0 && slot.Function.Name == (Value{}) && slot.Function.Environment == (Value{}) && slot.Function.Arity == 0 && len(slot.Function.Code) == 0 && len(slot.Function.Constants) == 0 && slot.Function.NativeID == 0 && slot.Promise.State == PromisePending && slot.Promise.Result == (Value{}) && len(slot.Promise.Reactions) == 0 && !slot.Promise.Handled && !slot.BigInt.Negative && len(slot.BigInt.Magnitude) == 0 && slot.Symbol.ID == 0 && slot.Symbol.Description == (Value{}) && len(slot.ArrayBuffer.Bytes) == 0 && !slot.ArrayBuffer.Detached
 }
 
 func clearSlotPayload(slot *Slot) {
@@ -170,6 +173,7 @@ func clearSlotPayload(slot *Slot) {
 	slot.Promise = Promise{}
 	slot.BigInt = BigInt{}
 	slot.Symbol = Symbol{}
+	slot.ArrayBuffer = ArrayBuffer{}
 }
 
 func initializeSlotPayload(slot *Slot, kind HeapKind) {

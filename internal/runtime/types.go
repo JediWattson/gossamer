@@ -309,6 +309,41 @@ func (context *TaskContext) DerefSymbol(ref memory.Ref) (memory.Symbol, error) {
 	return context.Realm.store.DerefSymbol(context.Owner, ref)
 }
 
+func (context *TaskContext) NewArrayBuffer(bytes []byte) (memory.Ref, error) {
+	if context == nil || context.Realm == nil {
+		return memory.Ref{}, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.AllocArrayBuffer(context.Owner, context.MemoryRegion, bytes)
+}
+
+func (context *TaskContext) DerefArrayBuffer(ref memory.Ref) (memory.ArrayBuffer, error) {
+	if context == nil || context.Realm == nil {
+		return memory.ArrayBuffer{}, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.DerefArrayBuffer(context.Owner, ref)
+}
+
+func (context *TaskContext) ReadArrayBuffer(ref memory.Ref, offset, length uint64) ([]byte, error) {
+	if context == nil || context.Realm == nil {
+		return nil, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.ReadArrayBuffer(context.Owner, ref, offset, length)
+}
+
+func (context *TaskContext) WriteArrayBuffer(ref memory.Ref, offset uint64, bytes []byte) error {
+	if context == nil || context.Realm == nil {
+		return fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.WriteArrayBuffer(context.Owner, ref, offset, bytes)
+}
+
+func (context *TaskContext) DetachArrayBuffer(ref memory.Ref) error {
+	if context == nil || context.Realm == nil {
+		return fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.DetachArrayBuffer(context.Owner, ref)
+}
+
 func (context *TaskContext) Set(ref memory.Ref, field int, value memory.Value) error {
 	if context == nil || context.Realm == nil {
 		return fmt.Errorf("runtime: nil task context")

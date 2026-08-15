@@ -102,6 +102,15 @@ counted edges.
 The global Symbol registry and property-key coercion remain language-runtime
 services above RegionStore.
 
+### ArrayBuffer
+
+Native ArrayBuffers own mutable cloned byte slices. Reads return copies;
+writes are bounds checked and reject published regions. Explicit detachment
+releases the bytes, is idempotent, and causes later reads or writes to fail.
+
+Copy and Promote clone attached bytes rather than sharing mutation. Detached
+state is preserved, and live-byte telemetry drops immediately on detach.
+
 ## Deliberate boundaries
 
 These native payloads are not yet ECMAScript implementations. String
