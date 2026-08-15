@@ -119,6 +119,45 @@ func (document *Document) Version() uint64 {
 	return document.version.Load()
 }
 
+// Text returns text-node data while holding the identity store's read lock, so
+// host reads cannot race stable-ID mutation.
+func (document *Document) Text(id NodeID) (string, error) {
+	if document == nil || document.store == nil {
+		return "", ErrInvalidDocument
+	}
+	document.store.mutex.RLock()
+	defer document.store.mutex.RUnlock()
+	node, ok := document.store.resolveLocked(id)
+	if !ok {
+		return "", fmt.Errorf("%w: %d", ErrUnknownNode, id)
+	}
+	if node.Type != TextNode {
+		return "", fmt.Errorf("%w: node %d is %d, want text", ErrWrongNodeKind, id, node.Type)
+	}
+	return node.Data, nil
+}
+
+// ClosestElement returns the nearest element ancestor, including id itself.
+func (document *Document) ClosestElement(id NodeID) (NodeID, bool) {
+	if document == nil || document.store == nil {
+		return InvalidNodeID, false
+	}
+	document.store.mutex.RLock()
+	defer document.store.mutex.RUnlock()
+	node, ok := document.store.resolveLocked(id)
+	if !ok {
+		return InvalidNodeID, false
+	}
+	for node != nil && node.Type != ElementNode {
+		node = node.Parent
+	}
+	if node == nil {
+		return InvalidNodeID, false
+	}
+	element, ok := document.store.ids[node]
+	return element, ok
+}
+
 // SetText changes a text node through stable identity.
 func (document *Document) SetText(id NodeID, data string) error {
 	if document == nil || document.store == nil {

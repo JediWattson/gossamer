@@ -95,6 +95,18 @@ Document to its Realm, URL, resources, invalidation state, and current Frame.
 Stable-ID mutations can enqueue a later render task without changing the
 working CSS/layout/render implementation.
 
+Navigation now follows that boundary as well: document and subresource I/O
+runs off-Realm, browser-owned completion envelopes enter through ordered Page
+tasks, stale navigation generations are rejected, and the final resource task
+queues rendering. The screenshot CLI uses this same path. See
+[`docs/phase-1-navigation.md`](docs/phase-1-navigation.md) for the sequence.
+
+The pre-V8 browser socket is also complete: Page tasks own input hit testing,
+timers, classic-script evaluation, explicit engine microtask checkpoints,
+opaque callback scheduling, and render invalidation. A replaceable fake engine
+proves the full click-to-paint flow without a JavaScript parser. See
+[`docs/pre-v8-engine-boundary.md`](docs/pre-v8-engine-boundary.md).
+
 ## What works today
 
 ### Loading and resources

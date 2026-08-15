@@ -89,6 +89,32 @@ func (realm *Realm) EnqueueMicrotask(run TaskFunc) (TaskID, error) {
 	return realm.enqueue(realm.Microtasks, run, ownership.OwnerID{}, nil)
 }
 
+// EnqueueRealmTask transfers Realm-owned objects into a newly runnable task.
+// It is the firing boundary for callbacks retained persistently by the Realm.
+func (realm *Realm) EnqueueRealmTask(run TaskFunc, objects ...ownership.ObjectID) (TaskID, error) {
+	if realm == nil {
+		return 0, fmt.Errorf("runtime: nil realm")
+	}
+	if realm.closed.Load() {
+		return 0, ErrRealmClosed
+	}
+	if run == nil {
+		return 0, ErrNilTask
+	}
+	id := TaskID(nextTaskID.Add(1))
+	owner := ownership.OwnerID{Kind: ownership.OwnerTask, Value: uint64(id)}
+	region, err := realm.ledger.CreateRegion(owner)
+	if err != nil {
+		return 0, err
+	}
+	task := Task{ID: id, Run: run, owner: owner, region: region, objects: uniqueObjectIDs(objects)}
+	if err := realm.Tasks.enqueueTransfer(task, realm.owner); err != nil {
+		_ = realm.ledger.CloseRegion(region)
+		return 0, err
+	}
+	return id, nil
+}
+
 func (realm *Realm) enqueue(queue *TaskQueue, run TaskFunc, publisher ownership.OwnerID, objects []ownership.ObjectID) (TaskID, error) {
 	if realm == nil {
 		return 0, fmt.Errorf("runtime: nil realm")

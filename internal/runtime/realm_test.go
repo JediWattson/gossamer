@@ -331,6 +331,121 @@ func TestSchedulerRunsRealmsConcurrently(t *testing.T) {
 	}
 }
 
+func TestSchedulerPublishesExternalCompletionEnvelopeThroughRealmQueue(t *testing.T) {
+	t.Parallel()
+
+	scheduler, err := browserruntime.NewScheduler(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer scheduler.Close()
+	realm, err := scheduler.NewRealm()
+	if err != nil {
+		t.Fatal(err)
+	}
+	executed := false
+	_, envelope, err := scheduler.EnqueueExternalTask(realm, func(*browserruntime.TaskContext) error {
+		executed = true
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	queued, err := scheduler.Ledger().Object(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queued.References != 1 || !queued.Alive {
+		t.Fatalf("queued completion envelope = %#v", queued)
+	}
+	if err := realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !executed {
+		t.Fatal("external completion did not execute")
+	}
+	completed, err := scheduler.Ledger().Object(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed.Alive || completed.References != 0 {
+		t.Fatalf("completed envelope = %#v", completed)
+	}
+
+	var published, transferred bool
+	for _, event := range scheduler.Ledger().Events() {
+		if event.Object != envelope {
+			continue
+		}
+		published = published || event.Kind == ownership.ObjectPublished &&
+			event.From.Kind == ownership.OwnerBrowser && event.To.Kind == ownership.OwnerQueue
+		transferred = transferred || event.Kind == ownership.ObjectTransferred &&
+			event.From.Kind == ownership.OwnerQueue && event.To.Kind == ownership.OwnerTask
+	}
+	if !published || !transferred {
+		t.Fatalf("completion ownership transitions: published=%t transferred=%t", published, transferred)
+	}
+}
+
+func TestRealmTransfersPersistentCallbackIntoFiringTask(t *testing.T) {
+	t.Parallel()
+
+	realm, err := browserruntime.NewRealm(9, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer realm.Close()
+	var callback ownership.ObjectID
+	if _, err := realm.EnqueueTask(func(task *browserruntime.TaskContext) error {
+		var createErr error
+		callback, createErr = task.NewObject()
+		if createErr != nil {
+			return createErr
+		}
+		return task.PublishToRealm(callback)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	persistent, err := realm.Ledger().Object(callback)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persistent.References != 1 || persistent.Owners[realm.Owner()] != 1 {
+		t.Fatalf("persistent callback = %#v", persistent)
+	}
+
+	fired := false
+	if _, err := realm.EnqueueRealmTask(func(*browserruntime.TaskContext) error {
+		fired = true
+		return nil
+	}, callback); err != nil {
+		t.Fatal(err)
+	}
+	queued, err := realm.Ledger().Object(callback)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queued.References != 1 || queued.Owners[realm.Tasks.Owner()] != 1 {
+		t.Fatalf("queued callback = %#v", queued)
+	}
+	if err := realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !fired {
+		t.Fatal("persistent callback did not fire")
+	}
+	completed, err := realm.Ledger().Object(callback)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed.Alive || completed.References != 0 {
+		t.Fatalf("completed callback = %#v", completed)
+	}
+}
+
 func TestConcurrentEnqueuePreservesEveryTask(t *testing.T) {
 	t.Parallel()
 

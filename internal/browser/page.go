@@ -1,6 +1,7 @@
 package browser
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"sync"
@@ -13,29 +14,62 @@ import (
 // Page is the owner that ties one Realm to its stable-identity Document,
 // current URL, render resources, invalidation state, and current Frame.
 type Page struct {
-	ID       PageID
-	Realm    *browserruntime.Realm
-	Document *dom.Document
+	ID    PageID
+	Realm *browserruntime.Realm
 
-	mutex           sync.RWMutex
-	location        *url.URL
-	resources       render.Resources
-	viewport        render.Viewport
-	frame           *render.Frame
-	dirty           bool
-	renderedVersion uint64
-	closed          bool
+	browser *Browser
+	script  JSRealm
+
+	mutex                  sync.RWMutex
+	document               *dom.Document
+	documentGeneration     DocumentGeneration
+	nextDocumentGeneration DocumentGeneration
+	location               *url.URL
+	resources              pageResources
+	viewport               render.Viewport
+	frame                  *render.Frame
+	frameGeneration        DocumentGeneration
+	dirty                  bool
+	renderedVersion        uint64
+	nextNavigation         NavigationID
+	navigation             navigationRecord
+	nextTimer              TimerID
+	timers                 map[TimerID]*pageTimer
+	closed                 bool
 }
 
-func newPage(id PageID, realm *browserruntime.Realm, document *dom.Document, location *url.URL) *Page {
+func newPage(
+	browser *Browser,
+	id PageID,
+	realm *browserruntime.Realm,
+	script JSRealm,
+	document *dom.Document,
+	location *url.URL,
+) *Page {
 	return &Page{
-		ID:       id,
-		Realm:    realm,
-		Document: document,
-		location: cloneURL(location),
-		viewport: render.DefaultViewport,
-		dirty:    true,
+		ID:                     id,
+		Realm:                  realm,
+		browser:                browser,
+		script:                 script,
+		document:               document,
+		documentGeneration:     1,
+		nextDocumentGeneration: 1,
+		location:               cloneURL(location),
+		resources:              newPageResources(),
+		viewport:               render.DefaultViewport,
+		timers:                 make(map[TimerID]*pageTimer),
+		dirty:                  true,
 	}
+}
+
+func (page *Page) Document() *dom.Document {
+	if page == nil {
+		return nil
+	}
+	page.mutex.RLock()
+	document := page.document
+	page.mutex.RUnlock()
+	return document
 }
 
 func (page *Page) URL() *url.URL {
@@ -57,7 +91,11 @@ func (page *Page) SetResources(resources render.Resources) error {
 	if page.closed {
 		return ErrPageClosed
 	}
-	page.resources = resources
+	stable, err := pageResourcesFromRenderer(page.document, resources)
+	if err != nil {
+		return err
+	}
+	page.resources = stable
 	page.dirty = true
 	return nil
 }
@@ -96,7 +134,7 @@ func (page *Page) Dirty() bool {
 		return false
 	}
 	page.mutex.RLock()
-	dirty := page.dirty || page.renderedVersion != page.Document.Version()
+	dirty := page.dirty || page.renderedVersion != page.document.Version()
 	page.mutex.RUnlock()
 	return dirty
 }
@@ -119,29 +157,37 @@ func (page *Page) QueueTextMutation(node dom.NodeID, data string) (browserruntim
 	if page == nil {
 		return 0, fmt.Errorf("browser: nil page")
 	}
+	page.mutex.RLock()
+	handle := NodeHandle{Document: page.documentGeneration, Node: node}
+	page.mutex.RUnlock()
+	return page.QueueTextMutationHandle(handle, data)
+}
+
+// QueueTextMutationHandle preserves document identity across the delay between
+// enqueue and execution, preventing a reused NodeID from targeting a later
+// navigation's document.
+func (page *Page) QueueTextMutationHandle(handle NodeHandle, data string) (browserruntime.TaskID, error) {
+	if page == nil {
+		return 0, fmt.Errorf("browser: nil page")
+	}
 	return page.Realm.EnqueueTask(func(context *browserruntime.TaskContext) error {
 		page.mutex.Lock()
 		if page.closed {
 			page.mutex.Unlock()
 			return ErrPageClosed
 		}
-		if err := page.Document.SetText(node, data); err != nil {
+		if page.documentGeneration != handle.Document {
+			page.mutex.Unlock()
+			return ErrStaleNodeHandle
+		}
+		if err := page.document.SetText(handle.Node, data); err != nil {
 			page.mutex.Unlock()
 			return err
 		}
 		page.dirty = true
 		page.mutex.Unlock()
 
-		invalidation, err := context.NewObject()
-		if err != nil {
-			return err
-		}
-		_, err = context.QueueTask(func(*browserruntime.TaskContext) error {
-			page.mutex.Lock()
-			defer page.mutex.Unlock()
-			return page.renderLocked(true)
-		}, invalidation)
-		return err
+		return page.queueRenderFromTask(context)
 	})
 }
 
@@ -156,6 +202,25 @@ func (page *Page) QueueRender() (browserruntime.TaskID, error) {
 	})
 }
 
+func (page *Page) queueRenderFromTask(context *browserruntime.TaskContext) error {
+	page.mutex.RLock()
+	generation := page.documentGeneration
+	page.mutex.RUnlock()
+	invalidation, err := context.NewObject()
+	if err != nil {
+		return err
+	}
+	_, err = context.QueueTask(func(*browserruntime.TaskContext) error {
+		page.mutex.Lock()
+		defer page.mutex.Unlock()
+		if page.documentGeneration != generation {
+			return nil
+		}
+		return page.renderLocked(true)
+	}, invalidation)
+	return err
+}
+
 func (page *Page) Close() error {
 	if page == nil {
 		return nil
@@ -166,33 +231,49 @@ func (page *Page) Close() error {
 		return nil
 	}
 	page.closed = true
+	if page.navigation.cancel != nil {
+		page.navigation.cancel()
+		page.navigation.cancel = nil
+	}
 	page.frame = nil
+	timers := page.takeTimersLocked()
+	script := page.script
+	page.script = nil
 	page.mutex.Unlock()
-	return page.Realm.Close()
+	timerErr := page.releaseTimers(timers)
+	var scriptErr error
+	if script != nil {
+		scriptErr = script.Close()
+	}
+	return errors.Join(timerErr, scriptErr, page.Realm.Close())
 }
 
 func (page *Page) renderLocked(onlyIfDirty bool) error {
 	if page.closed {
 		return ErrPageClosed
 	}
-	version := page.Document.Version()
+	version := page.document.Version()
 	if onlyIfDirty && !page.dirty && page.renderedVersion == version {
 		return nil
 	}
 	var frame *render.Frame
-	err := page.Document.ReadRoot(func(root *dom.Node) error {
+	resources := page.resources.rendererResources(page.document)
+	err := page.document.ReadRoot(func(root *dom.Node) error {
 		var renderErr error
-		frame, renderErr = render.RenderWithResources(root, page.viewport, page.resources)
+		frame, renderErr = render.RenderWithResources(root, page.viewport, resources)
 		return renderErr
 	})
 	if err != nil {
 		return err
 	}
 	page.frame = frame
+	page.frameGeneration = page.documentGeneration
 	page.renderedVersion = version
 	page.dirty = false
 	return nil
 }
+
+var ErrStaleNodeHandle = errors.New("browser: node handle belongs to a previous document")
 
 func cloneURL(source *url.URL) *url.URL {
 	if source == nil {

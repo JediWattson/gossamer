@@ -46,6 +46,12 @@ func TestDocumentMutationUsesStableIdentity(t *testing.T) {
 	if text.Data != "after" || document.Version() != initialVersion+1 {
 		t.Fatalf("SetText result = data:%q version:%d", text.Data, document.Version())
 	}
+	if got, err := document.Text(textID); err != nil || got != "after" {
+		t.Fatalf("Text(%d) = %q, %v; want after", textID, got, err)
+	}
+	if got, ok := document.ClosestElement(textID); !ok || got != paragraphID {
+		t.Fatalf("ClosestElement(%d) = %d, %t; want %d, true", textID, got, ok, paragraphID)
+	}
 
 	secondParagraph := NewElement("p")
 	secondText := NewText("second")

@@ -45,7 +45,7 @@ func TestPageSchedulesStableIDMutationThenRender(t *testing.T) {
 	}
 
 	textNode := findTextNode(root, "before")
-	textID, ok := page.Document.ID(textNode)
+	textID, ok := page.Document().ID(textNode)
 	if !ok || textID == dom.InvalidNodeID {
 		t.Fatal("text node has no stable ID")
 	}
@@ -102,7 +102,7 @@ func TestBrowserLoadPageIndexesFinalDocumentURL(t *testing.T) {
 	if page.URL().String() != finalURL.String() {
 		t.Fatalf("Page.URL() = %q, want %q", page.URL(), finalURL)
 	}
-	if page.Document.RootID() == dom.InvalidNodeID || page.Document.Store().Len() == 0 {
+	if page.Document().RootID() == dom.InvalidNodeID || page.Document().Store().Len() == 0 {
 		t.Fatal("loaded page has no indexed DOM")
 	}
 	if err := page.Render(); err != nil {

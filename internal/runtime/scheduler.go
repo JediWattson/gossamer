@@ -15,6 +15,7 @@ var nextBrowserID atomic.Uint64
 // Scheduler owns independent realm actors and their shared ownership ledger.
 type Scheduler struct {
 	ledger        *ownership.Ledger
+	browserOwner  ownership.OwnerID
 	browserRegion ownership.RegionID
 
 	mutex     sync.Mutex
@@ -32,7 +33,12 @@ func NewScheduler(ledger *ownership.Ledger) (*Scheduler, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Scheduler{ledger: ledger, browserRegion: region, realms: make(map[RealmID]*Realm)}, nil
+	return &Scheduler{
+		ledger:        ledger,
+		browserOwner:  browser,
+		browserRegion: region,
+		realms:        make(map[RealmID]*Realm),
+	}, nil
 }
 
 func (scheduler *Scheduler) NewRealm() (*Realm, error) {
@@ -74,6 +80,39 @@ func (scheduler *Scheduler) Start(ctx context.Context, realm *Realm) (<-chan err
 		close(result)
 	}()
 	return result, nil
+}
+
+// EnqueueExternalTask publishes one browser-owned completion envelope through
+// realm's task queue. The browser releases its claim after publication, so the
+// queue-to-task handoff and task-region close describe the completion's full
+// semantic lifetime.
+func (scheduler *Scheduler) EnqueueExternalTask(realm *Realm, run TaskFunc) (TaskID, ownership.ObjectID, error) {
+	if scheduler == nil || realm == nil {
+		return 0, 0, fmt.Errorf("runtime: nil scheduler or realm")
+	}
+	if run == nil {
+		return 0, 0, ErrNilTask
+	}
+
+	scheduler.mutex.Lock()
+	defer scheduler.mutex.Unlock()
+	if scheduler.closed {
+		return 0, 0, ErrRealmClosed
+	}
+	if scheduler.realms[realm.ID] != realm {
+		return 0, 0, fmt.Errorf("runtime: realm %d is not owned by scheduler", realm.ID)
+	}
+
+	envelope, err := scheduler.ledger.CreateObject(scheduler.browserRegion)
+	if err != nil {
+		return 0, 0, err
+	}
+	task, enqueueErr := realm.enqueue(realm.Tasks, run, scheduler.browserOwner, []ownership.ObjectID{envelope})
+	releaseErr := scheduler.ledger.Release(envelope, scheduler.browserOwner)
+	if enqueueErr != nil {
+		return 0, envelope, errors.Join(enqueueErr, releaseErr)
+	}
+	return task, envelope, releaseErr
 }
 
 func (scheduler *Scheduler) Ledger() *ownership.Ledger {

@@ -51,6 +51,7 @@ func TestDiscoverResolvesDOMResourcesInTreeOrder(t *testing.T) {
 		{kind: resource.Image, url: "https://example.com/hero.png", element: "img", attribute: "src"},
 		{kind: resource.Image, url: "https://example.com/button.png", element: "input", attribute: "src"},
 		{kind: resource.Image, url: "https://example.com/assets/poster.jpg", element: "video", attribute: "poster"},
+		{kind: resource.Script, url: "https://example.com/assets/ignored.js", element: "script", attribute: "src"},
 	}
 	if got := len(graph.References); got != len(want) {
 		t.Fatalf("len(References) = %d, want %d: %#v", got, len(want), graph.References)

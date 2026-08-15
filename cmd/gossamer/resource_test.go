@@ -15,9 +15,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/JediWattson/gossamer/internal/dom"
 	"github.com/JediWattson/gossamer/internal/loader"
-	"github.com/JediWattson/gossamer/internal/resource"
 )
 
 func TestRunScreenshotLoadsRedirectRelativeStylesheetAndImage(t *testing.T) {
@@ -129,37 +127,6 @@ func TestRunScreenshotLoadsRedirectRelativeStylesheetAndImage(t *testing.T) {
 	}
 	if !imageColumnContainsNRGBA(screenshot, screenshot.Bounds().Min.X+4, imageColor) {
 		t.Errorf("screenshot column 4 does not contain decoded image color %#v; duplicate image consumer may not have painted", imageColor)
-	}
-}
-
-func TestIsRenderedReferenceFiltersInactiveAndUnsupportedConsumers(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name      string
-		node      *dom.Node
-		kind      resource.Kind
-		attribute string
-		want      bool
-	}{
-		{name: "stylesheet", node: dom.NewElement("link", dom.Attribute{Name: "rel", Value: "stylesheet"}), kind: resource.Stylesheet, attribute: "href", want: true},
-		{name: "screen stylesheet", node: dom.NewElement("link", dom.Attribute{Name: "rel", Value: "stylesheet"}, dom.Attribute{Name: "media", Value: "screen"}), kind: resource.Stylesheet, attribute: "href", want: true},
-		{name: "alternate stylesheet", node: dom.NewElement("link", dom.Attribute{Name: "rel", Value: "alternate stylesheet"}), kind: resource.Stylesheet, attribute: "href"},
-		{name: "disabled stylesheet", node: dom.NewElement("link", dom.Attribute{Name: "rel", Value: "stylesheet"}, dom.Attribute{Name: "disabled"}), kind: resource.Stylesheet, attribute: "href"},
-		{name: "print stylesheet fetched for render filtering", node: dom.NewElement("link", dom.Attribute{Name: "rel", Value: "stylesheet"}, dom.Attribute{Name: "media", Value: "print"}), kind: resource.Stylesheet, attribute: "href", want: true},
-		{name: "image", node: dom.NewElement("img"), kind: resource.Image, attribute: "src", want: true},
-		{name: "icon", node: dom.NewElement("link"), kind: resource.Image, attribute: "href"},
-		{name: "video poster", node: dom.NewElement("video"), kind: resource.Image, attribute: "poster"},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			reference := resource.Reference{Kind: test.kind, Node: test.node, Attribute: test.attribute}
-			if got := isRenderedReference(reference); got != test.want {
-				t.Errorf("isRenderedReference() = %t, want %t", got, test.want)
-			}
-		})
 	}
 }
 

@@ -10,7 +10,6 @@ import (
 	"sync"
 
 	"github.com/JediWattson/gossamer/internal/dom"
-	htmlparser "github.com/JediWattson/gossamer/internal/html"
 	"github.com/JediWattson/gossamer/internal/loader"
 	browserruntime "github.com/JediWattson/gossamer/internal/runtime"
 	"github.com/JediWattson/gossamer/internal/runtime/ownership"
@@ -26,6 +25,7 @@ type DocumentLoader interface {
 // Browser owns the realm scheduler and every Page created through it.
 type Browser struct {
 	scheduler *browserruntime.Scheduler
+	engine    Engine
 
 	mutex    sync.Mutex
 	nextPage PageID
@@ -34,11 +34,17 @@ type Browser struct {
 }
 
 func New() (*Browser, error) {
+	return NewWithEngine(nil)
+}
+
+// NewWithEngine makes engine the script-realm factory owned by the Browser.
+// A nil engine creates pages with scripting disabled.
+func NewWithEngine(engine Engine) (*Browser, error) {
 	scheduler, err := browserruntime.NewScheduler(nil)
 	if err != nil {
 		return nil, err
 	}
-	return &Browser{scheduler: scheduler, pages: make(map[PageID]*Page)}, nil
+	return &Browser{scheduler: scheduler, engine: engine, pages: make(map[PageID]*Page)}, nil
 }
 
 // NewPage establishes the Page/Realm/Document ownership boundary around an
@@ -56,43 +62,51 @@ func (browser *Browser) NewPage(root *dom.Node, location *url.URL) (*Page, error
 	if err != nil {
 		return nil, err
 	}
+	var script JSRealm
+	if browser.engine != nil {
+		script, err = browser.engine.NewRealm()
+		if err != nil {
+			_ = realm.Close()
+			return nil, err
+		}
+	}
 
 	browser.mutex.Lock()
 	defer browser.mutex.Unlock()
 	if browser.closed {
+		if script != nil {
+			_ = script.Close()
+		}
 		_ = realm.Close()
 		return nil, ErrBrowserClosed
 	}
 	browser.nextPage++
-	page := newPage(browser.nextPage, realm, document, location)
+	page := newPage(browser, browser.nextPage, realm, script, document, location)
 	browser.pages[page.ID] = page
 	return page, nil
 }
 
-// LoadPage loads and parses one document. Subresources can be attached through
-// Page.SetResources before rendering; the existing CLI resource path remains
-// unchanged during this boundary migration.
+// LoadPage creates a Page, begins task-driven navigation, and drives its Realm
+// until the final resource-aware frame is ready.
 func (browser *Browser) LoadPage(ctx context.Context, rawURL string, client DocumentLoader) (*Page, error) {
-	if client == nil {
-		client = loader.New(nil)
-	}
-	response, err := client.Load(ctx, rawURL)
+	requestedURL, err := loader.ParseHTTPURL(rawURL)
 	if err != nil {
 		return nil, err
 	}
-	if response == nil || response.Body == nil {
-		return nil, fmt.Errorf("browser: empty document response")
-	}
-	defer response.Body.Close()
-	root, err := htmlparser.Parse(response.Body)
-	if err != nil {
-		return nil, fmt.Errorf("browser: parse document: %w", err)
-	}
-	location, err := loadedURL(response, rawURL)
+	page, err := browser.NewPage(dom.NewDocument(), requestedURL)
 	if err != nil {
 		return nil, err
 	}
-	return browser.NewPage(root, location)
+	navigation, err := page.Navigate(ctx, rawURL, client)
+	if err != nil {
+		_ = page.Close()
+		return nil, err
+	}
+	if err := page.WaitNavigation(ctx, navigation); err != nil {
+		_ = page.Close()
+		return nil, err
+	}
+	return page, nil
 }
 
 func (browser *Browser) Ledger() *ownership.Ledger {
@@ -122,7 +136,11 @@ func (browser *Browser) Close() error {
 	for _, page := range pages {
 		result = errors.Join(result, page.Close())
 	}
-	return errors.Join(result, browser.scheduler.Close())
+	result = errors.Join(result, browser.scheduler.Close())
+	if browser.engine != nil {
+		result = errors.Join(result, browser.engine.Close())
+	}
+	return result
 }
 
 func loadedURL(response *loader.Response, requested string) (*url.URL, error) {

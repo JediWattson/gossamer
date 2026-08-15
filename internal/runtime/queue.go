@@ -76,6 +76,29 @@ func (queue *TaskQueue) enqueue(task Task, publisher ownership.OwnerID) error {
 	return nil
 }
 
+// enqueueTransfer moves a persistent publisher claim into the queue instead
+// of retaining both owners. Timers use this when a Realm-owned callback becomes
+// runnable exactly once.
+func (queue *TaskQueue) enqueueTransfer(task Task, publisher ownership.OwnerID) error {
+	if queue == nil {
+		return fmt.Errorf("runtime: nil task queue")
+	}
+	if task.Run == nil {
+		return ErrNilTask
+	}
+	queue.mutex.Lock()
+	defer queue.mutex.Unlock()
+	if queue.closed {
+		return ErrQueueClosed
+	}
+	if err := queue.ledger.TransferAll(task.objects, publisher, queue.owner); err != nil {
+		return err
+	}
+	queue.items = append(queue.items, task)
+	queue.signal()
+	return nil
+}
+
 func (queue *TaskQueue) pop(ctx context.Context) (Task, error) {
 	for {
 		queue.mutex.Lock()

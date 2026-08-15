@@ -3,13 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
-	"image"
 	"image/color"
 	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -215,7 +213,7 @@ func TestWriteScreenshotPreCanceledPreservesExistingFileWithoutTemporaryArtifact
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	var stderr bytes.Buffer
-	if exitCode := writeScreenshot(ctx, &stderr, outputPath, commandTestDocument(), render.Resources{}); exitCode != 1 {
+	if exitCode := writeScreenshot(ctx, &stderr, outputPath, commandTestFrame(t)); exitCode != 1 {
 		t.Errorf("writeScreenshot() exit code = %d, want 1", exitCode)
 	}
 	if !strings.Contains(stderr.String(), "context canceled") {
@@ -246,7 +244,7 @@ func TestWriteScreenshotReplacementPreservesExistingPermissions(t *testing.T) {
 	}
 
 	var stderr bytes.Buffer
-	if exitCode := writeScreenshot(context.Background(), &stderr, outputPath, commandTestDocument(), render.Resources{}); exitCode != 0 {
+	if exitCode := writeScreenshot(context.Background(), &stderr, outputPath, commandTestFrame(t)); exitCode != 0 {
 		t.Fatalf("writeScreenshot() exit code = %d, want 0; stderr = %q", exitCode, stderr.String())
 	}
 	if stderr.Len() != 0 {
@@ -271,91 +269,6 @@ func TestWriteScreenshotReplacementPreservesExistingPermissions(t *testing.T) {
 	assertNoScreenshotTemporaryArtifacts(t, directory, outputPath)
 }
 
-func TestLoadRenderResourcesImageBudgetMapsDuplicateWithoutFetchingLaterUniqueImage(t *testing.T) {
-	t.Parallel()
-
-	document := dom.NewDocument()
-	html := dom.NewElement("html")
-	document.AppendChild(html)
-	body := dom.NewElement("body")
-	html.AppendChild(body)
-	first := dom.NewElement("img", dom.Attribute{Name: "src", Value: "/shared.png"})
-	duplicate := dom.NewElement("img", dom.Attribute{Name: "src", Value: "/shared.png"})
-	laterUnique := dom.NewElement("img", dom.Attribute{Name: "src", Value: "/later.png"})
-	body.AppendChild(first)
-	body.AppendChild(duplicate)
-	body.AppendChild(laterUnique)
-
-	pixel := image.NewNRGBA(image.Rect(0, 0, 1, 1))
-	pixel.SetNRGBA(0, 0, color.NRGBA{R: 0x42, G: 0x81, B: 0xc3, A: 0xff})
-	var encoded bytes.Buffer
-	if err := png.Encode(&encoded, pixel); err != nil {
-		t.Fatalf("encode image fixture: %v", err)
-	}
-	fetcher := &countingImageFetcher{
-		body:  encoded.Bytes(),
-		calls: make(map[string]int),
-	}
-	documentURL, err := url.Parse("https://example.test/pages/index.html")
-	if err != nil {
-		t.Fatalf("parse document URL: %v", err)
-	}
-
-	resources, err := loadRenderResourcesWithImageBudget(
-		context.Background(),
-		document,
-		documentURL,
-		fetcher,
-		1,
-	)
-	if err != nil {
-		t.Fatalf("loadRenderResourcesWithImageBudget() error = %v", err)
-	}
-	if got := fetcher.calls["https://example.test/shared.png"]; got != 1 {
-		t.Errorf("shared image fetches = %d, want 1", got)
-	}
-	if got := fetcher.calls["https://example.test/later.png"]; got != 0 {
-		t.Errorf("later unique image fetches = %d, want 0 after budget exhaustion", got)
-	}
-	if resources.Images[first] == nil {
-		t.Error("first image consumer was not mapped")
-	}
-	if resources.Images[duplicate] == nil {
-		t.Error("duplicate image consumer was not mapped")
-	}
-	if resources.Images[first] != resources.Images[duplicate] {
-		t.Error("duplicate image consumers did not share the decoded image")
-	}
-	if _, ok := resources.Images[laterUnique]; ok {
-		t.Error("later unique image was mapped after the pixel budget was exhausted")
-	}
-}
-
-type countingImageFetcher struct {
-	body  []byte
-	calls map[string]int
-}
-
-func (fetcher *countingImageFetcher) LoadResource(
-	_ context.Context,
-	rawURL string,
-	_ loader.Destination,
-) (*loader.Response, error) {
-	fetcher.calls[rawURL]++
-	parsedURL, err := url.Parse(rawURL)
-	if err != nil {
-		return nil, err
-	}
-	header := make(http.Header)
-	header.Set("Content-Type", "image/png")
-	return &loader.Response{
-		URL:        parsedURL,
-		StatusCode: http.StatusOK,
-		Header:     header,
-		Body:       io.NopCloser(bytes.NewReader(fetcher.body)),
-	}, nil
-}
-
 func commandTestDocument() *dom.Node {
 	document := dom.NewDocument()
 	html := dom.NewElement("html")
@@ -364,6 +277,15 @@ func commandTestDocument() *dom.Node {
 	html.AppendChild(body)
 	body.AppendChild(dom.NewText("Gossamer"))
 	return document
+}
+
+func commandTestFrame(t *testing.T) *render.Frame {
+	t.Helper()
+	frame, err := render.Render(commandTestDocument(), render.DefaultViewport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return frame
 }
 
 func assertNoScreenshotTemporaryArtifacts(t *testing.T, directory, outputPath string) {

@@ -18,6 +18,7 @@ const (
 	Unknown Kind = iota
 	Stylesheet
 	Image
+	Script
 )
 
 func (kind Kind) String() string {
@@ -26,6 +27,8 @@ func (kind Kind) String() string {
 		return "stylesheet"
 	case Image:
 		return "image"
+	case Script:
+		return "script"
 	default:
 		return "unknown"
 	}
@@ -37,6 +40,8 @@ func (kind Kind) destination() loader.Destination {
 		return loader.StyleDestination
 	case Image:
 		return loader.ImageDestination
+	case Script:
+		return loader.ScriptDestination
 	default:
 		return loader.DocumentDestination
 	}
@@ -141,6 +146,11 @@ func elementReferences(node *dom.Node) []referenceCandidate {
 	case "video":
 		if poster, ok := nonEmptyAttribute(node, "poster"); ok {
 			return []referenceCandidate{{kind: Image, attribute: "poster", value: poster}}
+		}
+
+	case "script":
+		if source, ok := nonEmptyAttribute(node, "src"); ok {
+			return []referenceCandidate{{kind: Script, attribute: "src", value: source}}
 		}
 	}
 	return nil

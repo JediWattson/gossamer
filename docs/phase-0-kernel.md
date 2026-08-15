@@ -56,24 +56,24 @@ claim(region, object) is either present or absent
   invalidation state, and current Frame.
 - A stable-ID text mutation can schedule a separate render task and carry a
   shadow invalidation object through the queue ownership lifecycle.
+- Phase 1 navigation now routes document and resource completion through Page
+  tasks, rejects stale generations, and stores renderer inputs by `NodeID`.
+  See [`phase-1-navigation.md`](phase-1-navigation.md) for the exact sequence.
 
-## Adoption path for the existing engine
+## Adoption status
 
 Gossamer already has HTML loading, a pointer-based DOM, style calculation,
 layout, and painting. Phase 0 should wrap and migrate those working components
 instead of discarding them:
 
-1. Add `Navigation` state and route network completion through Page tasks.
-2. Continue migrating pointer-keyed resource and render maps behind `NodeID`
-   handles while preserving their current behavior.
-3. Route input and timers through realm tasks.
-4. Define the engine-neutral JavaScript `Engine`, `JSRealm`, value-handle, and
-   browser `Host` interfaces.
-5. Add a fake engine that mutates the DOM through the host and schedules
-   follow-up work.
-6. Demonstrate click -> task -> queued callback -> DOM mutation -> layout ->
-   paint with a complete ownership trace.
-7. Add V8 only inside its engine adapter after the fake-engine demo passes.
+The navigation, input, timer, stable hit-test, engine-interface, fake-engine,
+and click-to-paint stages are implemented. Initial inline and external classic
+scripts also enter through Page evaluation tasks with an explicit engine
+microtask checkpoint.
+
+The next implementation step is V8 itself, isolated behind the proven adapter
+boundary documented in
+[`pre-v8-engine-boundary.md`](pre-v8-engine-boundary.md).
 
 Physical allocation optimizations such as typed slabs or object pools should
 be evaluated later against the semantic telemetry. They are implementation
