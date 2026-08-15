@@ -123,6 +123,17 @@ view. Copy and Promote clone the reachable buffer and retarget the copied view,
 so mutation never leaks back to the source graph. BigInt views and DataView are
 deliberately separate later payloads.
 
+### Map
+
+Native Maps store insertion-ordered key/value entries and use SameValueZero
+matching. `NaN` keys match, signed zeros match, native Strings compare by text,
+BigInts compare by canonical value, Symbols compare by stable `SymbolID`, and
+all other heap payloads compare by Ref identity.
+
+Replacing a value preserves the original key and insertion position. Delete
+and Clear unlink every removed key/value edge. Copy and Promote preserve order,
+key semantics, and shared aliases.
+
 ## Deliberate boundaries
 
 These native payloads are not yet ECMAScript implementations. String

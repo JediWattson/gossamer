@@ -63,6 +63,7 @@ type Stats struct {
 	LiveSymbols        uint64
 	LiveArrayBuffers   uint64
 	LiveTypedArrays    uint64
+	LiveMaps           uint64
 	LiveBytes          uint64
 	LiveRegions        uint64
 	BulkRegionReleases uint64
@@ -101,6 +102,8 @@ func (kind HeapKind) String() string {
 		return "ArrayBuffer"
 	case HeapTypedArray:
 		return "TypedArray"
+	case HeapMap:
+		return "Map"
 	default:
 		return fmt.Sprintf("HeapKind(%d)", kind)
 	}
@@ -230,7 +233,7 @@ func (store *Store) allocLocked(owner ownership.OwnerID, regionID RegionID, inte
 }
 
 func (store *Store) allocKindLocked(owner ownership.OwnerID, regionID RegionID, kind HeapKind, internal bool) (Ref, error) {
-	if kind < HeapCell || kind > HeapTypedArray {
+	if kind < HeapCell || kind > HeapMap {
 		return Ref{}, fmt.Errorf("%w: heap kind %d", ErrTypeMismatch, kind)
 	}
 	region, err := store.mutableRegionLocked(owner, regionID, internal)
@@ -672,6 +675,8 @@ func (store *Store) recordKindAllocationLocked(kind HeapKind, bytes uint64) {
 		store.stats.LiveArrayBuffers++
 	case HeapTypedArray:
 		store.stats.LiveTypedArrays++
+	case HeapMap:
+		store.stats.LiveMaps++
 	}
 	store.stats.LiveBytes += bytes
 }
@@ -707,6 +712,8 @@ func (store *Store) recordKindFreeLocked(slot *Slot) {
 		store.stats.LiveBytes -= uint64(len(slot.ArrayBuffer.Bytes))
 	case HeapTypedArray:
 		store.stats.LiveTypedArrays--
+	case HeapMap:
+		store.stats.LiveMaps--
 	}
 }
 
@@ -1297,6 +1304,13 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 			if err := store.initializeTypedArrayLocked(to, copyRef, view, true); err != nil {
 				_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
 				return nil, err
+			}
+		case HeapMap:
+			for _, entry := range sourceSlot.Map.Entries {
+				if err := store.mapSetLocked(to, copyRef, remapValue(entry.Key, mapping), remapValue(entry.Value, mapping), true); err != nil {
+					_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
+					return nil, err
+				}
 			}
 		default:
 			_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})

@@ -372,6 +372,48 @@ func (context *TaskContext) WriteTypedArrayElement(ref memory.Ref, index uint64,
 	return context.Realm.store.WriteTypedArrayElement(context.Owner, ref, index, number)
 }
 
+func (context *TaskContext) NewMap() (memory.Ref, error) {
+	if context == nil || context.Realm == nil {
+		return memory.Ref{}, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.AllocMap(context.Owner, context.MemoryRegion)
+}
+
+func (context *TaskContext) DerefMap(ref memory.Ref) (memory.Map, error) {
+	if context == nil || context.Realm == nil {
+		return memory.Map{}, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.DerefMap(context.Owner, ref)
+}
+
+func (context *TaskContext) MapSet(ref memory.Ref, key, value memory.Value) error {
+	if context == nil || context.Realm == nil {
+		return fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.MapSet(context.Owner, ref, key, value)
+}
+
+func (context *TaskContext) MapGet(ref memory.Ref, key memory.Value) (memory.Value, bool, error) {
+	if context == nil || context.Realm == nil {
+		return memory.Value{}, false, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.MapGet(context.Owner, ref, key)
+}
+
+func (context *TaskContext) MapDelete(ref memory.Ref, key memory.Value) (bool, error) {
+	if context == nil || context.Realm == nil {
+		return false, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.MapDelete(context.Owner, ref, key)
+}
+
+func (context *TaskContext) MapClear(ref memory.Ref) error {
+	if context == nil || context.Realm == nil {
+		return fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.MapClear(context.Owner, ref)
+}
+
 func (context *TaskContext) Set(ref memory.Ref, field int, value memory.Value) error {
 	if context == nil || context.Realm == nil {
 		return fmt.Errorf("runtime: nil task context")
