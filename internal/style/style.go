@@ -31,10 +31,14 @@ type Environment struct {
 type Viewport = Environment
 
 // Input contains the non-DOM inputs to one complete style computation.
-// Stylesheets are keyed by the link element that owns the external sheet.
+// Stylesheets are author-origin sheets keyed by the link element that owns
+// each external sheet. UserStylesheets and UserAgentStylesheets are ordered
+// origin inputs; built-in user-agent declarations precede supplied UA sheets.
 type Input struct {
-	Environment Environment
-	Stylesheets map[*dom.Node]css.Stylesheet
+	Environment          Environment
+	Stylesheets          map[*dom.Node]css.Stylesheet
+	UserStylesheets      []css.Stylesheet
+	UserAgentStylesheets []css.Stylesheet
 }
 
 // DisplayMode is the computed outer display mode supported by the current
@@ -286,9 +290,11 @@ func (computed ComputedStyle) CustomProperties() css.CustomProperties {
 }
 
 type styledNode struct {
-	node     *dom.Node
-	style    ComputedStyle
-	children []*styledNode
+	node         *dom.Node
+	parent       *styledNode
+	style        ComputedStyle
+	explanations map[string]PropertyExplanation
+	children     []*styledNode
 }
 
 // Snapshot is an immutable set of computed styles for one DOM tree and one
@@ -302,19 +308,21 @@ type Snapshot struct {
 	environment      Environment
 	byNode           map[*dom.Node]ComputedStyle
 	byID             map[dom.NodeID]ComputedStyle
+	provenance       provenanceStore
 }
 
 // Compute performs a complete style pass over an unindexed DOM tree. Browser
 // code should prefer ComputeReadView so snapshots carry stable node identity
 // and the coherent document version from which they were built.
 func Compute(root *dom.Node, input Input) *Snapshot {
-	styledRoot := buildStyleTree(root, input.Environment, input.Stylesheets)
+	styledRoot := buildStyleTree(root, input)
 	snapshot := &Snapshot{
 		root:        root,
 		environment: input.Environment,
 		byNode:      make(map[*dom.Node]ComputedStyle),
 	}
 	indexPointerStyles(styledRoot, snapshot.byNode)
+	snapshot.provenance = indexPointerProvenance(styledRoot)
 	return snapshot
 }
 
@@ -332,7 +340,7 @@ func ComputeReadView(view dom.ReadView, input Input) (*Snapshot, error) {
 	if root == nil || root.Type != dom.DocumentNode {
 		return nil, fmt.Errorf("%w: read view root must be a document node", dom.ErrInvalidDocument)
 	}
-	styledRoot := buildStyleTree(root, input.Environment, input.Stylesheets)
+	styledRoot := buildStyleTree(root, input)
 	snapshot := &Snapshot{
 		documentIdentity: access.Identity(),
 		version:          access.Version(),
@@ -340,6 +348,7 @@ func ComputeReadView(view dom.ReadView, input Input) (*Snapshot, error) {
 		byID:             make(map[dom.NodeID]ComputedStyle),
 	}
 	indexStableStyles(styledRoot, snapshot.byID, access)
+	snapshot.provenance = indexStableProvenance(styledRoot, access)
 	snapshot.rootID, _ = access.ID(root)
 	return snapshot, nil
 }
@@ -430,39 +439,38 @@ func (snapshot *Snapshot) LookupID(id dom.NodeID) (ComputedStyle, bool) {
 	return computed, ok
 }
 
-type authorStyleContext struct {
-	sheets           []css.Stylesheet
-	layerRanks       map[string]int
-	mediaEnvironment css.MediaEnvironment
-}
-
 const maxCustomPropertyCascadePasses = 128
 
-type winningDeclaration struct {
-	declaration css.Declaration
-	target      string
-	specificity css.Specificity
-	order       int
-	layerRank   int
-	layered     bool
-	inline      bool
-}
-
-func buildStyleTree(document *dom.Node, viewport Viewport, external map[*dom.Node]css.Stylesheet) *styledNode {
+func buildStyleTree(document *dom.Node, input Input) *styledNode {
 	if document == nil {
 		return nil
 	}
-	stylesheets := collectAuthorStyles(document, external, viewport)
-	author := authorStyleContext{
-		sheets:           stylesheets,
-		layerRanks:       authorLayerRanks(stylesheets),
-		mediaEnvironment: screenMediaEnvironment(viewport),
+	authorSheets := collectAuthorStyles(document, input.Stylesheets, input.Environment)
+	userSheets := inputStylesheets(input.UserStylesheets, SourceUserStylesheet)
+	userAgentSheets := append([]stylesheetSource{{
+		stylesheet: builtInUserAgentStylesheet,
+		kind:       SourceUserAgentRule,
+		order:      -1,
+	}}, inputStylesheets(input.UserAgentStylesheets, SourceUserAgentRule)...)
+	context := cascadeStyleContext{
+		userAgent:        originStyleContext{sheets: userAgentSheets, layerRanks: originLayerRanks(userAgentSheets)},
+		user:             originStyleContext{sheets: userSheets, layerRanks: originLayerRanks(userSheets)},
+		author:           originStyleContext{sheets: authorSheets, layerRanks: originLayerRanks(authorSheets)},
+		mediaEnvironment: screenMediaEnvironment(input.Environment),
 	}
-	return styleNode(document, nil, author, viewport)
+	return styleNode(document, nil, context, input.Environment)
 }
 
-func collectAuthorStyles(root *dom.Node, external map[*dom.Node]css.Stylesheet, viewport Viewport) []css.Stylesheet {
-	var stylesheets []css.Stylesheet
+func inputStylesheets(stylesheets []css.Stylesheet, kind SourceKind) []stylesheetSource {
+	sources := make([]stylesheetSource, len(stylesheets))
+	for index, stylesheet := range stylesheets {
+		sources[index] = stylesheetSource{stylesheet: stylesheet, kind: kind, order: index}
+	}
+	return sources
+}
+
+func collectAuthorStyles(root *dom.Node, external map[*dom.Node]css.Stylesheet, viewport Viewport) []stylesheetSource {
+	var stylesheets []stylesheetSource
 	var visit func(*dom.Node)
 	visit = func(node *dom.Node) {
 		if node == nil {
@@ -483,10 +491,20 @@ func collectAuthorStyles(root *dom.Node, external map[*dom.Node]css.Stylesheet, 
 				// CSS error recovery keeps all safely parsed rules. A malformed
 				// author sheet must not prevent the document from rendering.
 				stylesheet, _ := css.Parse(source.String())
-				stylesheets = append(stylesheets, stylesheet)
+				stylesheets = append(stylesheets, stylesheetSource{
+					stylesheet: stylesheet,
+					owner:      node,
+					kind:       SourceAuthorStylesheet,
+					order:      len(stylesheets),
+				})
 			case "link":
 				if stylesheet, ok := external[node]; ok && authorStyleOwnerApplies(node, viewport) {
-					stylesheets = append(stylesheets, stylesheet)
+					stylesheets = append(stylesheets, stylesheetSource{
+						stylesheet: stylesheet,
+						owner:      node,
+						kind:       SourceAuthorStylesheet,
+						order:      len(stylesheets),
+					})
 				}
 			}
 		}
@@ -498,21 +516,23 @@ func collectAuthorStyles(root *dom.Node, external map[*dom.Node]css.Stylesheet, 
 	return stylesheets
 }
 
-func styleNode(node *dom.Node, parent *styledNode, author authorStyleContext, viewport Viewport) *styledNode {
-	style := initialStyle(node, parent, viewport)
+func styleNode(node *dom.Node, parent *styledNode, context cascadeStyleContext, viewport Viewport) *styledNode {
+	style, explanations := initialStyle(node, parent, viewport)
 	if node != nil && node.Type == dom.ElementNode {
-		applyAuthorStyles(&style, node, author, viewport, parent)
+		applyCascade(&style, explanations, node, context, viewport, parent)
 	}
-	styled := &styledNode{node: node, style: style}
+	styled := &styledNode{node: node, parent: parent, style: style, explanations: explanations}
 	for _, child := range node.Children {
-		styled.children = append(styled.children, styleNode(child, styled, author, viewport))
+		styled.children = append(styled.children, styleNode(child, styled, context, viewport))
 	}
 	return styled
 }
 
-func initialStyle(node *dom.Node, parent *styledNode, viewport Viewport) computedStyle {
+func initialStyle(node *dom.Node, parent *styledNode, viewport Viewport) (computedStyle, map[string]PropertyExplanation) {
 	style := cssInitialStyle(viewport)
-	if parent != nil && parent.node != nil && parent.node.Type == dom.ElementNode {
+	explanations := make(map[string]PropertyExplanation, len(propertyDefinitions))
+	hasElementParent := parent != nil && parent.node != nil && parent.node.Type == dom.ElementNode
+	if hasElementParent {
 		for index := range propertyDefinitions {
 			definition := propertyDefinitions[index]
 			if definition.inherited {
@@ -523,19 +543,37 @@ func initialStyle(node *dom.Node, parent *styledNode, viewport Viewport) compute
 		style.underline = parent.style.underline
 		style.customProperties = parent.style.customProperties
 	}
+	for index := range propertyDefinitions {
+		definition := propertyDefinitions[index]
+		if definition.inherited && hasElementParent {
+			parentExplanation := parent.explanations[definition.name]
+			controller := PropertySource{Kind: SourceInherited, DeclarationProperty: definition.name, owner: parent.node}
+			explanations[definition.name] = PropertyExplanation{
+				Property:    definition.name,
+				Resolution:  ResolutionInherited,
+				Controller:  controller,
+				ValueSource: parentExplanation.ValueSource,
+			}
+			continue
+		}
+		source := PropertySource{Kind: SourceInitial, DeclarationProperty: definition.name}
+		explanations[definition.name] = PropertyExplanation{
+			Property: definition.name, Resolution: ResolutionInitial,
+			Controller: source, ValueSource: source,
+		}
+	}
 	if node == nil {
-		return style
+		return style, explanations
 	}
 	if node.Type == dom.DocumentNode {
 		style.display = displayBlock
-		return style
+		source := PropertySource{Origin: CascadeOriginUserAgent, Kind: SourceUserAgentRule, DeclarationProperty: "display", DeclarationValue: "block"}
+		explanations["display"] = PropertyExplanation{
+			Property: "display", Resolution: ResolutionSpecified,
+			Controller: source, ValueSource: source,
+		}
 	}
-	if node.Type != dom.ElementNode {
-		return style
-	}
-
-	applyUserAgentStyle(&style, node)
-	return style
+	return style, explanations
 }
 
 func cssInitialStyle(viewport Viewport) computedStyle {
@@ -566,87 +604,52 @@ func cssInitialStyle(viewport Viewport) computedStyle {
 	}
 }
 
-func applyUserAgentStyle(style *computedStyle, node *dom.Node) {
-	switch node.Data {
-	case "html", "body", "address", "article", "aside", "blockquote", "div", "dl", "dt", "dd", "fieldset", "figcaption", "figure", "footer", "form", "header", "hgroup", "main", "nav", "ol", "p", "pre", "section", "table", "ul", "h1", "h2", "h3", "h4", "h5", "h6":
-		style.display = displayBlock
-	case "li":
-		style.display = displayListItem
-	case "noscript":
-		// Gossamer has no scripting engine, so body fallback content participates
-		// in normal flow. Treating the transparent element as a block keeps its
-		// block descendants visible until inline box splitting is implemented.
-		style.display = displayBlock
-	case "head", "base", "link", "meta", "title", "style", "script", "template":
-		style.display = displayNone
-	}
+var builtInUserAgentStylesheet = mustParseBuiltInUserAgentStylesheet(`
+html, body, address, article, aside, blockquote, div, dl, dt, dd,
+fieldset, figcaption, figure, footer, form, header, hgroup, main, nav,
+ol, p, pre, section, table, ul, h1, h2, h3, h4, h5, h6 { display:block }
+li { display:list-item }
+/* Gossamer has no scripting engine, so body fallback content remains visible. */
+noscript { display:block }
+head, base, link, meta, title, style, script, template { display:none }
+body { margin:8px }
+h1 { font-size:2em; font-weight:700; margin-top:.67em; margin-bottom:.67em }
+h2 { font-size:1.5em; font-weight:700; margin-top:.83em; margin-bottom:.83em }
+h3 { font-size:1.17em; font-weight:700; margin-top:1em; margin-bottom:1em }
+h4, h5, h6 { font-weight:700; margin-top:1.33em; margin-bottom:1.33em }
+p { margin-top:1em; margin-bottom:1em }
+ul, ol { margin-top:1em; margin-bottom:1em; padding-left:40px }
+ul { list-style-type:disc }
+ol { list-style-type:decimal }
+blockquote { margin-top:1em; margin-right:40px; margin-bottom:1em; margin-left:40px }
+dd { margin-left:40px }
+a[href] { color:#0000ee; text-decoration-line:underline }
+strong, b { font-weight:700 }
+`)
 
-	switch node.Data {
-	case "body":
-		style.marginTop = px(8)
-		style.marginRight = px(8)
-		style.marginBottom = px(8)
-		style.marginLeft = px(8)
-	case "h1":
-		style.fontSize *= 2
-		style.fontWeightValue = 700
-		style.marginTop = px(style.fontSize * .67)
-		style.marginBottom = px(style.fontSize * .67)
-	case "h2":
-		style.fontSize *= 1.5
-		style.fontWeightValue = 700
-		style.marginTop = px(style.fontSize * .83)
-		style.marginBottom = px(style.fontSize * .83)
-	case "h3":
-		style.fontSize *= 1.17
-		style.fontWeightValue = 700
-		style.marginTop = px(style.fontSize)
-		style.marginBottom = px(style.fontSize)
-	case "h4", "h5", "h6":
-		style.fontWeightValue = 700
-		style.marginTop = px(style.fontSize * 1.33)
-		style.marginBottom = px(style.fontSize * 1.33)
-	case "p":
-		style.marginTop = px(style.fontSize)
-		style.marginBottom = px(style.fontSize)
-	case "ul", "ol":
-		style.marginTop = px(style.fontSize)
-		style.marginBottom = px(style.fontSize)
-		style.paddingLeft = px(40)
-		if node.Data == "ol" {
-			style.listStyleType = listStyleDecimal
-		} else {
-			style.listStyleType = listStyleDisc
-		}
-	case "blockquote":
-		style.marginTop = px(style.fontSize)
-		style.marginRight = px(40)
-		style.marginBottom = px(style.fontSize)
-		style.marginLeft = px(40)
-	case "dd":
-		style.marginLeft = px(40)
-	case "a":
-		if _, ok := attribute(node, "href"); ok {
-			style.color = color.NRGBA{R: 0, G: 0, B: 0xee, A: 0xff}
-			style.textDecoration = TextDecorationUnderline
-			style.underline = true
-		}
-	case "strong", "b":
-		style.fontWeightValue = 700
-	case "img":
-		if value, ok := dimensionAttribute(node, "width"); ok {
-			style.width = px(value)
-		}
-		if value, ok := dimensionAttribute(node, "height"); ok {
-			style.height = px(value)
-		}
+func mustParseBuiltInUserAgentStylesheet(source string) css.Stylesheet {
+	stylesheet, err := css.Parse(source)
+	if err != nil {
+		panic("style: invalid built-in user-agent stylesheet: " + err.Error())
 	}
+	return stylesheet
 }
 
-func applyAuthorStyles(style *computedStyle, node *dom.Node, author authorStyleContext, viewport Viewport, parent *styledNode) {
+func applyCascade(style *computedStyle, explanations map[string]PropertyExplanation, node *dom.Node, context cascadeStyleContext, viewport Viewport, parent *styledNode) {
 	candidatesByTarget := make(map[string][]winningDeclaration)
-	sourceOrder := 0
-	record := func(declaration css.Declaration, specificity css.Specificity, order int, layer string, inline bool) {
+	sourceOrders := make(map[CascadeOrigin]int)
+	layerRanks := func(origin CascadeOrigin) map[string]int {
+		switch origin {
+		case CascadeOriginUserAgent:
+			return context.userAgent.layerRanks
+		case CascadeOriginUser:
+			return context.user.layerRanks
+		default:
+			return context.author.layerRanks
+		}
+	}
+	record := func(candidate winningDeclaration) {
+		declaration := candidate.declaration
 		targets := declarationTargets(declaration.Property)
 		if len(targets) == 0 {
 			return
@@ -668,49 +671,77 @@ func applyAuthorStyles(style *computedStyle, node *dom.Node, author authorStyleC
 				return
 			}
 		}
-		layerRank, layered := author.layerRanks[layer]
+		candidate.layerRank, candidate.layered = layerRanks(candidate.origin)[candidate.layer]
+		candidate.layered = candidate.layered && !candidate.inline
 		for _, target := range targets {
-			candidate := winningDeclaration{
-				declaration: declaration,
-				target:      target,
-				specificity: specificity,
-				order:       order,
-				layerRank:   layerRank,
-				layered:     layered && !inline,
-				inline:      inline,
-			}
-			candidatesByTarget[target] = append(candidatesByTarget[target], candidate)
+			expanded := candidate
+			expanded.target = target
+			candidatesByTarget[target] = append(candidatesByTarget[target], expanded)
 		}
 	}
-	for _, sheet := range author.sheets {
-		for _, rule := range sheet.Rules {
-			specificity, matches := rule.Match(node)
-			matches = matches && rule.MatchesMedia(author.mediaEnvironment)
-			for _, declaration := range rule.Declarations {
-				order := sourceOrder
-				sourceOrder++
-				if !matches {
-					continue
+	reserveSourceOrder := func(origin CascadeOrigin) int {
+		order := sourceOrders[origin]
+		sourceOrders[origin]++
+		return order
+	}
+	recordInSourceOrder := func(candidate winningDeclaration) {
+		candidate.order = reserveSourceOrder(candidate.origin)
+		record(candidate)
+	}
+	recordSheets := func(origin CascadeOrigin, originContext originStyleContext) {
+		for _, source := range originContext.sheets {
+			for ruleIndex, rule := range source.stylesheet.Rules {
+				specificity, matches := rule.Match(node)
+				matches = matches && rule.MatchesMedia(context.mediaEnvironment)
+				for declarationIndex, declaration := range rule.Declarations {
+					order := reserveSourceOrder(origin)
+					if !matches {
+						continue
+					}
+					record(winningDeclaration{
+						declaration: declaration, origin: origin, kind: source.kind, owner: source.owner,
+						specificity: specificity, layer: rule.Layer, stylesheetOrder: source.order,
+						ruleOrder: ruleIndex, declarationOrder: declarationIndex, order: order,
+					})
 				}
-				record(declaration, specificity, order, rule.Layer, false)
 			}
 		}
 	}
+
+	recordSheets(CascadeOriginUserAgent, context.userAgent)
+	recordSheets(CascadeOriginUser, context.user)
+
+	if node.Data == "img" {
+		for declarationIndex, name := range []string{"width", "height"} {
+			order := reserveSourceOrder(CascadeOriginPresentationalHint)
+			value, ok := dimensionAttribute(node, name)
+			if !ok {
+				continue
+			}
+			authored, _ := attribute(node, name)
+			record(winningDeclaration{
+				declaration: css.Declaration{Property: name, Value: strconv.FormatFloat(value, 'f', -1, 64) + "px"},
+				origin:      CascadeOriginPresentationalHint, kind: SourcePresentationalHint,
+				owner: node, attribute: name, authoredValue: authored,
+				stylesheetOrder: -1, ruleOrder: -1, declarationOrder: declarationIndex, order: order,
+			})
+		}
+	}
+
+	recordSheets(CascadeOriginAuthor, context.author)
 
 	if source, ok := attribute(node, "style"); ok {
 		declarations, _ := css.ParseRawDeclarationList(source)
-		for _, declaration := range declarations {
-			record(declaration, css.Specificity{}, sourceOrder, "", true)
-			sourceOrder++
+		for declarationIndex, declaration := range declarations {
+			recordInSourceOrder(winningDeclaration{
+				declaration: declaration, origin: CascadeOriginAuthor, kind: SourceInlineStyle,
+				owner: node, inline: true, stylesheetOrder: -1, ruleOrder: -1,
+				declarationOrder: declarationIndex,
+			})
 		}
 	}
 
-	for target := range candidatesByTarget {
-		candidates := candidatesByTarget[target]
-		sort.SliceStable(candidates, func(left, right int) bool {
-			return declarationPrecedence(candidates[left], candidates[right]) > 0
-		})
-	}
+	sortCascadeCandidates(candidatesByTarget)
 
 	customPropertyCandidates := make(map[string][]winningDeclaration)
 	for target, candidates := range candidatesByTarget {
@@ -719,7 +750,7 @@ func applyAuthorStyles(style *computedStyle, node *dom.Node, author authorStyleC
 			delete(candidatesByTarget, target)
 		}
 	}
-	style.customProperties = resolveCustomPropertyCandidates(style.customProperties, customPropertyCandidates)
+	style.customProperties = resolveCustomPropertyCandidates(style.customProperties, customPropertyCandidates, explanations, parent)
 
 	for index := range propertyDefinitions {
 		definition := propertyDefinitions[index]
@@ -727,7 +758,7 @@ func applyAuthorStyles(style *computedStyle, node *dom.Node, author authorStyleC
 			continue
 		}
 		if candidates, ok := candidatesByTarget[definition.name]; ok {
-			applyDeclarationCandidates(style, parent, candidates, viewport)
+			applyDeclarationCandidates(style, explanations, parent, candidates, viewport)
 			delete(candidatesByTarget, definition.name)
 		}
 	}
@@ -737,25 +768,28 @@ func applyAuthorStyles(style *computedStyle, node *dom.Node, author authorStyleC
 	}
 	sort.Strings(targets)
 	for _, target := range targets {
-		applyDeclarationCandidates(style, parent, candidatesByTarget[target], viewport)
+		applyDeclarationCandidates(style, explanations, parent, candidatesByTarget[target], viewport)
 	}
 }
 
-func resolveCustomPropertyCandidates(parent css.CustomProperties, candidatesByName map[string][]winningDeclaration) css.CustomProperties {
+func resolveCustomPropertyCandidates(parentProperties css.CustomProperties, candidatesByName map[string][]winningDeclaration, explanations map[string]PropertyExplanation, parent *styledNode) css.CustomProperties {
 	if len(candidatesByName) == 0 {
-		return parent
+		return parentProperties
 	}
 	names := make([]string, 0, len(candidatesByName))
 	positions := make(map[string]int, len(candidatesByName))
 	overrides := make(map[string]string, len(candidatesByName))
 	settled := make(map[string]bool, len(candidatesByName))
+	rollbacks := make(map[string][]PropertySource, len(candidatesByName))
+	rollbackKinds := make(map[string]ResolutionKind, len(candidatesByName))
+	keywordResolutions := make(map[string]ResolutionKind, len(candidatesByName))
 	for name := range candidatesByName {
 		names = append(names, name)
 	}
 	sort.Strings(names)
 
 	for _, name := range names {
-		positions[name] = normalizeCustomPropertyPosition(candidatesByName[name], 0)
+		positions[name] = normalizeCustomPropertyPosition(candidatesByName[name], 0, rollbacks, rollbackKinds, name)
 	}
 
 	for pass := 0; ; pass++ {
@@ -771,7 +805,7 @@ func resolveCustomPropertyCandidates(parent css.CustomProperties, candidatesByNa
 			}
 		}
 
-		resolved := css.ResolveCustomProperties(parent, specified)
+		resolved := css.ResolveCustomProperties(parentProperties, specified)
 		cssWideValues := make(map[string]string)
 		dependencies := make(map[string][]string)
 		for _, name := range names {
@@ -797,6 +831,7 @@ func resolveCustomPropertyCandidates(parent css.CustomProperties, candidatesByNa
 			}
 		}
 		if len(cssWideValues) == 0 {
+			updateCustomPropertyExplanations(resolved, candidatesByName, positions, rollbacks, rollbackKinds, keywordResolutions, explanations, parent)
 			return resolved
 		}
 		if pass >= maxCustomPropertyCascadePasses-1 {
@@ -811,7 +846,9 @@ func resolveCustomPropertyCandidates(parent css.CustomProperties, candidatesByNa
 			for name := range affected {
 				specified[name] = "initial"
 			}
-			return css.ResolveCustomProperties(parent, specified)
+			resolved = css.ResolveCustomProperties(parentProperties, specified)
+			updateCustomPropertyExplanations(resolved, candidatesByName, positions, rollbacks, rollbackKinds, keywordResolutions, explanations, parent)
+			return resolved
 		}
 
 		// A CSS-wide keyword can flow through var() references. Apply it to the
@@ -832,24 +869,39 @@ func resolveCustomPropertyCandidates(parent css.CustomProperties, candidatesByNa
 				// custom-property resolver applies its native CSS-wide semantics.
 				overrides[name] = keyword
 				settled[name] = true
+				switch keyword {
+				case "initial":
+					keywordResolutions[name] = ResolutionInitial
+				case "inherit":
+					keywordResolutions[name] = ResolutionInherited
+				default:
+					keywordResolutions[name] = ResolutionUnset
+				}
 			case "revert":
-				// Gossamer has no user-origin custom properties. Removing all author
-				// candidates leaves the inherited custom-property set in place.
-				position = len(candidates)
+				rollbacks[name] = append(rollbacks[name], candidates[position].source())
+				if _, ok := rollbackKinds[name]; !ok {
+					rollbackKinds[name] = ResolutionRevert
+				}
+				position = nextCandidateAfterRevert(candidates, position)
 				delete(overrides, name)
-				settled[name] = true
+				settled[name] = false
 			case "revert-layer":
+				rollbacks[name] = append(rollbacks[name], candidates[position].source())
+				if _, ok := rollbackKinds[name]; !ok {
+					rollbackKinds[name] = ResolutionRevertLayer
+				}
 				position = nextCandidateAfterRevertLayer(candidates, position)
 				delete(overrides, name)
 				settled[name] = false
 			}
-			positions[name] = normalizeCustomPropertyPosition(candidates, position)
+			positions[name] = normalizeCustomPropertyPosition(candidates, position, rollbacks, rollbackKinds, name)
 			advanced = true
 		}
 		if !advanced {
 			// ResolveCustomProperties invalidates cyclic var() graphs, so a graph of
 			// resolved CSS-wide values always has a dependency leaf. Keep this guard
 			// as a deterministic fail-safe if that invariant changes.
+			updateCustomPropertyExplanations(resolved, candidatesByName, positions, rollbacks, rollbackKinds, keywordResolutions, explanations, parent)
 			return resolved
 		}
 	}
@@ -900,18 +952,123 @@ func customPropertyDependents(
 	return affected
 }
 
-func normalizeCustomPropertyPosition(candidates []winningDeclaration, position int) int {
+func normalizeCustomPropertyPosition(candidates []winningDeclaration, position int, rollbacks map[string][]PropertySource, kinds map[string]ResolutionKind, name string) int {
 	for position < len(candidates) {
 		switch css.CSSWideKeyword(candidates[position].declaration.Value) {
 		case "revert":
-			return len(candidates)
+			rollbacks[name] = append(rollbacks[name], candidates[position].source())
+			if _, ok := kinds[name]; !ok {
+				kinds[name] = ResolutionRevert
+			}
+			position = nextCandidateAfterRevert(candidates, position)
 		case "revert-layer":
+			rollbacks[name] = append(rollbacks[name], candidates[position].source())
+			if _, ok := kinds[name]; !ok {
+				kinds[name] = ResolutionRevertLayer
+			}
 			position = nextCandidateAfterRevertLayer(candidates, position)
 		default:
 			return position
 		}
 	}
 	return len(candidates)
+}
+
+func updateCustomPropertyExplanations(
+	resolved css.CustomProperties,
+	candidatesByName map[string][]winningDeclaration,
+	positions map[string]int,
+	rollbacks map[string][]PropertySource,
+	rollbackKinds map[string]ResolutionKind,
+	keywordResolutions map[string]ResolutionKind,
+	explanations map[string]PropertyExplanation,
+	parent *styledNode,
+) {
+	for name, candidates := range candidatesByName {
+		if len(candidates) == 0 {
+			continue
+		}
+		controller := candidates[0].source()
+		_, present := resolved.Value(name)
+		if !present {
+			// Computed custom-property enumeration omits guaranteed-invalid and
+			// initial values. Keep retained provenance equally sparse instead of
+			// allowing absent declarations to allocate unobservable snapshot state.
+			delete(explanations, name)
+			continue
+		}
+		valueSource := PropertySource{Kind: SourceInitial, DeclarationProperty: name}
+		resolution := ResolutionSpecified
+		position := positions[name]
+		var effectiveSource PropertySource
+		hasEffectiveSource := false
+		if inherited, ok := inheritedCustomPropertyExplanation(parent, name); ok {
+			valueSource = inherited.ValueSource
+		}
+		if position < len(candidates) {
+			effective := candidates[position]
+			effectiveSource = effective.source()
+			hasEffectiveSource = true
+			valueSource = effectiveSource
+			switch css.CSSWideKeyword(effective.declaration.Value) {
+			case "initial":
+				resolution = ResolutionInitial
+				valueSource = PropertySource{Kind: SourceInitial, DeclarationProperty: name}
+			case "inherit":
+				resolution = ResolutionInherited
+				if inherited, ok := inheritedCustomPropertyExplanation(parent, name); ok {
+					valueSource = inherited.ValueSource
+				}
+			case "unset":
+				resolution = ResolutionUnset
+				if inherited, ok := inheritedCustomPropertyExplanation(parent, name); ok {
+					valueSource = inherited.ValueSource
+				}
+			default:
+				if keywordResolution, ok := keywordResolutions[name]; ok {
+					resolution = keywordResolution
+					if keywordResolution != ResolutionInitial {
+						if inherited, inheritedOK := inheritedCustomPropertyExplanation(parent, name); inheritedOK {
+							valueSource = inherited.ValueSource
+						}
+					} else {
+						valueSource = PropertySource{Kind: SourceInitial, DeclarationProperty: name}
+					}
+				}
+			}
+		} else {
+			resolution = ResolutionInherited
+		}
+		if rollbackResolution, ok := rollbackKinds[name]; ok {
+			resolution = rollbackResolution
+		}
+		rollback := append([]PropertySource(nil), rollbacks[name]...)
+		if len(rollback) > 0 && rollback[0] == controller {
+			rollback = rollback[1:]
+		}
+		if _, rolledBack := rollbackKinds[name]; rolledBack && hasEffectiveSource && effectiveSource != controller && effectiveSource != valueSource {
+			rollback = append(rollback, effectiveSource)
+		}
+		explanations[name] = PropertyExplanation{
+			Property: name, Resolution: resolution,
+			Controller: controller, ValueSource: valueSource, Rollback: rollback,
+		}
+	}
+}
+
+func inheritedCustomPropertyExplanation(parent *styledNode, name string) (PropertyExplanation, bool) {
+	if parent == nil {
+		return PropertyExplanation{}, false
+	}
+	if _, ok := parent.style.customProperties.Value(name); !ok {
+		return PropertyExplanation{}, false
+	}
+	for current := parent; current != nil; current = current.parent {
+		if explanation, ok := current.explanations[name]; ok {
+			return explanation, true
+		}
+	}
+	return PropertyExplanation{}, false
 }
 
 func dependsOnCSSWideValue(references []string, cssWideValues map[string]string) bool {
@@ -927,85 +1084,76 @@ func cssWideKeyword(source string) string {
 	return css.CSSWideKeyword(source)
 }
 
-func applyDeclarationCandidates(style *computedStyle, parent *styledNode, candidates []winningDeclaration, viewport Viewport) {
-	for position := 0; position < len(candidates); {
-		candidate := candidates[position]
-		resolved, ok := style.customProperties.Substitute(candidate.declaration.Value)
-		if !ok {
-			// A winning declaration whose var() cannot be substituted is invalid at
-			// computed-value time. It computes as unset without reviving a loser.
-			applyCSSWideKeyword(style, parent, candidate.target, "unset", viewport)
-			return
-		}
-
-		switch keyword := cssWideKeyword(resolved); keyword {
-		case "revert":
-			// There is no user origin in this renderer. Leaving the pre-author
-			// style untouched exposes the inherited/UA result.
-			return
-		case "revert-layer":
-			position = nextCandidateAfterRevertLayer(candidates, position)
-			continue
-		case "inherit", "initial", "unset":
-			applyCSSWideKeyword(style, parent, candidate.target, keyword, viewport)
-			return
-		}
-
-		declaration := candidate.declaration
-		declaration.Value = resolved
-		if !validCascadedDeclaration(declaration, viewport) {
-			// A declaration containing var() participates in the cascade before its
-			// computed value is known. If substitution produces an invalid value, it
-			// computes as unset; a lower-priority declaration is not resurrected.
-			applyCSSWideKeyword(style, parent, candidate.target, "unset", viewport)
-			return
-		}
-		applyTargetDeclaration(style, parent, candidate.target, declaration, viewport)
+func applyDeclarationCandidates(style *computedStyle, explanations map[string]PropertyExplanation, parent *styledNode, candidates []winningDeclaration, viewport Viewport) {
+	if len(candidates) == 0 {
 		return
 	}
+	explanations[candidates[0].target] = applyDeclarationCandidate(style, parent, candidates, 0, viewport)
 }
 
-func nextCandidateAfterRevertLayer(candidates []winningDeclaration, position int) int {
-	current := candidates[position]
-	for position++; position < len(candidates); position++ {
-		if survivesRevertLayer(current, candidates[position]) {
-			return position
-		}
+func applyDeclarationCandidate(style *computedStyle, parent *styledNode, candidates []winningDeclaration, position int, viewport Viewport) PropertyExplanation {
+	candidate := candidates[position]
+	source := candidate.source()
+	resolved, ok := style.customProperties.Substitute(candidate.declaration.Value)
+	if !ok {
+		// A winning declaration whose var() cannot be substituted is invalid at
+		// computed-value time. It computes as unset without reviving a loser.
+		return applyCSSWideKeywordExplanation(style, parent, candidate.target, "unset", viewport, source, ResolutionInvalidAtComputedValue)
 	}
-	return len(candidates)
+
+	switch keyword := cssWideKeyword(resolved); keyword {
+	case "revert":
+		return applyRollbackCandidate(style, parent, candidates, position, viewport, source, ResolutionRevert, nextCandidateAfterRevert(candidates, position))
+	case "revert-layer":
+		return applyRollbackCandidate(style, parent, candidates, position, viewport, source, ResolutionRevertLayer, nextCandidateAfterRevertLayer(candidates, position))
+	case "inherit":
+		return applyCSSWideKeywordExplanation(style, parent, candidate.target, keyword, viewport, source, ResolutionInherited)
+	case "initial":
+		return applyCSSWideKeywordExplanation(style, parent, candidate.target, keyword, viewport, source, ResolutionInitial)
+	case "unset":
+		return applyCSSWideKeywordExplanation(style, parent, candidate.target, keyword, viewport, source, ResolutionUnset)
+	}
+
+	declaration := candidate.declaration
+	declaration.Value = resolved
+	if !validCascadedDeclaration(declaration, viewport) {
+		// A declaration containing var() participates in the cascade before its
+		// computed value is known. If substitution produces an invalid value, it
+		// computes as unset; a lower-priority declaration is not resurrected.
+		return applyCSSWideKeywordExplanation(style, parent, candidate.target, "unset", viewport, source, ResolutionInvalidAtComputedValue)
+	}
+	applyTargetDeclaration(style, parent, candidate.target, declaration, viewport)
+	return PropertyExplanation{
+		Property: candidate.target, Resolution: ResolutionSpecified,
+		Controller: source, ValueSource: source,
+	}
 }
 
-func survivesRevertLayer(current, candidate winningDeclaration) bool {
-	// Element-attached styles form their own cascade step. CSS Cascade 5 makes
-	// important inline revert-layer an explicit exception: it removes inline
-	// declarations but does not remove intervening author-important rules.
-	if current.inline {
-		return !candidate.inline
+func applyRollbackCandidate(
+	style *computedStyle,
+	parent *styledNode,
+	candidates []winningDeclaration,
+	position int,
+	viewport Viewport,
+	controller PropertySource,
+	resolution ResolutionKind,
+	next int,
+) PropertyExplanation {
+	var value PropertyExplanation
+	if next < len(candidates) {
+		value = applyDeclarationCandidate(style, parent, candidates, next, viewport)
+	} else {
+		value = applyCSSWideKeywordExplanation(style, parent, candidates[position].target, "unset", viewport, controller, ResolutionUnset)
 	}
-	if !current.declaration.Important {
-		return !sameCascadeLayer(current, candidate)
+	rollback := make([]PropertySource, 0, 1+len(value.Rollback))
+	if value.Controller != controller && value.Controller != value.ValueSource {
+		rollback = append(rollback, value.Controller)
 	}
-
-	// Important layer order mirrors normal layer order. Rolling back an
-	// important layer removes that layer and every cascade step between its
-	// important and normal halves, then resumes in the preceding normal layer.
-	if candidate.declaration.Important || candidate.inline || !candidate.layered {
-		return false
+	rollback = append(rollback, value.Rollback...)
+	return PropertyExplanation{
+		Property: candidates[position].target, Resolution: resolution,
+		Controller: controller, ValueSource: value.ValueSource, Rollback: rollback,
 	}
-	if !current.layered {
-		return true
-	}
-	return candidate.layerRank < current.layerRank
-}
-
-func sameCascadeLayer(left, right winningDeclaration) bool {
-	if left.inline || right.inline {
-		return left.inline && right.inline
-	}
-	if left.layered || right.layered {
-		return left.layered && right.layered && left.layerRank == right.layerRank
-	}
-	return true
 }
 
 func applyTargetDeclaration(style *computedStyle, parent *styledNode, target string, declaration css.Declaration, viewport Viewport) {
@@ -1057,28 +1205,28 @@ func applyCSSWideKeyword(style *computedStyle, parent *styledNode, target, keywo
 	definition.resetToInitial(style, viewport)
 }
 
-func authorLayerRanks(sheets []css.Stylesheet) map[string]int {
-	ranks := make(map[string]int)
-	for _, sheet := range sheets {
-		for _, name := range sheet.LayerOrder {
-			if name == "" {
-				continue
-			}
-			if _, exists := ranks[name]; exists {
-				continue
-			}
-			ranks[name] = len(ranks)
-		}
-		for _, rule := range sheet.Rules {
-			if rule.Layer == "" {
-				continue
-			}
-			if _, exists := ranks[rule.Layer]; !exists {
-				ranks[rule.Layer] = len(ranks)
-			}
+func applyCSSWideKeywordExplanation(
+	style *computedStyle,
+	parent *styledNode,
+	target string,
+	keyword string,
+	viewport Viewport,
+	controller PropertySource,
+	resolution ResolutionKind,
+) PropertyExplanation {
+	applyCSSWideKeyword(style, parent, target, keyword, viewport)
+	valueSource := PropertySource{Kind: SourceInitial, DeclarationProperty: target}
+	definition, hasDefinition := lookupPropertyDefinition(target)
+	usesParent := keyword == "inherit" || (keyword == "unset" && hasDefinition && definition.inherited)
+	if usesParent && parent != nil && parent.node != nil && parent.node.Type == dom.ElementNode {
+		if inherited, ok := parent.explanations[target]; ok {
+			valueSource = inherited.ValueSource
 		}
 	}
-	return ranks
+	return PropertyExplanation{
+		Property: target, Resolution: resolution,
+		Controller: controller, ValueSource: valueSource,
+	}
 }
 
 func screenMediaEnvironment(viewport Viewport) css.MediaEnvironment {
@@ -1221,50 +1369,6 @@ func containsHTMLToken(source, token string) bool {
 		}
 	}
 	return false
-}
-
-func declarationPrecedence(left, right winningDeclaration) int {
-	if left.declaration.Important != right.declaration.Important {
-		if left.declaration.Important {
-			return 1
-		}
-		return -1
-	}
-	if left.inline != right.inline {
-		if left.inline {
-			return 1
-		}
-		return -1
-	}
-	if left.layered != right.layered {
-		if left.declaration.Important {
-			if left.layered {
-				return 1
-			}
-			return -1
-		}
-		if left.layered {
-			return -1
-		}
-		return 1
-	}
-	if left.layered && left.layerRank != right.layerRank {
-		if left.declaration.Important {
-			return compareInt(right.layerRank, left.layerRank)
-		}
-		return compareInt(left.layerRank, right.layerRank)
-	}
-	if comparison := left.specificity.Compare(right.specificity); comparison != 0 {
-		return comparison
-	}
-	switch {
-	case left.order < right.order:
-		return -1
-	case left.order > right.order:
-		return 1
-	default:
-		return 0
-	}
 }
 
 func compareInt(left, right int) int {

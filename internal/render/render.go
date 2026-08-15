@@ -42,8 +42,10 @@ func ComputeStyleSnapshot(document *dom.Node, viewport Viewport, resources Resou
 		return nil, err
 	}
 	return computed.Compute(document, computed.Input{
-		Environment: styleEnvironment(viewport),
-		Stylesheets: resources.Stylesheets,
+		Environment:          styleEnvironment(viewport),
+		Stylesheets:          resources.Stylesheets,
+		UserStylesheets:      resources.UserStylesheets,
+		UserAgentStylesheets: resources.UserAgentStylesheets,
 	}), nil
 }
 
@@ -77,8 +79,10 @@ func ComputeStyleSnapshotFromReadView(view dom.ReadView, viewport Viewport, reso
 		return nil, fmt.Errorf("render: invalid viewport %dx%d", viewport.Width, viewport.Height)
 	}
 	return computed.ComputeReadView(view, computed.Input{
-		Environment: styleEnvironment(viewport),
-		Stylesheets: resources.Stylesheets,
+		Environment:          styleEnvironment(viewport),
+		Stylesheets:          resources.Stylesheets,
+		UserStylesheets:      resources.UserStylesheets,
+		UserAgentStylesheets: resources.UserAgentStylesheets,
 	})
 }
 

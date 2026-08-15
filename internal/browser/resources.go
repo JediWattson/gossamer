@@ -18,8 +18,10 @@ import (
 const maxNavigationImagePixels int64 = 32_000_000
 
 type pageResources struct {
-	stylesheets map[dom.NodeID]css.Stylesheet
-	images      map[dom.NodeID]image.Image
+	stylesheets          map[dom.NodeID]css.Stylesheet
+	userStylesheets      []css.Stylesheet
+	userAgentStylesheets []css.Stylesheet
+	images               map[dom.NodeID]image.Image
 }
 
 type navigationResourceRequest struct {
@@ -57,8 +59,10 @@ func (resources *pageResources) apply(result navigationResourceResult) {
 
 func (resources pageResources) rendererResources(document *dom.Document) render.Resources {
 	resolved := render.Resources{
-		Stylesheets: make(map[*dom.Node]css.Stylesheet, len(resources.stylesheets)),
-		Images:      make(map[*dom.Node]image.Image, len(resources.images)),
+		Stylesheets:          make(map[*dom.Node]css.Stylesheet, len(resources.stylesheets)),
+		UserStylesheets:      append([]css.Stylesheet(nil), resources.userStylesheets...),
+		UserAgentStylesheets: append([]css.Stylesheet(nil), resources.userAgentStylesheets...),
+		Images:               make(map[*dom.Node]image.Image, len(resources.images)),
 	}
 	for id, stylesheet := range resources.stylesheets {
 		if node, ok := document.Resolve(id); ok {
@@ -75,6 +79,8 @@ func (resources pageResources) rendererResources(document *dom.Document) render.
 
 func pageResourcesFromRenderer(document *dom.Document, resources render.Resources) (pageResources, error) {
 	stable := newPageResources()
+	stable.userStylesheets = append([]css.Stylesheet(nil), resources.UserStylesheets...)
+	stable.userAgentStylesheets = append([]css.Stylesheet(nil), resources.UserAgentStylesheets...)
 	for node, stylesheet := range resources.Stylesheets {
 		id, ok := document.ID(node)
 		if !ok {

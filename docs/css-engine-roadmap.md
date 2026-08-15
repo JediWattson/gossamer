@@ -70,17 +70,20 @@ Current foundation: cascade and computed-value calculation live in
 render consumes the exact snapshot retained by each frame. The current 34
 longhands share one registry for inheritance, validation, computation, copying,
 serialization, and invalidation metadata, and `all` participates in the full
-existing layer/importance cascade without resetting custom properties.
-Provenance and the remaining origins are still pending.
+layer/importance cascade without resetting custom properties. User-agent,
+user, author-presentational-hint, author-sheet, and inline cascade steps now
+share one origin-aware candidate model for normal and important declarations,
+including origin-correct `revert` and `revert-layer` behavior for ordinary and
+custom properties. Immutable snapshots retain compact, stable-ID winner
+provenance and can produce deterministic per-property explanation dumps.
 
 - Move cascade and computed-value ownership out of `internal/render`.
-- Model user-agent, user, presentational-hint, author, and inline origins,
-  including normal and important order.
 - Extend CSS-wide handling and the central property registry with every new
   longhand while preserving `all` exclusions such as `direction`,
   `unicode-bidi`, and custom properties.
-- Cache parsed embedded and inline declaration blocks without changing
-  observable cascade order.
+- Add tokenizer-backed source spans to retained provenance, then cache parsed
+  embedded and inline declaration blocks without changing observable cascade
+  order.
 
 Acceptance: a deterministic computed-style dump explains the winning source
 for every supported property independently of layout.

@@ -20,11 +20,15 @@ type Viewport struct {
 var DefaultViewport = Viewport{Width: 800, Height: 600}
 
 // Resources contains decoded navigation resources consumed while styling,
-// laying out, and painting a document. Entries are keyed by the DOM element
-// that initiated the request so duplicate URLs remain distinct consumers.
+// laying out, and painting a document. Author stylesheets and images are keyed
+// by the DOM element that initiated the request so duplicate URLs remain
+// distinct consumers. User and user-agent sheets retain their slice order
+// within their respective cascade origins.
 type Resources struct {
-	Stylesheets map[*dom.Node]css.Stylesheet
-	Images      map[*dom.Node]image.Image
+	Stylesheets          map[*dom.Node]css.Stylesheet
+	UserStylesheets      []css.Stylesheet
+	UserAgentStylesheets []css.Stylesheet
+	Images               map[*dom.Node]image.Image
 }
 
 // Rect is an axis-aligned rectangle in CSS pixels.
