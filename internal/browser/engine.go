@@ -49,8 +49,16 @@ type JSRealm interface {
 // schedule work preserve the current task as the publication boundary.
 type Host interface {
 	GetElementByID(string) (NodeHandle, bool, error)
+	CreateElement(string) (NodeHandle, error)
+	CreateTextNode(string) (NodeHandle, error)
 	TextContent(NodeHandle) (string, error)
 	SetTextContent(NodeHandle, string) error
+	AppendChild(NodeHandle, NodeHandle) error
+	InsertBefore(NodeHandle, NodeHandle, NodeHandle) error
+	RemoveChild(NodeHandle, NodeHandle) error
+	GetAttribute(NodeHandle, string) (string, bool, error)
+	SetAttribute(NodeHandle, string, string) error
+	RemoveAttribute(NodeHandle, string) error
 	Text(NodeHandle) (string, error)
 	SetText(NodeHandle, string) error
 	QueueCallback(ValueHandle) error

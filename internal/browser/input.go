@@ -166,6 +166,38 @@ func (host *taskHost) GetElementByID(value string) (NodeHandle, bool, error) {
 	return NodeHandle{Document: host.generation, Node: node}, true, nil
 }
 
+func (host *taskHost) CreateElement(name string) (NodeHandle, error) {
+	host.page.mutex.Lock()
+	defer host.page.mutex.Unlock()
+	if host.page.closed {
+		return NodeHandle{}, ErrPageClosed
+	}
+	if host.page.documentGeneration != host.generation {
+		return NodeHandle{}, ErrStaleNodeHandle
+	}
+	node, err := host.page.document.CreateElement(name)
+	if err != nil {
+		return NodeHandle{}, err
+	}
+	return NodeHandle{Document: host.generation, Node: node}, nil
+}
+
+func (host *taskHost) CreateTextNode(data string) (NodeHandle, error) {
+	host.page.mutex.Lock()
+	defer host.page.mutex.Unlock()
+	if host.page.closed {
+		return NodeHandle{}, ErrPageClosed
+	}
+	if host.page.documentGeneration != host.generation {
+		return NodeHandle{}, ErrStaleNodeHandle
+	}
+	node, err := host.page.document.CreateTextNode(data)
+	if err != nil {
+		return NodeHandle{}, err
+	}
+	return NodeHandle{Document: host.generation, Node: node}, nil
+}
+
 func (host *taskHost) TextContent(handle NodeHandle) (string, error) {
 	host.page.mutex.RLock()
 	defer host.page.mutex.RUnlock()
@@ -183,6 +215,67 @@ func (host *taskHost) SetTextContent(handle NodeHandle, data string) error {
 	}
 	before := host.page.document.Version()
 	if err := host.page.document.SetTextContent(handle.Node, data); err != nil {
+		return err
+	}
+	if host.page.document.Version() != before {
+		host.page.dirty = true
+		host.mutated = true
+	}
+	return nil
+}
+
+func (host *taskHost) AppendChild(parent, child NodeHandle) error {
+	return host.mutateNodes(parent, child, NodeHandle{}, func() error {
+		return host.page.document.AppendNode(parent.Node, child.Node)
+	})
+}
+
+func (host *taskHost) InsertBefore(parent, child, reference NodeHandle) error {
+	return host.mutateNodes(parent, child, reference, func() error {
+		return host.page.document.InsertBefore(parent.Node, child.Node, reference.Node)
+	})
+}
+
+func (host *taskHost) RemoveChild(parent, child NodeHandle) error {
+	return host.mutateNodes(parent, child, NodeHandle{}, func() error {
+		return host.page.document.RemoveChild(parent.Node, child.Node)
+	})
+}
+
+func (host *taskHost) GetAttribute(handle NodeHandle, name string) (string, bool, error) {
+	host.page.mutex.RLock()
+	defer host.page.mutex.RUnlock()
+	if err := host.validateHandleLocked(handle); err != nil {
+		return "", false, err
+	}
+	return host.page.document.GetAttribute(handle.Node, name)
+}
+
+func (host *taskHost) SetAttribute(handle NodeHandle, name, value string) error {
+	return host.mutateNodes(handle, NodeHandle{}, NodeHandle{}, func() error {
+		return host.page.document.SetAttribute(handle.Node, name, value)
+	})
+}
+
+func (host *taskHost) RemoveAttribute(handle NodeHandle, name string) error {
+	return host.mutateNodes(handle, NodeHandle{}, NodeHandle{}, func() error {
+		return host.page.document.RemoveAttribute(handle.Node, name)
+	})
+}
+
+func (host *taskHost) mutateNodes(first, second, third NodeHandle, mutation func() error) error {
+	host.page.mutex.Lock()
+	defer host.page.mutex.Unlock()
+	for _, handle := range []NodeHandle{first, second, third} {
+		if handle.Node == dom.InvalidNodeID {
+			continue
+		}
+		if err := host.validateHandleLocked(handle); err != nil {
+			return err
+		}
+	}
+	before := host.page.document.Version()
+	if err := mutation(); err != nil {
 		return err
 	}
 	if host.page.document.Version() != before {

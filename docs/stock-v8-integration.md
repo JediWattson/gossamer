@@ -86,8 +86,12 @@ The first wrapper slice adds:
 
 - `window`, `self`, and `document` globals;
 - `document.getElementById()` over connected, generation-scoped Go nodes;
+- `document.createElement()` and `document.createTextNode()` for detached,
+  document-lifetime nodes;
 - one weakly cached V8 object per numeric node identity;
 - `textContent` reads and replacement mutations;
+- `appendChild()`, `insertBefore()`, and `removeChild()` with stable identity;
+- `getAttribute()`, `setAttribute()`, and `removeAttribute()`;
 - `addEventListener("click", fn)` and `removeEventListener()`;
 - `queueMicrotask(fn)`, `setTimeout(fn, delay)`, and `clearTimeout()`;
 - execution-scoped C callback tables that carry a numeric registry ID, never a
@@ -156,15 +160,35 @@ JavaScript document.getElementById
 It also forces V8 collection and verifies that an unreferenced transient
 wrapper disappears while the listener-retained wrapper remains live.
 
+The mutation-churn test runs 64 framework-shaped subtree cycles through stock
+V8. Every cycle creates elements and text, writes and removes attributes,
+reorders children, detaches and reinserts a child, briefly connects the
+subtree, and removes it. One final survivor reaches the renderer. The test
+separately verifies:
+
+- 322 new Go nodes stay in the current document's lifetime store;
+- 322 V8 wrappers are reclaimed after JavaScript drops its aliases;
+- V8 collection produces no Gossamer ARC events;
+- the full churn produces exactly two shadow ownership objects, one for script
+  publication and one for render invalidation, independent of mutation count;
+  and
+- Realm teardown ends with no live wrappers, callback handles, or persistent
+  shadow ownership objects.
+
+This makes the current reclamation boundary explicit. Detached Go nodes are
+document-retained until navigation or Page teardown; the shadow ledger does
+not yet assign a separate object record to each DOM node. A later construction
+region can shorten detached-node lifetime and exercise reachable-subgraph
+promotion without changing wrapper identity.
+
 ## Next wrapper milestone
 
 This is deliberately not enough DOM for React or general JSX output yet. The
 next slice should preserve the same ownership socket while adding the mutation
 surface a renderer needs:
 
-1. `document.createElement()` and `document.createTextNode()`;
-2. `appendChild()`, `insertBefore()`, `removeChild()`, and parent/child access;
-3. attributes plus the initial property reflection required by JSX;
-4. a style declaration wrapper that feeds the existing CSS pipeline;
-5. browser event objects and propagation; and
-6. a small framework-shaped render test before attempting a full React bundle.
+1. parent/child/sibling traversal and property reflection required by JSX;
+2. a style declaration wrapper that feeds the existing CSS pipeline;
+3. browser event objects and propagation;
+4. short-lived construction regions plus reachable-subgraph promotion; and
+5. a real React bundle after the framework-shaped churn harness remains stable.

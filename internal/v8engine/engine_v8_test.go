@@ -344,6 +344,188 @@ func TestStockV8DOMWrapperClickMutatesThroughQueuedCallbackAndPaint(t *testing.T
 	}
 }
 
+func TestStockV8NodeMutationChurnPreservesOwnershipBoundaries(t *testing.T) {
+	const iterations = 64
+
+	engine := newTestEngine(t)
+	browserRuntime, err := browser.NewWithEngine(engine)
+	if err != nil {
+		t.Fatalf("NewWithEngine: %v", err)
+	}
+	defer func() {
+		if err := browserRuntime.Close(); err != nil {
+			t.Errorf("Close browser: %v", err)
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	page, err := browserRuntime.LoadPage(
+		ctx,
+		"https://gossamer.test/churn",
+		staticDocumentLoader{document: `<!doctype html><html><body style="margin:0"><div id="mount"></div></body></html>`},
+	)
+	if err != nil {
+		t.Fatalf("LoadPage: %v", err)
+	}
+	realm, ok := engine.LatestRealm()
+	if !ok {
+		t.Fatal("stock V8 engine has no live document realm")
+	}
+	document := page.Document()
+	initialNodes := document.Store().Len()
+	baselineLedger := browserRuntime.Ledger().Stats()
+	baselineProfile, err := realm.Profile()
+	if err != nil {
+		t.Fatalf("baseline Profile: %v", err)
+	}
+
+	_, err = page.QueueScript(browser.ScriptSource{
+		URL: "https://gossamer.test/churn.js",
+		Source: `
+			(() => {
+				const mount = document.getElementById("mount");
+				if (mount !== document.getElementById("mount")) {
+					throw new Error("mount wrapper identity changed");
+				}
+				for (let round = 0; round < 64; round++) {
+					const row = document.createElement("div");
+					const alias = row;
+					if (alias !== row) throw new Error("ordinary alias changed identity");
+					row.setAttribute("data-round", String(round));
+					row.setAttribute("data-temp", "discard");
+					if (row.getAttribute("data-round") !== String(round)) {
+						throw new Error("attribute write did not round trip");
+					}
+					row.removeAttribute("data-temp");
+					if (row.getAttribute("data-temp") !== null) {
+						throw new Error("attribute removal did not round trip");
+					}
+
+					const left = document.createElement("span");
+					const leftText = document.createTextNode("L" + round);
+					if (left.appendChild(leftText) !== leftText) {
+						throw new Error("appendChild did not return its child");
+					}
+					const right = document.createElement("span");
+					right.appendChild(document.createTextNode("R" + round));
+					row.appendChild(left);
+					row.appendChild(right);
+					if (row.insertBefore(right, left) !== right) {
+						throw new Error("insertBefore did not return its child");
+					}
+					if (row.textContent !== "R" + round + "L" + round) {
+						throw new Error("child reorder changed text order");
+					}
+					if (row.removeChild(left) !== left) {
+						throw new Error("removeChild did not return its child");
+					}
+					row.appendChild(left);
+					mount.appendChild(row);
+					if (mount.removeChild(row) !== row) {
+						throw new Error("detachment changed wrapper identity");
+					}
+				}
+
+				const survivor = document.createElement("div");
+				survivor.setAttribute("id", "survivor");
+				survivor.setAttribute("data-state", "connected");
+				survivor.textContent = "survivor";
+				mount.appendChild(survivor);
+			})();
+		`,
+	})
+	if err != nil {
+		t.Fatalf("QueueScript: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("run churn script: %v", err)
+	}
+	if !page.Dirty() || page.Realm.Tasks.Len() != 1 {
+		t.Fatalf("churn task = dirty:%t queued:%d; want dirty with one render", page.Dirty(), page.Realm.Tasks.Len())
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("render churn result: %v", err)
+	}
+	if page.Dirty() || !v8FrameContainsText(page.Frame(), "survivor") {
+		t.Fatal("churn result did not reach paint")
+	}
+
+	const createdNodes = iterations*5 + 2
+	if got := document.Store().Len() - initialNodes; got != createdNodes {
+		t.Fatalf("document-retained churn nodes = %d, want %d", got, createdNodes)
+	}
+	mountID, found := document.ElementByID("mount")
+	if !found {
+		t.Fatal("mount disappeared after churn")
+	}
+	survivorID, found := document.ElementByID("survivor")
+	if !found {
+		t.Fatal("survivor was not connected after churn")
+	}
+	mount, _ := document.Resolve(mountID)
+	survivor, _ := document.Resolve(survivorID)
+	if len(mount.Children) != 1 || mount.Children[0] != survivor {
+		t.Fatalf("connected mount children = %#v, want survivor only", mount.Children)
+	}
+	if got, err := document.TextContent(survivorID); err != nil || got != "survivor" {
+		t.Fatalf("survivor text = %q, %v", got, err)
+	}
+	if got, found, err := document.GetAttribute(survivorID, "data-state"); err != nil || !found || got != "connected" {
+		t.Fatalf("survivor attribute = %q, %t, %v", got, found, err)
+	}
+
+	afterRenderLedger := browserRuntime.Ledger().Stats()
+	if afterRenderLedger.ObjectsCreated-baselineLedger.ObjectsCreated != 2 ||
+		afterRenderLedger.ObjectsDestroyed-baselineLedger.ObjectsDestroyed != 2 ||
+		afterRenderLedger.LiveObjects != baselineLedger.LiveObjects ||
+		afterRenderLedger.TaskLocalAllocations-baselineLedger.TaskLocalAllocations != 1 ||
+		afterRenderLedger.PublishOperations-baselineLedger.PublishOperations != 2 ||
+		afterRenderLedger.TransferOperations-baselineLedger.TransferOperations != 2 {
+		t.Fatalf("churn crossed unexpected ARC boundaries: before=%#v after=%#v", baselineLedger, afterRenderLedger)
+	}
+	afterRenderProfile, err := realm.Profile()
+	if err != nil {
+		t.Fatalf("Profile after churn: %v", err)
+	}
+	const createdWrappers = 1 + iterations*5 + 1
+	if got := afterRenderProfile.WrappersCreated - baselineProfile.WrappersCreated; got != createdWrappers {
+		t.Fatalf("wrappers created by churn = %d, want %d", got, createdWrappers)
+	}
+	if afterRenderProfile.WrapperCacheHits-baselineProfile.WrapperCacheHits != 1 {
+		t.Fatalf("wrapper cache hits after churn = %d, want 1", afterRenderProfile.WrapperCacheHits-baselineProfile.WrapperCacheHits)
+	}
+
+	ledgerBeforeGC := browserRuntime.Ledger().Stats()
+	if err := realm.CollectGarbage(); err != nil {
+		t.Fatalf("CollectGarbage: %v", err)
+	}
+	if ledgerAfterGC := browserRuntime.Ledger().Stats(); ledgerAfterGC != ledgerBeforeGC {
+		t.Fatalf("V8 wrapper collection changed Go ARC: before=%#v after=%#v", ledgerBeforeGC, ledgerAfterGC)
+	}
+	afterGC, err := realm.Profile()
+	if err != nil {
+		t.Fatalf("Profile after churn GC: %v", err)
+	}
+	if afterGC.WrappersCollected-baselineProfile.WrappersCollected != createdWrappers ||
+		afterGC.LiveWrappers != baselineProfile.LiveWrappers {
+		t.Fatalf("wrapper reclamation after churn = %#v, baseline=%#v", afterGC, baselineProfile)
+	}
+
+	if err := page.Close(); err != nil {
+		t.Fatalf("Close churn page: %v", err)
+	}
+	closedProfile := engine.Profile()
+	if closedProfile.RealmsCreated != 2 || closedProfile.RealmsClosed != 2 ||
+		closedProfile.ClosedRealms.WrappersCreated < createdWrappers ||
+		closedProfile.ClosedRealms.LiveWrappers != 0 {
+		t.Fatalf("churn teardown profile = %#v", closedProfile)
+	}
+	if finalLedger := browserRuntime.Ledger().Stats(); finalLedger.LiveObjects != 0 || finalLedger.PersistentObjects != 0 {
+		t.Fatalf("churn teardown ownership = %#v", finalLedger)
+	}
+}
+
 func newTestEngine(t *testing.T) *Engine {
 	t.Helper()
 	icuData := os.Getenv("GOSSAMER_V8_ICU_DATA")
@@ -410,11 +592,43 @@ func (*capturingBindingHost) GetElementByID(string) (browser.NodeHandle, bool, e
 	return browser.NodeHandle{}, false, nil
 }
 
+func (*capturingBindingHost) CreateElement(string) (browser.NodeHandle, error) {
+	return browser.NodeHandle{}, nil
+}
+
+func (*capturingBindingHost) CreateTextNode(string) (browser.NodeHandle, error) {
+	return browser.NodeHandle{}, nil
+}
+
 func (*capturingBindingHost) TextContent(browser.NodeHandle) (string, error) {
 	return "", nil
 }
 
 func (*capturingBindingHost) SetTextContent(browser.NodeHandle, string) error {
+	return nil
+}
+
+func (*capturingBindingHost) AppendChild(browser.NodeHandle, browser.NodeHandle) error {
+	return nil
+}
+
+func (*capturingBindingHost) InsertBefore(browser.NodeHandle, browser.NodeHandle, browser.NodeHandle) error {
+	return nil
+}
+
+func (*capturingBindingHost) RemoveChild(browser.NodeHandle, browser.NodeHandle) error {
+	return nil
+}
+
+func (*capturingBindingHost) GetAttribute(browser.NodeHandle, string) (string, bool, error) {
+	return "", false, nil
+}
+
+func (*capturingBindingHost) SetAttribute(browser.NodeHandle, string, string) error {
+	return nil
+}
+
+func (*capturingBindingHost) RemoveAttribute(browser.NodeHandle, string) error {
 	return nil
 }
 

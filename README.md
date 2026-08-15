@@ -111,9 +111,11 @@ An optional stock V8 15.2 adapter now occupies that socket on Apple Silicon.
 The pinned, symbolized build keeps JavaScript values under V8 GC while browser
 objects remain under Go regions and queue ARC. Its first wrapper slice exposes
 stable numeric node identity, `getElementById`, `textContent`, click listeners,
-microtasks, and timers without passing Go pointers into V8. Profiling covers
-heap totals, sampled allocations, GC callbacks, weak-wrapper collection,
-callback publication, explicit Promise checkpoints, and isolate teardown. See
+node creation, tree mutation, attributes, microtasks, and timers without
+passing Go pointers into V8. Profiling covers heap totals, sampled allocations,
+GC callbacks, weak-wrapper collection, callback publication, explicit Promise
+checkpoints, and isolate teardown. A framework-shaped churn test proves that
+synchronous node aliases and mutations do not create queue ARC claims. See
 [`docs/stock-v8-integration.md`](docs/stock-v8-integration.md).
 
 ## What works today

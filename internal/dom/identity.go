@@ -19,6 +19,7 @@ var (
 	ErrUnknownNode     = errors.New("dom: unknown node id")
 	ErrInvalidTree     = errors.New("dom: invalid node tree")
 	ErrWrongNodeKind   = errors.New("dom: wrong node kind")
+	ErrInvalidName     = errors.New("dom: invalid name")
 )
 
 // Document adds stable identity and mutation versioning around the existing
@@ -142,6 +143,32 @@ func (document *Document) ElementByID(value string) (NodeID, bool) {
 		}
 	}
 	return InvalidNodeID, false
+}
+
+// CreateElement indexes a detached element in the document's lifetime store.
+// It remains addressable by stable ID even if it is never connected.
+func (document *Document) CreateElement(name string) (NodeID, error) {
+	if document == nil || document.store == nil {
+		return InvalidNodeID, ErrInvalidDocument
+	}
+	name = strings.ToLower(name)
+	if !validDOMName(name) {
+		return InvalidNodeID, fmt.Errorf("%w: element %q", ErrInvalidName, name)
+	}
+	document.store.mutex.Lock()
+	defer document.store.mutex.Unlock()
+	return document.store.assignLocked(NewElement(name)), nil
+}
+
+// CreateTextNode indexes detached character data in the document's lifetime
+// store. Creation alone does not invalidate the connected tree.
+func (document *Document) CreateTextNode(data string) (NodeID, error) {
+	if document == nil || document.store == nil {
+		return InvalidNodeID, ErrInvalidDocument
+	}
+	document.store.mutex.Lock()
+	defer document.store.mutex.Unlock()
+	return document.store.assignLocked(NewText(data)), nil
 }
 
 // Version changes after each effective mutation made through Document.
@@ -330,6 +357,191 @@ func (document *Document) AppendChild(parentID NodeID, child *Node) (NodeID, err
 	}
 	document.version.Add(1)
 	return document.store.ids[child], nil
+}
+
+// AppendNode moves an indexed node to the end of an indexed parent's children.
+func (document *Document) AppendNode(parentID, childID NodeID) error {
+	return document.InsertBefore(parentID, childID, InvalidNodeID)
+}
+
+// InsertBefore moves an indexed node immediately before referenceID. A zero
+// reference appends. Every node stays in the same document lifetime store.
+func (document *Document) InsertBefore(parentID, childID, referenceID NodeID) error {
+	if document == nil || document.store == nil {
+		return ErrInvalidDocument
+	}
+	document.store.mutex.Lock()
+	defer document.store.mutex.Unlock()
+	parent, ok := document.store.resolveLocked(parentID)
+	if !ok {
+		return fmt.Errorf("%w: %d", ErrUnknownNode, parentID)
+	}
+	child, ok := document.store.resolveLocked(childID)
+	if !ok {
+		return fmt.Errorf("%w: %d", ErrUnknownNode, childID)
+	}
+	if parent.Type != ElementNode && parent.Type != DocumentNode {
+		return fmt.Errorf("%w: node %d cannot have children", ErrWrongNodeKind, parentID)
+	}
+	for ancestor := parent; ancestor != nil; ancestor = ancestor.Parent {
+		if ancestor == child {
+			return fmt.Errorf("%w: insertion would create a cycle", ErrInvalidTree)
+		}
+	}
+	var reference *Node
+	if referenceID != InvalidNodeID {
+		if referenceID == childID {
+			return nil
+		}
+		reference, ok = document.store.resolveLocked(referenceID)
+		if !ok {
+			return fmt.Errorf("%w: %d", ErrUnknownNode, referenceID)
+		}
+		if reference.Parent != parent {
+			return fmt.Errorf("%w: reference %d is not a child of %d", ErrInvalidTree, referenceID, parentID)
+		}
+	}
+	if child.Parent != nil {
+		child.Parent.removeChild(child)
+	}
+	child.Parent = parent
+	if reference == nil {
+		parent.Children = append(parent.Children, child)
+	} else {
+		index := childIndex(parent, reference)
+		parent.Children = append(parent.Children, nil)
+		copy(parent.Children[index+1:], parent.Children[index:])
+		parent.Children[index] = child
+	}
+	document.version.Add(1)
+	return nil
+}
+
+// RemoveChild detaches a direct child while preserving both stable IDs.
+func (document *Document) RemoveChild(parentID, childID NodeID) error {
+	if document == nil || document.store == nil {
+		return ErrInvalidDocument
+	}
+	document.store.mutex.Lock()
+	defer document.store.mutex.Unlock()
+	parent, ok := document.store.resolveLocked(parentID)
+	if !ok {
+		return fmt.Errorf("%w: %d", ErrUnknownNode, parentID)
+	}
+	child, ok := document.store.resolveLocked(childID)
+	if !ok {
+		return fmt.Errorf("%w: %d", ErrUnknownNode, childID)
+	}
+	if child.Parent != parent {
+		return fmt.Errorf("%w: node %d is not a child of %d", ErrInvalidTree, childID, parentID)
+	}
+	parent.removeChild(child)
+	child.Parent = nil
+	document.version.Add(1)
+	return nil
+}
+
+func (document *Document) GetAttribute(id NodeID, name string) (string, bool, error) {
+	if document == nil || document.store == nil {
+		return "", false, ErrInvalidDocument
+	}
+	document.store.mutex.RLock()
+	defer document.store.mutex.RUnlock()
+	node, ok := document.store.resolveLocked(id)
+	if !ok {
+		return "", false, fmt.Errorf("%w: %d", ErrUnknownNode, id)
+	}
+	if node.Type != ElementNode {
+		return "", false, fmt.Errorf("%w: node %d is not an element", ErrWrongNodeKind, id)
+	}
+	name = strings.ToLower(name)
+	for _, attribute := range node.Attributes {
+		if attribute.Name == name {
+			return attribute.Value, true, nil
+		}
+	}
+	return "", false, nil
+}
+
+func (document *Document) SetAttribute(id NodeID, name, value string) error {
+	if document == nil || document.store == nil {
+		return ErrInvalidDocument
+	}
+	name = strings.ToLower(name)
+	if !validDOMName(name) {
+		return fmt.Errorf("%w: attribute %q", ErrInvalidName, name)
+	}
+	document.store.mutex.Lock()
+	defer document.store.mutex.Unlock()
+	node, ok := document.store.resolveLocked(id)
+	if !ok {
+		return fmt.Errorf("%w: %d", ErrUnknownNode, id)
+	}
+	if node.Type != ElementNode {
+		return fmt.Errorf("%w: node %d is not an element", ErrWrongNodeKind, id)
+	}
+	for index := range node.Attributes {
+		if node.Attributes[index].Name != name {
+			continue
+		}
+		if node.Attributes[index].Value == value {
+			return nil
+		}
+		node.Attributes[index].Value = value
+		document.version.Add(1)
+		return nil
+	}
+	node.Attributes = append(node.Attributes, Attribute{Name: name, Value: value})
+	document.version.Add(1)
+	return nil
+}
+
+func (document *Document) RemoveAttribute(id NodeID, name string) error {
+	if document == nil || document.store == nil {
+		return ErrInvalidDocument
+	}
+	document.store.mutex.Lock()
+	defer document.store.mutex.Unlock()
+	node, ok := document.store.resolveLocked(id)
+	if !ok {
+		return fmt.Errorf("%w: %d", ErrUnknownNode, id)
+	}
+	if node.Type != ElementNode {
+		return fmt.Errorf("%w: node %d is not an element", ErrWrongNodeKind, id)
+	}
+	name = strings.ToLower(name)
+	for index := range node.Attributes {
+		if node.Attributes[index].Name != name {
+			continue
+		}
+		copy(node.Attributes[index:], node.Attributes[index+1:])
+		node.Attributes[len(node.Attributes)-1] = Attribute{}
+		node.Attributes = node.Attributes[:len(node.Attributes)-1]
+		document.version.Add(1)
+		return nil
+	}
+	return nil
+}
+
+func childIndex(parent, child *Node) int {
+	for index, candidate := range parent.Children {
+		if candidate == child {
+			return index
+		}
+	}
+	return len(parent.Children)
+}
+
+func validDOMName(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, character := range name {
+		if character <= ' ' || strings.ContainsRune("<>/='\"", character) {
+			return false
+		}
+	}
+	return true
 }
 
 func (store *NodeStore) Resolve(id NodeID) (*Node, bool) {

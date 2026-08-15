@@ -339,6 +339,23 @@ bool ReadReceiverKey(v8::Isolate *isolate, v8::Local<v8::Object> receiver,
   return false;
 }
 
+bool ReadNodeArgument(v8::Isolate *isolate, v8::Local<v8::Value> value,
+                      WrapperKey *key, const char *message) {
+  if (value->IsObject() && ReadWrapperKey(value.As<v8::Object>(), key))
+    return true;
+  ThrowError(isolate, message);
+  return false;
+}
+
+bool StringFromValue(v8::Isolate *isolate, v8::Local<v8::Value> value,
+                     std::string *output) {
+  v8::Local<v8::String> rendered;
+  if (!value->ToString(isolate->GetCurrentContext()).ToLocal(&rendered))
+    return false;
+  *output = UTF8Value(isolate, rendered);
+  return true;
+}
+
 bool EventTypeFromValue(v8::Isolate *isolate, v8::Local<v8::Value> value,
                         uint8_t *event_type) {
   if (!value->IsString()) {
@@ -485,6 +502,59 @@ void DocumentGetElementByID(const v8::FunctionCallbackInfo<v8::Value> &info) {
   info.GetReturnValue().Set(wrapper);
 }
 
+void DocumentCreateNode(const v8::FunctionCallbackInfo<v8::Value> &info,
+                        bool element) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  std::string input;
+  if (info.Length() == 0) {
+    if (element) {
+      ThrowError(isolate, "createElement requires a tag name");
+      return;
+    }
+  } else if (!StringFromValue(isolate, info[0], &input)) {
+    return;
+  }
+  uint64_t document = 0;
+  uint32_t node = 0;
+  char *host_error = nullptr;
+  int ok = element ? realm->active_host->create_element(
+                         realm->active_host->execution_id, input.data(),
+                         input.size(), &document, &node, &host_error)
+                   : realm->active_host->create_text_node(
+                         realm->active_host->execution_id, input.data(),
+                         input.size(), &document, &node, &host_error);
+  if (ok == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate, error.empty() ? (element ? "createElement failed"
+                                                 : "createTextNode failed")
+                                      : error);
+    return;
+  }
+  std::free(host_error);
+  v8::Local<v8::Object> wrapper;
+  if (!GetOrCreateNodeWrapper(realm, isolate->GetCurrentContext(),
+                              WrapperKey{document, node})
+           .ToLocal(&wrapper)) {
+    ThrowError(isolate, "V8 failed to allocate a DOM node wrapper");
+    return;
+  }
+  info.GetReturnValue().Set(wrapper);
+}
+
+void DocumentCreateElement(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  DocumentCreateNode(info, true);
+}
+
+void DocumentCreateTextNode(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  DocumentCreateNode(info, false);
+}
+
 void NodeTextContentGetter(v8::Local<v8::Name>,
                            const v8::PropertyCallbackInfo<v8::Value> &info) {
   v8::Isolate *isolate = info.GetIsolate();
@@ -560,6 +630,200 @@ void NodeTextContentSetter(v8::Local<v8::Name>, v8::Local<v8::Value> value,
   }
   std::free(host_error);
   info.GetReturnValue().Set(true);
+}
+
+void NodeAppendChild(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  WrapperKey parent;
+  WrapperKey child;
+  if (!ReadReceiverKey(isolate, info.This(), &parent))
+    return;
+  if (info.Length() == 0 ||
+      !ReadNodeArgument(isolate, info[0], &child,
+                        "appendChild requires a Gossamer node"))
+    return;
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  char *host_error = nullptr;
+  if (realm->active_host->append_child(
+          realm->active_host->execution_id, parent.document, parent.node,
+          child.document, child.node, &host_error) == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate, error.empty() ? "appendChild failed" : error);
+    return;
+  }
+  std::free(host_error);
+  info.GetReturnValue().Set(info[0]);
+}
+
+void NodeInsertBefore(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  WrapperKey parent;
+  WrapperKey child;
+  WrapperKey reference;
+  if (!ReadReceiverKey(isolate, info.This(), &parent))
+    return;
+  if (info.Length() < 2 ||
+      !ReadNodeArgument(isolate, info[0], &child,
+                        "insertBefore requires a Gossamer child node"))
+    return;
+  if (!info[1]->IsNull() &&
+      !ReadNodeArgument(
+          isolate, info[1], &reference,
+          "insertBefore reference must be a Gossamer node or null"))
+    return;
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  char *host_error = nullptr;
+  if (realm->active_host->insert_before(
+          realm->active_host->execution_id, parent.document, parent.node,
+          child.document, child.node, reference.document, reference.node,
+          &host_error) == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate, error.empty() ? "insertBefore failed" : error);
+    return;
+  }
+  std::free(host_error);
+  info.GetReturnValue().Set(info[0]);
+}
+
+void NodeRemoveChild(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  WrapperKey parent;
+  WrapperKey child;
+  if (!ReadReceiverKey(isolate, info.This(), &parent))
+    return;
+  if (info.Length() == 0 ||
+      !ReadNodeArgument(isolate, info[0], &child,
+                        "removeChild requires a Gossamer node"))
+    return;
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  char *host_error = nullptr;
+  if (realm->active_host->remove_child(
+          realm->active_host->execution_id, parent.document, parent.node,
+          child.document, child.node, &host_error) == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate, error.empty() ? "removeChild failed" : error);
+    return;
+  }
+  std::free(host_error);
+  info.GetReturnValue().Set(info[0]);
+}
+
+void NodeGetAttribute(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.This(), &key))
+    return;
+  std::string name;
+  if (info.Length() == 0 || !StringFromValue(isolate, info[0], &name))
+    return;
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  char *value = nullptr;
+  size_t value_length = 0;
+  int found = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->get_attribute(
+          realm->active_host->execution_id, key.document, key.node, name.data(),
+          name.size(), &value, &value_length, &found, &host_error) == 0) {
+    error = TakeCString(host_error);
+    std::free(value);
+    ThrowError(isolate, error.empty() ? "getAttribute failed" : error);
+    return;
+  }
+  std::free(host_error);
+  if (found == 0) {
+    std::free(value);
+    info.GetReturnValue().Set(v8::Null(isolate));
+    return;
+  }
+  if (value_length > static_cast<size_t>(std::numeric_limits<int>::max())) {
+    std::free(value);
+    ThrowError(isolate, "attribute value exceeds V8's supported string length");
+    return;
+  }
+  v8::Local<v8::String> result;
+  const char *bytes = value == nullptr ? "" : value;
+  bool allocated =
+      v8::String::NewFromUtf8(isolate, bytes, v8::NewStringType::kNormal,
+                              static_cast<int>(value_length))
+          .ToLocal(&result);
+  std::free(value);
+  if (!allocated) {
+    ThrowError(isolate, "V8 failed to allocate an attribute value");
+    return;
+  }
+  info.GetReturnValue().Set(result);
+}
+
+void NodeSetAttribute(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.This(), &key))
+    return;
+  std::string name;
+  std::string value;
+  if (info.Length() < 2 || !StringFromValue(isolate, info[0], &name) ||
+      !StringFromValue(isolate, info[1], &value))
+    return;
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  char *host_error = nullptr;
+  if (realm->active_host->set_attribute(
+          realm->active_host->execution_id, key.document, key.node, name.data(),
+          name.size(), value.data(), value.size(), &host_error) == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate, error.empty() ? "setAttribute failed" : error);
+    return;
+  }
+  std::free(host_error);
+}
+
+void NodeRemoveAttribute(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.This(), &key))
+    return;
+  std::string name;
+  if (info.Length() == 0 || !StringFromValue(isolate, info[0], &name))
+    return;
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  char *host_error = nullptr;
+  if (realm->active_host->remove_attribute(realm->active_host->execution_id,
+                                           key.document, key.node, name.data(),
+                                           name.size(), &host_error) == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate, error.empty() ? "removeAttribute failed" : error);
+    return;
+  }
+  std::free(host_error);
 }
 
 void NodeAddEventListener(const v8::FunctionCallbackInfo<v8::Value> &info) {
@@ -720,6 +984,18 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   node_template->SetNativeDataProperty(
       v8::String::NewFromUtf8Literal(isolate, "textContent"),
       NodeTextContentGetter, NodeTextContentSetter);
+  node_template->Set(isolate, "appendChild",
+                     v8::FunctionTemplate::New(isolate, NodeAppendChild));
+  node_template->Set(isolate, "insertBefore",
+                     v8::FunctionTemplate::New(isolate, NodeInsertBefore));
+  node_template->Set(isolate, "removeChild",
+                     v8::FunctionTemplate::New(isolate, NodeRemoveChild));
+  node_template->Set(isolate, "getAttribute",
+                     v8::FunctionTemplate::New(isolate, NodeGetAttribute));
+  node_template->Set(isolate, "setAttribute",
+                     v8::FunctionTemplate::New(isolate, NodeSetAttribute));
+  node_template->Set(isolate, "removeAttribute",
+                     v8::FunctionTemplate::New(isolate, NodeRemoveAttribute));
   node_template->Set(isolate, "addEventListener",
                      v8::FunctionTemplate::New(isolate, NodeAddEventListener));
   node_template->Set(
@@ -729,11 +1005,17 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
 
   v8::Local<v8::Object> document = v8::Object::New(isolate);
   v8::Local<v8::Function> get_element_by_id;
+  v8::Local<v8::Function> create_element;
+  v8::Local<v8::Function> create_text_node;
   v8::Local<v8::Function> queue_microtask;
   v8::Local<v8::Function> set_timeout;
   v8::Local<v8::Function> clear_timeout;
   if (!v8::Function::New(context, DocumentGetElementByID)
            .ToLocal(&get_element_by_id) ||
+      !v8::Function::New(context, DocumentCreateElement)
+           .ToLocal(&create_element) ||
+      !v8::Function::New(context, DocumentCreateTextNode)
+           .ToLocal(&create_text_node) ||
       !v8::Function::New(context, QueueMicrotaskCallback)
            .ToLocal(&queue_microtask) ||
       !v8::Function::New(context, SetTimeoutCallback).ToLocal(&set_timeout) ||
@@ -746,6 +1028,16 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
              ->Set(context,
                    v8::String::NewFromUtf8Literal(isolate, "getElementById"),
                    get_element_by_id)
+             .FromMaybe(false) &&
+         document
+             ->Set(context,
+                   v8::String::NewFromUtf8Literal(isolate, "createElement"),
+                   create_element)
+             .FromMaybe(false) &&
+         document
+             ->Set(context,
+                   v8::String::NewFromUtf8Literal(isolate, "createTextNode"),
+                   create_text_node)
              .FromMaybe(false) &&
          global
              ->Set(context, v8::String::NewFromUtf8Literal(isolate, "document"),

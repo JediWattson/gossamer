@@ -147,9 +147,9 @@ Silicon:
    `JSRealm.DrainMicrotasks`.
 6. Keep JavaScript objects and callback handles in the V8 heap under V8 GC.
    Keep Go browser objects under Gossamer queue/region ownership.
-7. The next milestone maps wrapper identity with stable `NodeHandle` and opaque
-   `ValueHandle` tables, then adds weak-wrapper telemetry without changing
-   ownership rules.
+7. Stable `NodeHandle` wrappers, opaque `ValueHandle` tables, weak-wrapper
+   telemetry, and the first node creation/tree/attribute mutation slice now
+   occupy this boundary without changing queue ownership rules.
 
 See [`stock-v8-integration.md`](stock-v8-integration.md) for the pinned build,
 measurement surfaces, and wrapper sequence.

@@ -147,6 +147,89 @@ func TestDocumentElementLookupAndTextContentPreserveDetachedIdentity(t *testing.
 	}
 }
 
+func TestDocumentIndexedNodeChurnPreservesIdentityAndOrder(t *testing.T) {
+	t.Parallel()
+
+	root, _, body, _, _ := identityFixture()
+	document, err := IndexDocument(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bodyID := mustNodeID(t, document, body)
+	initialNodes := document.Store().Len()
+	initialVersion := document.Version()
+	rowID, err := document.CreateElement("DIV")
+	if err != nil {
+		t.Fatal(err)
+	}
+	leftID, err := document.CreateTextNode("left")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rightID, err := document.CreateTextNode("right")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if document.Version() != initialVersion || document.Store().Len() != initialNodes+3 {
+		t.Fatalf("detached creation = version:%d nodes:%d", document.Version(), document.Store().Len())
+	}
+	if err := document.SetAttribute(rowID, "ID", "dynamic-row"); err != nil {
+		t.Fatal(err)
+	}
+	if err := document.SetAttribute(rowID, "data-state", "first"); err != nil {
+		t.Fatal(err)
+	}
+	if err := document.AppendNode(rowID, leftID); err != nil {
+		t.Fatal(err)
+	}
+	if err := document.AppendNode(rowID, rightID); err != nil {
+		t.Fatal(err)
+	}
+	if err := document.InsertBefore(rowID, rightID, leftID); err != nil {
+		t.Fatal(err)
+	}
+	if err := document.AppendNode(bodyID, rowID); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := document.ElementByID("dynamic-row"); !ok || got != rowID {
+		t.Fatalf("connected dynamic row = %d, %t; want %d, true", got, ok, rowID)
+	}
+	row, _ := document.Resolve(rowID)
+	if len(row.Children) != 2 || mustNodeID(t, document, row.Children[0]) != rightID || mustNodeID(t, document, row.Children[1]) != leftID {
+		t.Fatalf("reordered children = %#v", row.Children)
+	}
+	if got, err := document.TextContent(rowID); err != nil || got != "rightleft" {
+		t.Fatalf("row TextContent = %q, %v; want rightleft", got, err)
+	}
+	if err := document.RemoveChild(rowID, leftID); err != nil {
+		t.Fatal(err)
+	}
+	if err := document.AppendNode(rowID, leftID); err != nil {
+		t.Fatal(err)
+	}
+	if err := document.RemoveAttribute(rowID, "data-state"); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := document.GetAttribute(rowID, "data-state"); err != nil || found {
+		t.Fatalf("removed attribute = found:%t error:%v", found, err)
+	}
+	if err := document.RemoveChild(bodyID, rowID); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := document.ElementByID("dynamic-row"); ok {
+		t.Fatal("detached dynamic row remained in connected ID lookup")
+	}
+	if resolved, ok := document.Resolve(rowID); !ok || resolved != row {
+		t.Fatalf("detached row identity = %p, %t; want %p, true", resolved, ok, row)
+	}
+	if err := document.AppendNode(bodyID, rowID); err != nil {
+		t.Fatal(err)
+	}
+	if resolved, ok := document.Resolve(leftID); !ok || resolved.Parent != row {
+		t.Fatalf("reinserted child identity = %#v, %t", resolved, ok)
+	}
+}
+
 func identityFixture() (root, html, body, paragraph, text *Node) {
 	root = NewDocument()
 	html = NewElement("html")

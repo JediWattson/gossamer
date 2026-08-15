@@ -24,11 +24,37 @@ typedef struct gossamer_v8_host {
                            size_t value_length, uint64_t *document_out,
                            uint32_t *node_out, int *found_out,
                            char **error_out);
+  int (*create_element)(uint64_t execution_id, const char *name,
+                        size_t name_length, uint64_t *document_out,
+                        uint32_t *node_out, char **error_out);
+  int (*create_text_node)(uint64_t execution_id, const char *data,
+                          size_t data_length, uint64_t *document_out,
+                          uint32_t *node_out, char **error_out);
   int (*text_content)(uint64_t execution_id, uint64_t document, uint32_t node,
                       char **value_out, size_t *value_length_out,
                       char **error_out);
   int (*set_text_content)(uint64_t execution_id, uint64_t document,
                           uint32_t node, const char *value, size_t value_length,
+                          char **error_out);
+  int (*append_child)(uint64_t execution_id, uint64_t parent_document,
+                      uint32_t parent_node, uint64_t child_document,
+                      uint32_t child_node, char **error_out);
+  int (*insert_before)(uint64_t execution_id, uint64_t parent_document,
+                       uint32_t parent_node, uint64_t child_document,
+                       uint32_t child_node, uint64_t reference_document,
+                       uint32_t reference_node, char **error_out);
+  int (*remove_child)(uint64_t execution_id, uint64_t parent_document,
+                      uint32_t parent_node, uint64_t child_document,
+                      uint32_t child_node, char **error_out);
+  int (*get_attribute)(uint64_t execution_id, uint64_t document, uint32_t node,
+                       const char *name, size_t name_length, char **value_out,
+                       size_t *value_length_out, int *found_out,
+                       char **error_out);
+  int (*set_attribute)(uint64_t execution_id, uint64_t document, uint32_t node,
+                       const char *name, size_t name_length, const char *value,
+                       size_t value_length, char **error_out);
+  int (*remove_attribute)(uint64_t execution_id, uint64_t document,
+                          uint32_t node, const char *name, size_t name_length,
                           char **error_out);
   int (*queue_callback)(uint64_t execution_id, uint64_t callback,
                         char **error_out);

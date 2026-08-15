@@ -72,8 +72,9 @@ scripts also enter through Page evaluation tasks with an explicit engine
 microtask checkpoint.
 
 Stock V8 now occupies the proven adapter boundary for evaluation, explicit
-microtasks, profiling, and isolate teardown. DOM wrappers are the next
-ownership milestone; see
+microtasks, profiling, isolate teardown, numeric DOM wrappers, and synchronous
+node mutation churn. Detached nodes currently remain document-retained while
+V8 wrapper collection stays independent of queue ARC; see
 [`stock-v8-integration.md`](stock-v8-integration.md).
 
 Physical allocation optimizations such as typed slabs or object pools should
