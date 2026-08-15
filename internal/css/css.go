@@ -1,6 +1,8 @@
-// Package css parses the small CSS subset used by Gossamer's first rendering
-// pipeline. It intentionally represents only compound selectors; combinators,
-// pseudo-elements, attribute selectors, and conditional at-rules are skipped.
+// Package css parses and matches the CSS subset used by Gossamer's rendering
+// pipeline. It supports complex selectors, attribute selectors, logical and
+// structural pseudo-classes, and the declarations consumed by the renderer.
+// Namespaces, pseudo-elements, escaped identifiers, and conditional at-rules
+// are intentionally outside the current subset.
 package css
 
 // Stylesheet is an ordered collection of qualified CSS rules.
@@ -16,14 +18,73 @@ type Rule struct {
 	Order        int
 }
 
-// Selector is a simple compound selector. An empty Tag means no type selector;
-// "*" is retained for an explicit universal selector.
+// Selector is a parsed complex selector. Its representation is deliberately
+// private so matching and specificity cannot drift apart. Selectors are
+// created by Parse.
 type Selector struct {
-	Tag           string
-	ID            string
-	Classes       []string
-	PseudoClasses []string
-	Specificity   Specificity
+	specificity Specificity
+	compounds   []compoundSelector
+	combinators []selectorCombinator
+}
+
+// Specificity returns the selector's static CSS specificity.
+func (selector Selector) Specificity() Specificity {
+	return selector.specificity
+}
+
+type compoundSelector struct {
+	typeName   string
+	ids        []string
+	classes    []string
+	attributes []attributeSelector
+	pseudos    []pseudoClassSelector
+}
+
+type selectorCombinator uint8
+
+const (
+	descendantCombinator selectorCombinator = iota + 1
+	childCombinator
+	adjacentSiblingCombinator
+	generalSiblingCombinator
+)
+
+type attributeSelector struct {
+	name      string
+	operator  attributeOperator
+	value     string
+	valueCase attributeCase
+}
+
+type attributeOperator uint8
+
+const (
+	attributeExists attributeOperator = iota
+	attributeEquals
+	attributeIncludes
+	attributeDashMatch
+	attributePrefix
+	attributeSuffix
+	attributeSubstring
+)
+
+type attributeCase uint8
+
+const (
+	attributeCaseDefault attributeCase = iota
+	attributeCaseInsensitive
+	attributeCaseSensitive
+)
+
+type pseudoClassSelector struct {
+	name      string
+	selectors []Selector
+	nth       nthExpression
+}
+
+type nthExpression struct {
+	a int
+	b int
 }
 
 // Specificity contains the three components of CSS selector specificity. IDs
@@ -44,6 +105,24 @@ func (specificity Specificity) Compare(other Specificity) int {
 		return compareInt(specificity.Classes, other.Classes)
 	}
 	return compareInt(specificity.Types, other.Types)
+}
+
+func (specificity Specificity) add(other Specificity) Specificity {
+	return Specificity{
+		IDs:     specificity.IDs + other.IDs,
+		Classes: specificity.Classes + other.Classes,
+		Types:   specificity.Types + other.Types,
+	}
+}
+
+func greatestSpecificity(selectors []Selector) Specificity {
+	var greatest Specificity
+	for _, selector := range selectors {
+		if selector.specificity.Compare(greatest) > 0 {
+			greatest = selector.specificity
+		}
+	}
+	return greatest
 }
 
 // Declaration is one property/value pair. Value is the trimmed source value;

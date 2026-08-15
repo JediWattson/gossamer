@@ -57,13 +57,12 @@ func TestUnsupportedPseudoClassInvalidatesSelectorList(t *testing.T) {
 	if got, want := len(stylesheet.Rules), 1; got != want {
 		t.Fatalf("len(Rules) = %d, want %d", got, want)
 	}
-	if got, want := stylesheet.Rules[0].Selectors[0].Tag, "p"; got != want {
-		t.Errorf("remaining selector tag = %q, want %q", got, want)
+	remaining := stylesheet.Rules[0].Selectors[0]
+	if !remaining.Matches(dom.NewElement("p")) {
+		t.Error("remaining p selector did not match p")
 	}
-
-	constructed := css.Selector{PseudoClasses: []string{"not-yet-supported"}}
-	if constructed.Matches(dom.NewElement("div")) {
-		t.Error("directly constructed unsupported pseudo-class matched")
+	if remaining.Matches(dom.NewElement("div")) {
+		t.Error("remaining p selector matched div")
 	}
 }
 
@@ -96,6 +95,7 @@ func TestSelectorMatchesLinkStateWithoutHistory(t *testing.T) {
 
 	link := dom.NewElement("a", dom.Attribute{Name: "href", Value: ""})
 	area := dom.NewElement("area", dom.Attribute{Name: "href", Value: "/map"})
+	stylesheetLink := dom.NewElement("link", dom.Attribute{Name: "href", Value: "/site.css"})
 	plainAnchor := dom.NewElement("a")
 	other := dom.NewElement("div", dom.Attribute{Name: "href", Value: "/not-a-link"})
 
@@ -107,6 +107,7 @@ func TestSelectorMatchesLinkStateWithoutHistory(t *testing.T) {
 	}{
 		{name: "link", selector: "a:link", node: link, want: true},
 		{name: "any link", selector: ":any-link", node: area, want: true},
+		{name: "stylesheet link", selector: "link:any-link", node: stylesheetLink, want: true},
 		{name: "visited has no history state", selector: "a:visited", node: link, want: false},
 		{name: "anchor without href", selector: "a:link", node: plainAnchor, want: false},
 		{name: "other element with href", selector: ":link", node: other, want: false},
@@ -229,15 +230,14 @@ func TestRuleMatchUsesGreatestMatchingSpecificity(t *testing.T) {
 		t.Errorf("non-match = (%#v, %t), want (zero, false)", got, matched)
 	}
 
-	constructedRule := css.Rule{Selectors: []css.Selector{{
-		Tag:         "div",
-		ID:          "main",
-		Classes:     []string{"card"},
-		Specificity: css.Specificity{Types: 99},
-	}}}
-	got, matched = constructedRule.Match(element)
+	compoundSheet, err := css.Parse(`div#main.card { color: blue }`)
+	if err != nil {
+		t.Fatalf("Parse(compound) error = %v", err)
+	}
+	compoundRule := compoundSheet.Rules[0]
+	got, matched = compoundRule.Match(element)
 	if want := (css.Specificity{IDs: 1, Classes: 1, Types: 1}); !matched || got != want {
-		t.Errorf("constructed Match() = (%#v, %t), want (%#v, true)", got, matched, want)
+		t.Errorf("compound Match() = (%#v, %t), want (%#v, true)", got, matched, want)
 	}
 }
 

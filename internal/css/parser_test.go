@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/JediWattson/gossamer/internal/css"
+	"github.com/JediWattson/gossamer/internal/dom"
 )
 
 func TestParseExampleDomainStylesheet(t *testing.T) {
@@ -48,8 +49,17 @@ a:link, a:visited {
 	if got, want := body.Order, 0; got != want {
 		t.Errorf("body rule Order = %d, want %d", got, want)
 	}
-	if got, want := body.Selectors, []css.Selector{{Tag: "body", Specificity: css.Specificity{Types: 1}}}; !reflect.DeepEqual(got, want) {
-		t.Errorf("body selectors = %#v, want %#v", got, want)
+	if got, want := len(body.Selectors), 1; got != want {
+		t.Fatalf("len(body.Selectors) = %d, want %d", got, want)
+	}
+	if got, want := body.Selectors[0].Specificity(), (css.Specificity{Types: 1}); got != want {
+		t.Errorf("body selector specificity = %#v, want %#v", got, want)
+	}
+	if !body.Selectors[0].Matches(dom.NewElement("body")) {
+		t.Error("body selector did not match a body element")
+	}
+	if body.Selectors[0].Matches(dom.NewElement("div")) {
+		t.Error("body selector matched a div element")
 	}
 	if got, want := body.Declarations[3], (css.Declaration{
 		Property: "font-family",
@@ -70,12 +80,20 @@ a:link, a:visited {
 	if got, want := links.Order, 2; got != want {
 		t.Errorf("link rule Order = %d, want %d", got, want)
 	}
-	wantLinkSelectors := []css.Selector{
-		{Tag: "a", PseudoClasses: []string{"link"}, Specificity: css.Specificity{Classes: 1, Types: 1}},
-		{Tag: "a", PseudoClasses: []string{"visited"}, Specificity: css.Specificity{Classes: 1, Types: 1}},
+	if got, want := len(links.Selectors), 2; got != want {
+		t.Fatalf("len(link selectors) = %d, want %d", got, want)
 	}
-	if got := links.Selectors; !reflect.DeepEqual(got, wantLinkSelectors) {
-		t.Errorf("link selectors = %#v, want %#v", got, wantLinkSelectors)
+	for index, selector := range links.Selectors {
+		if got, want := selector.Specificity(), (css.Specificity{Classes: 1, Types: 1}); got != want {
+			t.Errorf("link selector %d specificity = %#v, want %#v", index, got, want)
+		}
+	}
+	link := dom.NewElement("a", dom.Attribute{Name: "href", Value: "/docs"})
+	if !links.Selectors[0].Matches(link) {
+		t.Error("a:link selector did not match an anchor with href")
+	}
+	if links.Selectors[1].Matches(link) {
+		t.Error("a:visited selector matched without history state")
 	}
 }
 
@@ -100,12 +118,21 @@ func TestParseCommentsWhitespaceAndRawValues(t *testing.T) {
 	}
 
 	rule := stylesheet.Rules[0]
-	wantSelectors := []css.Selector{
-		{Classes: []string{"card", "featured"}, Specificity: css.Specificity{Classes: 2}},
-		{Tag: "*", PseudoClasses: []string{"hover"}, Specificity: css.Specificity{Classes: 1}},
+	if got, want := len(rule.Selectors), 2; got != want {
+		t.Fatalf("len(Selectors) = %d, want %d", got, want)
 	}
-	if got := rule.Selectors; !reflect.DeepEqual(got, wantSelectors) {
-		t.Errorf("Selectors = %#v, want %#v", got, wantSelectors)
+	if got, want := rule.Selectors[0].Specificity(), (css.Specificity{Classes: 2}); got != want {
+		t.Errorf("first selector specificity = %#v, want %#v", got, want)
+	}
+	featuredCard := dom.NewElement("div", dom.Attribute{Name: "class", Value: "card featured"})
+	if !rule.Selectors[0].Matches(featuredCard) {
+		t.Error("comment-separated compound selector did not match")
+	}
+	if got, want := rule.Selectors[1].Specificity(), (css.Specificity{Classes: 1}); got != want {
+		t.Errorf("second selector specificity = %#v, want %#v", got, want)
+	}
+	if rule.Selectors[1].Matches(featuredCard) {
+		t.Error("*:hover matched without interaction state")
 	}
 	wantDeclarations := []css.Declaration{
 		{Property: "color", Value: "rgb(1, 2, 3)", Important: true},
@@ -130,13 +157,13 @@ func TestParseSpecificity(t *testing.T) {
 	}
 
 	selectors := stylesheet.Rules[0].Selectors
-	if got, want := selectors[0].Specificity, (css.Specificity{IDs: 1, Classes: 4, Types: 1}); got != want {
+	if got, want := selectors[0].Specificity(), (css.Specificity{IDs: 1, Classes: 4, Types: 1}); got != want {
 		t.Errorf("first specificity = %#v, want %#v", got, want)
 	}
-	if got, want := selectors[1].Specificity, (css.Specificity{IDs: 1, Classes: 1}); got != want {
+	if got, want := selectors[1].Specificity(), (css.Specificity{IDs: 1, Classes: 1}); got != want {
 		t.Errorf("second specificity = %#v, want %#v", got, want)
 	}
-	if got := selectors[0].Specificity.Compare(selectors[1].Specificity); got != 1 {
+	if got := selectors[0].Specificity().Compare(selectors[1].Specificity()); got != 1 {
 		t.Errorf("first.Compare(second) = %d, want 1", got)
 	}
 	if got := (css.Specificity{Classes: 1}).Compare(css.Specificity{Types: 99}); got != 1 {
@@ -163,7 +190,7 @@ a { text-decoration: none
 	if err != nil {
 		t.Fatalf("Parse() error = %v", err)
 	}
-	if got, want := len(stylesheet.Rules), 3; got != want {
+	if got, want := len(stylesheet.Rules), 4; got != want {
 		t.Fatalf("len(Rules) = %d, want %d: %#v", got, want, stylesheet.Rules)
 	}
 	for index, rule := range stylesheet.Rules {
@@ -173,12 +200,20 @@ a { text-decoration: none
 	}
 
 	first := stylesheet.Rules[0]
-	wantSelectors := []css.Selector{
-		{Tag: "div", Specificity: css.Specificity{Types: 1}},
-		{Classes: []string{"usable"}, Specificity: css.Specificity{Classes: 1}},
+	if got, want := len(first.Selectors), 2; got != want {
+		t.Fatalf("len(recovered selectors) = %d, want %d", got, want)
 	}
-	if got := first.Selectors; !reflect.DeepEqual(got, wantSelectors) {
-		t.Errorf("recovered selectors = %#v, want %#v", got, wantSelectors)
+	if got, want := first.Selectors[0].Specificity(), (css.Specificity{Types: 1}); got != want {
+		t.Errorf("recovered div specificity = %#v, want %#v", got, want)
+	}
+	if !first.Selectors[0].Matches(dom.NewElement("div")) {
+		t.Error("recovered div selector did not match")
+	}
+	if got, want := first.Selectors[1].Specificity(), (css.Specificity{Classes: 1}); got != want {
+		t.Errorf("recovered class specificity = %#v, want %#v", got, want)
+	}
+	if !first.Selectors[1].Matches(dom.NewElement("span", dom.Attribute{Name: "class", Value: "usable"})) {
+		t.Error("recovered .usable selector did not match")
 	}
 	wantDeclarations := []css.Declaration{
 		{Property: "good", Value: "yes"},
@@ -188,11 +223,17 @@ a { text-decoration: none
 	if got := first.Declarations; !reflect.DeepEqual(got, wantDeclarations) {
 		t.Errorf("recovered declarations = %#v, want %#v", got, wantDeclarations)
 	}
-	if got, want := stylesheet.Rules[1].Selectors[0].Tag, "p"; got != want {
-		t.Errorf("second parsed selector tag = %q, want %q", got, want)
+	section := dom.NewElement("section")
+	directParagraph := dom.NewElement("p")
+	section.AppendChild(directParagraph)
+	if !stylesheet.Rules[1].Selectors[0].Matches(directParagraph) {
+		t.Error("section > p selector did not match a direct paragraph child")
 	}
-	if got, want := stylesheet.Rules[2].Selectors[0].Tag, "a"; got != want {
-		t.Errorf("unclosed final rule selector tag = %q, want %q", got, want)
+	if !stylesheet.Rules[2].Selectors[0].Matches(dom.NewElement("p")) {
+		t.Error("third parsed selector did not match p")
+	}
+	if !stylesheet.Rules[3].Selectors[0].Matches(dom.NewElement("a")) {
+		t.Error("unclosed final rule selector did not match a")
 	}
 }
 
@@ -249,7 +290,7 @@ func TestParseReturnsPartialSheetForUnrecoverableString(t *testing.T) {
 func TestUnsupportedOnlySheetIsEmptyWithoutError(t *testing.T) {
 	t.Parallel()
 
-	stylesheet, err := css.Parse(`@charset "utf-8"; @media print { body { color: black } } section > p { color: red }`)
+	stylesheet, err := css.Parse(`@charset "utf-8"; @media print { body { color: black } } section::before { color: red } svg|circle { fill: blue }`)
 	if err != nil {
 		t.Fatalf("Parse() error = %v", err)
 	}

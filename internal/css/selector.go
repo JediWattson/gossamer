@@ -6,46 +6,54 @@ import (
 	"github.com/JediWattson/gossamer/internal/dom"
 )
 
-// Matches reports whether selector matches node. Selector matching only applies
-// to elements; document, text, comment, doctype, and processing-instruction
-// nodes never match.
+// Matches reports whether selector matches node. Matching proceeds from the
+// rightmost compound and backtracks across ancestor and sibling candidates.
 func (selector Selector) Matches(node *dom.Node) bool {
-	if node == nil || node.Type != dom.ElementNode {
+	if node == nil || node.Type != dom.ElementNode || len(selector.compounds) == 0 {
 		return false
 	}
-	if selector.Tag == "" && selector.ID == "" && len(selector.Classes) == 0 && len(selector.PseudoClasses) == 0 {
+	return selector.matchesAt(len(selector.compounds)-1, node)
+}
+
+func (selector Selector) matchesAt(compoundIndex int, node *dom.Node) bool {
+	if !matchesCompound(selector.compounds[compoundIndex], node) {
 		return false
 	}
-	if selector.Tag != "" && selector.Tag != "*" && !equalASCIIFold(selector.Tag, node.Data) {
+	if compoundIndex == 0 {
+		return true
+	}
+	switch selector.combinators[compoundIndex-1] {
+	case childCombinator:
+		return node.Parent != nil && selector.matchesAt(compoundIndex-1, node.Parent)
+	case descendantCombinator:
+		for ancestor := node.Parent; ancestor != nil; ancestor = ancestor.Parent {
+			if selector.matchesAt(compoundIndex-1, ancestor) {
+				return true
+			}
+		}
+		return false
+	case adjacentSiblingCombinator:
+		sibling := previousElementSibling(node)
+		return sibling != nil && selector.matchesAt(compoundIndex-1, sibling)
+	case generalSiblingCombinator:
+		if node.Parent == nil {
+			return false
+		}
+		index := childIndex(node.Parent, node)
+		for siblingIndex := index - 1; siblingIndex >= 0; siblingIndex-- {
+			sibling := node.Parent.Children[siblingIndex]
+			if sibling != nil && sibling.Type == dom.ElementNode && selector.matchesAt(compoundIndex-1, sibling) {
+				return true
+			}
+		}
+		return false
+	default:
 		return false
 	}
-
-	if selector.ID != "" {
-		id, ok := attributeValue(node, "id")
-		if !ok || id != selector.ID {
-			return false
-		}
-	}
-
-	classValue, hasClass := attributeValue(node, "class")
-	for _, className := range selector.Classes {
-		if !hasClass || !containsCSSSpaceSeparatedToken(classValue, className) {
-			return false
-		}
-	}
-
-	for _, pseudoClass := range selector.PseudoClasses {
-		if !matchesPseudoClass(pseudoClass, node) {
-			return false
-		}
-	}
-
-	return true
 }
 
 // Match reports whether any selector in the rule matches node. When more than
-// one selector matches, it returns the greatest matching specificity, which is
-// the specificity the cascade must use for this rule.
+// one selector matches, it returns the greatest matching specificity.
 func (rule Rule) Match(node *dom.Node) (Specificity, bool) {
 	var greatest Specificity
 	matched := false
@@ -53,30 +61,81 @@ func (rule Rule) Match(node *dom.Node) (Specificity, bool) {
 		if !selector.Matches(node) {
 			continue
 		}
-		specificity := selector.calculatedSpecificity()
-		if !matched || specificity.Compare(greatest) > 0 {
-			greatest = specificity
+		if !matched || selector.specificity.Compare(greatest) > 0 {
+			greatest = selector.specificity
 		}
 		matched = true
 	}
 	return greatest, matched
 }
 
-func (selector Selector) calculatedSpecificity() Specificity {
-	specificity := Specificity{
-		Classes: len(selector.Classes) + len(selector.PseudoClasses),
+func matchesCompound(compound compoundSelector, node *dom.Node) bool {
+	if node == nil || node.Type != dom.ElementNode {
+		return false
 	}
-	if selector.ID != "" {
-		specificity.IDs = 1
+	if compound.typeName != "" && compound.typeName != "*" && !equalASCIIFold(compound.typeName, node.Data) {
+		return false
 	}
-	if selector.Tag != "" && selector.Tag != "*" {
-		specificity.Types = 1
+	id, hasID := attributeValue(node, "id")
+	for _, requiredID := range compound.ids {
+		if !hasID || id != requiredID {
+			return false
+		}
 	}
-	return specificity
+	classValue, hasClass := attributeValue(node, "class")
+	for _, className := range compound.classes {
+		if !hasClass || !containsCSSSpaceSeparatedToken(classValue, className) {
+			return false
+		}
+	}
+	for _, attribute := range compound.attributes {
+		if !matchesAttribute(attribute, node) {
+			return false
+		}
+	}
+	for _, pseudo := range compound.pseudos {
+		if !matchesPseudoClass(pseudo, node) {
+			return false
+		}
+	}
+	return true
 }
 
-func matchesPseudoClass(name string, node *dom.Node) bool {
-	switch strings.ToLower(name) {
+func matchesAttribute(selector attributeSelector, node *dom.Node) bool {
+	actual, present := attributeValue(node, selector.name)
+	if !present {
+		return false
+	}
+	if selector.operator == attributeExists {
+		return true
+	}
+	expected := selector.value
+	insensitive := selector.valueCase == attributeCaseInsensitive ||
+		selector.valueCase == attributeCaseDefault && htmlAttributeValueCaseInsensitive(selector.name)
+	if insensitive {
+		actual = lowerASCII(actual)
+		expected = lowerASCII(expected)
+	}
+	switch selector.operator {
+	case attributeEquals:
+		return actual == expected
+	case attributeIncludes:
+		return expected != "" && !containsCSSWhitespace(expected) && containsCSSSpaceSeparatedToken(actual, expected)
+	case attributeDashMatch:
+		return actual == expected || strings.HasPrefix(actual, expected+"-")
+	case attributePrefix:
+		return expected != "" && strings.HasPrefix(actual, expected)
+	case attributeSuffix:
+		return expected != "" && strings.HasSuffix(actual, expected)
+	case attributeSubstring:
+		return expected != "" && strings.Contains(actual, expected)
+	default:
+		return false
+	}
+}
+
+func matchesPseudoClass(pseudo pseudoClassSelector, node *dom.Node) bool {
+	switch pseudo.name {
 	case "root":
 		return isDocumentElement(node)
 	case "empty":
@@ -95,18 +154,26 @@ func matchesPseudoClass(name string, node *dom.Node) bool {
 		return isFirstElementSibling(node, true) && isLastElementSibling(node, true)
 	case "link", "any-link":
 		return isUnvisitedLink(node)
+	case "is", "where":
+		return selectorListMatches(pseudo.selectors, node)
+	case "not":
+		return !selectorListMatches(pseudo.selectors, node)
+	case "nth-child":
+		return matchesNth(pseudo, node, false, false)
+	case "nth-last-child":
+		return matchesNth(pseudo, node, true, false)
+	case "nth-of-type":
+		return matchesNth(pseudo, node, false, true)
+	case "nth-last-of-type":
+		return matchesNth(pseudo, node, true, true)
 	case "visited", "hover", "active", "focus", "focus-visible", "focus-within", "target":
-		// These selectors need history, interaction, focus, or navigation
-		// state. They deliberately do not match until that state is modeled.
 		return false
 	default:
-		// Selector values can be constructed directly even though the parser
-		// rejects unsupported pseudo-classes.
 		return false
 	}
 }
 
-func supportedPseudoClass(name string) bool {
+func supportedSimplePseudoClass(name string) bool {
 	switch name {
 	case "root", "empty",
 		"first-child", "last-child", "only-child",
@@ -117,6 +184,67 @@ func supportedPseudoClass(name string) bool {
 	default:
 		return false
 	}
+}
+
+func selectorListMatches(selectors []Selector, node *dom.Node) bool {
+	for _, selector := range selectors {
+		if selector.Matches(node) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesNth(pseudo pseudoClassSelector, node *dom.Node, fromEnd, ofType bool) bool {
+	index, ok := elementSiblingIndex(node, fromEnd, ofType, pseudo.selectors)
+	if !ok {
+		return false
+	}
+	if pseudo.nth.a == 0 {
+		return index == pseudo.nth.b
+	}
+	difference := index - pseudo.nth.b
+	return difference%pseudo.nth.a == 0 && difference/pseudo.nth.a >= 0
+}
+
+func elementSiblingIndex(node *dom.Node, fromEnd, ofType bool, filter []Selector) (int, bool) {
+	if node.Parent == nil {
+		return 0, false
+	}
+	index := 0
+	if fromEnd {
+		for siblingIndex := len(node.Parent.Children) - 1; siblingIndex >= 0; siblingIndex-- {
+			sibling := node.Parent.Children[siblingIndex]
+			if !includedSibling(sibling, node, ofType, filter) {
+				continue
+			}
+			index++
+			if sibling == node {
+				return index, true
+			}
+		}
+		return 0, false
+	}
+	for _, sibling := range node.Parent.Children {
+		if !includedSibling(sibling, node, ofType, filter) {
+			continue
+		}
+		index++
+		if sibling == node {
+			return index, true
+		}
+	}
+	return 0, false
+}
+
+func includedSibling(sibling, subject *dom.Node, ofType bool, filter []Selector) bool {
+	if sibling == nil || sibling.Type != dom.ElementNode {
+		return false
+	}
+	if ofType && !equalASCIIFold(sibling.Data, subject.Data) {
+		return false
+	}
+	return len(filter) == 0 || selectorListMatches(filter, sibling)
 }
 
 func isDocumentElement(node *dom.Node) bool {
@@ -182,11 +310,34 @@ func isLastElementSibling(node *dom.Node, sameType bool) bool {
 }
 
 func isUnvisitedLink(node *dom.Node) bool {
-	if !equalASCIIFold(node.Data, "a") && !equalASCIIFold(node.Data, "area") {
+	if !equalASCIIFold(node.Data, "a") && !equalASCIIFold(node.Data, "area") && !equalASCIIFold(node.Data, "link") {
 		return false
 	}
 	_, hasHref := attributeValue(node, "href")
 	return hasHref
+}
+
+func previousElementSibling(node *dom.Node) *dom.Node {
+	if node.Parent == nil {
+		return nil
+	}
+	index := childIndex(node.Parent, node)
+	for siblingIndex := index - 1; siblingIndex >= 0; siblingIndex-- {
+		sibling := node.Parent.Children[siblingIndex]
+		if sibling != nil && sibling.Type == dom.ElementNode {
+			return sibling
+		}
+	}
+	return nil
+}
+
+func childIndex(parent, child *dom.Node) int {
+	for index, candidate := range parent.Children {
+		if candidate == child {
+			return index
+		}
+	}
+	return -1
 }
 
 func attributeValue(node *dom.Node, name string) (string, bool) {
@@ -213,6 +364,29 @@ func containsCSSSpaceSeparatedToken(value, token string) bool {
 		start = end
 	}
 	return false
+}
+
+func containsCSSWhitespace(value string) bool {
+	for position := 0; position < len(value); position++ {
+		if isCSSWhitespace(value[position]) {
+			return true
+		}
+	}
+	return false
+}
+
+func htmlAttributeValueCaseInsensitive(name string) bool {
+	switch lowerASCII(name) {
+	case "accept", "accept-charset", "align", "alink", "axis", "bgcolor", "charset",
+		"checked", "clear", "codetype", "color", "compact", "declare", "defer", "dir",
+		"direction", "disabled", "enctype", "face", "frame", "hreflang", "http-equiv",
+		"lang", "language", "link", "media", "method", "multiple", "nohref", "noresize",
+		"noshade", "nowrap", "readonly", "rel", "rev", "rules", "scope", "scrolling",
+		"selected", "shape", "target", "text", "type", "valign", "valuetype", "vlink":
+		return true
+	default:
+		return false
+	}
 }
 
 func equalASCIIFold(left, right string) bool {

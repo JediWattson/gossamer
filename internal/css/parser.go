@@ -7,6 +7,11 @@ import (
 	"unicode/utf8"
 )
 
+// commentBoundary records a removed comment without turning it into CSS
+// whitespace. Keeping a zero-width token boundary prevents comments from
+// accidentally merging identifiers or creating function tokens.
+const commentBoundary byte = 0
+
 // Parse parses the supported subset of a CSS stylesheet. Unsupported or
 // malformed rules and declarations are skipped so a bad rule does not discard
 // the rest of the sheet. An error is returned only when an unterminated comment
@@ -75,7 +80,7 @@ func (parser *stylesheetParser) parse() (Stylesheet, error) {
 func (parser *stylesheetParser) skipIgnorable() {
 	for parser.pos < len(parser.source) {
 		switch parser.source[parser.pos] {
-		case ' ', '\t', '\n', '\r', '\f', ';', '}':
+		case ' ', '\t', '\n', '\r', '\f', commentBoundary, ';', '}':
 			parser.pos++
 		default:
 			return
@@ -270,90 +275,6 @@ func (parser *stylesheetParser) skipAtRule() error {
 	return nil
 }
 
-func parseSelectorList(source string) ([]Selector, bool) {
-	parts := splitTopLevel(source, ',')
-	selectors := make([]Selector, 0, len(parts))
-	for _, part := range parts {
-		selector, ok := parseSelector(strings.TrimSpace(part))
-		if !ok {
-			// CSS selector lists are not forgiving: one invalid selector makes
-			// the entire qualified rule invalid.
-			return nil, false
-		}
-		selectors = append(selectors, selector)
-	}
-	return selectors, len(selectors) > 0
-}
-
-func parseSelector(source string) (Selector, bool) {
-	if source == "" {
-		return Selector{}, false
-	}
-
-	var selector Selector
-	position := 0
-	if source[position] == '*' {
-		selector.Tag = "*"
-		position++
-	} else if isIdentifierStartAt(source, position) {
-		identifier, next := consumeIdentifier(source, position)
-		selector.Tag = lowerASCII(identifier)
-		selector.Specificity.Types++
-		position = next
-	}
-
-	for position < len(source) {
-		prefix := source[position]
-		if isCSSWhitespace(prefix) {
-			// Outer whitespace was trimmed; whitespace here would introduce an
-			// unsupported descendant combinator.
-			return Selector{}, false
-		}
-		if prefix != '#' && prefix != '.' && prefix != ':' {
-			return Selector{}, false
-		}
-		position++
-		if prefix == ':' && position < len(source) && source[position] == ':' {
-			return Selector{}, false
-		}
-		if !isIdentifierStartAt(source, position) {
-			return Selector{}, false
-		}
-		identifier, next := consumeIdentifier(source, position)
-		position = next
-
-		switch prefix {
-		case '#':
-			if selector.ID != "" {
-				return Selector{}, false
-			}
-			selector.ID = identifier
-			selector.Specificity.IDs++
-		case '.':
-			selector.Classes = append(selector.Classes, identifier)
-			selector.Specificity.Classes++
-		case ':':
-			// Functional pseudo-classes are deliberately outside the first
-			// subset; accepting their arguments would require their distinct
-			// matching and specificity rules.
-			if position < len(source) && source[position] == '(' {
-				return Selector{}, false
-			}
-			identifier = strings.ToLower(identifier)
-			if !supportedPseudoClass(identifier) {
-				return Selector{}, false
-			}
-			selector.PseudoClasses = append(selector.PseudoClasses, identifier)
-			selector.Specificity.Classes++
-		}
-	}
-
-	if selector.Tag == "" && selector.ID == "" && len(selector.Classes) == 0 && len(selector.PseudoClasses) == 0 {
-		return Selector{}, false
-	}
-	return selector, true
-}
-
 func parseDeclarations(block string) []Declaration {
 	parts := splitTopLevel(block, ';')
 	declarations := make([]Declaration, 0, len(parts))
@@ -363,7 +284,7 @@ func parseDeclarations(block string) []Declaration {
 			continue
 		}
 
-		property := strings.TrimSpace(part[:colon])
+		property := trimCSSIgnorable(part[:colon])
 		if !validPropertyName(property) {
 			continue
 		}
@@ -371,7 +292,8 @@ func parseDeclarations(block string) []Declaration {
 			property = strings.ToLower(property)
 		}
 
-		value := strings.TrimSpace(part[colon+1:])
+		value := normalizeCommentBoundaries(part[colon+1:])
+		value = strings.TrimSpace(value)
 		value, important := removeImportant(value)
 		if value == "" {
 			continue
@@ -608,6 +530,11 @@ func stripComments(source string) (string, error) {
 
 	for position := 0; position < len(source); {
 		character := source[position]
+		if character == 0 {
+			cleaned.WriteRune(utf8.RuneError)
+			position++
+			continue
+		}
 		if quote != 0 {
 			cleaned.WriteByte(character)
 			position++
@@ -636,6 +563,7 @@ func stripComments(source string) (string, error) {
 			if end < 0 {
 				return cleaned.String(), fmt.Errorf("css: unterminated comment")
 			}
+			cleaned.WriteByte(commentBoundary)
 			position += end + 4
 			continue
 		}
@@ -644,4 +572,32 @@ func stripComments(source string) (string, error) {
 	}
 
 	return cleaned.String(), nil
+}
+
+func trimCSSIgnorable(source string) string {
+	start := 0
+	for start < len(source) && (isCSSWhitespace(source[start]) || source[start] == commentBoundary) {
+		start++
+	}
+	end := len(source)
+	for end > start && (isCSSWhitespace(source[end-1]) || source[end-1] == commentBoundary) {
+		end--
+	}
+	return source[start:end]
+}
+
+func normalizeCommentBoundaries(source string) string {
+	if !strings.ContainsRune(source, rune(commentBoundary)) {
+		return source
+	}
+	var normalized strings.Builder
+	normalized.Grow(len(source))
+	for position := 0; position < len(source); position++ {
+		if source[position] == commentBoundary {
+			normalized.WriteByte(' ')
+			continue
+		}
+		normalized.WriteByte(source[position])
+	}
+	return normalized.String()
 }
