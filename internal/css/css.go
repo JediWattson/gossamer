@@ -6,6 +6,17 @@
 // the current subset.
 package css
 
+import (
+	"errors"
+
+	"github.com/JediWattson/gossamer/internal/dom"
+)
+
+// ErrInvalidSelector reports an unforgiving selector-list parse failure. DOM
+// query APIs surface this boundary to JavaScript instead of silently dropping
+// a malformed selector as stylesheet parsing does.
+var ErrInvalidSelector = errors.New("css: invalid selector")
+
 // Stylesheet is an ordered collection of qualified CSS rules. LayerOrder lists
 // supported named top-level layers in first-declaration order.
 type Stylesheet struct {
@@ -32,6 +43,31 @@ type Selector struct {
 	specificity Specificity
 	compounds   []compoundSelector
 	combinators []selectorCombinator
+}
+
+// ParseSelectorList parses the unforgiving selector-list grammar used by DOM
+// query APIs. Unlike stylesheet parsing, one invalid member rejects the whole
+// list.
+func ParseSelectorList(source string) ([]Selector, error) {
+	cleaned, err := stripComments(source)
+	if err != nil {
+		return nil, err
+	}
+	selectors, ok := parseSelectorList(cleaned)
+	if !ok {
+		return nil, ErrInvalidSelector
+	}
+	return selectors, nil
+}
+
+// MatchesAny reports whether at least one selector matches node.
+func MatchesAny(selectors []Selector, node *dom.Node) bool {
+	for _, selector := range selectors {
+		if selector.Matches(node) {
+			return true
+		}
+	}
+	return false
 }
 
 // Specificity returns the selector's static CSS specificity.

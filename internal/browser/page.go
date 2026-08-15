@@ -32,6 +32,7 @@ type Page struct {
 	frameGeneration        DocumentGeneration
 	dirty                  bool
 	renderedVersion        uint64
+	activeElement          dom.NodeID
 	nextNavigation         NavigationID
 	navigation             navigationRecord
 	nextTimer              TimerID

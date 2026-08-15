@@ -3,3 +3,4 @@
 /third_party/v8/*
 !/third_party/v8/README.md
 /.cache/
+/tools/v8/react-fixture/node_modules/

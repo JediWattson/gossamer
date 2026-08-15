@@ -262,6 +262,27 @@ func goGossamerV8HostCreateTextNode(
 	}, executionID)
 }
 
+//export goGossamerV8HostCreateDocumentFragment
+func goGossamerV8HostCreateDocumentFragment(
+	executionID C.uint64_t,
+	documentOut *C.uint64_t,
+	nodeOut *C.uint32_t,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, supported := domDocumentHost(host)
+		if !supported {
+			return fmt.Errorf("V8 host does not support DOM document bindings")
+		}
+		handle, err := domHost.CreateDocumentFragment()
+		if err != nil {
+			return err
+		}
+		writeNodeHandle(handle, documentOut, nodeOut)
+		return nil
+	}, executionID)
+}
+
 //export goGossamerV8HostTextContent
 func goGossamerV8HostTextContent(
 	executionID C.uint64_t,
@@ -506,6 +527,38 @@ func freeHostStrings(outputs ...**C.char) {
 	}
 }
 
+func writeHostNodes(
+	handles []browser.NodeHandle,
+	document browser.DocumentGeneration,
+	nodesOut **C.uint32_t,
+	countOut *C.size_t,
+) error {
+	if nodesOut != nil {
+		*nodesOut = nil
+		if len(handles) != 0 {
+			bytes := C.size_t(len(handles)) * C.size_t(unsafe.Sizeof(C.uint32_t(0)))
+			allocated := C.malloc(bytes)
+			if allocated == nil {
+				return fmt.Errorf("V8 host could not allocate node output")
+			}
+			*nodesOut = (*C.uint32_t)(allocated)
+			output := unsafe.Slice(*nodesOut, len(handles))
+			for index, handle := range handles {
+				if handle.Document != document {
+					C.free(allocated)
+					*nodesOut = nil
+					return fmt.Errorf("V8 host returned a node from another document")
+				}
+				output[index] = C.uint32_t(handle.Node)
+			}
+		}
+	}
+	if countOut != nil {
+		*countOut = C.size_t(len(handles))
+	}
+	return nil
+}
+
 //export goGossamerV8HostRelatedNode
 func goGossamerV8HostRelatedNode(
 	executionID C.uint64_t,
@@ -561,30 +614,7 @@ func goGossamerV8HostChildNodes(
 		if err != nil {
 			return err
 		}
-		if nodesOut != nil {
-			*nodesOut = nil
-			if len(handles) != 0 {
-				bytes := C.size_t(len(handles)) * C.size_t(unsafe.Sizeof(C.uint32_t(0)))
-				allocated := C.malloc(bytes)
-				if allocated == nil {
-					return fmt.Errorf("V8 host could not allocate child node output")
-				}
-				*nodesOut = (*C.uint32_t)(allocated)
-				output := unsafe.Slice(*nodesOut, len(handles))
-				for index, handle := range handles {
-					if handle.Document != browser.DocumentGeneration(document) {
-						C.free(allocated)
-						*nodesOut = nil
-						return fmt.Errorf("V8 host returned a child from another document")
-					}
-					output[index] = C.uint32_t(handle.Node)
-				}
-			}
-		}
-		if countOut != nil {
-			*countOut = C.size_t(len(handles))
-		}
-		return nil
+		return writeHostNodes(handles, browser.DocumentGeneration(document), nodesOut, countOut)
 	}, executionID)
 }
 
@@ -779,6 +809,330 @@ func goGossamerV8HostAttributeName(
 			return writeHostString("", nameOut, nameLengthOut)
 		}
 		return writeHostString(names[int(index)], nameOut, nameLengthOut)
+	}, executionID)
+}
+
+//export goGossamerV8HostQuerySelector
+func goGossamerV8HostQuerySelector(
+	executionID C.uint64_t,
+	document C.uint64_t,
+	node C.uint32_t,
+	selector *C.char,
+	selectorLength C.size_t,
+	all C.int,
+	nodesOut **C.uint32_t,
+	countOut *C.size_t,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domElementHost(host)
+		if err != nil {
+			return err
+		}
+		handles, err := domHost.QuerySelector(
+			browserNodeHandle(document, node),
+			goString(selector, selectorLength),
+			all != 0,
+		)
+		if err != nil {
+			return err
+		}
+		return writeHostNodes(handles, browser.DocumentGeneration(document), nodesOut, countOut)
+	}, executionID)
+}
+
+//export goGossamerV8HostMatchesSelector
+func goGossamerV8HostMatchesSelector(
+	executionID C.uint64_t,
+	document C.uint64_t,
+	node C.uint32_t,
+	selector *C.char,
+	selectorLength C.size_t,
+	matchesOut *C.int,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domElementHost(host)
+		if err != nil {
+			return err
+		}
+		matches, err := domHost.MatchesSelector(
+			browserNodeHandle(document, node),
+			goString(selector, selectorLength),
+		)
+		if err != nil {
+			return err
+		}
+		if matchesOut != nil {
+			if matches {
+				*matchesOut = 1
+			} else {
+				*matchesOut = 0
+			}
+		}
+		return nil
+	}, executionID)
+}
+
+//export goGossamerV8HostClosestSelector
+func goGossamerV8HostClosestSelector(
+	executionID C.uint64_t,
+	document C.uint64_t,
+	node C.uint32_t,
+	selector *C.char,
+	selectorLength C.size_t,
+	closestNodeOut *C.uint32_t,
+	foundOut *C.int,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domElementHost(host)
+		if err != nil {
+			return err
+		}
+		closest, found, err := domHost.ClosestSelector(
+			browserNodeHandle(document, node),
+			goString(selector, selectorLength),
+		)
+		if err != nil {
+			return err
+		}
+		if closestNodeOut != nil {
+			*closestNodeOut = C.uint32_t(closest.Node)
+		}
+		if foundOut != nil {
+			if found {
+				*foundOut = 1
+			} else {
+				*foundOut = 0
+			}
+		}
+		return nil
+	}, executionID)
+}
+
+//export goGossamerV8HostCloneNode
+func goGossamerV8HostCloneNode(
+	executionID C.uint64_t,
+	document C.uint64_t,
+	node C.uint32_t,
+	deep C.int,
+	cloneDocumentOut *C.uint64_t,
+	cloneNodeOut *C.uint32_t,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domElementHost(host)
+		if err != nil {
+			return err
+		}
+		clone, err := domHost.CloneNode(browserNodeHandle(document, node), deep != 0)
+		if err != nil {
+			return err
+		}
+		writeNodeHandle(clone, cloneDocumentOut, cloneNodeOut)
+		return nil
+	}, executionID)
+}
+
+//export goGossamerV8HostInnerHTML
+func goGossamerV8HostInnerHTML(
+	executionID C.uint64_t,
+	document C.uint64_t,
+	node C.uint32_t,
+	valueOut **C.char,
+	valueLengthOut *C.size_t,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domElementHost(host)
+		if err != nil {
+			return err
+		}
+		value, err := domHost.InnerHTML(browserNodeHandle(document, node))
+		if err != nil {
+			return err
+		}
+		return writeHostString(value, valueOut, valueLengthOut)
+	}, executionID)
+}
+
+//export goGossamerV8HostSetInnerHTML
+func goGossamerV8HostSetInnerHTML(
+	executionID C.uint64_t,
+	document C.uint64_t,
+	node C.uint32_t,
+	value *C.char,
+	valueLength C.size_t,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domElementHost(host)
+		if err != nil {
+			return err
+		}
+		return domHost.SetInnerHTML(
+			browserNodeHandle(document, node),
+			goString(value, valueLength),
+		)
+	}, executionID)
+}
+
+//export goGossamerV8HostInsertAdjacentHTML
+func goGossamerV8HostInsertAdjacentHTML(
+	executionID C.uint64_t,
+	document C.uint64_t,
+	node C.uint32_t,
+	position *C.char,
+	positionLength C.size_t,
+	value *C.char,
+	valueLength C.size_t,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domElementHost(host)
+		if err != nil {
+			return err
+		}
+		return domHost.InsertAdjacentHTML(
+			browserNodeHandle(document, node),
+			goString(position, positionLength),
+			goString(value, valueLength),
+		)
+	}, executionID)
+}
+
+//export goGossamerV8HostFormValue
+func goGossamerV8HostFormValue(
+	executionID C.uint64_t,
+	document C.uint64_t,
+	node C.uint32_t,
+	valueOut **C.char,
+	valueLengthOut *C.size_t,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domElementHost(host)
+		if err != nil {
+			return err
+		}
+		value, err := domHost.FormValue(browserNodeHandle(document, node))
+		if err != nil {
+			return err
+		}
+		return writeHostString(value, valueOut, valueLengthOut)
+	}, executionID)
+}
+
+//export goGossamerV8HostSetFormValue
+func goGossamerV8HostSetFormValue(
+	executionID C.uint64_t,
+	document C.uint64_t,
+	node C.uint32_t,
+	value *C.char,
+	valueLength C.size_t,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domElementHost(host)
+		if err != nil {
+			return err
+		}
+		return domHost.SetFormValue(browserNodeHandle(document, node), goString(value, valueLength))
+	}, executionID)
+}
+
+//export goGossamerV8HostFormChecked
+func goGossamerV8HostFormChecked(
+	executionID C.uint64_t,
+	document C.uint64_t,
+	node C.uint32_t,
+	checkedOut *C.int,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domElementHost(host)
+		if err != nil {
+			return err
+		}
+		checked, err := domHost.FormChecked(browserNodeHandle(document, node))
+		if err != nil {
+			return err
+		}
+		if checkedOut != nil {
+			if checked {
+				*checkedOut = 1
+			} else {
+				*checkedOut = 0
+			}
+		}
+		return nil
+	}, executionID)
+}
+
+//export goGossamerV8HostSetFormChecked
+func goGossamerV8HostSetFormChecked(
+	executionID C.uint64_t,
+	document C.uint64_t,
+	node C.uint32_t,
+	checked C.int,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domElementHost(host)
+		if err != nil {
+			return err
+		}
+		return domHost.SetFormChecked(browserNodeHandle(document, node), checked != 0)
+	}, executionID)
+}
+
+//export goGossamerV8HostFocusNode
+func goGossamerV8HostFocusNode(
+	executionID C.uint64_t,
+	document C.uint64_t,
+	node C.uint32_t,
+	focused C.int,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domElementHost(host)
+		if err != nil {
+			return err
+		}
+		if focused != 0 {
+			return domHost.Focus(browserNodeHandle(document, node))
+		}
+		return domHost.Blur(browserNodeHandle(document, node))
+	}, executionID)
+}
+
+//export goGossamerV8HostActiveElement
+func goGossamerV8HostActiveElement(
+	executionID C.uint64_t,
+	documentOut *C.uint64_t,
+	nodeOut *C.uint32_t,
+	foundOut *C.int,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domElementHost(host)
+		if err != nil {
+			return err
+		}
+		active, found, err := domHost.ActiveElement()
+		if err != nil {
+			return err
+		}
+		writeNodeHandle(active, documentOut, nodeOut)
+		if foundOut != nil {
+			if found {
+				*foundOut = 1
+			} else {
+				*foundOut = 0
+			}
+		}
+		return nil
 	}, executionID)
 }
 

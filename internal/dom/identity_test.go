@@ -234,6 +234,60 @@ func TestDocumentIndexedNodeChurnPreservesIdentityAndOrder(t *testing.T) {
 	}
 }
 
+func TestDocumentFragmentInsertionReplacementAndClone(t *testing.T) {
+	document, err := IndexDocument(NewDocument())
+	if err != nil {
+		t.Fatal(err)
+	}
+	parentID, err := document.CreateElement("main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := document.AppendNode(document.RootID(), parentID); err != nil {
+		t.Fatal(err)
+	}
+	fragmentID, err := document.CreateDocumentFragment()
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstID, _ := document.CreateElement("span")
+	secondID, _ := document.CreateTextNode("two")
+	if err := document.AppendNode(fragmentID, firstID); err != nil {
+		t.Fatal(err)
+	}
+	if err := document.AppendNode(fragmentID, secondID); err != nil {
+		t.Fatal(err)
+	}
+	if err := document.AppendNode(parentID, fragmentID); err != nil {
+		t.Fatal(err)
+	}
+	if children, err := document.ChildNodes(parentID, false); err != nil || !slices.Equal(children, []NodeID{firstID, secondID}) {
+		t.Fatalf("fragment insertion children = %#v, %v", children, err)
+	}
+	if children, err := document.ChildNodes(fragmentID, false); err != nil || len(children) != 0 {
+		t.Fatalf("inserted fragment children = %#v, %v", children, err)
+	}
+
+	parsed := NewDocumentFragment()
+	parsed.AppendChild(NewElement("strong"))
+	parsed.AppendChild(NewText("tail"))
+	if err := document.ReplaceChildrenFromFragment(parentID, parsed); err != nil {
+		t.Fatal(err)
+	}
+	children, err := document.ChildNodes(parentID, false)
+	if err != nil || len(children) != 2 {
+		t.Fatalf("fragment replacement children = %#v, %v", children, err)
+	}
+	cloneID, err := document.CloneNode(children[0], true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone, ok := document.Resolve(cloneID)
+	if !ok || clone.Parent != nil || clone.Data != "strong" {
+		t.Fatalf("clone = %#v, %t", clone, ok)
+	}
+}
+
 func TestDocumentReclaimDropsDetachedNodesWithoutReusingIDs(t *testing.T) {
 	document, err := IndexDocument(NewDocument())
 	if err != nil {
@@ -270,6 +324,57 @@ func TestDocumentReclaimDropsDetachedNodesWithoutReusingIDs(t *testing.T) {
 	}
 	if err := document.Reclaim([]NodeID{document.RootID()}); !errors.Is(err, ErrInvalidTree) {
 		t.Fatalf("connected root reclaim = %v, want %v", err, ErrInvalidTree)
+	}
+}
+
+func TestFormValueAndCheckedStateSeparateFromMarkupDefaults(t *testing.T) {
+	document, err := IndexDocument(NewDocument())
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputID, err := document.CreateElement("input")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := document.SetAttribute(inputID, "value", "markup"); err != nil {
+		t.Fatal(err)
+	}
+	if err := document.SetAttribute(inputID, "checked", ""); err != nil {
+		t.Fatal(err)
+	}
+	if value, err := document.FormValue(inputID); err != nil || value != "markup" {
+		t.Fatalf("initial value = %q, %v", value, err)
+	}
+	if checked, err := document.FormChecked(inputID); err != nil || !checked {
+		t.Fatalf("initial checked = %t, %v", checked, err)
+	}
+	if err := document.SetFormValue(inputID, "user"); err != nil {
+		t.Fatal(err)
+	}
+	if err := document.SetFormChecked(inputID, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := document.SetAttribute(inputID, "value", "new-default"); err != nil {
+		t.Fatal(err)
+	}
+	if err := document.RemoveAttribute(inputID, "checked"); err != nil {
+		t.Fatal(err)
+	}
+	if value, err := document.FormValue(inputID); err != nil || value != "user" {
+		t.Fatalf("dirty value = %q, %v", value, err)
+	}
+	if checked, err := document.FormChecked(inputID); err != nil || checked {
+		t.Fatalf("dirty checked = %t, %v", checked, err)
+	}
+	cloneID, err := document.CloneNode(inputID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value, err := document.FormValue(cloneID); err != nil || value != "user" {
+		t.Fatalf("cloned value = %q, %v", value, err)
+	}
+	if checked, err := document.FormChecked(cloneID); err != nil || checked {
+		t.Fatalf("cloned checked = %t, %v", checked, err)
 	}
 }
 

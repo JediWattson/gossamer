@@ -111,10 +111,11 @@ An optional stock V8 15.2 adapter now occupies that socket on Apple Silicon.
 The pinned, symbolized build keeps JavaScript values under V8 GC while browser
 objects remain under Go regions and queue ARC. Its wrapper layer exposes stable
 numeric node identity, canonical `Document`/`Node`/`Element`/`HTMLElement`/`Text`
-prototypes, namespace-aware creation, traversal, inline style, DOM `Event`
-objects, capture/target/bubble dispatch, generic listeners, tree mutation,
-attributes, live child collections, `classList`, `dataset`, microtasks, and
-timers without passing Go pointers into V8.
+prototypes, namespace-aware creation, selector traversal, inline style, DOM
+`Event` objects, capture/target/bubble dispatch, generic listeners, tree and
+fragment mutation, markup parsing/serialization, attributes, live child
+collections, `classList`, `dataset`, form state, focus, microtasks, and timers
+without passing Go pointers into V8.
 Browser input currently covers click, pointer, keyboard, input, focus, and
 change event families. Profiling covers heap totals, sampled allocations,
 GC callbacks, weak-wrapper collection, wrapper-root region sweeps, callback
@@ -122,7 +123,9 @@ publication, explicit Promise checkpoints, and isolate teardown. Task-created
 DOM nodes now begin in short-lived construction regions; after task close they
 survive only through the connected document graph or live V8 wrappers. A
 framework-shaped churn test proves that synchronous node aliases do not create
-queue ARC claims. See
+queue ARC claims. A pinned real React 19.2.7 gate additionally proves initial
+render, delegated click and controlled-input updates, unmount, forced GC, and
+Realm teardown against the stock engine. See
 [`docs/stock-v8-integration.md`](docs/stock-v8-integration.md).
 
 ## What works today

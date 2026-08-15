@@ -348,6 +348,7 @@ func (page *Page) commitNavigationDocument(
 	page.nextDocumentGeneration = generation
 	page.document = prepared.document
 	page.documentGeneration = generation
+	page.activeElement = dom.InvalidNodeID
 	page.location = cloneURL(prepared.location)
 	page.resources = newPageResources()
 	page.dirty = true

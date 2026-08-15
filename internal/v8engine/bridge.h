@@ -40,6 +40,9 @@ typedef struct gossamer_v8_host {
   int (*create_text_node)(uint64_t execution_id, const char *data,
                           size_t data_length, uint64_t *document_out,
                           uint32_t *node_out, char **error_out);
+  int (*create_document_fragment)(uint64_t execution_id,
+                                  uint64_t *document_out,
+                                  uint32_t *node_out, char **error_out);
   int (*text_content)(uint64_t execution_id, uint64_t document, uint32_t node,
                       char **value_out, size_t *value_length_out,
                       char **error_out);
@@ -100,6 +103,47 @@ typedef struct gossamer_v8_host {
   int (*attribute_name)(uint64_t execution_id, uint64_t document,
                         uint32_t node, size_t index, char **name_out,
                         size_t *name_length_out, int *found_out,
+                        char **error_out);
+  int (*query_selector)(uint64_t execution_id, uint64_t document,
+                        uint32_t node, const char *selector,
+                        size_t selector_length, int all,
+                        uint32_t **nodes_out, size_t *count_out,
+                        char **error_out);
+  int (*matches_selector)(uint64_t execution_id, uint64_t document,
+                          uint32_t node, const char *selector,
+                          size_t selector_length, int *matches_out,
+                          char **error_out);
+  int (*closest_selector)(uint64_t execution_id, uint64_t document,
+                          uint32_t node, const char *selector,
+                          size_t selector_length, uint32_t *closest_node_out,
+                          int *found_out, char **error_out);
+  int (*clone_node)(uint64_t execution_id, uint64_t document, uint32_t node,
+                    int deep, uint64_t *clone_document_out,
+                    uint32_t *clone_node_out, char **error_out);
+  int (*inner_html)(uint64_t execution_id, uint64_t document, uint32_t node,
+                    char **value_out, size_t *value_length_out,
+                    char **error_out);
+  int (*set_inner_html)(uint64_t execution_id, uint64_t document,
+                        uint32_t node, const char *value, size_t value_length,
+                        char **error_out);
+  int (*insert_adjacent_html)(uint64_t execution_id, uint64_t document,
+                              uint32_t node, const char *position,
+                              size_t position_length, const char *value,
+                              size_t value_length, char **error_out);
+  int (*form_value)(uint64_t execution_id, uint64_t document, uint32_t node,
+                    char **value_out, size_t *value_length_out,
+                    char **error_out);
+  int (*set_form_value)(uint64_t execution_id, uint64_t document,
+                        uint32_t node, const char *value,
+                        size_t value_length, char **error_out);
+  int (*form_checked)(uint64_t execution_id, uint64_t document, uint32_t node,
+                      int *checked_out, char **error_out);
+  int (*set_form_checked)(uint64_t execution_id, uint64_t document,
+                          uint32_t node, int checked, char **error_out);
+  int (*focus_node)(uint64_t execution_id, uint64_t document, uint32_t node,
+                    int focused, char **error_out);
+  int (*active_element)(uint64_t execution_id, uint64_t *document_out,
+                        uint32_t *node_out, int *found_out,
                         char **error_out);
   int (*style_css_text)(uint64_t execution_id, uint64_t document,
                         uint32_t node, char **value_out,
@@ -235,7 +279,8 @@ gossamer_v8_realm_evaluate(gossamer_v8_realm *realm,
                            size_t source_url_length, char **error_out);
 GOSSAMER_V8_EXPORT int gossamer_v8_realm_dispatch_event(
     gossamer_v8_realm *realm, const gossamer_v8_host *host,
-    const gossamer_v8_input_event *event, char **error_out);
+    const gossamer_v8_input_event *event, int *default_prevented_out,
+    char **error_out);
 GOSSAMER_V8_EXPORT int gossamer_v8_realm_invoke(gossamer_v8_realm *realm,
                                                 const gossamer_v8_host *host,
                                                 uint64_t callback,

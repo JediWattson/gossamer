@@ -1,6 +1,7 @@
 package css_test
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -8,6 +9,23 @@ import (
 	"github.com/JediWattson/gossamer/internal/dom"
 	htmlparser "github.com/JediWattson/gossamer/internal/html"
 )
+
+func TestParseSelectorListForDOMQueries(t *testing.T) {
+	t.Parallel()
+	root := dom.NewElement("main")
+	match := dom.NewElement("span", dom.Attribute{Name: "class", Value: "picked"})
+	root.AppendChild(match)
+	selectors, err := css.ParseSelectorList("/* boundary */ main > .picked, #other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !css.MatchesAny(selectors, match) || css.MatchesAny(selectors, root) {
+		t.Fatal("DOM selector list did not preserve ordinary matching")
+	}
+	if _, err := css.ParseSelectorList(".valid, :unsupported()"); !errors.Is(err, css.ErrInvalidSelector) {
+		t.Fatalf("invalid selector error = %v", err)
+	}
+}
 
 func TestSelectorMatchesCompoundSelectors(t *testing.T) {
 	t.Parallel()

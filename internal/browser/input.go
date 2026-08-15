@@ -9,6 +9,7 @@ import (
 
 	"github.com/JediWattson/gossamer/internal/css"
 	"github.com/JediWattson/gossamer/internal/dom"
+	htmlparser "github.com/JediWattson/gossamer/internal/html"
 	"github.com/JediWattson/gossamer/internal/render"
 	browserruntime "github.com/JediWattson/gossamer/internal/runtime"
 )
@@ -103,9 +104,62 @@ func (page *Page) dispatchInput(context *browserruntime.TaskContext, event Input
 	}
 	event.Target = target
 	host := &taskHost{page: page, task: context, generation: generation, autoRender: true}
-	dispatchErr := script.DispatchEvent(host, event)
+	rollback, defaultErr := host.applyInputStateBeforeDispatch(event)
+	result, dispatchErr := script.DispatchEvent(host, event)
+	if result.DefaultPrevented && rollback != nil {
+		defaultErr = errors.Join(defaultErr, rollback())
+	} else if !result.DefaultPrevented && event.Type == InputClick {
+		defaultErr = errors.Join(defaultErr, host.Focus(event.Target))
+	}
 	microtaskErr := script.DrainMicrotasks(host)
-	return errors.Join(dispatchErr, microtaskErr, host.finish())
+	return errors.Join(defaultErr, dispatchErr, microtaskErr, host.finish())
+}
+
+func (host *taskHost) applyInputStateBeforeDispatch(event InputEvent) (func() error, error) {
+	switch event.Type {
+	case InputFocus, InputFocusIn:
+		return nil, host.Focus(event.Target)
+	case InputBlur, InputFocusOut:
+		return nil, host.Blur(event.Target)
+	case InputInput:
+		value, err := host.FormValue(event.Target)
+		if err != nil {
+			if errors.Is(err, dom.ErrWrongNodeKind) {
+				return nil, nil
+			}
+			return nil, err
+		}
+		if event.Data == "" {
+			return nil, nil
+		}
+		return nil, host.SetFormValue(event.Target, value+event.Data)
+	case InputClick:
+		host.page.mutex.RLock()
+		if err := host.validateHandleLocked(event.Target); err != nil {
+			host.page.mutex.RUnlock()
+			return nil, err
+		}
+		node, _ := host.page.document.Resolve(event.Target.Node)
+		isCheckbox := node.Type == dom.ElementNode && node.Data == "input"
+		inputType := ""
+		if isCheckbox {
+			inputType, _, _ = host.page.document.GetAttribute(event.Target.Node, "type")
+		}
+		host.page.mutex.RUnlock()
+		if !isCheckbox || !strings.EqualFold(inputType, "checkbox") {
+			return nil, nil
+		}
+		previous, err := host.FormChecked(event.Target)
+		if err != nil {
+			return nil, err
+		}
+		if err := host.SetFormChecked(event.Target, !previous); err != nil {
+			return nil, err
+		}
+		return func() error { return host.SetFormChecked(event.Target, previous) }, nil
+	default:
+		return nil, nil
+	}
 }
 
 func (page *Page) invokeScript(
@@ -265,6 +319,25 @@ func (host *taskHost) CreateTextNode(data string) (NodeHandle, error) {
 		return NodeHandle{}, ErrStaleNodeHandle
 	}
 	node, err := host.page.document.CreateTextNode(data)
+	if err != nil {
+		return NodeHandle{}, err
+	}
+	if err := host.page.nodeLifetimes.sync(host.task); err != nil {
+		return NodeHandle{}, err
+	}
+	return NodeHandle{Document: host.generation, Node: node}, nil
+}
+
+func (host *taskHost) CreateDocumentFragment() (NodeHandle, error) {
+	host.page.mutex.Lock()
+	defer host.page.mutex.Unlock()
+	if host.page.closed {
+		return NodeHandle{}, ErrPageClosed
+	}
+	if host.page.documentGeneration != host.generation {
+		return NodeHandle{}, ErrStaleNodeHandle
+	}
+	node, err := host.page.document.CreateDocumentFragment()
 	if err != nil {
 		return NodeHandle{}, err
 	}
@@ -438,6 +511,326 @@ func (host *taskHost) AttributeNames(handle NodeHandle) ([]string, error) {
 		return nil, err
 	}
 	return host.page.document.AttributeNames(handle.Node)
+}
+
+func (host *taskHost) QuerySelector(handle NodeHandle, source string, all bool) ([]NodeHandle, error) {
+	selectors, err := css.ParseSelectorList(source)
+	if err != nil {
+		return nil, err
+	}
+	host.page.mutex.RLock()
+	defer host.page.mutex.RUnlock()
+	if err := host.validateHandleLocked(handle); err != nil {
+		return nil, err
+	}
+	scope, ok := host.page.document.Resolve(handle.Node)
+	if !ok {
+		return nil, dom.ErrUnknownNode
+	}
+	if scope.Type != dom.DocumentNode && scope.Type != dom.ElementNode && scope.Type != dom.DocumentFragmentNode {
+		return nil, fmt.Errorf("%w: selector scope is not a document, fragment, or element", dom.ErrWrongNodeKind)
+	}
+	stack := make([]*dom.Node, 0, len(scope.Children))
+	for index := len(scope.Children) - 1; index >= 0; index-- {
+		stack = append(stack, scope.Children[index])
+	}
+	var matches []NodeHandle
+	for len(stack) != 0 {
+		last := len(stack) - 1
+		node := stack[last]
+		stack = stack[:last]
+		if node.Type == dom.ElementNode && css.MatchesAny(selectors, node) {
+			id, found := host.page.document.ID(node)
+			if !found {
+				return nil, dom.ErrUnknownNode
+			}
+			matches = append(matches, NodeHandle{Document: host.generation, Node: id})
+			if !all {
+				return matches, nil
+			}
+		}
+		for index := len(node.Children) - 1; index >= 0; index-- {
+			stack = append(stack, node.Children[index])
+		}
+	}
+	return matches, nil
+}
+
+func (host *taskHost) MatchesSelector(handle NodeHandle, source string) (bool, error) {
+	selectors, err := css.ParseSelectorList(source)
+	if err != nil {
+		return false, err
+	}
+	host.page.mutex.RLock()
+	defer host.page.mutex.RUnlock()
+	if err := host.validateHandleLocked(handle); err != nil {
+		return false, err
+	}
+	node, ok := host.page.document.Resolve(handle.Node)
+	if !ok {
+		return false, dom.ErrUnknownNode
+	}
+	if node.Type != dom.ElementNode {
+		return false, fmt.Errorf("%w: selector target is not an element", dom.ErrWrongNodeKind)
+	}
+	return css.MatchesAny(selectors, node), nil
+}
+
+func (host *taskHost) ClosestSelector(handle NodeHandle, source string) (NodeHandle, bool, error) {
+	selectors, err := css.ParseSelectorList(source)
+	if err != nil {
+		return NodeHandle{}, false, err
+	}
+	host.page.mutex.RLock()
+	defer host.page.mutex.RUnlock()
+	if err := host.validateHandleLocked(handle); err != nil {
+		return NodeHandle{}, false, err
+	}
+	node, ok := host.page.document.Resolve(handle.Node)
+	if !ok {
+		return NodeHandle{}, false, dom.ErrUnknownNode
+	}
+	if node.Type != dom.ElementNode {
+		return NodeHandle{}, false, fmt.Errorf("%w: closest target is not an element", dom.ErrWrongNodeKind)
+	}
+	for candidate := node; candidate != nil; candidate = candidate.Parent {
+		if candidate.Type != dom.ElementNode || !css.MatchesAny(selectors, candidate) {
+			continue
+		}
+		id, found := host.page.document.ID(candidate)
+		if !found {
+			return NodeHandle{}, false, dom.ErrUnknownNode
+		}
+		return NodeHandle{Document: host.generation, Node: id}, true, nil
+	}
+	return NodeHandle{}, false, nil
+}
+
+func (host *taskHost) CloneNode(handle NodeHandle, deep bool) (NodeHandle, error) {
+	host.page.mutex.Lock()
+	defer host.page.mutex.Unlock()
+	if err := host.validateHandleLocked(handle); err != nil {
+		return NodeHandle{}, err
+	}
+	clone, err := host.page.document.CloneNode(handle.Node, deep)
+	if err != nil {
+		return NodeHandle{}, err
+	}
+	if err := host.page.nodeLifetimes.sync(host.task); err != nil {
+		return NodeHandle{}, err
+	}
+	return NodeHandle{Document: host.generation, Node: clone}, nil
+}
+
+func (host *taskHost) InnerHTML(handle NodeHandle) (string, error) {
+	host.page.mutex.RLock()
+	defer host.page.mutex.RUnlock()
+	if err := host.validateHandleLocked(handle); err != nil {
+		return "", err
+	}
+	node, ok := host.page.document.Resolve(handle.Node)
+	if !ok {
+		return "", dom.ErrUnknownNode
+	}
+	if node.Type != dom.ElementNode {
+		return "", fmt.Errorf("%w: innerHTML target is not an element", dom.ErrWrongNodeKind)
+	}
+	return htmlparser.SerializeChildren(node), nil
+}
+
+func (host *taskHost) SetInnerHTML(handle NodeHandle, source string) error {
+	host.page.mutex.RLock()
+	if err := host.validateHandleLocked(handle); err != nil {
+		host.page.mutex.RUnlock()
+		return err
+	}
+	node, ok := host.page.document.Resolve(handle.Node)
+	if !ok || node.Type != dom.ElementNode {
+		host.page.mutex.RUnlock()
+		return fmt.Errorf("%w: innerHTML target is not an element", dom.ErrWrongNodeKind)
+	}
+	contextName := node.Data
+	host.page.mutex.RUnlock()
+	fragment, err := htmlparser.ParseFragment(strings.NewReader(source), contextName)
+	if err != nil {
+		return err
+	}
+	return host.mutateNodes(handle, NodeHandle{}, NodeHandle{}, func() error {
+		return host.page.document.ReplaceChildrenFromFragment(handle.Node, fragment)
+	})
+}
+
+func (host *taskHost) InsertAdjacentHTML(handle NodeHandle, position, source string) error {
+	position = strings.ToLower(strings.TrimSpace(position))
+	switch position {
+	case "beforebegin", "afterbegin", "beforeend", "afterend":
+	default:
+		return fmt.Errorf("browser: invalid insertAdjacentHTML position %q", position)
+	}
+	host.page.mutex.RLock()
+	if err := host.validateHandleLocked(handle); err != nil {
+		host.page.mutex.RUnlock()
+		return err
+	}
+	target, ok := host.page.document.Resolve(handle.Node)
+	if !ok || target.Type != dom.ElementNode {
+		host.page.mutex.RUnlock()
+		return fmt.Errorf("%w: insertAdjacentHTML target is not an element", dom.ErrWrongNodeKind)
+	}
+	contextName := target.Data
+	if (position == "beforebegin" || position == "afterend") && target.Parent != nil && target.Parent.Type == dom.ElementNode {
+		contextName = target.Parent.Data
+	}
+	host.page.mutex.RUnlock()
+	fragment, err := htmlparser.ParseFragment(strings.NewReader(source), contextName)
+	if err != nil {
+		return err
+	}
+	return host.mutateNodes(handle, NodeHandle{}, NodeHandle{}, func() error {
+		target, found := host.page.document.Resolve(handle.Node)
+		if !found {
+			return dom.ErrUnknownNode
+		}
+		parent := target
+		reference := dom.InvalidNodeID
+		switch position {
+		case "beforebegin":
+			if target.Parent == nil {
+				return fmt.Errorf("%w: beforebegin target has no parent", dom.ErrInvalidTree)
+			}
+			parent = target.Parent
+			reference = handle.Node
+		case "afterbegin":
+			if len(target.Children) != 0 {
+				var ok bool
+				reference, ok = host.page.document.ID(target.Children[0])
+				if !ok {
+					return dom.ErrUnknownNode
+				}
+			}
+		case "beforeend":
+		case "afterend":
+			if target.Parent == nil {
+				return fmt.Errorf("%w: afterend target has no parent", dom.ErrInvalidTree)
+			}
+			parent = target.Parent
+			index := -1
+			for candidateIndex, candidate := range parent.Children {
+				if candidate == target {
+					index = candidateIndex
+					break
+				}
+			}
+			if index >= 0 && index+1 < len(parent.Children) {
+				var ok bool
+				reference, ok = host.page.document.ID(parent.Children[index+1])
+				if !ok {
+					return dom.ErrUnknownNode
+				}
+			}
+		default:
+			return fmt.Errorf("browser: invalid insertAdjacentHTML position %q", position)
+		}
+		parentID, found := host.page.document.ID(parent)
+		if !found {
+			return dom.ErrUnknownNode
+		}
+		return host.page.document.InsertFragment(parentID, reference, fragment)
+	})
+}
+
+func (host *taskHost) FormValue(handle NodeHandle) (string, error) {
+	host.page.mutex.RLock()
+	defer host.page.mutex.RUnlock()
+	if err := host.validateHandleLocked(handle); err != nil {
+		return "", err
+	}
+	return host.page.document.FormValue(handle.Node)
+}
+
+func (host *taskHost) SetFormValue(handle NodeHandle, value string) error {
+	return host.mutateNodes(handle, NodeHandle{}, NodeHandle{}, func() error {
+		return host.page.document.SetFormValue(handle.Node, value)
+	})
+}
+
+func (host *taskHost) FormChecked(handle NodeHandle) (bool, error) {
+	host.page.mutex.RLock()
+	defer host.page.mutex.RUnlock()
+	if err := host.validateHandleLocked(handle); err != nil {
+		return false, err
+	}
+	return host.page.document.FormChecked(handle.Node)
+}
+
+func (host *taskHost) SetFormChecked(handle NodeHandle, checked bool) error {
+	return host.mutateNodes(handle, NodeHandle{}, NodeHandle{}, func() error {
+		return host.page.document.SetFormChecked(handle.Node, checked)
+	})
+}
+
+func (host *taskHost) Focus(handle NodeHandle) error {
+	host.page.mutex.Lock()
+	defer host.page.mutex.Unlock()
+	if err := host.validateHandleLocked(handle); err != nil {
+		return err
+	}
+	snapshot, err := host.page.document.Snapshot(handle.Node)
+	if err != nil {
+		return err
+	}
+	if snapshot.Type != dom.ElementNode {
+		return fmt.Errorf("%w: focus target is not an element", dom.ErrWrongNodeKind)
+	}
+	node, _ := host.page.document.Resolve(handle.Node)
+	focusable := false
+	switch node.Data {
+	case "input", "select", "textarea", "button":
+		focusable = true
+	case "a":
+		_, focusable, _ = host.page.document.GetAttribute(handle.Node, "href")
+	default:
+		_, focusable, _ = host.page.document.GetAttribute(handle.Node, "tabindex")
+	}
+	if snapshot.Connected && focusable {
+		host.page.activeElement = handle.Node
+	}
+	return nil
+}
+
+func (host *taskHost) Blur(handle NodeHandle) error {
+	host.page.mutex.Lock()
+	defer host.page.mutex.Unlock()
+	if err := host.validateHandleLocked(handle); err != nil {
+		return err
+	}
+	if host.page.activeElement == handle.Node {
+		host.page.activeElement = dom.InvalidNodeID
+	}
+	return nil
+}
+
+func (host *taskHost) ActiveElement() (NodeHandle, bool, error) {
+	host.page.mutex.RLock()
+	defer host.page.mutex.RUnlock()
+	if host.page.closed {
+		return NodeHandle{}, false, ErrPageClosed
+	}
+	if host.page.documentGeneration != host.generation {
+		return NodeHandle{}, false, ErrStaleNodeHandle
+	}
+	active := host.page.activeElement
+	if active != dom.InvalidNodeID {
+		snapshot, err := host.page.document.Snapshot(active)
+		if err == nil && snapshot.Connected {
+			return NodeHandle{Document: host.generation, Node: active}, true, nil
+		}
+	}
+	body, found, err := host.page.document.RelatedNode(host.page.document.RootID(), dom.DocumentBody)
+	if err != nil || !found {
+		return NodeHandle{}, false, err
+	}
+	return NodeHandle{Document: host.generation, Node: body}, true, nil
 }
 
 func (host *taskHost) StyleCSSText(handle NodeHandle) (string, error) {

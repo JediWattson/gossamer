@@ -8,6 +8,23 @@ import (
 	"github.com/JediWattson/gossamer/internal/dom"
 )
 
+func TestParseFragmentBuildsDetachedChildren(t *testing.T) {
+	fragment, err := ParseFragment(strings.NewReader(`<span class="one">alpha</span><!--gap--><strong>omega</strong>`), "div")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fragment.Type != dom.DocumentFragmentNode || fragment.Parent != nil || len(fragment.Children) != 3 {
+		t.Fatalf("fragment = %#v", fragment)
+	}
+	if fragment.Children[0].Data != "span" || fragment.Children[0].Parent != fragment ||
+		fragment.Children[2].Data != "strong" || fragment.Children[2].Children[0].Data != "omega" {
+		t.Fatalf("fragment children = %#v", fragment.Children)
+	}
+	if got := SerializeChildren(fragment); got != `<span class="one">alpha</span><!--gap--><strong>omega</strong>` {
+		t.Fatalf("SerializeChildren = %q", got)
+	}
+}
+
 func TestParseBuildsImplicitDocumentStructure(t *testing.T) {
 	t.Parallel()
 

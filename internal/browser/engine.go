@@ -122,10 +122,14 @@ type Engine interface {
 // execution-scoped Host and may not retain it after the call returns.
 type JSRealm interface {
 	Evaluate(Host, ScriptSource) error
-	DispatchEvent(Host, InputEvent) error
+	DispatchEvent(Host, InputEvent) (EventDispatchResult, error)
 	Invoke(Host, ValueHandle) error
 	DrainMicrotasks(Host) error
 	Close() error
+}
+
+type EventDispatchResult struct {
+	DefaultPrevented bool
 }
 
 // Host is the execution-scoped browser API visible to an engine. Methods that
@@ -198,6 +202,7 @@ const (
 	DOMCommentNode               DOMNodeType = 8
 	DOMDocumentNode              DOMNodeType = 9
 	DOMDocumentTypeNode          DOMNodeType = 10
+	DOMDocumentFragmentNode      DOMNodeType = 11
 )
 
 // NodeMetadata is the scalar node state exposed through JavaScript traversal.
@@ -229,6 +234,20 @@ type DOMElementHost interface {
 	SetNodeValue(NodeHandle, string) error
 	HasAttribute(NodeHandle, string) (bool, error)
 	AttributeNames(NodeHandle) ([]string, error)
+	QuerySelector(NodeHandle, string, bool) ([]NodeHandle, error)
+	MatchesSelector(NodeHandle, string) (bool, error)
+	ClosestSelector(NodeHandle, string) (NodeHandle, bool, error)
+	CloneNode(NodeHandle, bool) (NodeHandle, error)
+	InnerHTML(NodeHandle) (string, error)
+	SetInnerHTML(NodeHandle, string) error
+	InsertAdjacentHTML(NodeHandle, string, string) error
+	FormValue(NodeHandle) (string, error)
+	SetFormValue(NodeHandle, string) error
+	FormChecked(NodeHandle) (bool, error)
+	SetFormChecked(NodeHandle, bool) error
+	Focus(NodeHandle) error
+	Blur(NodeHandle) error
+	ActiveElement() (NodeHandle, bool, error)
 	StyleCSSText(NodeHandle) (string, error)
 	SetStyleCSSText(NodeHandle, string) error
 	StyleProperty(NodeHandle, string) (string, string, bool, error)
@@ -242,6 +261,7 @@ type DOMElementHost interface {
 type DOMDocumentHost interface {
 	DocumentMetadata() (DocumentMetadata, error)
 	CreateElementNS(string, string) (NodeHandle, error)
+	CreateDocumentFragment() (NodeHandle, error)
 }
 
 func domNodeMetadata(snapshot dom.NodeSnapshot) NodeMetadata {
@@ -274,6 +294,9 @@ func domNodeMetadata(snapshot dom.NodeSnapshot) NodeMetadata {
 	case dom.ProcessingInstructionNode:
 		metadata.Type = DOMProcessingInstructionNode
 		metadata.NodeName = snapshot.Target
+	case dom.DocumentFragmentNode:
+		metadata.Type = DOMDocumentFragmentNode
+		metadata.NodeName = "#document-fragment"
 	}
 	return metadata
 }

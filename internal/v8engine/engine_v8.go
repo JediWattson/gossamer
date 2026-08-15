@@ -179,17 +179,17 @@ func (realm *Realm) Evaluate(host browser.Host, source browser.ScriptSource) err
 	return errors.Join(operationErr, realm.drainCollectedWrappersLocked(host))
 }
 
-func (realm *Realm) DispatchEvent(host browser.Host, event browser.InputEvent) error {
+func (realm *Realm) DispatchEvent(host browser.Host, event browser.InputEvent) (browser.EventDispatchResult, error) {
 	if realm == nil {
-		return ErrRealmClosed
+		return browser.EventDispatchResult{}, ErrRealmClosed
 	}
 	realm.mutex.Lock()
 	defer realm.mutex.Unlock()
 	if realm.isClosed || realm.pointer == nil {
-		return ErrRealmClosed
+		return browser.EventDispatchResult{}, ErrRealmClosed
 	}
 	if err := realm.drainCollectedWrappersLocked(host); err != nil {
-		return err
+		return browser.EventDispatchResult{}, err
 	}
 	executionID := registerHostExecution(host)
 	defer unregisterHostExecution(executionID)
@@ -243,16 +243,19 @@ func (realm *Realm) DispatchEvent(host browser.Host, event browser.InputEvent) e
 		native.shift_key = 1
 	}
 	var failure *C.char
+	var defaultPrevented C.int
 	var operationErr error
 	if C.gossamer_v8_go_realm_dispatch_event(
 		realm.pointer,
 		C.uint64_t(executionID),
 		&native,
+		&defaultPrevented,
 		&failure,
 	) == 0 {
 		operationErr = takeError(failure)
 	}
-	return errors.Join(operationErr, realm.drainCollectedWrappersLocked(host))
+	return browser.EventDispatchResult{DefaultPrevented: defaultPrevented != 0},
+		errors.Join(operationErr, realm.drainCollectedWrappersLocked(host))
 }
 
 func (realm *Realm) Invoke(host browser.Host, callback browser.ValueHandle) error {

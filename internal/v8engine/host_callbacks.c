@@ -26,6 +26,9 @@ extern int goGossamerV8HostCreateTextNode(uint64_t execution_id,
                                           const char *data, size_t data_length,
                                           uint64_t *document_out,
                                           uint32_t *node_out, char **error_out);
+extern int goGossamerV8HostCreateDocumentFragment(
+    uint64_t execution_id, uint64_t *document_out, uint32_t *node_out,
+    char **error_out);
 extern int goGossamerV8HostTextContent(uint64_t execution_id, uint64_t document,
                                        uint32_t node, char **value_out,
                                        size_t *value_length_out,
@@ -109,6 +112,49 @@ extern int goGossamerV8HostAttributeName(
     uint64_t execution_id, uint64_t document, uint32_t node, size_t index,
     char **name_out, size_t *name_length_out, int *found_out,
     char **error_out);
+extern int goGossamerV8HostQuerySelector(
+    uint64_t execution_id, uint64_t document, uint32_t node,
+    const char *selector, size_t selector_length, int all,
+    uint32_t **nodes_out, size_t *count_out, char **error_out);
+extern int goGossamerV8HostMatchesSelector(
+    uint64_t execution_id, uint64_t document, uint32_t node,
+    const char *selector, size_t selector_length, int *matches_out,
+    char **error_out);
+extern int goGossamerV8HostClosestSelector(
+    uint64_t execution_id, uint64_t document, uint32_t node,
+    const char *selector, size_t selector_length, uint32_t *closest_node_out,
+    int *found_out, char **error_out);
+extern int goGossamerV8HostCloneNode(
+    uint64_t execution_id, uint64_t document, uint32_t node, int deep,
+    uint64_t *clone_document_out, uint32_t *clone_node_out, char **error_out);
+extern int goGossamerV8HostInnerHTML(
+    uint64_t execution_id, uint64_t document, uint32_t node, char **value_out,
+    size_t *value_length_out, char **error_out);
+extern int goGossamerV8HostSetInnerHTML(
+    uint64_t execution_id, uint64_t document, uint32_t node,
+    const char *value, size_t value_length, char **error_out);
+extern int goGossamerV8HostInsertAdjacentHTML(
+    uint64_t execution_id, uint64_t document, uint32_t node,
+    const char *position, size_t position_length, const char *value,
+    size_t value_length, char **error_out);
+extern int goGossamerV8HostFormValue(
+    uint64_t execution_id, uint64_t document, uint32_t node, char **value_out,
+    size_t *value_length_out, char **error_out);
+extern int goGossamerV8HostSetFormValue(
+    uint64_t execution_id, uint64_t document, uint32_t node,
+    const char *value, size_t value_length, char **error_out);
+extern int goGossamerV8HostFormChecked(uint64_t execution_id,
+                                       uint64_t document, uint32_t node,
+                                       int *checked_out, char **error_out);
+extern int goGossamerV8HostSetFormChecked(uint64_t execution_id,
+                                          uint64_t document, uint32_t node,
+                                          int checked, char **error_out);
+extern int goGossamerV8HostFocusNode(uint64_t execution_id, uint64_t document,
+                                     uint32_t node, int focused,
+                                     char **error_out);
+extern int goGossamerV8HostActiveElement(
+    uint64_t execution_id, uint64_t *document_out, uint32_t *node_out,
+    int *found_out, char **error_out);
 extern int goGossamerV8HostStyleCSSText(uint64_t execution_id,
                                         uint64_t document, uint32_t node,
                                         char **value_out,
@@ -169,6 +215,7 @@ static gossamer_v8_host gossamer_v8_go_host(uint64_t execution_id) {
       .create_element = goGossamerV8HostCreateElement,
       .create_element_ns = goGossamerV8HostCreateElementNS,
       .create_text_node = goGossamerV8HostCreateTextNode,
+      .create_document_fragment = goGossamerV8HostCreateDocumentFragment,
       .text_content = goGossamerV8HostTextContent,
       .set_text_content = goGossamerV8HostSetTextContent,
       .append_child = goGossamerV8HostAppendChild,
@@ -187,6 +234,19 @@ static gossamer_v8_host gossamer_v8_go_host(uint64_t execution_id) {
       .has_attribute = goGossamerV8HostHasAttribute,
       .attribute_count = goGossamerV8HostAttributeCount,
       .attribute_name = goGossamerV8HostAttributeName,
+      .query_selector = goGossamerV8HostQuerySelector,
+      .matches_selector = goGossamerV8HostMatchesSelector,
+      .closest_selector = goGossamerV8HostClosestSelector,
+      .clone_node = goGossamerV8HostCloneNode,
+      .inner_html = goGossamerV8HostInnerHTML,
+      .set_inner_html = goGossamerV8HostSetInnerHTML,
+      .insert_adjacent_html = goGossamerV8HostInsertAdjacentHTML,
+      .form_value = goGossamerV8HostFormValue,
+      .set_form_value = goGossamerV8HostSetFormValue,
+      .form_checked = goGossamerV8HostFormChecked,
+      .set_form_checked = goGossamerV8HostSetFormChecked,
+      .focus_node = goGossamerV8HostFocusNode,
+      .active_element = goGossamerV8HostActiveElement,
       .style_css_text = goGossamerV8HostStyleCSSText,
       .set_style_css_text = goGossamerV8HostSetStyleCSSText,
       .style_property = goGossamerV8HostStyleProperty,
@@ -217,9 +277,11 @@ int gossamer_v8_go_realm_evaluate(gossamer_v8_realm *realm,
 int gossamer_v8_go_realm_dispatch_event(gossamer_v8_realm *realm,
                                         uint64_t execution_id,
                                         const gossamer_v8_input_event *event,
+                                        int *default_prevented_out,
                                         char **error_out) {
   gossamer_v8_host host = gossamer_v8_go_host(execution_id);
-  return gossamer_v8_realm_dispatch_event(realm, &host, event, error_out);
+  return gossamer_v8_realm_dispatch_event(
+      realm, &host, event, default_prevented_out, error_out);
 }
 
 int gossamer_v8_go_realm_invoke(gossamer_v8_realm *realm, uint64_t execution_id,

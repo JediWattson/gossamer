@@ -28,9 +28,10 @@ type parser struct {
 	mode      insertionMode
 	priorMode insertionMode
 
-	html *dom.Node
-	head *dom.Node
-	body *dom.Node
+	html         *dom.Node
+	head         *dom.Node
+	body         *dom.Node
+	fragmentRoot *dom.Node
 
 	ignoreLeadingLineFeed bool
 }
@@ -57,6 +58,53 @@ func Parse(reader io.Reader) (*dom.Node, error) {
 		}
 
 		for parser.process(token) {
+		}
+	}
+}
+
+// ParseFragment parses markup in an element-like context and returns an
+// unindexed DocumentFragment. The browser adopts the returned children into a
+// stable-ID Document as one mutation boundary.
+func ParseFragment(reader io.Reader, contextName string) (*dom.Node, error) {
+	if contextName == "" {
+		contextName = "div"
+	}
+	container := dom.NewElement(strings.ToLower(contextName))
+	tokenizer := NewTokenizer(reader)
+	fragmentParser := &parser{
+		tokenizer:    tokenizer,
+		document:     dom.NewDocument(),
+		open:         []*dom.Node{container},
+		mode:         inBodyMode,
+		fragmentRoot: container,
+	}
+	switch container.Data {
+	case "title", "textarea":
+		tokenizer.enterTextMode(rcdataMode, container.Data)
+		fragmentParser.priorMode = inBodyMode
+		fragmentParser.mode = textModeState
+	case "style", "xmp", "iframe", "noembed", "noframes":
+		tokenizer.enterTextMode(rawTextMode, container.Data)
+		fragmentParser.priorMode = inBodyMode
+		fragmentParser.mode = textModeState
+	case "script":
+		tokenizer.enterTextMode(scriptDataMode, container.Data)
+		fragmentParser.priorMode = inBodyMode
+		fragmentParser.mode = textModeState
+	}
+	for {
+		token, err := tokenizer.Next()
+		if err == io.EOF {
+			fragment := dom.NewDocumentFragment()
+			for len(container.Children) != 0 {
+				fragment.AppendChild(container.Children[0])
+			}
+			return fragment, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		for fragmentParser.process(token) {
 		}
 	}
 }
@@ -376,7 +424,9 @@ func (parser *parser) processText(token Token) bool {
 		return false
 	}
 	if token.Type == EndTagToken && len(parser.open) > 0 && parser.currentNode().Data == token.Data {
-		parser.open = parser.open[:len(parser.open)-1]
+		if parser.fragmentRoot == nil || len(parser.open) > 1 {
+			parser.open = parser.open[:len(parser.open)-1]
+		}
 		parser.mode = parser.priorMode
 		return false
 	}
@@ -575,7 +625,7 @@ func (parser *parser) closeFirstOpen(names ...string) {
 	for index := len(parser.open) - 1; index >= 0; index-- {
 		for _, name := range names {
 			if parser.open[index].Data == name {
-				parser.open = parser.open[:index]
+				parser.truncateOpen(index)
 				return
 			}
 		}
@@ -586,7 +636,7 @@ func (parser *parser) closeListItem() {
 	for index := len(parser.open) - 1; index >= 0; index-- {
 		switch parser.open[index].Data {
 		case "li":
-			parser.open = parser.open[:index]
+			parser.truncateOpen(index)
 			return
 		case "ol", "ul":
 			return
@@ -598,7 +648,7 @@ func (parser *parser) closeDescriptionItem() {
 	for index := len(parser.open) - 1; index >= 0; index-- {
 		switch parser.open[index].Data {
 		case "dt", "dd":
-			parser.open = parser.open[:index]
+			parser.truncateOpen(index)
 			return
 		case "dl":
 			return
@@ -609,10 +659,17 @@ func (parser *parser) closeDescriptionItem() {
 func (parser *parser) popUntil(name string) {
 	for index := len(parser.open) - 1; index >= 0; index-- {
 		if parser.open[index].Data == name {
-			parser.open = parser.open[:index]
+			parser.truncateOpen(index)
 			return
 		}
 	}
+}
+
+func (parser *parser) truncateOpen(index int) {
+	if parser.fragmentRoot != nil && index < 1 {
+		return
+	}
+	parser.open = parser.open[:index]
 }
 
 func isVoidElement(name string) bool {

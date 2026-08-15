@@ -11,6 +11,7 @@ const (
 	TextNode
 	CommentNode
 	ProcessingInstructionNode
+	DocumentFragmentNode
 )
 
 const (
@@ -38,11 +39,21 @@ type Node struct {
 	Attributes   []Attribute
 	Parent       *Node
 	Children     []*Node
+	FormValue    string
+	ValueDirty   bool
+	FormChecked  bool
+	CheckedDirty bool
 }
 
 // NewDocument creates an empty document node.
 func NewDocument() *Node {
 	return &Node{Type: DocumentNode}
+}
+
+// NewDocumentFragment creates a detached lightweight parent whose children are
+// spliced into the destination when the fragment is inserted.
+func NewDocumentFragment() *Node {
+	return &Node{Type: DocumentFragmentNode}
 }
 
 // NewDoctype creates a doctype node with the given name.

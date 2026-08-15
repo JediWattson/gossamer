@@ -286,6 +286,65 @@ func (document *Document) CreateTextNode(data string) (NodeID, error) {
 	return document.store.assignLocked(NewText(data)), nil
 }
 
+// CreateDocumentFragment indexes an empty detached fragment in the document's
+// lifetime store. Inserting the fragment moves its children rather than the
+// fragment node itself.
+func (document *Document) CreateDocumentFragment() (NodeID, error) {
+	if document == nil || document.store == nil {
+		return InvalidNodeID, ErrInvalidDocument
+	}
+	document.store.mutex.Lock()
+	defer document.store.mutex.Unlock()
+	return document.store.assignLocked(NewDocumentFragment()), nil
+}
+
+// CloneNode creates a detached copy with fresh stable IDs. Parent edges are
+// rebuilt inside the copied subtree and never alias the source tree.
+func (document *Document) CloneNode(id NodeID, deep bool) (NodeID, error) {
+	if document == nil || document.store == nil {
+		return InvalidNodeID, ErrInvalidDocument
+	}
+	document.store.mutex.Lock()
+	defer document.store.mutex.Unlock()
+	source, ok := document.store.resolveLocked(id)
+	if !ok {
+		return InvalidNodeID, fmt.Errorf("%w: %d", ErrUnknownNode, id)
+	}
+	if source.Type == DocumentNode {
+		return InvalidNodeID, fmt.Errorf("%w: document cloning is unsupported", ErrWrongNodeKind)
+	}
+	var clone func(*Node) *Node
+	clone = func(node *Node) *Node {
+		copy := &Node{
+			Type:         node.Type,
+			Data:         node.Data,
+			Target:       node.Target,
+			NamespaceURI: node.NamespaceURI,
+			Prefix:       node.Prefix,
+			Attributes:   append([]Attribute(nil), node.Attributes...),
+			FormValue:    node.FormValue,
+			ValueDirty:   node.ValueDirty,
+			FormChecked:  node.FormChecked,
+			CheckedDirty: node.CheckedDirty,
+		}
+		if deep {
+			for _, child := range node.Children {
+				copy.AppendChild(clone(child))
+			}
+		}
+		return copy
+	}
+	root := clone(source)
+	ordered, err := collectSubtree(root)
+	if err != nil {
+		return InvalidNodeID, err
+	}
+	for _, node := range ordered {
+		document.store.assignLocked(node)
+	}
+	return document.store.ids[root], nil
+}
+
 // Version changes after each effective mutation made through Document.
 func (document *Document) Version() uint64 {
 	if document == nil {
@@ -406,7 +465,7 @@ func (document *Document) SetTextContent(id NodeID, data string) error {
 			return nil
 		}
 		node.Data = data
-	case ElementNode:
+	case ElementNode, DocumentFragmentNode:
 		if len(node.Children) == 0 && data == "" {
 			return nil
 		}
@@ -495,7 +554,7 @@ func (document *Document) InsertBefore(parentID, childID, referenceID NodeID) er
 	if !ok {
 		return fmt.Errorf("%w: %d", ErrUnknownNode, childID)
 	}
-	if parent.Type != ElementNode && parent.Type != DocumentNode {
+	if parent.Type != ElementNode && parent.Type != DocumentNode && parent.Type != DocumentFragmentNode {
 		return fmt.Errorf("%w: node %d cannot have children", ErrWrongNodeKind, parentID)
 	}
 	for ancestor := parent; ancestor != nil; ancestor = ancestor.Parent {
@@ -516,6 +575,32 @@ func (document *Document) InsertBefore(parentID, childID, referenceID NodeID) er
 			return fmt.Errorf("%w: reference %d is not a child of %d", ErrInvalidTree, referenceID, parentID)
 		}
 	}
+	if child.Type == DocumentFragmentNode {
+		children := append([]*Node(nil), child.Children...)
+		if len(children) == 0 {
+			return nil
+		}
+		for _, candidate := range children {
+			for ancestor := parent; ancestor != nil; ancestor = ancestor.Parent {
+				if ancestor == candidate {
+					return fmt.Errorf("%w: fragment insertion would create a cycle", ErrInvalidTree)
+				}
+			}
+		}
+		index := len(parent.Children)
+		if reference != nil {
+			index = childIndex(parent, reference)
+		}
+		child.Children = nil
+		for _, candidate := range children {
+			candidate.Parent = parent
+		}
+		parent.Children = append(parent.Children, make([]*Node, len(children))...)
+		copy(parent.Children[index+len(children):], parent.Children[index:len(parent.Children)-len(children)])
+		copy(parent.Children[index:index+len(children)], children)
+		document.version.Add(1)
+		return nil
+	}
 	if child.Parent != nil {
 		child.Parent.removeChild(child)
 	}
@@ -530,6 +615,119 @@ func (document *Document) InsertBefore(parentID, childID, referenceID NodeID) er
 	}
 	document.version.Add(1)
 	return nil
+}
+
+// ReplaceChildrenFromFragment replaces all children of an element or fragment
+// with an unexposed parsed fragment. New nodes receive fresh stable IDs in
+// tree order while displaced nodes remain indexed and detached for wrappers.
+func (document *Document) ReplaceChildrenFromFragment(parentID NodeID, fragment *Node) error {
+	if document == nil || document.store == nil {
+		return ErrInvalidDocument
+	}
+	document.store.mutex.Lock()
+	defer document.store.mutex.Unlock()
+	parent, ok := document.store.resolveLocked(parentID)
+	if !ok {
+		return fmt.Errorf("%w: %d", ErrUnknownNode, parentID)
+	}
+	if parent.Type != ElementNode && parent.Type != DocumentFragmentNode {
+		return fmt.Errorf("%w: node %d cannot receive fragment children", ErrWrongNodeKind, parentID)
+	}
+	children, err := document.adoptFragmentChildrenLocked(fragment)
+	if err != nil {
+		return err
+	}
+	if len(parent.Children) == 0 && len(children) == 0 {
+		return nil
+	}
+	for _, child := range parent.Children {
+		child.Parent = nil
+	}
+	parent.Children = children
+	for _, child := range children {
+		child.Parent = parent
+	}
+	document.version.Add(1)
+	return nil
+}
+
+// InsertFragment inserts a parsed fragment before referenceID, or appends it
+// when referenceID is zero. The fragment object itself is never inserted.
+func (document *Document) InsertFragment(parentID, referenceID NodeID, fragment *Node) error {
+	if document == nil || document.store == nil {
+		return ErrInvalidDocument
+	}
+	document.store.mutex.Lock()
+	defer document.store.mutex.Unlock()
+	parent, ok := document.store.resolveLocked(parentID)
+	if !ok {
+		return fmt.Errorf("%w: %d", ErrUnknownNode, parentID)
+	}
+	if parent.Type != ElementNode && parent.Type != DocumentFragmentNode {
+		return fmt.Errorf("%w: node %d cannot receive fragment children", ErrWrongNodeKind, parentID)
+	}
+	index := len(parent.Children)
+	if referenceID != InvalidNodeID {
+		reference, found := document.store.resolveLocked(referenceID)
+		if !found {
+			return fmt.Errorf("%w: %d", ErrUnknownNode, referenceID)
+		}
+		if reference.Parent != parent {
+			return fmt.Errorf("%w: reference %d is not a child of %d", ErrInvalidTree, referenceID, parentID)
+		}
+		index = childIndex(parent, reference)
+	}
+	children, err := document.adoptFragmentChildrenLocked(fragment)
+	if err != nil {
+		return err
+	}
+	if len(children) == 0 {
+		return nil
+	}
+	updated := make([]*Node, 0, len(parent.Children)+len(children))
+	updated = append(updated, parent.Children[:index]...)
+	updated = append(updated, children...)
+	updated = append(updated, parent.Children[index:]...)
+	parent.Children = updated
+	for _, child := range children {
+		child.Parent = parent
+	}
+	document.version.Add(1)
+	return nil
+}
+
+func (document *Document) adoptFragmentChildrenLocked(fragment *Node) ([]*Node, error) {
+	if fragment == nil || fragment.Type != DocumentFragmentNode {
+		return nil, fmt.Errorf("%w: expected a document fragment", ErrWrongNodeKind)
+	}
+	children := append([]*Node(nil), fragment.Children...)
+	var ordered []*Node
+	known := 0
+	for _, child := range children {
+		subtree, err := collectSubtree(child)
+		if err != nil {
+			return nil, err
+		}
+		ordered = append(ordered, subtree...)
+		for _, node := range subtree {
+			if _, exists := document.store.ids[node]; exists {
+				known++
+			}
+		}
+	}
+	if known != 0 && known != len(ordered) {
+		return nil, fmt.Errorf("%w: fragment mixes indexed and unindexed nodes", ErrInvalidTree)
+	}
+	if known == 0 {
+		for _, node := range ordered {
+			document.store.assignLocked(node)
+		}
+	}
+	fragment.Children = nil
+	for _, child := range children {
+		child.Parent = nil
+	}
+	return children, nil
 }
 
 // RemoveChild detaches a direct child while preserving both stable IDs.
@@ -659,6 +857,133 @@ func (document *Document) RemoveAttribute(id NodeID, name string) error {
 		return nil
 	}
 	return nil
+}
+
+// FormValue returns the current mutable value state for controls. Before the
+// value becomes dirty it follows the markup default, matching the browser
+// distinction between the value property and value attribute.
+func (document *Document) FormValue(id NodeID) (string, error) {
+	if document == nil || document.store == nil {
+		return "", ErrInvalidDocument
+	}
+	document.store.mutex.RLock()
+	defer document.store.mutex.RUnlock()
+	node, ok := document.store.resolveLocked(id)
+	if !ok {
+		return "", fmt.Errorf("%w: %d", ErrUnknownNode, id)
+	}
+	if !isValueControl(node) {
+		return "", fmt.Errorf("%w: node %d has no form value", ErrWrongNodeKind, id)
+	}
+	if node.ValueDirty {
+		return node.FormValue, nil
+	}
+	if node.Data == "textarea" {
+		return descendantText(node), nil
+	}
+	value, _ := attributeValue(node, "value")
+	return value, nil
+}
+
+func (document *Document) SetFormValue(id NodeID, value string) error {
+	if document == nil || document.store == nil {
+		return ErrInvalidDocument
+	}
+	document.store.mutex.Lock()
+	defer document.store.mutex.Unlock()
+	node, ok := document.store.resolveLocked(id)
+	if !ok {
+		return fmt.Errorf("%w: %d", ErrUnknownNode, id)
+	}
+	if !isValueControl(node) {
+		return fmt.Errorf("%w: node %d has no form value", ErrWrongNodeKind, id)
+	}
+	if node.ValueDirty && node.FormValue == value {
+		return nil
+	}
+	node.FormValue = value
+	node.ValueDirty = true
+	document.version.Add(1)
+	return nil
+}
+
+func (document *Document) FormChecked(id NodeID) (bool, error) {
+	if document == nil || document.store == nil {
+		return false, ErrInvalidDocument
+	}
+	document.store.mutex.RLock()
+	defer document.store.mutex.RUnlock()
+	node, ok := document.store.resolveLocked(id)
+	if !ok {
+		return false, fmt.Errorf("%w: %d", ErrUnknownNode, id)
+	}
+	if node.Type != ElementNode || node.Data != "input" {
+		return false, fmt.Errorf("%w: node %d has no checked state", ErrWrongNodeKind, id)
+	}
+	if node.CheckedDirty {
+		return node.FormChecked, nil
+	}
+	_, found := attributeValue(node, "checked")
+	return found, nil
+}
+
+func (document *Document) SetFormChecked(id NodeID, checked bool) error {
+	if document == nil || document.store == nil {
+		return ErrInvalidDocument
+	}
+	document.store.mutex.Lock()
+	defer document.store.mutex.Unlock()
+	node, ok := document.store.resolveLocked(id)
+	if !ok {
+		return fmt.Errorf("%w: %d", ErrUnknownNode, id)
+	}
+	if node.Type != ElementNode || node.Data != "input" {
+		return fmt.Errorf("%w: node %d has no checked state", ErrWrongNodeKind, id)
+	}
+	if node.CheckedDirty && node.FormChecked == checked {
+		return nil
+	}
+	node.FormChecked = checked
+	node.CheckedDirty = true
+	document.version.Add(1)
+	return nil
+}
+
+func isValueControl(node *Node) bool {
+	if node == nil || node.Type != ElementNode {
+		return false
+	}
+	switch node.Data {
+	case "input", "textarea", "option", "select", "button":
+		return true
+	default:
+		return false
+	}
+}
+
+func attributeValue(node *Node, name string) (string, bool) {
+	for _, attribute := range node.Attributes {
+		if attribute.Name == name {
+			return attribute.Value, true
+		}
+	}
+	return "", false
+}
+
+func descendantText(node *Node) string {
+	var result strings.Builder
+	var visit func(*Node)
+	visit = func(current *Node) {
+		if current.Type == TextNode {
+			result.WriteString(current.Data)
+			return
+		}
+		for _, child := range current.Children {
+			visit(child)
+		}
+	}
+	visit(node)
+	return result.String()
 }
 
 func childIndex(parent, child *Node) int {

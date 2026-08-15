@@ -169,21 +169,21 @@ func (realm *Realm) Evaluate(host browser.Host, source browser.ScriptSource) err
 	return evaluator(host, source)
 }
 
-func (realm *Realm) DispatchEvent(host browser.Host, event browser.InputEvent) error {
+func (realm *Realm) DispatchEvent(host browser.Host, event browser.InputEvent) (browser.EventDispatchResult, error) {
 	if host == nil {
-		return fmt.Errorf("fake engine: nil host")
+		return browser.EventDispatchResult{}, fmt.Errorf("fake engine: nil host")
 	}
 	realm.mutex.Lock()
 	if realm.closed {
 		realm.mutex.Unlock()
-		return ErrRealmClosed
+		return browser.EventDispatchResult{}, ErrRealmClosed
 	}
 	callback := realm.handlers[eventTarget{typeID: event.Type, target: event.Target}]
 	realm.mutex.Unlock()
 	if callback == 0 {
-		return nil
+		return browser.EventDispatchResult{}, nil
 	}
-	return host.QueueCallback(callback)
+	return browser.EventDispatchResult{}, host.QueueCallback(callback)
 }
 
 func (realm *Realm) Invoke(host browser.Host, handle browser.ValueHandle) error {

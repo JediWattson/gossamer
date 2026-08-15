@@ -787,6 +787,657 @@ func TestStockV8LiveDOMFacadesReflectionIterationAndLifetime(t *testing.T) {
 	}
 }
 
+func TestStockV8SelectorTraversalStaticNodeListAndLifetime(t *testing.T) {
+	engine := newTestEngine(t)
+	browserRuntime, err := browser.NewWithEngine(engine)
+	if err != nil {
+		t.Fatalf("NewWithEngine: %v", err)
+	}
+	defer func() {
+		if err := browserRuntime.Close(); err != nil {
+			t.Errorf("Close browser: %v", err)
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	page, err := browserRuntime.LoadPage(
+		ctx,
+		"https://gossamer.test/selectors",
+		staticDocumentLoader{document: `<!doctype html><html><body><main id="scope"><section id="first" class="card"><span class="leaf"></span></section><section id="second" class="card"></section></main></body></html>`},
+	)
+	if err != nil {
+		t.Fatalf("LoadPage: %v", err)
+	}
+	realm, ok := engine.LatestRealm()
+	if !ok {
+		t.Fatal("stock V8 engine has no live document realm")
+	}
+	store := page.Document().Store()
+
+	_, err = page.QueueScript(browser.ScriptSource{
+		URL: "https://gossamer.test/selectors/assertions.js",
+		Source: `
+			(() => {
+				const scope = document.querySelector("#scope");
+				const first = scope.querySelector("section.card:first-child");
+				const leaf = document.querySelector("main > section .leaf");
+				if (scope !== document.getElementById("scope") || first.id !== "first" ||
+					leaf.closest("section") !== first || leaf.closest("#missing") !== null ||
+					!leaf.matches("span.leaf") || leaf.matches("section")) {
+					throw new Error("selector traversal or canonical identity is incorrect");
+				}
+				const cards = scope.querySelectorAll("section.card");
+				if (!(cards instanceof NodeList) || cards.length !== 2 ||
+					cards[0] !== first || cards[1].id !== "second" ||
+					[...cards].map(node => node.id).join(",") !== "first,second") {
+					throw new Error("querySelectorAll did not return an ordered static NodeList");
+				}
+				const third = document.createElement("section");
+				third.id = "third";
+				third.className = "card";
+				scope.appendChild(third);
+				if (cards.length !== 2 || scope.querySelectorAll("section.card").length !== 3 ||
+					scope.querySelector("#third") !== third) {
+					throw new Error("querySelectorAll result was live instead of static");
+				}
+				let invalidRejected = false;
+				try { document.querySelectorAll(".card, :unsupported()"); }
+				catch (error) { invalidRejected = String(error).includes("invalid selector"); }
+				if (!invalidRejected) throw new Error("invalid selector list was accepted");
+			})();
+		`,
+	})
+	if err != nil {
+		t.Fatalf("QueueScript selector assertions: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("run selector assertions: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("render selector assertions: %v", err)
+	}
+	if err := realm.CollectGarbage(page); err != nil {
+		t.Fatalf("CollectGarbage before selector baseline: %v", err)
+	}
+	baselineLiveNodes := store.LiveLen()
+
+	_, err = page.QueueScript(browser.ScriptSource{
+		URL: "https://gossamer.test/selectors/hold-static-result.js",
+		Source: `
+			globalThis.__heldQueryResult = (() => {
+				const root = document.createElement("div");
+				const match = document.createElement("span");
+				match.className = "retained-match";
+				root.appendChild(match);
+				return root.querySelectorAll(".retained-match");
+			})();
+		`,
+	})
+	if err != nil {
+		t.Fatalf("QueueScript held query result: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("run held query result: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("render held query result: %v", err)
+	}
+	if err := realm.CollectGarbage(page); err != nil {
+		t.Fatalf("CollectGarbage with held query result: %v", err)
+	}
+	if got := store.LiveLen(); got != baselineLiveNodes+2 {
+		t.Fatalf("static NodeList retained native component = %d nodes, want %d", got, baselineLiveNodes+2)
+	}
+	_, err = page.QueueScript(browser.ScriptSource{
+		URL: "https://gossamer.test/selectors/release-static-result.js",
+		Source: `
+			(() => {
+				if (!(__heldQueryResult instanceof NodeList) || __heldQueryResult.length !== 1 ||
+					__heldQueryResult[0].className !== "retained-match" ||
+					__heldQueryResult[0].parentNode.tagName !== "DIV") {
+					throw new Error("static NodeList lost its detached match after GC");
+				}
+				globalThis.__heldQueryResult = undefined;
+			})();
+		`,
+	})
+	if err != nil {
+		t.Fatalf("QueueScript release query result: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("run query result release: %v", err)
+	}
+	if err := realm.CollectGarbage(page); err != nil {
+		t.Fatalf("CollectGarbage after query result release: %v", err)
+	}
+	if got := store.LiveLen(); got != baselineLiveNodes {
+		t.Fatalf("live nodes after static NodeList release = %d, want baseline %d", got, baselineLiveNodes)
+	}
+	profile, err := realm.Profile()
+	if err != nil {
+		t.Fatalf("Profile after selector GC: %v", err)
+	}
+	if profile.LiveWrappers != 1 {
+		t.Fatalf("canonical document should be sole wrapper after selector GC: %#v", profile)
+	}
+}
+
+func TestStockV8DocumentFragmentsMarkupMutationAndLifetime(t *testing.T) {
+	engine := newTestEngine(t)
+	browserRuntime, err := browser.NewWithEngine(engine)
+	if err != nil {
+		t.Fatalf("NewWithEngine: %v", err)
+	}
+	defer func() {
+		if err := browserRuntime.Close(); err != nil {
+			t.Errorf("Close browser: %v", err)
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	page, err := browserRuntime.LoadPage(
+		ctx,
+		"https://gossamer.test/markup",
+		staticDocumentLoader{document: `<!doctype html><html><body><main id="mount"></main></body></html>`},
+	)
+	if err != nil {
+		t.Fatalf("LoadPage: %v", err)
+	}
+	realm, ok := engine.LatestRealm()
+	if !ok {
+		t.Fatal("stock V8 engine has no live document realm")
+	}
+	store := page.Document().Store()
+
+	_, err = page.QueueScript(browser.ScriptSource{
+		URL: "https://gossamer.test/markup/assertions.js",
+		Source: `
+			(() => {
+				const mount = document.getElementById("mount");
+				const fragment = document.createDocumentFragment();
+				if (!(fragment instanceof DocumentFragment) || !(fragment instanceof Node) ||
+					fragment.nodeType !== 11 || fragment.nodeName !== "#document-fragment" ||
+					fragment.ownerDocument !== document || fragment.isConnected) {
+					throw new Error("DocumentFragment interface metadata failed");
+				}
+				const first = document.createElement("p");
+				first.id = "first";
+				first.appendChild(document.createTextNode("one"));
+				const second = document.createElement("p");
+				second.id = "second";
+				second.textContent = "two";
+				fragment.appendChild(first);
+				fragment.appendChild(second);
+				if (fragment.querySelector("#first") !== first ||
+					fragment.querySelectorAll("p").length !== 2) {
+					throw new Error("DocumentFragment selector traversal failed");
+				}
+				const deep = fragment.cloneNode(true);
+				const shallow = fragment.cloneNode(false);
+				if (!(deep instanceof DocumentFragment) || deep === fragment ||
+					deep.childNodes.length !== 2 || deep.firstChild === first ||
+					deep.firstChild.id !== "first" || deep.textContent !== "onetwo" ||
+					shallow.childNodes.length !== 0) {
+					throw new Error("cloneNode did not allocate an independent subtree");
+				}
+				if (mount.appendChild(fragment) !== fragment || fragment.childNodes.length !== 0 ||
+					mount.children.length !== 2 || mount.firstElementChild !== first ||
+					!first.isConnected || first.ownerDocument !== document) {
+					throw new Error("fragment insertion did not splice children");
+				}
+
+				mount.innerHTML = '<article data-kind="card">A &amp; <b>B</b></article><!--tail-->';
+				if (mount.innerHTML !== '<article data-kind="card">A &amp; <b>B</b></article><!--tail-->' ||
+					mount.firstElementChild.tagName !== "ARTICLE" ||
+					mount.firstElementChild.textContent !== "A & B") {
+					throw new Error("innerHTML parse/serialize round trip failed: " + mount.innerHTML);
+				}
+
+				mount.innerHTML = '<i id="target">core</i>';
+				const target = document.getElementById("target");
+				target.insertAdjacentHTML("beforebegin", '<span id="before">before</span>');
+				target.insertAdjacentHTML("afterbegin", '<b id="inside-first">[</b>');
+				target.insertAdjacentHTML("beforeend", '<b id="inside-last">]</b>');
+				target.insertAdjacentHTML("afterend", '<span id="after">after</span>');
+				if (mount.children.length !== 3 || mount.children[0].id !== "before" ||
+					mount.children[1] !== target || mount.children[2].id !== "after" ||
+					target.children[0].id !== "inside-first" ||
+					target.children[1].id !== "inside-last" || target.textContent !== "[core]") {
+					throw new Error("insertAdjacentHTML positions were not preserved");
+				}
+
+				globalThis.__markupScriptExecuted = false;
+				mount.innerHTML = '<script>globalThis.__markupScriptExecuted = true;</script><p>inert</p>';
+				if (__markupScriptExecuted || mount.lastElementChild.textContent !== "inert") {
+					throw new Error("script inserted through innerHTML was not inert");
+				}
+			})();
+		`,
+	})
+	if err != nil {
+		t.Fatalf("QueueScript markup assertions: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("run markup assertions: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("render markup assertions: %v", err)
+	}
+	if !v8FrameContainsText(page.Frame(), "inert") {
+		t.Fatal("innerHTML mutation did not reach paint")
+	}
+	if err := realm.CollectGarbage(page); err != nil {
+		t.Fatalf("CollectGarbage before clone baseline: %v", err)
+	}
+	baselineLiveNodes := store.LiveLen()
+
+	_, err = page.QueueScript(browser.ScriptSource{
+		URL: "https://gossamer.test/markup/hold-clone.js",
+		Source: `
+			globalThis.__heldMarkupClone = (() => {
+				const source = document.createElement("section");
+				source.innerHTML = "<strong>held</strong><em>subtree</em>";
+				return source.cloneNode(true);
+			})();
+		`,
+	})
+	if err != nil {
+		t.Fatalf("QueueScript held clone: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("run held clone: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("render held clone: %v", err)
+	}
+	if err := realm.CollectGarbage(page); err != nil {
+		t.Fatalf("CollectGarbage with held clone: %v", err)
+	}
+	if got := store.LiveLen(); got != baselineLiveNodes+5 {
+		t.Fatalf("held cloned subtree retained %d live nodes, want %d", got, baselineLiveNodes+5)
+	}
+	_, err = page.QueueScript(browser.ScriptSource{
+		URL: "https://gossamer.test/markup/release-clone.js",
+		Source: `
+			if (__heldMarkupClone.innerHTML !== "<strong>held</strong><em>subtree</em>") {
+				throw new Error("held cloned subtree changed across GC");
+			}
+			globalThis.__heldMarkupClone = undefined;
+		`,
+	})
+	if err != nil {
+		t.Fatalf("QueueScript clone release: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("run clone release: %v", err)
+	}
+	if err := realm.CollectGarbage(page); err != nil {
+		t.Fatalf("CollectGarbage after clone release: %v", err)
+	}
+	if got := store.LiveLen(); got != baselineLiveNodes {
+		t.Fatalf("live nodes after cloned subtree release = %d, want %d", got, baselineLiveNodes)
+	}
+}
+
+func TestStockV8FormStateFocusAndCancelableDefaultActions(t *testing.T) {
+	engine := newTestEngine(t)
+	browserRuntime, err := browser.NewWithEngine(engine)
+	if err != nil {
+		t.Fatalf("NewWithEngine: %v", err)
+	}
+	defer func() {
+		if err := browserRuntime.Close(); err != nil {
+			t.Errorf("Close browser: %v", err)
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	page, err := browserRuntime.LoadPage(
+		ctx,
+		"https://gossamer.test/forms",
+		staticDocumentLoader{document: `<!doctype html><html><body><input id="text" value="seed"><input id="check" type="checkbox" checked><input id="cancel" type="checkbox"></body></html>`},
+	)
+	if err != nil {
+		t.Fatalf("LoadPage: %v", err)
+	}
+
+	_, err = page.QueueScript(browser.ScriptSource{
+		URL: "https://gossamer.test/forms/setup.js",
+		Source: `
+			(() => {
+				const text = document.getElementById("text");
+				const check = document.getElementById("check");
+				const cancel = document.getElementById("cancel");
+				const valueDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "value");
+				const checkedDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "checked");
+				if (!valueDescriptor || typeof valueDescriptor.get !== "function" ||
+					typeof valueDescriptor.set !== "function" || !checkedDescriptor ||
+					typeof checkedDescriptor.get !== "function" || typeof checkedDescriptor.set !== "function") {
+					throw new Error("form-control property descriptors are incomplete");
+				}
+				if (document.activeElement !== document.body || text.value !== "seed") {
+					throw new Error("initial form value or activeElement is wrong");
+				}
+				text.value = "user";
+				text.defaultValue = "markup";
+				if (text.value !== "user" || text.defaultValue !== "markup" ||
+					text.getAttribute("value") !== "markup") {
+					throw new Error("dirty value stopped following property semantics");
+				}
+				text.focus();
+				if (document.activeElement !== text) throw new Error("focus() did not set activeElement");
+				text.blur();
+				if (document.activeElement !== document.body) throw new Error("blur() did not restore body focus");
+				if (!check.checked || !check.defaultChecked) throw new Error("checked markup default was lost");
+				check.checked = false;
+				check.defaultChecked = false;
+				if (check.checked || check.defaultChecked || check.hasAttribute("checked")) {
+					throw new Error("checked and defaultChecked did not separate");
+				}
+				globalThis.__checkedDuringClick = false;
+				globalThis.__checkedDuringCanceledClick = false;
+				check.addEventListener("click", () => { __checkedDuringClick = check.checked; });
+				cancel.addEventListener("click", event => {
+					__checkedDuringCanceledClick = cancel.checked;
+					event.preventDefault();
+				});
+			})();
+		`,
+	})
+	if err != nil {
+		t.Fatalf("QueueScript form setup: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("run form setup: %v", err)
+	}
+	if page.Dirty() {
+		if err := page.Realm.RunOne(context.Background()); err != nil {
+			t.Fatalf("render form setup: %v", err)
+		}
+	}
+
+	textID, _ := page.Document().ElementByID("text")
+	checkID, _ := page.Document().ElementByID("check")
+	cancelID, _ := page.Document().ElementByID("cancel")
+	generation := page.DocumentGeneration()
+	for _, event := range []browser.InputEvent{
+		{Type: browser.InputClick, Target: browser.NodeHandle{Document: generation, Node: checkID}},
+		{Type: browser.InputClick, Target: browser.NodeHandle{Document: generation, Node: cancelID}},
+		{Type: browser.InputInput, Target: browser.NodeHandle{Document: generation, Node: textID}, Data: "X", InputType: "insertText"},
+	} {
+		if _, err := page.QueueInputEvent(event); err != nil {
+			t.Fatalf("QueueInputEvent(%s): %v", event.Type, err)
+		}
+	}
+	for range 3 {
+		if err := page.Realm.RunOne(context.Background()); err != nil {
+			t.Fatalf("run form input: %v", err)
+		}
+	}
+
+	_, err = page.QueueScript(browser.ScriptSource{
+		URL: "https://gossamer.test/forms/assert.js",
+		Source: `
+			if (!__checkedDuringClick || !document.getElementById("check").checked) {
+				throw new Error("checkbox activation was not visible during click");
+			}
+			if (!__checkedDuringCanceledClick || document.getElementById("cancel").checked) {
+				throw new Error("preventDefault did not roll checkbox activation back");
+			}
+			if (document.getElementById("text").value !== "userX") {
+				throw new Error("input event did not update current value");
+			}
+			if (document.activeElement !== document.getElementById("check")) {
+				throw new Error("uncanceled click did not preserve focus");
+			}
+		`,
+	})
+	if err != nil {
+		t.Fatalf("QueueScript form assertions: %v", err)
+	}
+	for page.Realm.Tasks.Len() != 0 {
+		if err := page.Realm.RunOne(context.Background()); err != nil {
+			t.Fatalf("drain form assertions: %v", err)
+		}
+	}
+}
+
+func TestStockV8RunsRealReactRenderUpdateEventAndUnmount(t *testing.T) {
+	reactBundle, err := os.ReadFile("testdata/react-19.2.7.production.js")
+	if err != nil {
+		t.Fatalf("read React fixture: %v", err)
+	}
+	engine := newTestEngine(t)
+	browserRuntime, err := browser.NewWithEngine(engine)
+	if err != nil {
+		t.Fatalf("NewWithEngine: %v", err)
+	}
+	defer func() {
+		if err := browserRuntime.Close(); err != nil {
+			t.Errorf("Close browser: %v", err)
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	page, err := browserRuntime.LoadPage(
+		ctx,
+		"https://gossamer.test/react",
+		staticDocumentLoader{document: `<!doctype html><html><body><main id="root"></main></body></html>`},
+	)
+	if err != nil {
+		t.Fatalf("LoadPage: %v", err)
+	}
+	realm, ok := engine.LatestRealm()
+	if !ok {
+		t.Fatal("stock V8 engine has no live document realm")
+	}
+	initialLiveNodes := page.Document().Store().LiveLen()
+	drainRender := func(label string) {
+		t.Helper()
+		for attempt := 0; attempt < 16 && page.Dirty(); attempt++ {
+			if err := page.Realm.RunOne(context.Background()); err != nil {
+				t.Fatalf("%s: %v", label, err)
+			}
+		}
+		if page.Dirty() {
+			t.Fatalf("%s: page remained dirty after draining queued work", label)
+		}
+	}
+	runUntil := func(label string, condition func() bool) {
+		t.Helper()
+		for attempt := 0; attempt < 32; attempt++ {
+			if condition() {
+				return
+			}
+			if page.Realm.Tasks.Len() == 0 {
+				t.Fatalf("%s: task queue emptied before the condition was met", label)
+			}
+			if err := page.Realm.RunOne(context.Background()); err != nil {
+				t.Fatalf("%s: %v", label, err)
+			}
+		}
+		t.Fatalf("%s: condition was not met after draining queued work", label)
+	}
+
+	_, err = page.QueueScript(browser.ScriptSource{
+		URL:    "https://gossamer.test/vendor/react-19.2.7.production.js",
+		Source: string(reactBundle),
+	})
+	if err != nil {
+		t.Fatalf("QueueScript React bundle: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("evaluate React bundle: %v", err)
+	}
+	if err := realm.CollectGarbage(page); err != nil {
+		t.Fatalf("CollectGarbage after React bundle load: %v", err)
+	}
+	frameworkBaselineLiveNodes := page.Document().Store().LiveLen()
+	if frameworkBaselineLiveNodes > initialLiveNodes+1 {
+		t.Fatalf("React bundle retained %d probe nodes, want at most one", frameworkBaselineLiveNodes-initialLiveNodes)
+	}
+
+	_, err = page.QueueScript(browser.ScriptSource{
+		URL: "https://gossamer.test/react/app.js",
+		Source: `
+			(() => {
+				const h = React.createElement;
+				function Counter() {
+					const [count, setCount] = React.useState(0);
+					const [name, setName] = React.useState("A");
+					return h("section", { id: "counter", className: "ready", "data-count": count },
+						h("h1", null, "Count ", count),
+						h("button", {
+							id: "increment",
+							style: { display: "block" },
+							onClick: () => ReactDOM.flushSync(() => setCount(value => value + 1))
+						}, "Increment"),
+						h("input", {
+							id: "name",
+							value: name,
+							style: { display: "block" },
+							onInput: event => ReactDOM.flushSync(() => setName(event.currentTarget.value))
+						}),
+						h("p", { id: "name-value" }, name)
+					);
+				}
+				globalThis.__reactCommitError = "";
+				const root = ReactDOM.createRoot(document.getElementById("root"), {
+					onUncaughtError: error => { globalThis.__reactCommitError = String(error); }
+				});
+				ReactDOM.flushSync(() => root.render(h(Counter)));
+				globalThis.__reactRoot = root;
+				if (__reactCommitError) throw new Error("React commit failed: " + __reactCommitError);
+				if (document.querySelector("#counter").dataset.count !== "0" ||
+					document.querySelector("#counter h1").textContent !== "Count 0" ||
+					document.getElementById("name").value !== "A") {
+					throw new Error("initial React commit did not reach the Go DOM");
+				}
+			})();
+		`,
+	})
+	if err != nil {
+		t.Fatalf("QueueScript React app: %v", err)
+	}
+	runUntil("run initial React render", func() bool {
+		_, found := page.Document().ElementByID("counter")
+		return found
+	})
+	drainRender("render initial React commit")
+	if !v8FrameContainsText(page.Frame(), "Count") || !v8FrameContainsText(page.Frame(), "Increment") {
+		t.Fatal("initial React commit did not reach paint")
+	}
+
+	buttonID, found := page.Document().ElementByID("increment")
+	if !found {
+		t.Fatal("React button was not connected")
+	}
+	button, _ := page.Document().Resolve(buttonID)
+	buttonBox := findV8BoxForNode(page.Frame().Root, button)
+	if buttonBox == nil && len(button.Children) != 0 {
+		buttonBox = findV8BoxForNode(page.Frame().Root, button.Children[0])
+	}
+	if buttonBox == nil {
+		t.Fatal("React button has no rendered box")
+	}
+	if _, err := page.QueueClick(buttonBox.Bounds.X+2, buttonBox.Bounds.Y+2, 0); err != nil {
+		t.Fatalf("QueueClick React button: %v", err)
+	}
+	runUntil("dispatch React delegated click", func() bool {
+		counterID, found := page.Document().ElementByID("counter")
+		if !found {
+			return false
+		}
+		value, found, err := page.Document().GetAttribute(counterID, "data-count")
+		return err == nil && found && value == "1"
+	})
+	drainRender("render React state update")
+	if !v8FrameContainsText(page.Frame(), "Count") || !v8FrameContainsText(page.Frame(), "1") {
+		t.Fatal("React state update did not reach paint")
+	}
+	counterID, found := page.Document().ElementByID("counter")
+	if !found {
+		t.Fatal("React counter disappeared after its state update")
+	}
+	if value, found, err := page.Document().GetAttribute(counterID, "data-count"); err != nil || !found || value != "1" {
+		t.Fatalf("React data-count after click = %q, %t, %v", value, found, err)
+	}
+	nameID, found := page.Document().ElementByID("name")
+	if !found {
+		t.Fatal("React controlled input disappeared")
+	}
+	if _, err := page.QueueInputEvent(browser.InputEvent{
+		Type:      browser.InputInput,
+		Target:    browser.NodeHandle{Document: page.DocumentGeneration(), Node: nameID},
+		Data:      "B",
+		InputType: "insertText",
+	}); err != nil {
+		t.Fatalf("QueueInputEvent React controlled input: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("dispatch React controlled input: %v", err)
+	}
+	valueID, valueFound := page.Document().ElementByID("name-value")
+	renderedValue := ""
+	if valueFound {
+		renderedValue, _ = page.Document().TextContent(valueID)
+	}
+	formValue, formErr := page.Document().FormValue(nameID)
+	if renderedValue != "AB" {
+		t.Fatalf("React controlled input state = %q, native value = %q (%v)", renderedValue, formValue, formErr)
+	}
+	drainRender("render React controlled input")
+	if !v8FrameContainsText(page.Frame(), "AB") {
+		t.Fatal("React controlled input update did not reach paint")
+	}
+
+	_, err = page.QueueScript(browser.ScriptSource{
+		URL: "https://gossamer.test/react/unmount.js",
+		Source: `
+			ReactDOM.flushSync(() => __reactRoot.unmount());
+			if (document.getElementById("root").childNodes.length !== 0) {
+				throw new Error("React unmount left native children connected");
+			}
+			globalThis.__reactRoot = undefined;
+		`,
+	})
+	if err != nil {
+		t.Fatalf("QueueScript React unmount: %v", err)
+	}
+	runUntil("run React unmount", func() bool {
+		_, found := page.Document().ElementByID("counter")
+		return !found
+	})
+	drainRender("render React unmount")
+	if v8FrameContainsText(page.Frame(), "Count") || v8FrameContainsText(page.Frame(), "Increment") {
+		t.Fatal("React unmount did not clear paint output")
+	}
+	if err := realm.CollectGarbage(page); err != nil {
+		t.Fatalf("CollectGarbage after React unmount: %v", err)
+	}
+	if got := page.Document().Store().LiveLen(); got > frameworkBaselineLiveNodes+9 {
+		t.Fatalf("React unmount retained nodes outside its detached component: got %d, framework baseline %d", got, frameworkBaselineLiveNodes)
+	}
+	if profile, err := realm.Profile(); err != nil {
+		t.Fatalf("Profile after React unmount: %v", err)
+	} else if profile.LiveWrappers > 4 || profile.LiveCallbacks != 0 || profile.EventListeners == 0 {
+		t.Fatalf("React unmount retained state outside its delegated root surface: %#v", profile)
+	}
+	if err := page.Close(); err != nil {
+		t.Fatalf("Close React page: %v", err)
+	}
+	if _, live := engine.LatestRealm(); live {
+		t.Fatal("React realm remained registered after page teardown")
+	}
+	if stats := browserRuntime.Ledger().Stats(); stats.LiveObjects != 0 || stats.PersistentObjects != 0 {
+		t.Fatalf("React realm teardown ownership = %#v", stats)
+	}
+}
+
 func TestStockV8DOMPrototypesDocumentNamespaceIdentityAndTeardown(t *testing.T) {
 	engine := newTestEngine(t)
 	browserRuntime, err := browser.NewWithEngine(engine)
@@ -1498,6 +2149,58 @@ func (*capturingBindingHost) RemoveAttribute(browser.NodeHandle, string) error {
 
 func (*capturingBindingHost) AttributeNames(browser.NodeHandle) ([]string, error) {
 	return nil, nil
+}
+
+func (*capturingBindingHost) QuerySelector(browser.NodeHandle, string, bool) ([]browser.NodeHandle, error) {
+	return nil, nil
+}
+
+func (*capturingBindingHost) MatchesSelector(browser.NodeHandle, string) (bool, error) {
+	return false, nil
+}
+
+func (*capturingBindingHost) ClosestSelector(browser.NodeHandle, string) (browser.NodeHandle, bool, error) {
+	return browser.NodeHandle{}, false, nil
+}
+
+func (*capturingBindingHost) CloneNode(browser.NodeHandle, bool) (browser.NodeHandle, error) {
+	return browser.NodeHandle{}, nil
+}
+
+func (*capturingBindingHost) InnerHTML(browser.NodeHandle) (string, error) {
+	return "", nil
+}
+
+func (*capturingBindingHost) SetInnerHTML(browser.NodeHandle, string) error {
+	return nil
+}
+
+func (*capturingBindingHost) InsertAdjacentHTML(browser.NodeHandle, string, string) error {
+	return nil
+}
+
+func (*capturingBindingHost) FormValue(browser.NodeHandle) (string, error) {
+	return "", nil
+}
+
+func (*capturingBindingHost) SetFormValue(browser.NodeHandle, string) error {
+	return nil
+}
+
+func (*capturingBindingHost) FormChecked(browser.NodeHandle) (bool, error) {
+	return false, nil
+}
+
+func (*capturingBindingHost) SetFormChecked(browser.NodeHandle, bool) error {
+	return nil
+}
+
+func (*capturingBindingHost) Focus(browser.NodeHandle) error { return nil }
+
+func (*capturingBindingHost) Blur(browser.NodeHandle) error { return nil }
+
+func (*capturingBindingHost) ActiveElement() (browser.NodeHandle, bool, error) {
+	return browser.NodeHandle{}, false, nil
 }
 
 func (*capturingBindingHost) Text(browser.NodeHandle) (string, error) {

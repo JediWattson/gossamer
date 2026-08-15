@@ -110,8 +110,10 @@ type timerTestRealm struct {
 	drains  int
 }
 
-func (*timerTestRealm) Evaluate(Host, ScriptSource) error    { return nil }
-func (*timerTestRealm) DispatchEvent(Host, InputEvent) error { return nil }
+func (*timerTestRealm) Evaluate(Host, ScriptSource) error { return nil }
+func (*timerTestRealm) DispatchEvent(Host, InputEvent) (EventDispatchResult, error) {
+	return EventDispatchResult{}, nil
+}
 func (realm *timerTestRealm) Invoke(_ Host, callback ValueHandle) error {
 	realm.invoked = callback
 	return nil
@@ -120,4 +122,4 @@ func (realm *timerTestRealm) DrainMicrotasks(Host) error {
 	realm.drains++
 	return nil
 }
-func (*timerTestRealm) Close() error               { return nil }
+func (*timerTestRealm) Close() error { return nil }

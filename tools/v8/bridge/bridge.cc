@@ -47,6 +47,8 @@ constexpr int kNodeDatasetField = 6;
 constexpr int kNodeInternalFieldCount = 7;
 constexpr int kStyleNodeField = 0;
 constexpr int kFacadeNodeField = 0;
+constexpr int kFacadeBackingField = 1;
+constexpr int kFacadeInternalFieldCount = 2;
 constexpr int kIteratorFacadeField = 0;
 constexpr int kIteratorIndexField = 1;
 constexpr int kIteratorSourceKindField = 2;
@@ -298,6 +300,7 @@ struct gossamer_v8_realm {
   v8::Global<v8::FunctionTemplate> html_element_template;
   v8::Global<v8::FunctionTemplate> text_template;
   v8::Global<v8::FunctionTemplate> document_template;
+  v8::Global<v8::FunctionTemplate> document_fragment_template;
   v8::Global<v8::FunctionTemplate> event_template;
   v8::Global<v8::FunctionTemplate> mouse_event_template;
   v8::Global<v8::FunctionTemplate> pointer_event_template;
@@ -510,7 +513,8 @@ bool ReadStyleKey(v8::Isolate *isolate, v8::Local<v8::Object> receiver,
 
 bool ReadFacadeKey(v8::Isolate *isolate, v8::Local<v8::Object> receiver,
                    WrapperKey *key) {
-  if (receiver.IsEmpty() || receiver->InternalFieldCount() != 1) {
+  if (receiver.IsEmpty() ||
+      receiver->InternalFieldCount() < kFacadeInternalFieldCount) {
     ThrowError(isolate, "DOM facade receiver is not a Gossamer facade");
     return false;
   }
@@ -639,6 +643,8 @@ GetOrCreateNodeWrapper(gossamer_v8_realm *realm, v8::Local<v8::Context> context,
   v8::Local<v8::FunctionTemplate> node_template;
   if (metadata.type == 9) {
     node_template = realm->document_template.Get(realm->isolate);
+  } else if (metadata.type == 11) {
+    node_template = realm->document_fragment_template.Get(realm->isolate);
   } else if (metadata.type == 3) {
     node_template = realm->text_template.Get(realm->isolate);
   } else if (metadata.type == 1) {
@@ -937,6 +943,70 @@ void DocumentCreateElementNS(
 
 void DocumentCreateTextNode(const v8::FunctionCallbackInfo<v8::Value> &info) {
   DocumentCreateNode(info, false);
+}
+
+void DocumentCreateDocumentFragment(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  uint64_t document = 0;
+  uint32_t node = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->create_document_fragment(
+          realm->active_host->execution_id, &document, &node,
+          &host_error) == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate,
+               error.empty() ? "createDocumentFragment failed" : error);
+    return;
+  }
+  std::free(host_error);
+  v8::Local<v8::Object> wrapper;
+  if (!GetOrCreateNodeWrapper(realm, isolate->GetCurrentContext(),
+                              WrapperKey{document, node}, &error)
+           .ToLocal(&wrapper)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  info.GetReturnValue().Set(wrapper);
+}
+
+void NodeCloneNode(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.This(), &key))
+    return;
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  uint64_t clone_document = 0;
+  uint32_t clone_node = 0;
+  char *host_error = nullptr;
+  bool deep = info.Length() != 0 && info[0]->BooleanValue(isolate);
+  if (realm->active_host->clone_node(
+          realm->active_host->execution_id, key.document, key.node,
+          deep ? 1 : 0, &clone_document, &clone_node, &host_error) == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate, error.empty() ? "cloneNode failed" : error);
+    return;
+  }
+  std::free(host_error);
+  v8::Local<v8::Object> wrapper;
+  if (!GetOrCreateNodeWrapper(realm, isolate->GetCurrentContext(),
+                              WrapperKey{clone_document, clone_node}, &error)
+           .ToLocal(&wrapper)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  info.GetReturnValue().Set(wrapper);
 }
 
 void NodeTextContentGetter(v8::Local<v8::Name>,
@@ -1689,8 +1759,30 @@ FacadeKind FacadeKindFromData(v8::Local<v8::Value> data) {
   return static_cast<FacadeKind>(data.As<v8::Int32>()->Value());
 }
 
-bool ReadFacadeLength(gossamer_v8_realm *realm, const WrapperKey &key,
-                      FacadeKind kind, size_t *length, std::string *error) {
+bool ReadStaticNodeListBacking(v8::Local<v8::Object> facade,
+                               v8::Local<v8::Array> *backing) {
+  if (facade.IsEmpty() ||
+      facade->InternalFieldCount() < kFacadeInternalFieldCount)
+    return false;
+  v8::Local<v8::Data> data = facade->GetInternalField(kFacadeBackingField);
+  if (!data->IsValue() || !data.As<v8::Value>()->IsArray())
+    return false;
+  *backing = data.As<v8::Value>().As<v8::Array>();
+  return true;
+}
+
+bool ReadFacadeLength(gossamer_v8_realm *realm, v8::Isolate *isolate,
+                      v8::Local<v8::Object> facade, FacadeKind kind,
+                      size_t *length, std::string *error) {
+  v8::Local<v8::Array> backing;
+  if (kind == FacadeKind::NodeList &&
+      ReadStaticNodeListBacking(facade, &backing)) {
+    *length = backing->Length();
+    return true;
+  }
+  WrapperKey key;
+  if (!ReadFacadeKey(isolate, facade, &key))
+    return false;
   if (kind == FacadeKind::ClassList) {
     std::vector<std::string> tokens;
     if (!ReadClassTokens(realm, key, &tokens, error))
@@ -1708,9 +1800,20 @@ bool ReadFacadeLength(gossamer_v8_realm *realm, const WrapperKey &key,
 
 v8::MaybeLocal<v8::Value>
 ReadFacadeValue(gossamer_v8_realm *realm, v8::Local<v8::Context> context,
-                const WrapperKey &key, FacadeKind kind, uint32_t index,
+                v8::Local<v8::Object> facade, FacadeKind kind, uint32_t index,
                 bool *found, std::string *error) {
   v8::Isolate *isolate = v8::Isolate::GetCurrent();
+  v8::Local<v8::Array> backing;
+  if (kind == FacadeKind::NodeList &&
+      ReadStaticNodeListBacking(facade, &backing)) {
+    *found = index < backing->Length();
+    if (!*found)
+      return v8::Undefined(isolate);
+    return backing->Get(context, index);
+  }
+  WrapperKey key;
+  if (!ReadFacadeKey(isolate, facade, &key))
+    return {};
   if (kind == FacadeKind::ClassList) {
     std::vector<std::string> tokens;
     if (!ReadClassTokens(realm, key, &tokens, error))
@@ -1742,14 +1845,12 @@ ReadFacadeValue(gossamer_v8_realm *realm, v8::Local<v8::Context> context,
 void FacadeLengthGetter(v8::Local<v8::Name>,
                         const v8::PropertyCallbackInfo<v8::Value> &info) {
   v8::Isolate *isolate = info.GetIsolate();
-  WrapperKey key;
-  if (!ReadFacadeKey(isolate, info.Holder(), &key))
-    return;
   size_t length = 0;
   std::string error;
-  if (!ReadFacadeLength(CurrentRealm(isolate), key,
+  if (!ReadFacadeLength(CurrentRealm(isolate), isolate, info.Holder(),
                         FacadeKindFromData(info.Data()), &length, &error)) {
-    ThrowError(isolate, error);
+    if (!isolate->HasPendingException())
+      ThrowError(isolate, error);
     return;
   }
   info.GetReturnValue().Set(v8::Number::New(isolate, length));
@@ -1758,13 +1859,11 @@ void FacadeLengthGetter(v8::Local<v8::Name>,
 v8::Intercepted FacadeIndexedGetter(
     uint32_t index, const v8::PropertyCallbackInfo<v8::Value> &info) {
   v8::Isolate *isolate = info.GetIsolate();
-  WrapperKey key;
-  if (!ReadFacadeKey(isolate, info.Holder(), &key))
-    return v8::Intercepted::kYes;
   bool found = false;
   std::string error;
   v8::Local<v8::Value> value;
-  if (!ReadFacadeValue(CurrentRealm(isolate), isolate->GetCurrentContext(), key,
+  if (!ReadFacadeValue(CurrentRealm(isolate), isolate->GetCurrentContext(),
+                       info.Holder(),
                        FacadeKindFromData(info.Data()), index, &found, &error)
            .ToLocal(&value)) {
     ThrowError(isolate, error.empty() ? "reading live DOM facade failed"
@@ -1780,14 +1879,12 @@ v8::Intercepted FacadeIndexedGetter(
 v8::Intercepted FacadeIndexedQuery(
     uint32_t index, const v8::PropertyCallbackInfo<v8::Integer> &info) {
   v8::Isolate *isolate = info.GetIsolate();
-  WrapperKey key;
-  if (!ReadFacadeKey(isolate, info.Holder(), &key))
-    return v8::Intercepted::kYes;
   size_t length = 0;
   std::string error;
-  if (!ReadFacadeLength(CurrentRealm(isolate), key,
+  if (!ReadFacadeLength(CurrentRealm(isolate), isolate, info.Holder(),
                         FacadeKindFromData(info.Data()), &length, &error)) {
-    ThrowError(isolate, error);
+    if (!isolate->HasPendingException())
+      ThrowError(isolate, error);
     return v8::Intercepted::kYes;
   }
   if (index >= length)
@@ -1799,14 +1896,12 @@ v8::Intercepted FacadeIndexedQuery(
 void FacadeIndexedEnumerator(
     const v8::PropertyCallbackInfo<v8::Array> &info) {
   v8::Isolate *isolate = info.GetIsolate();
-  WrapperKey key;
-  if (!ReadFacadeKey(isolate, info.Holder(), &key))
-    return;
   size_t length = 0;
   std::string error;
-  if (!ReadFacadeLength(CurrentRealm(isolate), key,
+  if (!ReadFacadeLength(CurrentRealm(isolate), isolate, info.Holder(),
                         FacadeKindFromData(info.Data()), &length, &error)) {
-    ThrowError(isolate, error);
+    if (!isolate->HasPendingException())
+      ThrowError(isolate, error);
     return;
   }
   if (length > static_cast<size_t>(std::numeric_limits<int>::max())) {
@@ -1831,9 +1926,6 @@ void FacadeIndexedEnumerator(
 
 void FacadeItem(const v8::FunctionCallbackInfo<v8::Value> &info) {
   v8::Isolate *isolate = info.GetIsolate();
-  WrapperKey key;
-  if (!ReadFacadeKey(isolate, info.This(), &key))
-    return;
   uint32_t index = 0;
   if (info.Length() != 0 &&
       !info[0]->Uint32Value(isolate->GetCurrentContext()).To(&index))
@@ -1841,7 +1933,8 @@ void FacadeItem(const v8::FunctionCallbackInfo<v8::Value> &info) {
   bool found = false;
   std::string error;
   v8::Local<v8::Value> value;
-  if (!ReadFacadeValue(CurrentRealm(isolate), isolate->GetCurrentContext(), key,
+  if (!ReadFacadeValue(CurrentRealm(isolate), isolate->GetCurrentContext(),
+                       info.This(),
                        FacadeKindFromData(info.Data()), index, &found, &error)
            .ToLocal(&value)) {
     ThrowError(isolate, error.empty() ? "reading DOM facade item failed"
@@ -2064,9 +2157,6 @@ void CollectionIteratorNext(
   }
   v8::Local<v8::Object> facade =
       facade_data.As<v8::Value>().As<v8::Object>();
-  WrapperKey key;
-  if (!ReadFacadeKey(isolate, facade, &key))
-    return;
   uint32_t index = index_data.As<v8::Value>().As<v8::Uint32>()->Value();
   FacadeKind kind = static_cast<FacadeKind>(
       kind_data.As<v8::Value>().As<v8::Int32>()->Value());
@@ -2075,8 +2165,8 @@ void CollectionIteratorNext(
   bool found = false;
   std::string error;
   v8::Local<v8::Value> value;
-  if (!ReadFacadeValue(CurrentRealm(isolate), isolate->GetCurrentContext(), key,
-                       kind, index, &found, &error)
+  if (!ReadFacadeValue(CurrentRealm(isolate), isolate->GetCurrentContext(),
+                       facade, kind, index, &found, &error)
            .ToLocal(&value)) {
     ThrowError(isolate, error.empty() ? "reading DOM iterator failed" : error);
     return;
@@ -2107,9 +2197,11 @@ void CollectionIteratorNext(
 
 void FacadeIterator(const v8::FunctionCallbackInfo<v8::Value> &info) {
   v8::Isolate *isolate = info.GetIsolate();
-  WrapperKey key;
-  if (!ReadFacadeKey(isolate, info.This(), &key))
+  if (info.This().IsEmpty() ||
+      info.This()->InternalFieldCount() < kFacadeInternalFieldCount) {
+    ThrowError(isolate, "DOM facade receiver is not a Gossamer facade");
     return;
+  }
   int encoded = info.Data().As<v8::Int32>()->Value();
   FacadeKind kind = static_cast<FacadeKind>(encoded / 10);
   IteratorMode mode = static_cast<IteratorMode>(encoded % 10);
@@ -2133,9 +2225,11 @@ void FacadeIterator(const v8::FunctionCallbackInfo<v8::Value> &info) {
 
 void FacadeForEach(const v8::FunctionCallbackInfo<v8::Value> &info) {
   v8::Isolate *isolate = info.GetIsolate();
-  WrapperKey key;
-  if (!ReadFacadeKey(isolate, info.This(), &key))
+  if (info.This().IsEmpty() ||
+      info.This()->InternalFieldCount() < kFacadeInternalFieldCount) {
+    ThrowError(isolate, "DOM facade receiver is not a Gossamer facade");
     return;
+  }
   if (info.Length() == 0 || !info[0]->IsFunction()) {
     ThrowError(isolate, "DOM facade forEach requires a callback");
     return;
@@ -2149,7 +2243,8 @@ void FacadeForEach(const v8::FunctionCallbackInfo<v8::Value> &info) {
     bool found = false;
     std::string error;
     v8::Local<v8::Value> value;
-    if (!ReadFacadeValue(CurrentRealm(isolate), context, key, kind, index,
+    if (!ReadFacadeValue(CurrentRealm(isolate), context, info.This(), kind,
+                         index,
                          &found, &error)
              .ToLocal(&value)) {
       ThrowError(isolate, error.empty() ? "reading DOM facade failed" : error);
@@ -2622,6 +2717,572 @@ void NodeGetAttributeNames(
   info.GetReturnValue().Set(result);
 }
 
+bool ReadSelectorNodes(gossamer_v8_realm *realm, const WrapperKey &scope,
+                       const std::string &selector, bool all,
+                       std::vector<uint32_t> *nodes, std::string *error) {
+  if (!RequireHost(realm, error))
+    return false;
+  uint32_t *host_nodes = nullptr;
+  size_t count = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->query_selector(
+          realm->active_host->execution_id, scope.document, scope.node,
+          selector.data(), selector.size(), all ? 1 : 0, &host_nodes, &count,
+          &host_error) == 0) {
+    *error = TakeCString(host_error);
+    std::free(host_nodes);
+    if (error->empty())
+      *error = "DOM selector query failed";
+    return false;
+  }
+  std::free(host_error);
+  if (count == 0)
+    nodes->clear();
+  else
+    nodes->assign(host_nodes, host_nodes + count);
+  std::free(host_nodes);
+  return true;
+}
+
+v8::MaybeLocal<v8::Object>
+CreateStaticNodeList(gossamer_v8_realm *realm,
+                     v8::Local<v8::Context> context,
+                     const WrapperKey &scope,
+                     const std::vector<uint32_t> &nodes,
+                     std::string *error) {
+  v8::Isolate *isolate = realm->isolate;
+  if (nodes.size() > static_cast<size_t>(std::numeric_limits<int>::max())) {
+    *error = "selector result exceeds V8's collection limit";
+    return {};
+  }
+  v8::Local<v8::Array> backing =
+      v8::Array::New(isolate, static_cast<int>(nodes.size()));
+  for (size_t index = 0; index < nodes.size(); ++index) {
+    v8::Local<v8::Object> wrapper;
+    if (!GetOrCreateNodeWrapper(realm, context,
+                                WrapperKey{scope.document, nodes[index]}, error)
+             .ToLocal(&wrapper) ||
+        !backing->Set(context, static_cast<uint32_t>(index), wrapper)
+             .FromMaybe(false)) {
+      if (error->empty())
+        *error = "V8 failed to populate a static NodeList";
+      return {};
+    }
+  }
+  v8::Local<v8::Object> facade;
+  if (!realm->node_list_template.Get(isolate)
+           ->InstanceTemplate()
+           ->NewInstance(context)
+           .ToLocal(&facade)) {
+    *error = "V8 failed to allocate a static NodeList";
+    return {};
+  }
+  facade->SetInternalField(kFacadeBackingField, backing);
+  return facade;
+}
+
+void NodeQuerySelector(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey scope;
+  if (!ReadReceiverKey(isolate, info.This(), &scope))
+    return;
+  std::string selector;
+  if (!StringFromValue(isolate,
+                       info.Length() == 0 ? v8::Undefined(isolate) : info[0],
+                       &selector))
+    return;
+  bool all = !info.Data().IsEmpty() && info.Data()->IsTrue();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  std::vector<uint32_t> nodes;
+  std::string error;
+  if (!ReadSelectorNodes(realm, scope, selector, all, &nodes, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  v8::Local<v8::Context> context = isolate->GetCurrentContext();
+  if (all) {
+    v8::Local<v8::Object> list;
+    if (!CreateStaticNodeList(realm, context, scope, nodes, &error)
+             .ToLocal(&list)) {
+      ThrowError(isolate, error);
+      return;
+    }
+    info.GetReturnValue().Set(list);
+    return;
+  }
+  if (nodes.empty()) {
+    info.GetReturnValue().Set(v8::Null(isolate));
+    return;
+  }
+  v8::Local<v8::Object> wrapper;
+  if (!GetOrCreateNodeWrapper(realm, context,
+                              WrapperKey{scope.document, nodes.front()},
+                              &error)
+           .ToLocal(&wrapper)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  info.GetReturnValue().Set(wrapper);
+}
+
+void ElementMatchesSelector(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.This(), &key))
+    return;
+  std::string selector;
+  if (!StringFromValue(isolate,
+                       info.Length() == 0 ? v8::Undefined(isolate) : info[0],
+                       &selector))
+    return;
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  int matches = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->matches_selector(
+          realm->active_host->execution_id, key.document, key.node,
+          selector.data(), selector.size(), &matches, &host_error) == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate, error.empty() ? "DOM selector match failed" : error);
+    return;
+  }
+  std::free(host_error);
+  info.GetReturnValue().Set(matches != 0);
+}
+
+void ElementClosestSelector(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.This(), &key))
+    return;
+  std::string selector;
+  if (!StringFromValue(isolate,
+                       info.Length() == 0 ? v8::Undefined(isolate) : info[0],
+                       &selector))
+    return;
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  uint32_t closest = 0;
+  int found = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->closest_selector(
+          realm->active_host->execution_id, key.document, key.node,
+          selector.data(), selector.size(), &closest, &found,
+          &host_error) == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate, error.empty() ? "DOM closest selector failed" : error);
+    return;
+  }
+  std::free(host_error);
+  if (found == 0) {
+    info.GetReturnValue().Set(v8::Null(isolate));
+    return;
+  }
+  v8::Local<v8::Object> wrapper;
+  if (!GetOrCreateNodeWrapper(realm, isolate->GetCurrentContext(),
+                              WrapperKey{key.document, closest}, &error)
+           .ToLocal(&wrapper)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  info.GetReturnValue().Set(wrapper);
+}
+
+void ElementInnerHTMLGetter(
+    v8::Local<v8::Name>, const v8::PropertyCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.Holder(), &key))
+    return;
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  char *value = nullptr;
+  size_t value_length = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->inner_html(
+          realm->active_host->execution_id, key.document, key.node, &value,
+          &value_length, &host_error) == 0) {
+    error = TakeCString(host_error);
+    std::free(value);
+    ThrowError(isolate, error.empty() ? "reading innerHTML failed" : error);
+    return;
+  }
+  std::free(host_error);
+  v8::Local<v8::String> result;
+  bool allocated = NewUTF8String(isolate, value, value_length, &result);
+  std::free(value);
+  if (!allocated) {
+    ThrowError(isolate, "V8 failed to allocate innerHTML");
+    return;
+  }
+  info.GetReturnValue().Set(result);
+}
+
+void ElementInnerHTMLSetter(
+    v8::Local<v8::Name>, v8::Local<v8::Value> value,
+    const v8::PropertyCallbackInfo<v8::Boolean> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  std::string source;
+  if (!ReadReceiverKey(isolate, info.Holder(), &key) ||
+      !StringFromValue(isolate, value, &source)) {
+    info.GetReturnValue().Set(false);
+    return;
+  }
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    info.GetReturnValue().Set(false);
+    return;
+  }
+  char *host_error = nullptr;
+  if (realm->active_host->set_inner_html(
+          realm->active_host->execution_id, key.document, key.node,
+          source.data(), source.size(), &host_error) == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate, error.empty() ? "setting innerHTML failed" : error);
+    info.GetReturnValue().Set(false);
+    return;
+  }
+  std::free(host_error);
+  info.GetReturnValue().Set(true);
+}
+
+void ElementInsertAdjacentHTML(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.This(), &key))
+    return;
+  std::string position;
+  std::string source;
+  if (info.Length() < 2 || !StringFromValue(isolate, info[0], &position) ||
+      !StringFromValue(isolate, info[1], &source)) {
+    ThrowError(isolate, "insertAdjacentHTML requires a position and markup");
+    return;
+  }
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  char *host_error = nullptr;
+  if (realm->active_host->insert_adjacent_html(
+          realm->active_host->execution_id, key.document, key.node,
+          position.data(), position.size(), source.data(), source.size(),
+          &host_error) == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate,
+               error.empty() ? "insertAdjacentHTML failed" : error);
+    return;
+  }
+  std::free(host_error);
+}
+
+void ElementFormValueGetter(
+    v8::Local<v8::Name>, const v8::PropertyCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.Holder(), &key))
+    return;
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  char *value = nullptr;
+  size_t value_length = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->form_value(
+          realm->active_host->execution_id, key.document, key.node, &value,
+          &value_length, &host_error) == 0) {
+    error = TakeCString(host_error);
+    std::free(value);
+    ThrowError(isolate, error.empty() ? "reading form value failed" : error);
+    return;
+  }
+  std::free(host_error);
+  v8::Local<v8::String> result;
+  bool allocated = NewUTF8String(isolate, value, value_length, &result);
+  std::free(value);
+  if (!allocated) {
+    ThrowError(isolate, "V8 failed to allocate a form value");
+    return;
+  }
+  info.GetReturnValue().Set(result);
+}
+
+void ElementFormValueSetter(
+    v8::Local<v8::Name>, v8::Local<v8::Value> value,
+    const v8::PropertyCallbackInfo<v8::Boolean> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  std::string rendered;
+  if (!ReadReceiverKey(isolate, info.Holder(), &key) ||
+      !StringFromValue(isolate, value, &rendered)) {
+    info.GetReturnValue().Set(false);
+    return;
+  }
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    info.GetReturnValue().Set(false);
+    return;
+  }
+  char *host_error = nullptr;
+  if (realm->active_host->set_form_value(
+          realm->active_host->execution_id, key.document, key.node,
+          rendered.data(), rendered.size(), &host_error) == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate, error.empty() ? "setting form value failed" : error);
+    info.GetReturnValue().Set(false);
+    return;
+  }
+  std::free(host_error);
+  info.GetReturnValue().Set(true);
+}
+
+void ElementFormCheckedGetter(
+    v8::Local<v8::Name>, const v8::PropertyCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.Holder(), &key))
+    return;
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  int checked = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->form_checked(
+          realm->active_host->execution_id, key.document, key.node, &checked,
+          &host_error) == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate,
+               error.empty() ? "reading form checked state failed" : error);
+    return;
+  }
+  std::free(host_error);
+  info.GetReturnValue().Set(checked != 0);
+}
+
+void ElementFormCheckedSetter(
+    v8::Local<v8::Name>, v8::Local<v8::Value> value,
+    const v8::PropertyCallbackInfo<v8::Boolean> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.Holder(), &key)) {
+    info.GetReturnValue().Set(false);
+    return;
+  }
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    info.GetReturnValue().Set(false);
+    return;
+  }
+  char *host_error = nullptr;
+  if (realm->active_host->set_form_checked(
+          realm->active_host->execution_id, key.document, key.node,
+          value->BooleanValue(isolate) ? 1 : 0, &host_error) == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate,
+               error.empty() ? "setting form checked state failed" : error);
+    info.GetReturnValue().Set(false);
+    return;
+  }
+  std::free(host_error);
+  info.GetReturnValue().Set(true);
+}
+
+void ElementFormValueFunctionGetter(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.This(), &key))
+    return;
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  char *value = nullptr;
+  size_t value_length = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->form_value(
+          realm->active_host->execution_id, key.document, key.node, &value,
+          &value_length, &host_error) == 0) {
+    error = TakeCString(host_error);
+    std::free(value);
+    ThrowError(isolate, error.empty() ? "reading form value failed" : error);
+    return;
+  }
+  std::free(host_error);
+  v8::Local<v8::String> result;
+  bool allocated = NewUTF8String(isolate, value, value_length, &result);
+  std::free(value);
+  if (!allocated) {
+    ThrowError(isolate, "V8 failed to allocate a form value");
+    return;
+  }
+  info.GetReturnValue().Set(result);
+}
+
+void ElementFormValueFunctionSetter(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  std::string rendered;
+  if (!ReadReceiverKey(isolate, info.This(), &key) || info.Length() == 0 ||
+      !StringFromValue(isolate, info[0], &rendered))
+    return;
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  char *host_error = nullptr;
+  if (realm->active_host->set_form_value(
+          realm->active_host->execution_id, key.document, key.node,
+          rendered.data(), rendered.size(), &host_error) == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate, error.empty() ? "setting form value failed" : error);
+    return;
+  }
+  std::free(host_error);
+}
+
+void ElementFormCheckedFunctionGetter(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.This(), &key))
+    return;
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  int checked = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->form_checked(
+          realm->active_host->execution_id, key.document, key.node, &checked,
+          &host_error) == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate,
+               error.empty() ? "reading form checked state failed" : error);
+    return;
+  }
+  std::free(host_error);
+  info.GetReturnValue().Set(checked != 0);
+}
+
+void ElementFormCheckedFunctionSetter(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.This(), &key) || info.Length() == 0)
+    return;
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  char *host_error = nullptr;
+  if (realm->active_host->set_form_checked(
+          realm->active_host->execution_id, key.document, key.node,
+          info[0]->BooleanValue(isolate) ? 1 : 0, &host_error) == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate,
+               error.empty() ? "setting form checked state failed" : error);
+    return;
+  }
+  std::free(host_error);
+}
+
+void HTMLElementFocus(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.This(), &key))
+    return;
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  bool focused = info.Data()->IsTrue();
+  char *host_error = nullptr;
+  if (realm->active_host->focus_node(
+          realm->active_host->execution_id, key.document, key.node,
+          focused ? 1 : 0, &host_error) == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate, error.empty() ? "changing focus failed" : error);
+    return;
+  }
+  std::free(host_error);
+}
+
+void DocumentActiveElementGetter(
+    v8::Local<v8::Name>, const v8::PropertyCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  uint64_t document = 0;
+  uint32_t node = 0;
+  int found = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->active_element(
+          realm->active_host->execution_id, &document, &node, &found,
+          &host_error) == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate, error.empty() ? "reading activeElement failed" : error);
+    return;
+  }
+  std::free(host_error);
+  if (found == 0) {
+    info.GetReturnValue().Set(v8::Null(isolate));
+    return;
+  }
+  v8::Local<v8::Object> wrapper;
+  if (!GetOrCreateNodeWrapper(realm, isolate->GetCurrentContext(),
+                              WrapperKey{document, node}, &error)
+           .ToLocal(&wrapper)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  info.GetReturnValue().Set(wrapper);
+}
+
 void NodeHasChildNodes(const v8::FunctionCallbackInfo<v8::Value> &info) {
   v8::Isolate *isolate = info.GetIsolate();
   gossamer_v8_realm *realm = CurrentRealm(isolate);
@@ -2783,7 +3444,13 @@ void NodeReflectedAttributeGetter(
   if (!ReadReceiverKey(isolate, info.Holder(), &key))
     return;
   std::string property_name = UTF8Value(isolate, property.As<v8::Value>());
-  const char *attribute = property_name == "className" ? "class" : "id";
+  std::string attribute = property_name;
+  if (property_name == "className")
+    attribute = "class";
+  else if (property_name == "htmlFor")
+    attribute = "for";
+  else if (property_name == "defaultValue")
+    attribute = "value";
   char *value = nullptr;
   size_t value_length = 0;
   int found = 0;
@@ -2794,8 +3461,9 @@ void NodeReflectedAttributeGetter(
     return;
   }
   if (realm->active_host->get_attribute(
-          realm->active_host->execution_id, key.document, key.node, attribute,
-          std::strlen(attribute), &value, &value_length, &found,
+          realm->active_host->execution_id, key.document, key.node,
+          attribute.data(),
+          attribute.size(), &value, &value_length, &found,
           &host_error) == 0) {
     error = TakeCString(host_error);
     std::free(value);
@@ -2831,7 +3499,13 @@ void NodeReflectedAttributeSetter(
     return;
   }
   std::string property_name = UTF8Value(isolate, property.As<v8::Value>());
-  const char *attribute = property_name == "className" ? "class" : "id";
+  std::string attribute = property_name;
+  if (property_name == "className")
+    attribute = "class";
+  else if (property_name == "htmlFor")
+    attribute = "for";
+  else if (property_name == "defaultValue")
+    attribute = "value";
   std::string error;
   if (!RequireHost(realm, &error)) {
     ThrowError(isolate, error);
@@ -2840,12 +3514,85 @@ void NodeReflectedAttributeSetter(
   }
   char *host_error = nullptr;
   if (realm->active_host->set_attribute(
-          realm->active_host->execution_id, key.document, key.node, attribute,
-          std::strlen(attribute), rendered.data(), rendered.size(),
+          realm->active_host->execution_id, key.document, key.node,
+          attribute.data(),
+          attribute.size(), rendered.data(), rendered.size(),
           &host_error) == 0) {
     error = TakeCString(host_error);
     ThrowError(isolate, error.empty() ? "setting reflected attribute failed"
                                       : error);
+    info.GetReturnValue().Set(false);
+    return;
+  }
+  std::free(host_error);
+  info.GetReturnValue().Set(true);
+}
+
+std::string ReflectedBooleanAttributeName(const std::string &property) {
+  if (property == "defaultChecked")
+    return "checked";
+  return property;
+}
+
+void NodeReflectedBooleanGetter(
+    v8::Local<v8::Name> property,
+    const v8::PropertyCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.Holder(), &key))
+    return;
+  std::string attribute = ReflectedBooleanAttributeName(
+      UTF8Value(isolate, property.As<v8::Value>()));
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  int found = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->has_attribute(
+          realm->active_host->execution_id, key.document, key.node,
+          attribute.data(), attribute.size(), &found, &host_error) == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate,
+               error.empty() ? "reading reflected boolean failed" : error);
+    return;
+  }
+  std::free(host_error);
+  info.GetReturnValue().Set(found != 0);
+}
+
+void NodeReflectedBooleanSetter(
+    v8::Local<v8::Name> property, v8::Local<v8::Value> value,
+    const v8::PropertyCallbackInfo<v8::Boolean> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.Holder(), &key)) {
+    info.GetReturnValue().Set(false);
+    return;
+  }
+  std::string attribute = ReflectedBooleanAttributeName(
+      UTF8Value(isolate, property.As<v8::Value>()));
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    info.GetReturnValue().Set(false);
+    return;
+  }
+  char *host_error = nullptr;
+  int ok = value->BooleanValue(isolate)
+               ? realm->active_host->set_attribute(
+                     realm->active_host->execution_id, key.document, key.node,
+                     attribute.data(), attribute.size(), "", 0, &host_error)
+               : realm->active_host->remove_attribute(
+                     realm->active_host->execution_id, key.document, key.node,
+                     attribute.data(), attribute.size(), &host_error);
+  if (ok == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate,
+               error.empty() ? "setting reflected boolean failed" : error);
     info.GetReturnValue().Set(false);
     return;
   }
@@ -4155,9 +4902,13 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
       v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
   v8::Local<v8::FunctionTemplate> html_element_template =
       v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
+  v8::Local<v8::FunctionTemplate> html_iframe_element_template =
+      v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
   v8::Local<v8::FunctionTemplate> text_template =
       v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
   v8::Local<v8::FunctionTemplate> document_template =
+      v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
+  v8::Local<v8::FunctionTemplate> document_fragment_template =
       v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
   v8::Local<v8::FunctionTemplate> node_list_template =
       v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
@@ -4193,9 +4944,13 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
       v8::String::NewFromUtf8Literal(isolate, "Element"));
   html_element_template->SetClassName(
       v8::String::NewFromUtf8Literal(isolate, "HTMLElement"));
+  html_iframe_element_template->SetClassName(
+      v8::String::NewFromUtf8Literal(isolate, "HTMLIFrameElement"));
   text_template->SetClassName(v8::String::NewFromUtf8Literal(isolate, "Text"));
   document_template->SetClassName(
       v8::String::NewFromUtf8Literal(isolate, "Document"));
+  document_fragment_template->SetClassName(
+      v8::String::NewFromUtf8Literal(isolate, "DocumentFragment"));
   node_list_template->SetClassName(
       v8::String::NewFromUtf8Literal(isolate, "NodeList"));
   html_collection_template->SetClassName(
@@ -4219,8 +4974,10 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   node_template->Inherit(event_target_template);
   element_template->Inherit(node_template);
   html_element_template->Inherit(element_template);
+  html_iframe_element_template->Inherit(html_element_template);
   text_template->Inherit(node_template);
   document_template->Inherit(node_template);
+  document_fragment_template->Inherit(node_template);
   mouse_event_template->Inherit(event_template);
   pointer_event_template->Inherit(mouse_event_template);
   keyboard_event_template->Inherit(event_template);
@@ -4228,14 +4985,15 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   focus_event_template->Inherit(event_template);
   for (v8::Local<v8::FunctionTemplate> interface_template :
        {node_template, element_template, html_element_template, text_template,
-        document_template}) {
+        document_template, document_fragment_template}) {
     interface_template->InstanceTemplate()->SetInternalFieldCount(
         kNodeInternalFieldCount);
   }
   for (v8::Local<v8::FunctionTemplate> facade_template :
        {node_list_template, html_collection_template, token_list_template,
         dataset_template}) {
-    facade_template->InstanceTemplate()->SetInternalFieldCount(1);
+    facade_template->InstanceTemplate()->SetInternalFieldCount(
+        kFacadeInternalFieldCount);
   }
   for (v8::Local<v8::FunctionTemplate> interface_template :
        {event_template, mouse_event_template, pointer_event_template,
@@ -4498,6 +5256,8 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
                       v8::FunctionTemplate::New(isolate, NodeContains));
   node_prototype->Set(isolate, "remove",
                       v8::FunctionTemplate::New(isolate, NodeRemove));
+  node_prototype->Set(isolate, "cloneNode",
+                      v8::FunctionTemplate::New(isolate, NodeCloneNode));
 
   auto install_parent_node_surface =
       [isolate](v8::Local<v8::ObjectTemplate> prototype) {
@@ -4540,6 +5300,9 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
       NodeClassListGetter);
   element_prototype->SetNativeDataProperty(
       v8::String::NewFromUtf8Literal(isolate, "dataset"), NodeDatasetGetter);
+  element_prototype->SetNativeDataProperty(
+      v8::String::NewFromUtf8Literal(isolate, "innerHTML"),
+      ElementInnerHTMLGetter, ElementInnerHTMLSetter);
   element_prototype->Set(isolate, "getAttribute",
                          v8::FunctionTemplate::New(isolate, NodeGetAttribute));
   element_prototype->Set(isolate, "setAttribute",
@@ -4552,6 +5315,55 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   element_prototype->Set(
       isolate, "getAttributeNames",
       v8::FunctionTemplate::New(isolate, NodeGetAttributeNames));
+  element_prototype->Set(
+      isolate, "querySelector",
+      v8::FunctionTemplate::New(isolate, NodeQuerySelector,
+                                v8::False(isolate)));
+  element_prototype->Set(
+      isolate, "querySelectorAll",
+      v8::FunctionTemplate::New(isolate, NodeQuerySelector,
+                                v8::True(isolate)));
+  element_prototype->Set(
+      isolate, "matches",
+      v8::FunctionTemplate::New(isolate, ElementMatchesSelector));
+  element_prototype->Set(
+      isolate, "closest",
+      v8::FunctionTemplate::New(isolate, ElementClosestSelector));
+  element_prototype->Set(
+      isolate, "insertAdjacentHTML",
+      v8::FunctionTemplate::New(isolate, ElementInsertAdjacentHTML));
+
+  v8::Local<v8::ObjectTemplate> html_element_prototype =
+      html_element_template->PrototypeTemplate();
+  html_element_prototype->SetAccessorProperty(
+      v8::String::NewFromUtf8Literal(isolate, "value"),
+      v8::FunctionTemplate::New(isolate, ElementFormValueFunctionGetter),
+      v8::FunctionTemplate::New(isolate, ElementFormValueFunctionSetter));
+  html_element_prototype->SetAccessorProperty(
+      v8::String::NewFromUtf8Literal(isolate, "checked"),
+      v8::FunctionTemplate::New(isolate, ElementFormCheckedFunctionGetter),
+      v8::FunctionTemplate::New(isolate,
+                                ElementFormCheckedFunctionSetter));
+  for (const char *name : {"defaultValue", "name", "type", "placeholder",
+                           "title", "lang", "dir", "htmlFor"}) {
+    html_element_prototype->SetNativeDataProperty(
+        v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
+        NodeReflectedAttributeGetter, NodeReflectedAttributeSetter);
+  }
+  for (const char *name : {"defaultChecked", "disabled", "multiple",
+                           "required", "readOnly"}) {
+    html_element_prototype->SetNativeDataProperty(
+        v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
+        NodeReflectedBooleanGetter, NodeReflectedBooleanSetter);
+  }
+  html_element_prototype->Set(
+      isolate, "focus",
+      v8::FunctionTemplate::New(isolate, HTMLElementFocus,
+                                v8::True(isolate)));
+  html_element_prototype->Set(
+      isolate, "blur",
+      v8::FunctionTemplate::New(isolate, HTMLElementFocus,
+                                v8::False(isolate)));
 
   text_template->PrototypeTemplate()->SetNativeDataProperty(
       v8::String::NewFromUtf8Literal(isolate, "data"), NodeValueGetter,
@@ -4568,9 +5380,20 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   document_prototype->SetNativeDataProperty(
       v8::String::NewFromUtf8Literal(isolate, "defaultView"),
       DocumentDefaultViewGetter);
+  document_prototype->SetNativeDataProperty(
+      v8::String::NewFromUtf8Literal(isolate, "activeElement"),
+      DocumentActiveElementGetter);
   document_prototype->Set(
       isolate, "getElementById",
       v8::FunctionTemplate::New(isolate, DocumentGetElementByID));
+  document_prototype->Set(
+      isolate, "querySelector",
+      v8::FunctionTemplate::New(isolate, NodeQuerySelector,
+                                v8::False(isolate)));
+  document_prototype->Set(
+      isolate, "querySelectorAll",
+      v8::FunctionTemplate::New(isolate, NodeQuerySelector,
+                                v8::True(isolate)));
   document_prototype->Set(
       isolate, "createElement",
       v8::FunctionTemplate::New(isolate, DocumentCreateElement));
@@ -4580,6 +5403,20 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   document_prototype->Set(
       isolate, "createTextNode",
       v8::FunctionTemplate::New(isolate, DocumentCreateTextNode));
+  document_prototype->Set(
+      isolate, "createDocumentFragment",
+      v8::FunctionTemplate::New(isolate, DocumentCreateDocumentFragment));
+
+  install_parent_node_surface(
+      document_fragment_template->PrototypeTemplate());
+  document_fragment_template->PrototypeTemplate()->Set(
+      isolate, "querySelector",
+      v8::FunctionTemplate::New(isolate, NodeQuerySelector,
+                                v8::False(isolate)));
+  document_fragment_template->PrototypeTemplate()->Set(
+      isolate, "querySelectorAll",
+      v8::FunctionTemplate::New(isolate, NodeQuerySelector,
+                                v8::True(isolate)));
 
   // Current V8 native-data callbacks expose Holder rather than the original
   // receiver. Keep the standards-shaped accessors on the prototypes for
@@ -4657,18 +5494,41 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
         instance->SetNativeDataProperty(
             v8::String::NewFromUtf8Literal(isolate, "dataset"),
             NodeDatasetGetter);
+        instance->SetNativeDataProperty(
+            v8::String::NewFromUtf8Literal(isolate, "innerHTML"),
+            ElementInnerHTMLGetter, ElementInnerHTMLSetter);
       };
   for (v8::Local<v8::FunctionTemplate> interface_template :
        {node_template, element_template, html_element_template, text_template,
-        document_template}) {
+        document_template, document_fragment_template}) {
     install_node_instance_surface(interface_template->InstanceTemplate());
   }
   install_element_instance_surface(element_template->InstanceTemplate());
   install_element_instance_surface(html_element_template->InstanceTemplate());
+  html_element_template->InstanceTemplate()->SetNativeDataProperty(
+      v8::String::NewFromUtf8Literal(isolate, "value"),
+      ElementFormValueGetter, ElementFormValueSetter);
+  html_element_template->InstanceTemplate()->SetNativeDataProperty(
+      v8::String::NewFromUtf8Literal(isolate, "checked"),
+      ElementFormCheckedGetter, ElementFormCheckedSetter);
+  for (const char *name : {"defaultValue", "name", "type", "placeholder",
+                           "title", "lang", "dir", "htmlFor"}) {
+    html_element_template->InstanceTemplate()->SetNativeDataProperty(
+        v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
+        NodeReflectedAttributeGetter, NodeReflectedAttributeSetter);
+  }
+  for (const char *name : {"defaultChecked", "disabled", "multiple",
+                           "required", "readOnly"}) {
+    html_element_template->InstanceTemplate()->SetNativeDataProperty(
+        v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
+        NodeReflectedBooleanGetter, NodeReflectedBooleanSetter);
+  }
   text_template->InstanceTemplate()->SetNativeDataProperty(
       v8::String::NewFromUtf8Literal(isolate, "data"), NodeValueGetter,
       NodeValueSetter);
   install_parent_instance_surface(document_template->InstanceTemplate());
+  install_parent_instance_surface(
+      document_fragment_template->InstanceTemplate());
   for (const char *name : {"documentElement", "head", "body"}) {
     document_template->InstanceTemplate()->SetNativeDataProperty(
         v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
@@ -4677,6 +5537,9 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   document_template->InstanceTemplate()->SetNativeDataProperty(
       v8::String::NewFromUtf8Literal(isolate, "defaultView"),
       DocumentDefaultViewGetter);
+  document_template->InstanceTemplate()->SetNativeDataProperty(
+      v8::String::NewFromUtf8Literal(isolate, "activeElement"),
+      DocumentActiveElementGetter);
 
   realm->event_target_template.Reset(isolate, event_target_template);
   realm->node_template.Reset(isolate, node_template);
@@ -4684,6 +5547,8 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   realm->html_element_template.Reset(isolate, html_element_template);
   realm->text_template.Reset(isolate, text_template);
   realm->document_template.Reset(isolate, document_template);
+  realm->document_fragment_template.Reset(isolate,
+                                           document_fragment_template);
   realm->event_template.Reset(isolate, event_template);
   realm->mouse_event_template.Reset(isolate, mouse_event_template);
   realm->pointer_event_template.Reset(isolate, pointer_event_template);
@@ -4768,8 +5633,10 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
          expose_interface("Node", node_template) &&
          expose_interface("Element", element_template) &&
          expose_interface("HTMLElement", html_element_template) &&
+         expose_interface("HTMLIFrameElement", html_iframe_element_template) &&
          expose_interface("Text", text_template) &&
          expose_interface("Document", document_template) &&
+         expose_interface("DocumentFragment", document_fragment_template) &&
          expose_interface("NodeList", node_list_template) &&
          expose_interface("HTMLCollection", html_collection_template) &&
          expose_interface("DOMTokenList", token_list_template) &&
@@ -4979,6 +5846,7 @@ void ClearRealmHandles(gossamer_v8_realm *realm) {
   realm->html_element_template.Reset();
   realm->text_template.Reset();
   realm->document_template.Reset();
+  realm->document_fragment_template.Reset();
   realm->style_template.Reset();
   realm->collection_iterator_template.Reset();
   realm->document_wrapper.Reset();
@@ -5147,6 +6015,7 @@ gossamer_v8_realm_evaluate(gossamer_v8_realm *realm,
 extern "C" int gossamer_v8_realm_dispatch_event(gossamer_v8_realm *realm,
                                                 const gossamer_v8_host *host,
                                                 const gossamer_v8_input_event *input,
+                                                int *default_prevented_out,
                                                 char **error_out) {
   if (!RequireRealm(realm, error_out))
     return 0;
@@ -5182,6 +6051,8 @@ extern "C" int gossamer_v8_realm_dispatch_event(gossamer_v8_realm *realm,
     SetError(error_out, error);
     return 0;
   }
+  if (default_prevented_out != nullptr)
+    *default_prevented_out = event_state->default_prevented ? 1 : 0;
   return 1;
 }
 
