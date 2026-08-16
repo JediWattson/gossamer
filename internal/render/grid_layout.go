@@ -40,6 +40,8 @@ type gridLayoutModel struct {
 	rows         int
 	explicitCols int
 	explicitRows int
+	columnTracks computed.GridTrackList
+	rowTracks    computed.GridTrackList
 	columnOffset int
 	rowOffset    int
 	placementOps int
@@ -65,6 +67,7 @@ func (context *layoutContext) layoutGridContainer(node *styledNode, box *Box, co
 	}
 	columnStarts, columnEnds, _ := alignedGridTrackGeometry(columnSizes, columnGap, contentWidth, node.style.JustifyContent())
 	box.gridColumnSizes = append([]float64(nil), columnSizes...)
+	box.gridColumnLineNames = gridUsedLineNames(node.style.GridTemplateColumns(), len(columnSizes), model.columnOffset)
 
 	// The first item pass obtains max-content row contributions. Once rows are
 	// sized, a second bounded pass supplies each area's definite height so
@@ -75,6 +78,7 @@ func (context *layoutContext) layoutGridContainer(node *styledNode, box *Box, co
 	rowTracks := gridTrackSizes(node.style.GridTemplateRows(), node.style.GridAutoRows(), model.rows, model.rowOffset)
 	rowSizes := context.sizeGridRows(model.items, rowTracks, definiteHeight, rowGap, contentAlignmentStretches(node.style.AlignContent()))
 	box.gridRowSizes = append([]float64(nil), rowSizes...)
+	box.gridRowLineNames = gridUsedLineNames(node.style.GridTemplateRows(), len(rowSizes), model.rowOffset)
 	rowAvailable := sumFloat64(rowSizes) + rowGap*float64(max(0, len(rowSizes)-1))
 	if definiteHeight != nil {
 		rowAvailable = *definiteHeight
@@ -94,6 +98,8 @@ func (context *layoutContext) buildGridLayoutModel(container *styledNode) (gridL
 	}
 	model.explicitCols = container.style.GridTemplateColumns().Len()
 	model.explicitRows = container.style.GridTemplateRows().Len()
+	model.columnTracks = container.style.GridTemplateColumns()
+	model.rowTracks = container.style.GridTemplateRows()
 	model.columns = model.explicitCols
 	model.rows = model.explicitRows
 	if len(model.items) != 0 && model.columns == 0 && container.style.GridAutoFlow().Axis() == computed.GridAutoFlowRow {
@@ -106,8 +112,8 @@ func (context *layoutContext) buildGridLayoutModel(container *styledNode) (gridL
 	minColumn, minRow := 0, 0
 	for index := range model.items {
 		item := &model.items[index]
-		item.column = resolveGridAxis(item.node.style.GridColumnStart(), item.node.style.GridColumnEnd(), model.explicitCols)
-		item.row = resolveGridAxis(item.node.style.GridRowStart(), item.node.style.GridRowEnd(), model.explicitRows)
+		item.column = resolveGridAxis(item.node.style.GridColumnStart(), item.node.style.GridColumnEnd(), model.columnTracks)
+		item.row = resolveGridAxis(item.node.style.GridRowStart(), item.node.style.GridRowEnd(), model.rowTracks)
 		if item.column.definite {
 			minColumn = min(minColumn, item.column.start)
 		}
@@ -164,6 +170,7 @@ func (context *layoutContext) buildGridLayoutModel(container *styledNode) (gridL
 		}
 		item.row.start, item.row.definite = row, true
 		item.column.start, item.column.definite = column, true
+		item.row.span, item.column.span = model.itemSpansAt(*item, row, column)
 		model.rows = max(model.rows, row+item.row.span)
 		model.columns = max(model.columns, column+item.column.span)
 		if err := model.checkBounds(); err != nil {
@@ -192,6 +199,7 @@ func (context *layoutContext) buildGridLayoutModel(container *styledNode) (gridL
 		}
 		item.row.start, item.row.definite = row, true
 		item.column.start, item.column.definite = column, true
+		item.row.span, item.column.span = model.itemSpansAt(*item, row, column)
 		model.rows = max(model.rows, row+item.row.span)
 		model.columns = max(model.columns, column+item.column.span)
 		if err := model.checkBounds(); err != nil {
@@ -270,16 +278,23 @@ func (context *layoutContext) gridAnonymousProducesLayout(children []*styledNode
 	return len(builder.tokens) != 0
 }
 
-func resolveGridAxis(startLine, endLine computed.GridLine, explicitTracks int) gridAxisPlacement {
+func resolveGridAxis(startLine, endLine computed.GridLine, template computed.GridTrackList) gridAxisPlacement {
+	if startLine.Kind() == computed.GridLineSpan && endLine.Kind() == computed.GridLineSpan {
+		endLine = computed.GridLine{}
+	}
 	span := 1
 	if startLine.Kind() == computed.GridLineSpan {
-		span = max(1, startLine.Number())
+		if startLine.Name() == "" {
+			span = max(1, startLine.Number())
+		}
 	}
 	if endLine.Kind() == computed.GridLineSpan {
-		span = max(1, endLine.Number())
+		if endLine.Name() == "" {
+			span = max(1, endLine.Number())
+		}
 	}
-	start, hasStart := gridLineCoordinate(startLine, explicitTracks)
-	end, hasEnd := gridLineCoordinate(endLine, explicitTracks)
+	start, hasStart := gridLineCoordinate(startLine, template, true)
+	end, hasEnd := gridLineCoordinate(endLine, template, false)
 	switch {
 	case hasStart && hasEnd:
 		if end < start {
@@ -289,6 +304,12 @@ func resolveGridAxis(startLine, endLine computed.GridLine, explicitTracks int) g
 			end++
 		}
 		return gridAxisPlacement{definite: true, start: start, span: end - start}
+	case hasStart && endLine.Kind() == computed.GridLineSpan:
+		end = gridSpanCoordinate(start, 1, endLine, template)
+		return gridAxisPlacement{definite: true, start: start, span: max(1, end-start)}
+	case hasEnd && startLine.Kind() == computed.GridLineSpan:
+		start = gridSpanCoordinate(end, -1, startLine, template)
+		return gridAxisPlacement{definite: true, start: start, span: max(1, end-start)}
 	case hasStart:
 		return gridAxisPlacement{definite: true, start: start, span: span}
 	case hasEnd:
@@ -298,14 +319,107 @@ func resolveGridAxis(startLine, endLine computed.GridLine, explicitTracks int) g
 	}
 }
 
-func gridLineCoordinate(line computed.GridLine, explicitTracks int) (int, bool) {
+func gridLineCoordinate(line computed.GridLine, template computed.GridTrackList, startEdge bool) (int, bool) {
 	if line.Kind() != computed.GridLineNumber {
 		return 0, false
+	}
+	explicitTracks := template.Len()
+	if line.Name() != "" {
+		name := line.Name()
+		if !line.NumberExplicit() {
+			areaName := name + "-end"
+			if startEdge {
+				areaName = name + "-start"
+			}
+			if coordinate, ok := explicitNamedGridLine(template, areaName, 1); ok {
+				return coordinate, true
+			}
+		}
+		return namedGridLineCoordinate(template, name, line.Number()), true
 	}
 	if line.Number() > 0 {
 		return line.Number() - 1, true
 	}
 	return explicitTracks + 1 + line.Number(), true
+}
+
+func explicitNamedGridLine(template computed.GridTrackList, name string, occurrence int) (int, bool) {
+	if occurrence == 0 {
+		return 0, false
+	}
+	if occurrence > 0 {
+		for line := 0; line <= template.Len(); line++ {
+			if gridLineHasName(template, line, name) {
+				occurrence--
+				if occurrence == 0 {
+					return line, true
+				}
+			}
+		}
+		return 0, false
+	}
+	for line := template.Len(); line >= 0; line-- {
+		if gridLineHasName(template, line, name) {
+			occurrence++
+			if occurrence == 0 {
+				return line, true
+			}
+		}
+	}
+	return 0, false
+}
+
+func namedGridLineCoordinate(template computed.GridTrackList, name string, occurrence int) int {
+	if coordinate, ok := explicitNamedGridLine(template, name, occurrence); ok {
+		return coordinate
+	}
+	if occurrence > 0 {
+		matches := 0
+		for line := 0; line <= template.Len(); line++ {
+			if gridLineHasName(template, line, name) {
+				matches++
+			}
+		}
+		return template.Len() + occurrence - matches
+	}
+	matches := 0
+	for line := template.Len(); line >= 0; line-- {
+		if gridLineHasName(template, line, name) {
+			matches++
+		}
+	}
+	return occurrence + matches
+}
+
+func gridSpanCoordinate(opposite, direction int, line computed.GridLine, template computed.GridTrackList) int {
+	occurrence := max(1, line.Number())
+	return namedGridSpanCoordinate(opposite, direction, occurrence, line.Name(), template)
+}
+
+func namedGridSpanCoordinate(opposite, direction, occurrence int, name string, template computed.GridTrackList) int {
+	if name == "" {
+		return opposite + direction*occurrence
+	}
+	remaining := occurrence
+	for candidate := opposite + direction; candidate >= -maxGridTracksPerAxis && candidate <= maxGridTracksPerAxis*2; candidate += direction {
+		implicitMatch := direction > 0 && candidate > template.Len() || direction < 0 && candidate < 0
+		if implicitMatch || candidate >= 0 && candidate <= template.Len() && gridLineHasName(template, candidate, name) {
+			remaining--
+			if remaining == 0 {
+				return candidate
+			}
+		}
+	}
+	return opposite + direction*occurrence
+}
+
+func gridLineHasName(template computed.GridTrackList, line int, name string) bool {
+	for _, candidate := range template.LineNames(line) {
+		if candidate == name {
+			return true
+		}
+	}
+	return false
 }
 
 func (model *gridLayoutModel) checkBounds() error {
@@ -362,6 +476,10 @@ func (model *gridLayoutModel) findPosition(item gridLayoutItem, axis computed.Gr
 	return model.findRowFlowPosition(item, cursorRow, cursorColumn)
 }
 
+func (model *gridLayoutModel) itemSpansAt(item gridLayoutItem, row, column int) (int, int) {
+	return item.row.span, item.column.span
+}
+
 func (model *gridLayoutModel) findRowFlowPosition(item gridLayoutItem, cursorRow, cursorColumn int) (int, int, error) {
 	if item.row.definite {
 		row := item.row.start
@@ -369,11 +487,12 @@ func (model *gridLayoutModel) findRowFlowPosition(item gridLayoutItem, cursorRow
 		if cursorRow == row {
 			startColumn = cursorColumn
 		}
-		for column := startColumn; column+item.column.span <= maxGridTracksPerAxis; column++ {
+		for column := startColumn; column < maxGridTracksPerAxis; column++ {
 			if item.column.definite {
 				column = item.column.start
 			}
-			free, err := model.areaFree(row, column, item.row.span, item.column.span)
+			rowSpan, columnSpan := model.itemSpansAt(item, row, column)
+			free, err := model.areaFree(row, column, rowSpan, columnSpan)
 			if err != nil || free {
 				return row, column, err
 			}
@@ -383,21 +502,26 @@ func (model *gridLayoutModel) findRowFlowPosition(item gridLayoutItem, cursorRow
 		}
 		return 0, 0, fmt.Errorf("render: grid row auto-placement exhausted")
 	}
-	columns := max(model.columns, item.column.span)
+	_, initialColumnSpan := model.itemSpansAt(item, cursorRow, 0)
+	columns := max(model.columns, initialColumnSpan)
 	if item.column.definite {
 		columns = max(columns, item.column.start+item.column.span)
 	}
-	for row := cursorRow; row+item.row.span <= maxGridTracksPerAxis; row++ {
+	for row := cursorRow; row < maxGridTracksPerAxis; row++ {
 		startColumn := 0
 		if row == cursorRow {
 			startColumn = cursorColumn
 		}
-		endColumn := columns - item.column.span
+		endColumn := columns - 1
 		if item.column.definite {
 			startColumn, endColumn = item.column.start, item.column.start
 		}
 		for column := startColumn; column <= endColumn; column++ {
-			free, err := model.areaFree(row, column, item.row.span, item.column.span)
+			rowSpan, columnSpan := model.itemSpansAt(item, row, column)
+			if row+rowSpan > maxGridTracksPerAxis || column+columnSpan > columns {
+				continue
+			}
+			free, err := model.areaFree(row, column, rowSpan, columnSpan)
 			if err != nil || free {
 				return row, column, err
 			}
@@ -413,11 +537,12 @@ func (model *gridLayoutModel) findColumnFlowPosition(item gridLayoutItem, cursor
 		if cursorColumn == column {
 			startRow = cursorRow
 		}
-		for row := startRow; row+item.row.span <= maxGridTracksPerAxis; row++ {
+		for row := startRow; row < maxGridTracksPerAxis; row++ {
 			if item.row.definite {
 				row = item.row.start
 			}
-			free, err := model.areaFree(row, column, item.row.span, item.column.span)
+			rowSpan, columnSpan := model.itemSpansAt(item, row, column)
+			free, err := model.areaFree(row, column, rowSpan, columnSpan)
 			if err != nil || free {
 				return row, column, err
 			}
@@ -427,21 +552,26 @@ func (model *gridLayoutModel) findColumnFlowPosition(item gridLayoutItem, cursor
 		}
 		return 0, 0, fmt.Errorf("render: grid column auto-placement exhausted")
 	}
-	rows := max(model.rows, item.row.span)
+	initialRowSpan, _ := model.itemSpansAt(item, 0, cursorColumn)
+	rows := max(model.rows, initialRowSpan)
 	if item.row.definite {
 		rows = max(rows, item.row.start+item.row.span)
 	}
-	for column := cursorColumn; column+item.column.span <= maxGridTracksPerAxis; column++ {
+	for column := cursorColumn; column < maxGridTracksPerAxis; column++ {
 		startRow := 0
 		if column == cursorColumn {
 			startRow = cursorRow
 		}
-		endRow := rows - item.row.span
+		endRow := rows - 1
 		if item.row.definite {
 			startRow, endRow = item.row.start, item.row.start
 		}
 		for row := startRow; row <= endRow; row++ {
-			free, err := model.areaFree(row, column, item.row.span, item.column.span)
+			rowSpan, columnSpan := model.itemSpansAt(item, row, column)
+			if row+rowSpan > rows || column+columnSpan > maxGridTracksPerAxis {
+				continue
+			}
+			free, err := model.areaFree(row, column, rowSpan, columnSpan)
 			if err != nil || free {
 				return row, column, err
 			}
@@ -475,6 +605,17 @@ func gridTrackSizes(template, automatic computed.GridTrackList, count, offset in
 		}
 	}
 	return tracks
+}
+
+func gridUsedLineNames(template computed.GridTrackList, count, offset int) [][]string {
+	lines := make([][]string, count+1)
+	for explicitLine := 0; explicitLine <= template.Len(); explicitLine++ {
+		usedLine := explicitLine + offset
+		if usedLine >= 0 && usedLine < len(lines) {
+			lines[usedLine] = template.LineNames(explicitLine)
+		}
+	}
+	return lines
 }
 
 func (context *layoutContext) sizeGridColumns(items []gridLayoutItem, tracks []computed.GridTrackSize, availableWidth, gap float64, stretchAuto bool) ([]float64, error) {

@@ -379,13 +379,17 @@ text items without mutating computed snapshots, and bounds placement by item,
 track, occupied-cell, and operation budgets. Explicit and implicit tracks
 accept fixed/percentage/`auto`/`fr`/`min-content`/`max-content` breadths,
 bounded `minmax()` ranges, clamped `fit-content()` maxima, cyclic multi-size
-implicit-track patterns, and bounded integer `repeat()`. Implicit patterns
+implicit-track patterns, and bounded integer `repeat()`. Explicit templates
+also retain case-sensitive named line sets; repeat expansion merges adjacent
+boundary sets and resolved CSSOM interleaves those names with used track sizes.
+Implicit patterns
 repeat forwards after the explicit grid and backwards before it. The
 used-value track model retains separate bases, growth limits, intrinsic
 contributions, and flexible maxima; it floors inverted ranges and treats
 percentage breadths as automatic only when their axis is indefinite.
-Items support numbered and negative lines, spans, stable `order`, row/column
-auto-flow, dense backfill, gaps, content distribution, container item
+Items support numbered and named positive/negative occurrences, named-area
+edge preference, filtered named spans with implicit-line fallback, stable
+`order`, row/column auto-flow, dense backfill, gaps, content distribution, container item
 alignment, and per-item self overrides. Normal/stretch alignment expands
 automatic tracks, positional and distributed content alignment shifts track
 geometry, and non-stretch automatic items shrink to their intrinsic width.
@@ -397,7 +401,7 @@ rules, and retained stable-ID geometry exposes resolved explicit and implicit
   edge cases, row/column `visibility: collapse`, table-wrapper separation,
   direction/writing-mode placement, and collapsed-border junctions once the
   wider border-style set exists.
-- Extend Grid with line names, auto-fill/auto-fit, template areas,
+- Extend Grid with auto-fill/auto-fit, template areas,
   baseline/safe/unsafe alignment, subgrid, and the remaining
   intrinsic/overflow interactions.
 - Add multicolumn and fragmentation only after their block/inline consumers

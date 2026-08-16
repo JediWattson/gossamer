@@ -112,6 +112,8 @@ type Box struct {
 	afterPaint          []boxPaintRect
 	gridColumnSizes     []float64
 	gridRowSizes        []float64
+	gridColumnLineNames [][]string
+	gridRowLineNames    [][]string
 }
 
 type boxPaintRect struct {

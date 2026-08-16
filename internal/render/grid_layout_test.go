@@ -3,6 +3,7 @@ package render_test
 import (
 	"image/color"
 	"math"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -56,6 +57,58 @@ func TestGridLayoutSizesFixedFractionalAndSpanningTracks(t *testing.T) {
 	}
 	if hit := render.HitTest(frame, b.Bounds.X+10, b.Bounds.Y+10); hit != findStaticPageElementByID(document, "b") {
 		t.Fatalf("grid hit = %#v, want item b", hit)
+	}
+}
+
+func TestGridNamedLinesPlaceItemsAndSurviveUsedGeometry(t *testing.T) {
+	t.Parallel()
+
+	document, err := htmlparser.Parse(strings.NewReader(`<!doctype html><html><body style="margin:0">
+		<section id=grid style="display:grid;width:180px;grid-template-columns:[first content-start x] 40px [middle x] 60px [x content-end] 80px [last];grid-auto-rows:20px">
+			<div id=area style="grid-column:content"></div>
+			<div id=span style="grid-column:x / span 2 x"></div>
+			<div id=occurrence style="grid-column:2 x / last"></div>
+		</section>
+	</body></html>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame, err := render.Render(document, render.Viewport{Width: 240, Height: 200})
+	if err != nil {
+		t.Fatal(err)
+	}
+	geometry := func(id string) render.LayoutGeometry {
+		t.Helper()
+		value, ok := frame.Layout.Geometry(findStaticPageElementByID(document, id))
+		if !ok {
+			t.Fatalf("%s has no geometry", id)
+		}
+		return value
+	}
+	grid := geometry("grid")
+	area := geometry("area")
+	span := geometry("span")
+	occurrence := geometry("occurrence")
+	assertNear(t, "area-name start", area.Bounds.X, grid.ContentBounds.X)
+	assertNear(t, "area-name width", area.Bounds.Width, 100)
+	assertNear(t, "named span width", span.Bounds.Width, 100)
+	assertNear(t, "second occurrence x", occurrence.Bounds.X, grid.ContentBounds.X+40)
+	assertNear(t, "second occurrence to last", occurrence.Bounds.Width, 140)
+
+	wantNames := [][]string{
+		{"first", "content-start", "x"},
+		{"middle", "x"},
+		{"x", "content-end"},
+		{"last"},
+	}
+	names := grid.GridColumnLineNames()
+	if !reflect.DeepEqual(names, wantNames) {
+		t.Fatalf("retained line names = %v, want %v", names, wantNames)
+	}
+	names[0][0] = "mutated"
+	again := geometry("grid").GridColumnLineNames()
+	if again[0][0] != "first" {
+		t.Fatalf("mutating returned names changed layout snapshot: %v", again)
 	}
 }
 

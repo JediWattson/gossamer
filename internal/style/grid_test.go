@@ -1,6 +1,7 @@
 package style
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/JediWattson/gossamer/internal/css"
@@ -83,6 +84,72 @@ func TestGridPropertiesComputeSerializeAndStayImmutable(t *testing.T) {
 	}
 }
 
+func TestNamedGridLinesComputeExpandRepeatAndStayImmutable(t *testing.T) {
+	t.Parallel()
+
+	document := dom.NewDocument()
+	html := dom.NewElement("html")
+	body := dom.NewElement("body")
+	target := dom.NewElement("div", dom.Attribute{Name: "style", Value: `
+		display:grid;
+		grid-template-columns:[first nav-start] 40px [middle] repeat(2, [col] 1fr [edge]) [last];
+		grid-template-rows:[\66 oo] 20px [Bar];
+		grid-column:content-start / span 2 content-end;
+		grid-row:Bar 2 / span foo;
+	`})
+	body.AppendChild(target)
+	html.AppendChild(body)
+	document.AppendChild(html)
+
+	snapshot := Compute(document, Input{Environment: Environment{Width: 800, Height: 600, InitialFontSize: 16}})
+	computed, ok := snapshot.Lookup(target)
+	if !ok {
+		t.Fatal("target has no computed style")
+	}
+	wantProperties := map[string]string{
+		"grid-template-columns": "[first nav-start] 40px [middle] repeat(2, [col] 1fr [edge]) [last]",
+		"grid-template-rows":    "[foo] 20px [Bar]",
+		"grid-column-start":     "content-start",
+		"grid-column-end":       "span 2 content-end",
+		"grid-row-start":        "2 Bar",
+		"grid-row-end":          "span foo",
+	}
+	for property, want := range wantProperties {
+		if got, found := ComputedPropertyValue(computed, property); !found || got != want {
+			t.Errorf("%s = %q, %t, want %q, true", property, got, found, want)
+		}
+	}
+
+	template := computed.GridTemplateColumns()
+	wantLines := [][]string{
+		{"first", "nav-start"},
+		{"middle", "col"},
+		{"edge", "col"},
+		{"edge", "last"},
+	}
+	if template.Len() != 3 {
+		t.Fatalf("expanded tracks = %d, want 3", template.Len())
+	}
+	for index, want := range wantLines {
+		got := template.LineNames(index)
+		if !slices.Equal(got, want) {
+			t.Errorf("line %d names = %v, want %v", index, got, want)
+		}
+		if len(got) != 0 {
+			got[0] = "mutated"
+		}
+		if preserved := template.LineNames(index); len(preserved) != 0 && preserved[0] == "mutated" {
+			t.Fatalf("mutating line %d names changed snapshot", index)
+		}
+	}
+	if computed.GridColumnStart().Name() != "content-start" || computed.GridColumnStart().Number() != 1 || computed.GridColumnStart().NumberExplicit() {
+		t.Fatalf("named start = %#v", computed.GridColumnStart())
+	}
+	if computed.GridColumnEnd().Name() != "content-end" || computed.GridColumnEnd().Number() != 2 || !computed.GridColumnEnd().NumberExplicit() {
+		t.Fatalf("named span = %#v", computed.GridColumnEnd())
+	}
+}
+
 func TestGridPropertyGrammarRejectsUnboundedOrUnsupportedTracks(t *testing.T) {
 	t.Parallel()
 
@@ -96,10 +163,14 @@ func TestGridPropertyGrammarRejectsUnboundedOrUnsupportedTracks(t *testing.T) {
 		{Property: "grid-auto-rows", Value: "minmax(min-content, max-content)"},
 		{Property: "grid-template-rows", Value: "min-content max-content minmax(auto, 2fr)"},
 		{Property: "grid-template-columns", Value: "repeat(2, fit-content(10vw))"},
+		{Property: "grid-template-columns", Value: "[first] 20px [middle] repeat(2, [track] 1fr [edge]) [last]"},
+		{Property: "grid-template-columns", Value: "[] 10px []"},
 		{Property: "grid-auto-columns", Value: "fit-content(calc(20px + 5%))"},
 		{Property: "grid-auto-columns", Value: "10px min-content 2fr"},
 		{Property: "grid-auto-flow", Value: "dense row"},
 		{Property: "grid-column", Value: "span 2 / -1"},
+		{Property: "grid-column", Value: "content 2 / span 3 content"},
+		{Property: "grid-row-start", Value: "span row"},
 		{Property: "justify-content", Value: "stretch"},
 		{Property: "justify-items", Value: "start"},
 		{Property: "justify-self", Value: "center"},
@@ -116,6 +187,7 @@ func TestGridPropertyGrammarRejectsUnboundedOrUnsupportedTracks(t *testing.T) {
 		{Property: "align-self", Value: "space-between"},
 		{Property: "grid-template-columns", Value: "repeat(0, 1fr)"},
 		{Property: "grid-template-columns", Value: "repeat(1025, 1fr)"},
+		{Property: "grid-template-columns", Value: "repeat(1024, [a b c d e f g h i] 1px)"},
 		{Property: "grid-template-columns", Value: "minmax(1fr, 20px)"},
 		{Property: "grid-template-columns", Value: "minmax(10px)"},
 		{Property: "grid-template-columns", Value: "minmax(10px, 20px, 30px)"},
@@ -123,9 +195,19 @@ func TestGridPropertyGrammarRejectsUnboundedOrUnsupportedTracks(t *testing.T) {
 		{Property: "grid-template-columns", Value: "fit-content(1fr)"},
 		{Property: "grid-template-columns", Value: "fit-content(20px 30px)"},
 		{Property: "grid-auto-columns", Value: "repeat(2, 10px)"},
+		{Property: "grid-auto-columns", Value: "[named] 10px"},
+		{Property: "grid-template-columns", Value: "[span] 10px"},
+		{Property: "grid-template-columns", Value: "[auto] 10px"},
+		{Property: "grid-template-columns", Value: "[initial] 10px"},
+		{Property: "grid-template-columns", Value: "[a][b] 10px"},
+		{Property: "grid-template-columns", Value: "[a]"},
 		{Property: "grid-auto-flow", Value: "row column"},
 		{Property: "grid-column-start", Value: "0"},
 		{Property: "grid-column-end", Value: "span -1"},
+		{Property: "grid-column-end", Value: "span"},
+		{Property: "grid-column-end", Value: "auto content"},
+		{Property: "grid-column-end", Value: "0 content"},
+		{Property: "grid-column-end", Value: "span 2 first second"},
 		{Property: "grid-row", Value: "1 / 2 / 3"},
 		{Property: "justify-content", Value: "self-start"},
 		{Property: "justify-items", Value: "space-around"},

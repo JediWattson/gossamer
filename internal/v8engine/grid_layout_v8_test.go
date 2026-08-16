@@ -70,6 +70,19 @@ func TestStockV8GridComputedStyleAndGeometryStayLive(t *testing.T) {
 				if (retained.justifyContent !== "center" || retained.alignContent !== "end" || retained["align-content"] !== "end" || retained.justifyItems !== "end" || retained["justify-items"] !== "end" || retained.alignItems !== "start" || aligned.left !== 280 || aligned.top !== 30) {
 					throw new Error("live grid alignment: " + [retained.justifyContent, retained.alignContent, retained.justifyItems, retained.alignItems, aligned.left, aligned.top]);
 				}
+				grid.style.gridTemplateColumns = "[first content-start] 100px [middle] 200px [last content-end]";
+				first.style.gridColumnStart = "content";
+				first.style.gridColumnEnd = "content";
+				if (retained.gridTemplateColumns !== "[first content-start] 100px [middle] 200px [last content-end]" ||
+					getComputedStyle(first).gridColumnStart !== "content" || getComputedStyle(first)["grid-column-end"] !== "content") {
+					throw new Error("named grid lines: " + [retained.gridTemplateColumns, getComputedStyle(first).gridColumnStart, getComputedStyle(first)["grid-column-end"]]);
+				}
+				grid.style["grid-template-columns"] = "repeat(2, [slot] 150px [edge])";
+				first.style.gridColumnStart = "slot";
+				first.style.gridColumnEnd = "edge";
+				if (retained["grid-template-columns"] !== "[slot] 150px [edge slot] 150px [edge]") {
+					throw new Error("repeated named lines: " + retained["grid-template-columns"]);
+				}
 			})();
 		`,
 	}); err != nil {

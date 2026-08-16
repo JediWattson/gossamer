@@ -28,12 +28,83 @@ func TestResolveGridAxisHandlesLinesSpansAndReversedAreas(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got := resolveGridAxis(test.start, test.end, test.explicit)
+			got := resolveGridAxis(test.start, test.end, computedGridTrackListForTest(test.explicit))
 			if got.definite != test.wantDefinite || got.start != test.wantStart || got.span != test.wantSpan {
 				t.Fatalf("resolveGridAxis() = %#v, want definite=%t start=%d span=%d", got, test.wantDefinite, test.wantStart, test.wantSpan)
 			}
 		})
 	}
+}
+
+func TestResolveGridAxisHandlesNamedOccurrencesAreasAndSpans(t *testing.T) {
+	t.Parallel()
+
+	template := computedGridTrackListFromCSS("[outer area-start x] 10px [x] 10px [x area-end] 10px [outer]")
+	tests := []struct {
+		name       string
+		start, end string
+		wantStart  int
+		wantSpan   int
+	}{
+		{name: "first named line", start: "x", wantStart: 0, wantSpan: 1},
+		{name: "second named line", start: "2 x", wantStart: 1, wantSpan: 1},
+		{name: "negative named occurrence", start: "-1 x", wantStart: 2, wantSpan: 1},
+		{name: "missing positive continues implicit", start: "2 missing", wantStart: 5, wantSpan: 1},
+		{name: "missing negative continues implicit", start: "-2 missing", wantStart: -2, wantSpan: 1},
+		{name: "name-only prefers area start edge", start: "area", wantStart: 0, wantSpan: 1},
+		{name: "name-only prefers area end edge", start: "1", end: "area", wantStart: 0, wantSpan: 2},
+		{name: "forward named span", start: "x", end: "span 2 x", wantStart: 0, wantSpan: 2},
+		{name: "backward named span", start: "span 2 x", end: "3 x", wantStart: 0, wantSpan: 2},
+		{name: "case-sensitive missing name", start: "X", wantStart: 4, wantSpan: 1},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			start := computedGridLineFromCSS(test.start)
+			end := computed.GridLine{}
+			if test.end != "" {
+				end = computedGridLineFromCSS(test.end)
+			}
+			got := resolveGridAxis(start, end, template)
+			if !got.definite || got.start != test.wantStart || got.span != test.wantSpan {
+				t.Fatalf("resolveGridAxis(%q,%q) = %#v, want start=%d span=%d", test.start, test.end, got, test.wantStart, test.wantSpan)
+			}
+		})
+	}
+
+	autoSpan := resolveGridAxis(computed.GridLine{}, computedGridLineFromCSS("span 2 x"), template)
+	model := gridLayoutModel{columnTracks: template}
+	_, gotSpan := model.itemSpansAt(gridLayoutItem{column: autoSpan, row: gridAxisPlacement{span: 1}}, 0, 0)
+	if gotSpan != 1 {
+		t.Fatalf("unanchored named span = %d, want conflict-resolved span 1", gotSpan)
+	}
+	twoSpans := resolveGridAxis(computedGridLineFromCSS("span 3"), computedGridLineFromCSS("span 2"), template)
+	if twoSpans.definite || twoSpans.span != 3 {
+		t.Fatalf("two spans = %#v, want end span discarded and start span 3", twoSpans)
+	}
+	twoNamedSpans := resolveGridAxis(computedGridLineFromCSS("span 3 x"), computedGridLineFromCSS("span 2 x"), template)
+	if twoNamedSpans.definite || twoNamedSpans.span != 1 {
+		t.Fatalf("two named spans = %#v, want end discarded then named-only span 1", twoNamedSpans)
+	}
+}
+
+func computedGridTrackListForTest(count int) computed.GridTrackList {
+	if count == 0 {
+		return computed.GridTrackList{}
+	}
+	return computedGridTrackListFromCSS(fmt.Sprintf("repeat(%d,1px)", count))
+}
+
+func computedGridTrackListFromCSS(source string) computed.GridTrackList {
+	document := dom.NewDocument()
+	html := dom.NewElement("html")
+	body := dom.NewElement("body")
+	target := dom.NewElement("div", dom.Attribute{Name: "style", Value: "grid-template-columns:" + source})
+	body.AppendChild(target)
+	html.AppendChild(body)
+	document.AppendChild(html)
+	snapshot := computed.Compute(document, computed.Input{Environment: computed.Environment{Width: 800, Height: 600, InitialFontSize: 16}})
+	style, _ := snapshot.Lookup(target)
+	return style.GridTemplateColumns()
 }
 
 func TestGridPlacementBudgetsFailClosed(t *testing.T) {

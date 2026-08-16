@@ -283,8 +283,9 @@ performance budgets; see
 - Block and inline Grid containers with bounded explicit and implicit tracks,
   fixed/percentage/`auto`/`fr`/`min-content`/`max-content` breadths, bounded
   `minmax()` ranges, clamped `fit-content()`, multi-size implicit-track
-  patterns, and integer `repeat()`, numbered and negative line placement,
-  spans, row/column dense auto-flow, gaps, content distribution,
+  patterns, integer `repeat()`, and bounded case-sensitive named line sets
+  whose repeated boundaries merge, numbered/named positive and negative line
+  placement, filtered named spans, row/column dense auto-flow, gaps, content distribution,
   container/item/self alignment, anonymous text items, order-modified
   placement and paint, retained track geometry, and live resolved
   `grid-template-*` CSSOM reads
@@ -330,8 +331,8 @@ The following are intentionally still outside the current milestone:
 - Full HTML error recovery beyond the current table insertion modes and foster
   parenting, including formatting-element reconstruction, complete template
   modes, SVG/MathML, and encoding sniffing
-- Flex wrapping and full intrinsic sizing, Grid named lines and areas,
-  auto-repeat, subgrid, baseline/safe/unsafe alignment, remaining table track
+- Flex wrapping and full intrinsic sizing, Grid named areas, auto-repeat,
+  subgrid, baseline/safe/unsafe alignment, remaining table track
   merging, percentage sizing, visibility-collapse, wrapper, writing-mode, and
   border junction behavior, floats, sticky and full inline positioned layout,
   and retained inline boxes

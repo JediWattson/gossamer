@@ -8,7 +8,10 @@ import (
 	"github.com/JediWattson/gossamer/internal/css"
 )
 
-const maxGridTrackListEntries = 1024
+const (
+	maxGridTrackListEntries = 1024
+	maxGridLineNames        = 8192
+)
 
 // GridTrackKind identifies one computed track-breadth form.
 type GridTrackKind uint8
@@ -56,6 +59,7 @@ func (track GridTrackSize) FitContentLimit() Length {
 // style snapshots cannot be mutated through CSSOM or renderer callers.
 type GridTrackList struct {
 	tracks        []GridTrackSize
+	lineNames     [][]string
 	serialization string
 }
 
@@ -70,6 +74,15 @@ func (list GridTrackList) At(index int) (GridTrackSize, bool) {
 
 func (list GridTrackList) Tracks() []GridTrackSize {
 	return append([]GridTrackSize(nil), list.tracks...)
+}
+
+// LineNames returns a copy of the case-sensitive names assigned to one
+// explicit grid line. A non-empty track list has Len()+1 lines.
+func (list GridTrackList) LineNames(index int) []string {
+	if index < 0 || index >= len(list.lineNames) {
+		return nil
+	}
+	return append([]string(nil), list.lineNames[index]...)
 }
 
 // GridAutoFlowAxis is the major axis used by the auto-placement cursor.
@@ -89,7 +102,6 @@ func (flow GridAutoFlow) Axis() GridAutoFlowAxis { return flow.axis }
 func (flow GridAutoFlow) Dense() bool            { return flow.dense }
 
 // GridLineKind distinguishes automatic, absolute-line, and span placement.
-// Named lines are intentionally deferred until template line names arrive.
 type GridLineKind uint8
 
 const (
@@ -99,12 +111,75 @@ const (
 )
 
 type GridLine struct {
-	kind   GridLineKind
-	number int
+	kind           GridLineKind
+	number         int
+	name           string
+	numberExplicit bool
 }
 
 func (line GridLine) Kind() GridLineKind { return line.kind }
-func (line GridLine) Number() int        { return line.number }
+func (line GridLine) Number() int {
+	if line.number == 0 && line.kind != GridLineAuto {
+		return 1
+	}
+	return line.number
+}
+func (line GridLine) Name() string { return line.name }
+
+// NumberExplicit reports whether the integer was written rather than supplied
+// by the grid-line grammar's default occurrence of one.
+func (line GridLine) NumberExplicit() bool { return line.numberExplicit }
+
+type gridTrackListBuilder struct {
+	tracks    []GridTrackSize
+	lineNames [][]string
+	nameCount int
+}
+
+func newGridTrackListBuilder(capacity int) gridTrackListBuilder {
+	return gridTrackListBuilder{
+		tracks:    make([]GridTrackSize, 0, capacity),
+		lineNames: [][]string{{}},
+	}
+}
+
+func (builder *gridTrackListBuilder) appendNames(names []string) bool {
+	if builder.nameCount+len(names) > maxGridLineNames || len(builder.lineNames) == 0 {
+		return false
+	}
+	last := len(builder.lineNames) - 1
+	builder.lineNames[last] = append(builder.lineNames[last], names...)
+	builder.nameCount += len(names)
+	return true
+}
+
+func (builder *gridTrackListBuilder) appendTrack(track GridTrackSize) bool {
+	if len(builder.tracks) >= maxGridTrackListEntries {
+		return false
+	}
+	builder.tracks = append(builder.tracks, track)
+	builder.lineNames = append(builder.lineNames, nil)
+	return true
+}
+
+func (builder *gridTrackListBuilder) appendRepeated(repeated gridTrackListBuilder, count int) bool {
+	if len(repeated.tracks) == 0 || count < 1 || count > maxGridTrackListEntries/len(repeated.tracks) ||
+		len(builder.tracks)+count*len(repeated.tracks) > maxGridTrackListEntries ||
+		repeated.nameCount != 0 && count > (maxGridLineNames-builder.nameCount)/repeated.nameCount {
+		return false
+	}
+	for range count {
+		if !builder.appendNames(repeated.lineNames[0]) {
+			return false
+		}
+		for index, track := range repeated.tracks {
+			if !builder.appendTrack(track) || !builder.appendNames(repeated.lineNames[index+1]) {
+				return false
+			}
+		}
+	}
+	return true
+}
 
 func parseGridTrackList(source string, fontSize float64, viewport Viewport) (GridTrackList, bool) {
 	value, ok := parsePropertyValue(source)
@@ -116,20 +191,15 @@ func parseGridTrackList(source string, fontSize float64, viewport Viewport) (Gri
 			return GridTrackList{serialization: "none"}, true
 		}
 	}
-	tracks := make([]GridTrackSize, 0, len(value.terms))
-	for _, term := range value.terms {
-		if !appendGridTrackComponent(&tracks, term, value.source, fontSize, viewport, true) {
-			return GridTrackList{}, false
-		}
-	}
-	if len(tracks) == 0 || len(tracks) > maxGridTrackListEntries {
+	builder, ok := parseGridTrackSequence(value.terms, value.source, fontSize, viewport, true)
+	if !ok || len(builder.tracks) == 0 {
 		return GridTrackList{}, false
 	}
 	serialization, ok := canonicalGridTrackList(value.terms, value.source, fontSize, viewport)
 	if !ok {
 		return GridTrackList{}, false
 	}
-	return GridTrackList{tracks: tracks, serialization: serialization}, true
+	return GridTrackList{tracks: builder.tracks, lineNames: builder.lineNames, serialization: serialization}, true
 }
 
 func defaultGridAutoTrackList() GridTrackList {
@@ -144,46 +214,69 @@ func parseGridAutoTrackList(source string, fontSize float64, viewport Viewport) 
 	tracks := make([]GridTrackSize, 0, len(value.terms))
 	parts := make([]string, 0, len(value.terms))
 	for _, term := range value.terms {
-		if !appendGridTrackComponent(&tracks, term, value.source, fontSize, viewport, false) || len(tracks) != len(parts)+1 {
+		parsed, parsedOK := parseGridTrackSizeComponent(term, value.source, fontSize, viewport)
+		if !parsedOK {
 			return GridTrackList{}, false
 		}
-		parts = append(parts, serializeGridTrackSize(tracks[len(tracks)-1]))
+		tracks = append(tracks, parsed)
+		parts = append(parts, serializeGridTrackSize(parsed))
 	}
 	return GridTrackList{tracks: tracks, serialization: strings.Join(parts, " ")}, true
 }
 
-func appendGridTrackComponent(tracks *[]GridTrackSize, component css.ComponentValue, source string, fontSize float64, viewport Viewport, allowRepeat bool) bool {
-	if len(*tracks) >= maxGridTrackListEntries {
-		return false
-	}
-	if component.Kind == css.ComponentFunction && lowerASCIIValue(component.Token.Value) == "repeat" {
-		if !allowRepeat {
-			return false
-		}
-		count, body, ok := gridRepeatParts(component)
-		if !ok {
-			return false
-		}
-		if count > maxGridTrackListEntries/len(body) || len(*tracks)+count*len(body) > maxGridTrackListEntries {
-			return false
-		}
-		parsed := make([]GridTrackSize, 0, len(body))
-		for _, child := range body {
-			if !appendGridTrackComponent(&parsed, child, source, fontSize, viewport, false) {
-				return false
+func parseGridTrackSequence(components []css.ComponentValue, source string, fontSize float64, viewport Viewport, allowRepeat bool) (gridTrackListBuilder, bool) {
+	builder := newGridTrackListBuilder(len(components))
+	previousNames := false
+	for _, component := range components {
+		if names, ok := parseGridLineNameSet(component); ok {
+			if previousNames || !builder.appendNames(names) {
+				return gridTrackListBuilder{}, false
 			}
+			previousNames = true
+			continue
 		}
-		for range count {
-			*tracks = append(*tracks, parsed...)
+		if component.Kind == css.ComponentBlock && component.Token.Kind == css.TokenOpenSquare {
+			return gridTrackListBuilder{}, false
 		}
-		return true
+		previousNames = false
+		if component.Kind == css.ComponentFunction && lowerASCIIValue(component.Token.Value) == "repeat" {
+			if !allowRepeat {
+				return gridTrackListBuilder{}, false
+			}
+			count, body, ok := gridRepeatParts(component)
+			if !ok {
+				return gridTrackListBuilder{}, false
+			}
+			repeated, ok := parseGridTrackSequence(body, source, fontSize, viewport, false)
+			if !ok || !builder.appendRepeated(repeated, count) {
+				return gridTrackListBuilder{}, false
+			}
+			continue
+		}
+		track, ok := parseGridTrackSizeComponent(component, source, fontSize, viewport)
+		if !ok || !builder.appendTrack(track) {
+			return gridTrackListBuilder{}, false
+		}
 	}
-	parsed, ok := parseGridTrackSizeComponent(component, source, fontSize, viewport)
-	if !ok {
-		return false
+	return builder, len(builder.tracks) != 0
+}
+
+func parseGridLineNameSet(component css.ComponentValue) ([]string, bool) {
+	if component.Kind != css.ComponentBlock || component.Token.Kind != css.TokenOpenSquare {
+		return nil, false
 	}
-	*tracks = append(*tracks, parsed)
-	return true
+	names := make([]string, 0, len(component.Values))
+	for _, child := range component.Values {
+		if valueWhitespace(child) {
+			continue
+		}
+		name, ok := gridCustomIdentifier(child)
+		if !ok || len(names) >= maxGridLineNames {
+			return nil, false
+		}
+		names = append(names, name)
+	}
+	return names, true
 }
 
 type gridTrackBreadth struct {
@@ -318,6 +411,10 @@ func gridRepeatParts(component css.ComponentValue) (int, []css.ComponentValue, b
 func canonicalGridTrackList(terms []css.ComponentValue, source string, fontSize float64, viewport Viewport) (string, bool) {
 	parts := make([]string, 0, len(terms))
 	for _, term := range terms {
+		if names, ok := parseGridLineNameSet(term); ok {
+			parts = append(parts, serializeGridLineNameSet(names))
+			continue
+		}
 		if term.Kind == css.ComponentFunction && lowerASCIIValue(term.Token.Value) == "repeat" {
 			count, body, ok := gridRepeatParts(term)
 			if !ok {
@@ -325,20 +422,24 @@ func canonicalGridTrackList(terms []css.ComponentValue, source string, fontSize 
 			}
 			bodyParts := make([]string, 0, len(body))
 			for _, child := range body {
-				tracks := make([]GridTrackSize, 0, 1)
-				if !appendGridTrackComponent(&tracks, child, source, fontSize, viewport, false) || len(tracks) != 1 {
+				if names, namesOK := parseGridLineNameSet(child); namesOK {
+					bodyParts = append(bodyParts, serializeGridLineNameSet(names))
+					continue
+				}
+				track, trackOK := parseGridTrackSizeComponent(child, source, fontSize, viewport)
+				if !trackOK {
 					return "", false
 				}
-				bodyParts = append(bodyParts, serializeGridTrackSize(tracks[0]))
+				bodyParts = append(bodyParts, serializeGridTrackSize(track))
 			}
 			parts = append(parts, "repeat("+strconv.Itoa(count)+", "+strings.Join(bodyParts, " ")+")")
 			continue
 		}
-		tracks := make([]GridTrackSize, 0, 1)
-		if !appendGridTrackComponent(&tracks, term, source, fontSize, viewport, false) || len(tracks) != 1 {
+		track, ok := parseGridTrackSizeComponent(term, source, fontSize, viewport)
+		if !ok {
 			return "", false
 		}
-		parts = append(parts, serializeGridTrackSize(tracks[0]))
+		parts = append(parts, serializeGridTrackSize(track))
 	}
 	return strings.Join(parts, " "), len(parts) != 0
 }
@@ -401,30 +502,55 @@ func parseGridLineTerms(terms []css.ComponentValue) (GridLine, bool) {
 		if keyword, ok := componentKeyword(terms[0]); ok && keyword == "auto" {
 			return GridLine{kind: GridLineAuto}, true
 		}
-		if number, ok := gridInteger(terms[0]); ok && number != 0 {
-			return GridLine{kind: GridLineNumber, number: number}, true
-		}
+	}
+	if len(terms) == 0 || len(terms) > 3 {
 		return GridLine{}, false
 	}
-	if len(terms) == 2 {
-		keyword, keywordIndex := "", -1
-		number, numberOK := 0, false
-		for index, term := range terms {
-			if candidate, ok := componentKeyword(term); ok {
-				keyword, keywordIndex = candidate, index
-				continue
+	span, number, numberOK, name := false, 1, false, ""
+	for _, term := range terms {
+		if keyword, ok := componentKeyword(term); ok && keyword == "span" {
+			if span {
+				return GridLine{}, false
 			}
-			if candidate, ok := gridInteger(term); ok {
-				number, numberOK = candidate, true
-				continue
+			span = true
+			continue
+		}
+		if candidate, ok := gridInteger(term); ok {
+			if numberOK || candidate == 0 {
+				return GridLine{}, false
 			}
+			number, numberOK = candidate, true
+			continue
+		}
+		candidate, ok := gridCustomIdentifier(term)
+		if !ok || name != "" {
 			return GridLine{}, false
 		}
-		if keyword == "span" && keywordIndex >= 0 && numberOK && number > 0 {
-			return GridLine{kind: GridLineSpan, number: number}, true
-		}
+		name = candidate
 	}
-	return GridLine{}, false
+	if span {
+		if !numberOK && name == "" || number < 1 {
+			return GridLine{}, false
+		}
+		return GridLine{kind: GridLineSpan, number: number, name: name, numberExplicit: numberOK}, true
+	}
+	if !numberOK && name == "" {
+		return GridLine{}, false
+	}
+	return GridLine{kind: GridLineNumber, number: number, name: name, numberExplicit: numberOK}, true
+}
+
+func gridCustomIdentifier(component css.ComponentValue) (string, bool) {
+	token, ok := componentToken(component)
+	if !ok || token.Kind != css.TokenIdent {
+		return "", false
+	}
+	switch lowerASCIIValue(token.Value) {
+	case "auto", "span", "default", "initial", "inherit", "unset", "revert", "revert-layer":
+		return "", false
+	default:
+		return token.Value, token.Value != ""
+	}
 }
 
 func gridInteger(component css.ComponentValue) (int, bool) {
@@ -453,7 +579,11 @@ func parseGridLineShorthand(source string) (GridLine, GridLine, bool) {
 	}
 	if slash < 0 {
 		start, startOK := parseGridLineTerms(value.terms)
-		return start, GridLine{kind: GridLineAuto}, startOK
+		end := GridLine{kind: GridLineAuto}
+		if startOK && start.kind == GridLineNumber && start.name != "" && !start.numberExplicit {
+			end = start
+		}
+		return start, end, startOK
 	}
 	if slash == 0 || slash == len(value.terms)-1 {
 		return GridLine{}, GridLine{}, false
@@ -496,11 +626,59 @@ func serializeGridTrackList(list GridTrackList) string {
 	if len(list.tracks) == 0 {
 		return "none"
 	}
-	parts := make([]string, len(list.tracks))
+	parts := make([]string, 0, len(list.tracks)*2+1)
 	for index, track := range list.tracks {
-		parts[index] = serializeGridTrackSize(track)
+		if names := list.LineNames(index); len(names) != 0 {
+			parts = append(parts, serializeGridLineNameSet(names))
+		}
+		parts = append(parts, serializeGridTrackSize(track))
+	}
+	if names := list.LineNames(len(list.tracks)); len(names) != 0 {
+		parts = append(parts, serializeGridLineNameSet(names))
 	}
 	return strings.Join(parts, " ")
+}
+
+func serializeGridLineNameSet(names []string) string {
+	serialized := make([]string, len(names))
+	for index, name := range names {
+		serialized[index] = serializeGridIdentifier(name)
+	}
+	return "[" + strings.Join(serialized, " ") + "]"
+}
+
+// SerializeGridLineNames returns the canonical bracketed serialization used by
+// resolved grid track listings. Names are case-sensitive decoded identifiers.
+func SerializeGridLineNames(names []string) string {
+	return serializeGridLineNameSet(names)
+}
+
+func serializeGridIdentifier(identifier string) string {
+	runes := []rune(identifier)
+	var result strings.Builder
+	result.Grow(len(identifier))
+	for index, candidate := range runes {
+		switch {
+		case candidate == 0:
+			result.WriteRune('\uFFFD')
+		case candidate >= 1 && candidate <= 0x1f || candidate == 0x7f ||
+			index == 0 && candidate >= '0' && candidate <= '9' ||
+			index == 1 && runes[0] == '-' && candidate >= '0' && candidate <= '9':
+			result.WriteByte('\\')
+			result.WriteString(strconv.FormatInt(int64(candidate), 16))
+			result.WriteByte(' ')
+		case index == 0 && candidate == '-' && len(runes) == 1:
+			result.WriteString("\\-")
+		case candidate >= 0x80 || candidate == '-' || candidate == '_' ||
+			candidate >= '0' && candidate <= '9' ||
+			candidate >= 'A' && candidate <= 'Z' || candidate >= 'a' && candidate <= 'z':
+			result.WriteRune(candidate)
+		default:
+			result.WriteByte('\\')
+			result.WriteRune(candidate)
+		}
+	}
+	return result.String()
 }
 
 func serializeGridAutoFlow(flow GridAutoFlow) string {
@@ -517,9 +695,23 @@ func serializeGridAutoFlow(flow GridAutoFlow) string {
 func serializeGridLine(line GridLine) string {
 	switch line.kind {
 	case GridLineNumber:
-		return strconv.Itoa(line.number)
+		parts := make([]string, 0, 2)
+		if line.numberExplicit || line.name == "" {
+			parts = append(parts, strconv.Itoa(line.Number()))
+		}
+		if line.name != "" {
+			parts = append(parts, serializeGridIdentifier(line.name))
+		}
+		return strings.Join(parts, " ")
 	case GridLineSpan:
-		return "span " + strconv.Itoa(line.number)
+		parts := []string{"span"}
+		if line.numberExplicit || line.name == "" {
+			parts = append(parts, strconv.Itoa(line.Number()))
+		}
+		if line.name != "" {
+			parts = append(parts, serializeGridIdentifier(line.name))
+		}
+		return strings.Join(parts, " ")
 	default:
 		return "auto"
 	}

@@ -66,7 +66,7 @@ func TestComputedGridTemplateIncludesImplicitTracksAndEmptyGridKeepsNone(t *test
 	t.Parallel()
 
 	engine, page, gridID := computedStyleTestPage(t, `<!doctype html><html><body style="margin:0">
-		<section id=target style="display:grid;width:150px;grid-template-columns:40px 40px;grid-auto-columns:20px 30px;column-gap:5px"><div style="grid-column:-5"></div><div style="grid-column:4"></div></section>
+		<section id=target style="display:grid;width:150px;grid-template-columns:[first] 40px [middle] 40px [last];grid-auto-columns:20px 30px;column-gap:5px"><div style="grid-column:-5"></div><div style="grid-column:4"></div></section>
 		<section id=empty style="display:grid;width:100px"></section>
 	</body></html>`)
 	defer engine.Close()
@@ -74,12 +74,46 @@ func TestComputedGridTemplateIncludesImplicitTracksAndEmptyGridKeepsNone(t *test
 	grid := NodeHandle{Document: generation, Node: gridID}
 	empty := NodeHandle{Document: generation, Node: mustPageElementID(t, page, "empty")}
 
-	assertResolvedProperty(t, page, grid, "grid-template-columns", "20px 30px 40px 40px 20px 30px")
+	assertResolvedProperty(t, page, grid, "grid-template-columns", "20px 30px [first] 40px [middle] 40px [last] 20px 30px")
 	assertResolvedProperty(t, page, grid, "grid-auto-columns", "20px 30px")
 	assertResolvedProperty(t, page, empty, "grid-template-columns", "none")
 	assertResolvedProperty(t, page, empty, "grid-template-rows", "none")
 	if page.Frame() != nil || !page.Dirty() {
 		t.Fatal("grid resolved-style reads published a frame or cleared dirtiness")
+	}
+}
+
+func TestComputedGridTemplateRetainsNamedLinesAndNamedPlacement(t *testing.T) {
+	t.Parallel()
+
+	engine, page, gridID := computedStyleTestPage(t, `<!doctype html><html><body style="margin:0">
+		<section id=target style="display:grid;width:100px;grid-template-columns:[first content-start] 40px [middle] 60px [last content-end];grid-auto-rows:20px"><div id=child style="grid-column:content"></div></section>
+	</body></html>`)
+	defer engine.Close()
+	generation := page.DocumentGeneration()
+	grid := NodeHandle{Document: generation, Node: gridID}
+	child := NodeHandle{Document: generation, Node: mustPageElementID(t, page, "child")}
+
+	assertResolvedProperty(t, page, grid, "grid-template-columns", "[first content-start] 40px [middle] 60px [last content-end]")
+	assertResolvedProperty(t, page, child, "grid-column-start", "content")
+	assertResolvedProperty(t, page, child, "grid-column-end", "content")
+	geometry, err := page.ElementGeometry(child)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if geometry.Rect.X != 0 || geometry.Rect.Width != 100 {
+		t.Fatalf("named-area geometry = %#v, want x=0 width=100", geometry.Rect)
+	}
+
+	if err := page.document.SetAttribute(gridID, "style", "display:grid;width:100px;grid-template-columns:repeat(2,[slot] 50px [edge]);grid-auto-rows:20px"); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.document.SetAttribute(child.Node, "style", "grid-column:slot / edge"); err != nil {
+		t.Fatal(err)
+	}
+	assertResolvedProperty(t, page, grid, "grid-template-columns", "[slot] 50px [edge slot] 50px [edge]")
+	if page.Frame() != nil || !page.Dirty() {
+		t.Fatal("named grid computed-style read published a frame or cleared dirtiness")
 	}
 }
 

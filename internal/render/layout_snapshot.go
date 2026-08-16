@@ -24,6 +24,8 @@ type LayoutGeometry struct {
 	PercentHeightResolved bool
 	gridColumnSizes       []float64
 	gridRowSizes          []float64
+	gridColumnLineNames   [][]string
+	gridRowLineNames      [][]string
 }
 
 // GridColumnSizes returns the used explicit and implicit column track sizes
@@ -36,6 +38,29 @@ func (geometry LayoutGeometry) GridColumnSizes() []float64 {
 // principal grid container box. The returned slice is a copy.
 func (geometry LayoutGeometry) GridRowSizes() []float64 {
 	return append([]float64(nil), geometry.gridRowSizes...)
+}
+
+// GridColumnLineNames returns the explicit names attached to every used
+// column line, including empty sets for implicit lines.
+func (geometry LayoutGeometry) GridColumnLineNames() [][]string {
+	return cloneGridLineNames(geometry.gridColumnLineNames)
+}
+
+// GridRowLineNames returns the explicit names attached to every used row line,
+// including empty sets for implicit lines.
+func (geometry LayoutGeometry) GridRowLineNames() [][]string {
+	return cloneGridLineNames(geometry.gridRowLineNames)
+}
+
+func cloneGridLineNames(names [][]string) [][]string {
+	if names == nil {
+		return nil
+	}
+	cloned := make([][]string, len(names))
+	for index := range names {
+		cloned[index] = append([]string(nil), names[index]...)
+	}
+	return cloned
 }
 
 // LayoutSnapshot is an immutable layout result that can be queried before it
@@ -230,6 +255,8 @@ func boxGeometry(box *Box, extent layoutExtent) LayoutGeometry {
 		PercentHeightResolved: box.percentHeightResolved,
 		gridColumnSizes:       append([]float64(nil), box.gridColumnSizes...),
 		gridRowSizes:          append([]float64(nil), box.gridRowSizes...),
+		gridColumnLineNames:   cloneGridLineNames(box.gridColumnLineNames),
+		gridRowLineNames:      cloneGridLineNames(box.gridRowLineNames),
 	}
 }
 

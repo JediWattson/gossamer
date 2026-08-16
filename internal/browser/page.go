@@ -646,17 +646,15 @@ func (page *Page) ComputedStyleProperty(handle NodeHandle, property string) (str
 				return nil
 			}
 			tracks := geometry.GridColumnSizes()
+			lineNames := geometry.GridColumnLineNames()
 			if canonical == "grid-template-rows" {
 				tracks = geometry.GridRowSizes()
+				lineNames = geometry.GridRowLineNames()
 			}
 			if len(tracks) == 0 {
 				return nil
 			}
-			serialized := make([]string, len(tracks))
-			for index, track := range tracks {
-				serialized[index] = serializeUsedPixels(track)
-			}
-			value = strings.Join(serialized, " ")
+			value = serializeResolvedGridTracks(tracks, lineNames)
 			return nil
 		}
 		if canonical == "height" && computedStyle.Height().DependsOnPercent() && !geometry.PercentHeightResolved {
@@ -864,6 +862,20 @@ func serializeUsedPixels(value float64) string {
 		return "0px"
 	}
 	return strconv.FormatFloat(value, 'f', -1, 64) + "px"
+}
+
+func serializeResolvedGridTracks(tracks []float64, lineNames [][]string) string {
+	parts := make([]string, 0, len(tracks)*2+1)
+	for index, track := range tracks {
+		if index < len(lineNames) && len(lineNames[index]) != 0 {
+			parts = append(parts, computed.SerializeGridLineNames(lineNames[index]))
+		}
+		parts = append(parts, serializeUsedPixels(track))
+	}
+	if len(tracks) < len(lineNames) && len(lineNames[len(tracks)]) != 0 {
+		parts = append(parts, computed.SerializeGridLineNames(lineNames[len(tracks)]))
+	}
+	return strings.Join(parts, " ")
 }
 
 var ErrStaleNodeHandle = errors.New("browser: node handle belongs to a previous document")

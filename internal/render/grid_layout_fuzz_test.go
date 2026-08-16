@@ -50,18 +50,18 @@ func FuzzGridLayoutPlacementStaysFinite(f *testing.F) {
 		html := dom.NewElement("html")
 		body := dom.NewElement("body", dom.Attribute{Name: "style", Value: "margin:0"})
 		grid := dom.NewElement("section", dom.Attribute{Name: "style", Value: fmt.Sprintf(
-			"display:grid;width:%dpx;height:%dpx;grid-template-columns:repeat(%d,%s);grid-template-rows:repeat(%d,auto);grid-auto-columns:%s auto;grid-auto-rows:%dpx auto;grid-auto-flow:%s;gap:%dpx;justify-content:%s;align-content:%s;justify-items:%s;align-items:%s",
+			"display:grid;width:%dpx;height:%dpx;grid-template-columns:repeat(%d,[slot] %s [edge]);grid-template-rows:repeat(%d,[row] auto [row-end]);grid-auto-columns:%s auto;grid-auto-rows:%dpx auto;grid-auto-flow:%s;gap:%dpx;justify-content:%s;align-content:%s;justify-items:%s;align-items:%s",
 			100+int(rawColumns)*2, 80+int(rawRows)*2, columns, track, rows, track, 8+rawModes%12, flow, rawModes%7, contentAlignment, contentAlignment, selfAlignment, selfAlignment,
 		)})
 		for index := range itemCount {
 			placement := ""
 			switch (int(rawModes) + index) % 4 {
 			case 0:
-				placement = fmt.Sprintf("grid-column:%d / span %d;", index%columns+1, min(span, columns))
+				placement = fmt.Sprintf("grid-column:%d slot / span %d slot;", index%columns+1, min(span, columns))
 			case 1:
-				placement = fmt.Sprintf("grid-row:%d;grid-column-end:span %d;", index%rows+1, min(span, columns))
+				placement = fmt.Sprintf("grid-row:%d row;grid-column-end:span %d edge;", index%rows+1, min(span, columns))
 			case 2:
-				placement = fmt.Sprintf("grid-row-end:span %d;", min(span, rows))
+				placement = fmt.Sprintf("grid-row-end:span %d row;", min(span, rows))
 			}
 			item := dom.NewElement("div", dom.Attribute{Name: "style", Value: placement + fmt.Sprintf("min-width:%dpx;min-height:%dpx;background:#123456;justify-self:%s;align-self:%s", index%13, index%11, selfAlignment, selfAlignment)})
 			item.AppendChild(dom.NewText(strings.Repeat("x", index%9)))
