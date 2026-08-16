@@ -24,13 +24,14 @@ type DocumentIdentity struct {
 var nextDocumentIdentity atomic.Uint64
 
 var (
-	ErrInvalidDocument = errors.New("dom: invalid document")
-	ErrUnknownNode     = errors.New("dom: unknown node id")
-	ErrInvalidTree     = errors.New("dom: invalid node tree")
-	ErrWrongNodeKind   = errors.New("dom: wrong node kind")
-	ErrInvalidName     = errors.New("dom: invalid name")
-	ErrNamespace       = errors.New("dom: invalid namespace")
-	ErrExpiredReadView = errors.New("dom: read view has expired")
+	ErrInvalidDocument         = errors.New("dom: invalid document")
+	ErrUnknownNode             = errors.New("dom: unknown node id")
+	ErrInvalidTree             = errors.New("dom: invalid node tree")
+	ErrWrongNodeKind           = errors.New("dom: wrong node kind")
+	ErrInvalidName             = errors.New("dom: invalid name")
+	ErrNamespace               = errors.New("dom: invalid namespace")
+	ErrExpiredReadView         = errors.New("dom: read view has expired")
+	ErrMutationJournalOverflow = errors.New("dom: mutation journal history is unavailable")
 )
 
 // Document adds stable identity and mutation versioning around the existing
@@ -66,6 +67,7 @@ type ReadView struct {
 type readViewLease struct {
 	mutex    sync.RWMutex
 	active   bool
+	document *Document
 	identity DocumentIdentity
 	store    *NodeStore
 	root     NodeID
@@ -151,6 +153,20 @@ func (access *ReadAccess) Version() uint64 {
 		return 0
 	}
 	return access.lease.version
+}
+
+// MutationRecordsSince returns the coherent journal suffix visible to this
+// read access without recursively acquiring the document store lock.
+func (access *ReadAccess) MutationRecordsSince(sequence uint64) ([]MutationRecord, uint64, error) {
+	if access == nil {
+		return nil, sequence, ErrExpiredReadView
+	}
+	access.mutex.RLock()
+	defer access.mutex.RUnlock()
+	if access.closed || access.lease == nil || access.lease.document == nil {
+		return nil, sequence, ErrExpiredReadView
+	}
+	return access.lease.document.mutationRecordsSinceLocked(sequence)
 }
 
 // ID resolves a backing node to stable logical identity without reacquiring
@@ -317,6 +333,7 @@ func (document *Document) WithReadView(callback func(ReadView) error) error {
 	}
 	lease := &readViewLease{
 		active:   true,
+		document: document,
 		identity: document.identity,
 		store:    document.store,
 		root:     document.root,
@@ -795,13 +812,27 @@ func (document *Document) AppendChild(parentID NodeID, child *Node) (NodeID, err
 		return InvalidNodeID, fmt.Errorf("%w: subtree mixes indexed and unindexed nodes", ErrInvalidTree)
 	}
 
+	destinationBefore := append([]*Node(nil), parent.Children...)
+	origin := child.Parent
+	var originBefore []*Node
+	if origin != nil && origin != parent {
+		originBefore = append([]*Node(nil), origin.Children...)
+	}
 	parent.AppendChild(child)
 	if known == 0 {
 		for _, node := range ordered {
 			document.store.assignLocked(node)
 		}
 	}
-	document.version.Add(1)
+	changed := !sameNodeSlice(destinationBefore, parent.Children)
+	if origin != nil && origin != parent {
+		document.recordChildMutationLocked(origin, originBefore, origin.Children, []*Node{child})
+		changed = true
+	}
+	if changed {
+		document.recordChildMutationLocked(parent, destinationBefore, parent.Children, []*Node{child})
+		document.version.Add(1)
+	}
 	return document.store.ids[child], nil
 }
 

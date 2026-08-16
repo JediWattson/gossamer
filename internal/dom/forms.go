@@ -88,6 +88,9 @@ func (document *Document) SetFormValue(id NodeID, value string) error {
 		state.SelectionStart = utf16Length(value)
 		state.SelectionEnd = state.SelectionStart
 		state.SelectionDirection = "none"
+		if changed {
+			document.recordStateMutationLocked(node, "value")
+		}
 	case "select":
 		options := optionNodes(node)
 		matched := false
@@ -97,6 +100,7 @@ func (document *Document) SetFormValue(id NodeID, value string) error {
 			state := ensureControlState(option)
 			if !state.SelectedDirty || state.Selected != selected {
 				changed = true
+				document.recordStateMutationLocked(option, "selected")
 			}
 			state.Selected = selected
 			state.SelectedDirty = true
@@ -171,6 +175,7 @@ func (document *Document) SetFormSelection(id NodeID, start, end int, direction 
 	state.SelectionStart = start
 	state.SelectionEnd = end
 	state.SelectionDirection = direction
+	document.recordStateMutationLocked(node, "selection")
 	document.version.Add(1)
 	return nil
 }
@@ -241,6 +246,7 @@ func (document *Document) ReplaceFormSelection(id NodeID, data, inputType string
 	state.SelectionStart = start + len(replacementUnits)
 	state.SelectionEnd = state.SelectionStart
 	state.SelectionDirection = "none"
+	document.recordStateMutationLocked(node, "value")
 	document.version.Add(1)
 	return nil
 }
@@ -280,6 +286,7 @@ func (document *Document) SetFormUserValidity(id NodeID, userValidity bool) erro
 		return fmt.Errorf("%w: node %d has no user-validity state", ErrWrongNodeKind, id)
 	}
 	if setUserValidityLocked(node, userValidity) {
+		document.recordStateMutationLocked(node, "user-validity")
 		document.version.Add(1)
 	}
 	return nil
@@ -309,6 +316,7 @@ func (document *Document) CommitFormUserInteraction(id NodeID) error {
 	changed := !state.UserValidity
 	state.UserValidity = true
 	if changed {
+		document.recordStateMutationLocked(node, "user-validity")
 		document.version.Add(1)
 	}
 	return nil
@@ -334,6 +342,7 @@ func (document *Document) MarkFormUserValidityForSubmission(formID NodeID) error
 	for _, control := range listedFormControlsLocked(document, form) {
 		if hasUserValidity(control) && setUserValidityLocked(control, true) {
 			changed = true
+			document.recordStateMutationLocked(control, "user-validity")
 		}
 	}
 	if changed {
@@ -391,6 +400,9 @@ func (document *Document) SetFormChecked(id NodeID, checked bool) error {
 		return fmt.Errorf("%w: node %d has no checked state", ErrWrongNodeKind, id)
 	}
 	changed := setCheckedState(node, checked)
+	if changed {
+		document.recordStateMutationLocked(node, "checked")
+	}
 	if checked && strings.EqualFold(contentAttribute(node, "type"), "radio") {
 		for _, candidate := range document.store.nodes {
 			if candidate == nil || candidate == node || !sameRadioGroupLocked(document, node, candidate) {
@@ -398,6 +410,7 @@ func (document *Document) SetFormChecked(id NodeID, checked bool) error {
 			}
 			if setCheckedState(candidate, false) {
 				changed = true
+				document.recordStateMutationLocked(candidate, "checked")
 			}
 		}
 	}
@@ -445,6 +458,7 @@ func (document *Document) SetFormIndeterminate(id NodeID, indeterminate bool) er
 		return nil
 	}
 	state.Indeterminate = indeterminate
+	document.recordStateMutationLocked(node, "indeterminate")
 	document.version.Add(1)
 	return nil
 }
@@ -530,6 +544,7 @@ func (document *Document) SetFormSelected(id NodeID, selected bool) error {
 			}
 			if !state.SelectedDirty || state.Selected != value {
 				changed = true
+				document.recordStateMutationLocked(candidate, "selected")
 			}
 			state.Selected = value
 			state.SelectedDirty = true
@@ -537,6 +552,9 @@ func (document *Document) SetFormSelected(id NodeID, selected bool) error {
 	} else {
 		state := ensureControlState(option)
 		changed = !state.SelectedDirty || state.Selected != selected
+		if changed {
+			document.recordStateMutationLocked(option, "selected")
+		}
 		state.Selected = selected
 		state.SelectedDirty = true
 	}
@@ -596,6 +614,7 @@ func (document *Document) SetFormSelectedIndex(id NodeID, selectedIndex int) err
 		selected := selectedIndex >= 0 && index == selectedIndex
 		if !state.SelectedDirty || state.Selected != selected {
 			changed = true
+			document.recordStateMutationLocked(option, "selected")
 		}
 		state.Selected = selected
 		state.SelectedDirty = true
@@ -750,6 +769,7 @@ func (document *Document) ResetForm(id NodeID) error {
 		if candidate.Control.ValueDirty || candidate.Control.CheckedDirty || candidate.Control.SelectedDirty ||
 			candidate.Control.UserValidity || candidate.Control.UserInteracted {
 			changed = true
+			document.recordStateMutationLocked(candidate, "reset")
 		}
 		candidate.Control.Value = ""
 		candidate.Control.ValueDirty = false

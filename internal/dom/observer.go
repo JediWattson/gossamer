@@ -9,6 +9,10 @@ const (
 	MutationChildList MutationRecordType = iota + 1
 	MutationAttributes
 	MutationCharacterData
+	// MutationState is an internal native-control-state change. Script-facing
+	// MutationObserver delivery ignores it, while incremental browser caches use
+	// it to prove that every Document version change is journaled.
+	MutationState
 )
 
 // MutationRecord is an immutable stable-ID journal entry. It contains enough
@@ -24,6 +28,8 @@ type MutationRecord struct {
 	AttributeName   string
 	OldValue        string
 	OldValuePresent bool
+	StateName       string
+	Connected       bool
 }
 
 // MutationSequence returns the latest committed mutation journal sequence.
@@ -43,6 +49,16 @@ func (document *Document) MutationRecordsSince(sequence uint64) ([]MutationRecor
 	}
 	document.store.mutex.RLock()
 	defer document.store.mutex.RUnlock()
+	return document.mutationRecordsSinceLocked(sequence)
+}
+
+func (document *Document) mutationRecordsSinceLocked(sequence uint64) ([]MutationRecord, uint64, error) {
+	if len(document.mutations) != 0 {
+		oldest := document.mutations[0].Sequence
+		if oldest > 1 && sequence < oldest-1 {
+			return nil, document.mutationSequence, ErrMutationJournalOverflow
+		}
+	}
 	result := make([]MutationRecord, 0)
 	for _, record := range document.mutations {
 		if record.Sequence <= sequence {
@@ -77,6 +93,7 @@ func (document *Document) recordCharacterMutationLocked(node *Node, oldValue str
 		Target:          target,
 		OldValue:        oldValue,
 		OldValuePresent: true,
+		Connected:       document.nodeConnectedLocked(node),
 	})
 }
 
@@ -91,6 +108,20 @@ func (document *Document) recordAttributeMutationLocked(node *Node, name, oldVal
 		AttributeName:   name,
 		OldValue:        oldValue,
 		OldValuePresent: oldValuePresent,
+		Connected:       document.nodeConnectedLocked(node),
+	})
+}
+
+func (document *Document) recordStateMutationLocked(node *Node, stateName string) {
+	target, found := document.store.ids[node]
+	if !found {
+		return
+	}
+	document.appendMutationLocked(MutationRecord{
+		Type:      MutationState,
+		Target:    target,
+		StateName: stateName,
+		Connected: document.nodeConnectedLocked(node),
 	})
 }
 
@@ -141,7 +172,22 @@ func (document *Document) recordChildMutationLocked(parent *Node, before, after,
 		RemovedNodes:    document.nodeIDsLocked(removed),
 		PreviousSibling: document.nodeIDLocked(previous),
 		NextSibling:     document.nodeIDLocked(next),
+		Connected:       document.nodeConnectedLocked(parent),
 	})
+}
+
+func (document *Document) nodeConnectedLocked(node *Node) bool {
+	if node == nil {
+		return false
+	}
+	root, found := document.store.resolveLocked(document.root)
+	if !found {
+		return false
+	}
+	for node.Parent != nil {
+		node = node.Parent
+	}
+	return node == root
 }
 
 func mutationSiblingContext(before, after, added, removed []*Node) (*Node, *Node) {
