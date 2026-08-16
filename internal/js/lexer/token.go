@@ -11,6 +11,9 @@ const (
 	Identifier
 	Number
 	String
+	TemplateHead
+	TemplateMiddle
+	TemplateTail
 	RegExp
 
 	Let
@@ -52,6 +55,7 @@ const (
 	Semicolon
 	Comma
 	Dot
+	Ellipsis
 	Colon
 	Question
 
@@ -101,6 +105,9 @@ var kindNames = [...]string{
 	Identifier:               "identifier",
 	Number:                   "number",
 	String:                   "string",
+	TemplateHead:             "template head",
+	TemplateMiddle:           "template middle",
+	TemplateTail:             "template tail",
 	RegExp:                   "regular expression",
 	Let:                      "let",
 	Const:                    "const",
@@ -140,6 +147,7 @@ var kindNames = [...]string{
 	Semicolon:                ";",
 	Comma:                    ",",
 	Dot:                      ".",
+	Ellipsis:                 "...",
 	Colon:                    ":",
 	Question:                 "?",
 	Assign:                   "=",
@@ -202,7 +210,7 @@ type Span struct {
 }
 
 // Token retains its raw source Lexeme and decoded Text or Number value. Text
-// is populated for identifiers and String literals.
+// is populated for identifiers, String literals, and template chunks.
 type Token struct {
 	Kind   Kind
 	Lexeme string

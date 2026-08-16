@@ -129,6 +129,9 @@ const (
 	nativeWindowScrollY
 	nativeDOMRectToJSON
 	nativeDOMInterfaceConstructor
+	nativeDocumentImportNode
+	nativeNodeRemove
+	nativeTemplateContent
 )
 
 const (
@@ -146,6 +149,7 @@ const (
 	bindingDocumentPrototype           = "\x00gossamer.document.prototype"
 	bindingNodePrototype               = "\x00gossamer.node.prototype"
 	bindingElementPrototype            = "\x00gossamer.element.prototype"
+	bindingTemplatePrototype           = "\x00gossamer.template.prototype"
 	bindingTextPrototype               = "\x00gossamer.text.prototype"
 	bindingFragmentPrototype           = "\x00gossamer.fragment.prototype"
 	bindingEventPrototype              = "\x00gossamer.event.prototype"
@@ -174,6 +178,7 @@ type browserBindings struct {
 	documentPrototype           memory.Ref
 	nodePrototype               memory.Ref
 	elementPrototype            memory.Ref
+	templatePrototype           memory.Ref
 	textPrototype               memory.Ref
 	fragmentPrototype           memory.Ref
 	eventPrototype              memory.Ref
@@ -318,6 +323,9 @@ func (realm *Realm) installBrowserNatives() error {
 		{nativeWindowScrollY, realm.windowGeometryValue("scrollY")},
 		{nativeDOMRectToJSON, realm.domRectToJSON},
 		{nativeDOMInterfaceConstructor, realm.domInterfaceConstructor},
+		{nativeDocumentImportNode, realm.documentImportNode},
+		{nativeNodeRemove, realm.nodeRemove},
+		{nativeTemplateContent, realm.templateContent},
 		{nativeGlobalSetTimeout, realm.globalSetTimeout},
 		{nativeGlobalClearTimeout, realm.globalClearTimeout},
 		{nativeGlobalRequestAnimationFrame, realm.globalRequestAnimationFrame},
@@ -360,6 +368,7 @@ func (realm *Realm) prepareBrowserBindingsLocked(context *browserruntime.TaskCon
 			{bindingDocumentPrototype, &bindings.documentPrototype},
 			{bindingNodePrototype, &bindings.nodePrototype},
 			{bindingElementPrototype, &bindings.elementPrototype},
+			{bindingTemplatePrototype, &bindings.templatePrototype},
 			{bindingTextPrototype, &bindings.textPrototype},
 			{bindingFragmentPrototype, &bindings.fragmentPrototype},
 			{bindingEventPrototype, &bindings.eventPrototype},
@@ -406,6 +415,7 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		&bindings.nodePrototype,
 		&bindings.documentPrototype,
 		&bindings.elementPrototype,
+		&bindings.templatePrototype,
 		&bindings.textPrototype,
 		&bindings.fragmentPrototype,
 		&bindings.eventPrototype,
@@ -424,6 +434,9 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		return err
 	}
 	if err := context.SetPrototype(bindings.elementPrototype, memory.RefValue(bindings.nodePrototype)); err != nil {
+		return err
+	}
+	if err := context.SetPrototype(bindings.templatePrototype, memory.RefValue(bindings.elementPrototype)); err != nil {
 		return err
 	}
 	if err := context.SetPrototype(bindings.textPrototype, memory.RefValue(bindings.nodePrototype)); err != nil {
@@ -539,6 +552,7 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{bindingDocumentPrototype, bindings.documentPrototype, false},
 		{bindingNodePrototype, bindings.nodePrototype, false},
 		{bindingElementPrototype, bindings.elementPrototype, false},
+		{bindingTemplatePrototype, bindings.templatePrototype, false},
 		{bindingTextPrototype, bindings.textPrototype, false},
 		{bindingFragmentPrototype, bindings.fragmentPrototype, false},
 		{bindingEventPrototype, bindings.eventPrototype, false},
@@ -586,6 +600,7 @@ func (realm *Realm) installDOMPrototypeProperties(context *browserruntime.TaskCo
 		{realm.bindings.documentPrototype, "createTextNode", 1, nativeDocumentCreateTextNode},
 		{realm.bindings.documentPrototype, "createElementNS", 2, nativeDocumentCreateElementNS},
 		{realm.bindings.documentPrototype, "createDocumentFragment", 0, nativeDocumentCreateDocumentFragment},
+		{realm.bindings.documentPrototype, "importNode", 2, nativeDocumentImportNode},
 		{realm.bindings.documentPrototype, "querySelector", 1, nativeElementQuerySelector},
 		{realm.bindings.documentPrototype, "querySelectorAll", 1, nativeElementQuerySelectorAll},
 		{realm.bindings.nodePrototype, "appendChild", 1, nativeNodeAppendChild},
@@ -595,6 +610,7 @@ func (realm *Realm) installDOMPrototypeProperties(context *browserruntime.TaskCo
 		{realm.bindings.nodePrototype, "cloneNode", 1, nativeNodeCloneNode},
 		{realm.bindings.nodePrototype, "replaceChild", 2, nativeNodeReplaceChild},
 		{realm.bindings.nodePrototype, "normalize", 0, nativeNodeNormalize},
+		{realm.bindings.nodePrototype, "remove", 0, nativeNodeRemove},
 		{realm.bindings.textPrototype, "splitText", 1, nativeTextSplitText},
 		{realm.bindings.elementPrototype, "getAttribute", 1, nativeElementGetAttribute},
 		{realm.bindings.elementPrototype, "setAttribute", 2, nativeElementSetAttribute},
@@ -682,6 +698,8 @@ func (realm *Realm) installDOMPrototypeProperties(context *browserruntime.TaskCo
 		{realm.bindings.nodePrototype, "nextSibling", nativeNodeNextSibling, 0},
 		{realm.bindings.nodePrototype, "textContent", nativeNodeTextContentGet, nativeNodeTextContentSet},
 		{realm.bindings.nodePrototype, "childNodes", nativeNodeChildNodes, 0},
+		{realm.bindings.templatePrototype, "content", nativeTemplateContent, 0},
+		{realm.bindings.textPrototype, "data", nativeNodeValueGet, nativeNodeValueSet},
 		{realm.bindings.elementPrototype, "localName", nativeElementLocalName, 0},
 		{realm.bindings.elementPrototype, "children", nativeElementChildren, 0},
 		{realm.bindings.elementPrototype, "id", nativeElementIDGet, nativeElementIDSet},
@@ -822,6 +840,9 @@ func (realm *Realm) wrapNodeLocked(context *browserruntime.TaskContext, handle b
 		prototype = realm.bindings.documentPrototype
 	case browser.DOMElementNode:
 		prototype = realm.bindings.elementPrototype
+		if metadata.NamespaceURI == dom.HTMLNamespace && metadata.LocalName == "template" {
+			prototype = realm.bindings.templatePrototype
+		}
 	case browser.DOMTextNode:
 		prototype = realm.bindings.textPrototype
 	case browser.DOMDocumentFragmentNode:
@@ -935,6 +956,22 @@ func (realm *Realm) documentCreateDocumentFragment(context *browserruntime.TaskC
 		return memory.Value{}, err
 	}
 	return realm.wrappedNodeValue(context, handle)
+}
+
+func (realm *Realm) documentImportNode(context *browserruntime.TaskContext, _ memory.Value, arguments []memory.Value) (memory.Value, error) {
+	handle, err := realm.unwrapNode(context, argument(arguments, 0))
+	if err != nil {
+		return memory.Value{}, err
+	}
+	host, ok := realm.host.(browser.DOMElementHost)
+	if !ok {
+		return memory.Value{}, fmt.Errorf("nativeengine: browser host does not expose node importing")
+	}
+	clone, err := host.CloneNode(handle, truthy(argument(arguments, 1)))
+	if err != nil {
+		return memory.Value{}, err
+	}
+	return realm.wrappedNodeValue(context, clone)
 }
 
 func (realm *Realm) documentDefaultView(context *browserruntime.TaskContext, this memory.Value, _ []memory.Value) (memory.Value, error) {
@@ -1207,6 +1244,25 @@ func (realm *Realm) nodeRemoveChild(context *browserruntime.TaskContext, this me
 	return childValue, realm.refreshCollections(context, parent)
 }
 
+func (realm *Realm) nodeRemove(context *browserruntime.TaskContext, this memory.Value, _ []memory.Value) (memory.Value, error) {
+	handle, err := realm.unwrapNode(context, this)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	host, ok := realm.host.(browser.DOMElementHost)
+	if !ok {
+		return memory.Value{}, fmt.Errorf("nativeengine: browser host does not expose node removal")
+	}
+	parent, found, err := host.RelatedNode(handle, browser.RelationParentNode)
+	if err != nil || !found {
+		return memory.UndefinedValue(), err
+	}
+	if err := realm.host.RemoveChild(parent, handle); err != nil {
+		return memory.Value{}, err
+	}
+	return memory.UndefinedValue(), realm.refreshCollections(context, parent)
+}
+
 func (realm *Realm) nodeContains(context *browserruntime.TaskContext, this memory.Value, arguments []memory.Value) (memory.Value, error) {
 	handle, err := realm.unwrapNode(context, this)
 	if err != nil {
@@ -1238,6 +1294,22 @@ func (realm *Realm) nodeCloneNode(context *browserruntime.TaskContext, this memo
 		return memory.Value{}, err
 	}
 	return realm.wrappedNodeValue(context, clone)
+}
+
+func (realm *Realm) templateContent(context *browserruntime.TaskContext, this memory.Value, _ []memory.Value) (memory.Value, error) {
+	handle, err := realm.unwrapNode(context, this)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	host, ok := realm.host.(browser.DOMElementHost)
+	if !ok {
+		return memory.Value{}, fmt.Errorf("nativeengine: browser host does not expose template contents")
+	}
+	content, err := host.TemplateContent(handle)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	return realm.wrappedNodeValue(context, content)
 }
 
 func (realm *Realm) nodeReplaceChild(context *browserruntime.TaskContext, this memory.Value, arguments []memory.Value) (memory.Value, error) {

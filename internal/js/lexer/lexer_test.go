@@ -94,6 +94,31 @@ func TestLexRecognizesReactFrontendTokens(t *testing.T) {
 	}
 }
 
+func TestLexRecognizesTemplateSubstitutionsAndNestedBraces(t *testing.T) {
+	t.Parallel()
+
+	tokens, err := lexer.Lex("`before ${value} between ${{nested: `inner ${other}`}.nested} after`")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []lexer.Kind{
+		lexer.TemplateHead, lexer.Identifier, lexer.TemplateMiddle,
+		lexer.LeftBrace, lexer.Identifier, lexer.Colon, lexer.TemplateHead, lexer.Identifier, lexer.TemplateTail,
+		lexer.RightBrace, lexer.Dot, lexer.Identifier, lexer.TemplateTail, lexer.EOF,
+	}
+	if len(tokens) != len(want) {
+		t.Fatalf("token count = %d, want %d: %#v", len(tokens), len(want), tokens)
+	}
+	for index, kind := range want {
+		if tokens[index].Kind != kind {
+			t.Fatalf("token %d = %s, want %s", index, tokens[index].Kind, kind)
+		}
+	}
+	if tokens[0].Text != "before " || tokens[2].Text != " between " || tokens[6].Text != "inner " || tokens[8].Text != "" || tokens[12].Text != " after" {
+		t.Fatalf("template chunks = %#v", tokens)
+	}
+}
+
 func TestLexRejectsMalformedInputPrecisely(t *testing.T) {
 	t.Parallel()
 
@@ -105,7 +130,7 @@ func TestLexRejectsMalformedInputPrecisely(t *testing.T) {
 		"0b2",
 		"1name",
 		"\"\\u{110000}\"",
-		"`template ${value}`",
+		"`template ${value`",
 		string([]byte{0xff}),
 	} {
 		_, err := lexer.Lex(source)

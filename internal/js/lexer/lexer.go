@@ -27,10 +27,16 @@ func (problem *Error) Error() string {
 func (problem *Error) Unwrap() error { return ErrInvalidToken }
 
 type scanner struct {
-	source string
-	offset int
-	line   uint32
-	column uint32
+	source         string
+	offset         int
+	line           uint32
+	column         uint32
+	templateFrames []templateFrame
+}
+
+type templateFrame struct {
+	start      Position
+	braceDepth uint32
 }
 
 func Lex(source string) ([]Token, error) {
@@ -45,6 +51,10 @@ func Lex(source string) ([]Token, error) {
 			return nil, err
 		}
 		if input.offset == len(input.source) {
+			if len(input.templateFrames) != 0 {
+				frame := input.templateFrames[len(input.templateFrames)-1]
+				return nil, input.problem(frame.start, "unterminated template substitution")
+			}
 			position := input.position()
 			tokens = append(tokens, Token{Kind: EOF, Span: Span{Start: position, End: position}})
 			return tokens, nil
@@ -54,6 +64,8 @@ func Lex(source string) ([]Token, error) {
 		var token Token
 		var err error
 		switch {
+		case r == '}' && input.atTemplateBoundary():
+			token, err = input.scanTemplateContinuation(start)
 		case isIdentifierStart(r):
 			token = input.scanIdentifier(start)
 		case unicode.IsDigit(r) || r == '.' && input.nextRuneIsDigit():
@@ -70,6 +82,7 @@ func Lex(source string) ([]Token, error) {
 		if err != nil {
 			return nil, err
 		}
+		input.trackTemplateBrace(token.Kind)
 		tokens = append(tokens, token)
 		allowRegExp = !tokenEndsExpression(token.Kind)
 	}
@@ -77,11 +90,33 @@ func Lex(source string) ([]Token, error) {
 
 func tokenEndsExpression(kind Kind) bool {
 	switch kind {
-	case Identifier, Number, String, RegExp, True, False, Null, This,
+	case Identifier, Number, String, TemplateTail, RegExp, True, False, Null, This,
 		RightParen, RightBracket, RightBrace, PlusPlus, MinusMinus:
 		return true
 	default:
 		return false
+	}
+}
+
+func (input *scanner) atTemplateBoundary() bool {
+	if len(input.templateFrames) == 0 {
+		return false
+	}
+	return input.templateFrames[len(input.templateFrames)-1].braceDepth == 0
+}
+
+func (input *scanner) trackTemplateBrace(kind Kind) {
+	if len(input.templateFrames) == 0 {
+		return
+	}
+	frame := &input.templateFrames[len(input.templateFrames)-1]
+	switch kind {
+	case LeftBrace:
+		frame.braceDepth++
+	case RightBrace:
+		if frame.braceDepth > 0 {
+			frame.braceDepth--
+		}
 	}
 }
 
@@ -385,29 +420,54 @@ func (input *scanner) scanString(start Position, quote rune) (Token, error) {
 
 func (input *scanner) scanTemplate(start Position) (Token, error) {
 	_, _ = input.advance()
+	return input.scanTemplateChunk(start, true)
+}
+
+func (input *scanner) scanTemplateContinuation(start Position) (Token, error) {
+	_, _ = input.advance()
+	return input.scanTemplateChunk(start, false)
+}
+
+func (input *scanner) scanTemplateChunk(start Position, first bool) (Token, error) {
 	var decoded strings.Builder
 	for input.offset < len(input.source) {
 		if strings.HasPrefix(input.source[input.offset:], "${") {
-			return Token{}, input.problem(start, "template substitutions are not implemented")
+			_, _ = input.advance()
+			_, _ = input.advance()
+			kind := TemplateMiddle
+			if first {
+				kind = TemplateHead
+				input.templateFrames = append(input.templateFrames, templateFrame{start: start})
+			}
+			return Token{
+				Kind: kind, Lexeme: input.source[start.Offset:input.offset], Text: decoded.String(),
+				Span: Span{Start: start, End: input.position()},
+			}, nil
 		}
 		r, err := input.advance()
 		if err != nil {
 			return Token{}, err
 		}
 		if r == '`' {
-			return Token{Kind: String, Lexeme: input.source[start.Offset:input.offset], Text: decoded.String(), Span: Span{Start: start, End: input.position()}}, nil
+			kind := String
+			if !first {
+				kind = TemplateTail
+				input.templateFrames = input.templateFrames[:len(input.templateFrames)-1]
+			}
+			return Token{Kind: kind, Lexeme: input.source[start.Offset:input.offset], Text: decoded.String(), Span: Span{Start: start, End: input.position()}}, nil
 		}
 		if r != '\\' {
 			decoded.WriteRune(r)
 			continue
 		}
+		escapeStart := input.position()
 		escape, err := input.advance()
 		if err != nil {
 			return Token{}, err
 		}
 		switch escape {
 		case '\n', '\r':
-		case '`', '\\', '$':
+		case '`', '\\', '$', '/', '\'', '"':
 			decoded.WriteRune(escape)
 		case 'n':
 			decoded.WriteByte('\n')
@@ -415,11 +475,35 @@ func (input *scanner) scanTemplate(start Position) (Token, error) {
 			decoded.WriteByte('\r')
 		case 't':
 			decoded.WriteByte('\t')
+		case 'b':
+			decoded.WriteByte('\b')
+		case 'f':
+			decoded.WriteByte('\f')
+		case 'v':
+			decoded.WriteByte('\v')
+		case '0':
+			decoded.WriteByte(0)
+		case 'x':
+			value, err := input.consumeHex(escapeStart, 2)
+			if err != nil {
+				return Token{}, err
+			}
+			decoded.WriteRune(rune(value))
+		case 'u':
+			value, err := input.consumeUnicodeEscape(escapeStart)
+			if err != nil {
+				return Token{}, err
+			}
+			decoded.WriteRune(value)
 		default:
-			return Token{}, input.problem(start, fmt.Sprintf("unsupported template escape \\%c", escape))
+			return Token{}, input.problem(escapeStart, fmt.Sprintf("unsupported template escape \\%c", escape))
 		}
 	}
-	return Token{}, input.problem(start, "unterminated template literal")
+	message := "unterminated template literal"
+	if !first {
+		message = "unterminated template substitution"
+	}
+	return Token{}, input.problem(start, message)
 }
 
 func (input *scanner) scanRegExp(start Position) (Token, error) {
@@ -522,7 +606,7 @@ func (input *scanner) scanPunctuator(start Position) (Token, error) {
 		text string
 		kind Kind
 	}{
-		{">>>=", UnsignedShiftRightAssign}, {"===", StrictEqual}, {"!==", StrictNotEqual},
+		{">>>=", UnsignedShiftRightAssign}, {"===", StrictEqual}, {"!==", StrictNotEqual}, {"...", Ellipsis},
 		{"<<=", ShiftLeftAssign}, {">>=", ShiftRightAssign}, {">>>", UnsignedShiftRight},
 		{"+=", PlusAssign}, {"-=", MinusAssign}, {"*=", StarAssign}, {"/=", SlashAssign},
 		{"%=", PercentAssign}, {"&=", AmpersandAssign}, {"|=", PipeAssign}, {"^=", CaretAssign},

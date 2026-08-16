@@ -78,6 +78,12 @@ func (compiler *functionCompiler) compileStatement(statement ast.Statement) erro
 
 func (compiler *functionCompiler) compileVariableDeclaration(declaration *ast.VariableDeclaration) error {
 	for _, declarator := range declaration.Declarations {
+		if declarator.ArrayPattern != nil {
+			if err := compiler.compileArrayBindingDeclaration(declaration.Kind, declarator); err != nil {
+				return err
+			}
+			continue
+		}
 		name, err := compiler.stringConstant(declarator.Name.Name)
 		if err != nil {
 			return err
@@ -111,6 +117,52 @@ func (compiler *functionCompiler) compileVariableDeclaration(declaration *ast.Va
 			return err
 		}
 		if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpPop}, declarator.Span()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (compiler *functionCompiler) compileArrayBindingDeclaration(kind ast.VariableKind, declarator *ast.VariableDeclarator) error {
+	if declarator.Init == nil {
+		return compiler.problem(declarator.Span(), "array binding pattern requires an initializer")
+	}
+	if err := compiler.compileExpression(declarator.Init); err != nil {
+		return err
+	}
+	temporary := compiler.temporaryName("array.binding")
+	if err := compiler.initializeTemporary(temporary, declarator.Span()); err != nil {
+		return err
+	}
+	for index, binding := range declarator.ArrayPattern {
+		if binding == nil {
+			continue
+		}
+		if err := compiler.loadTemporary(temporary, binding.Span()); err != nil {
+			return err
+		}
+		property, err := compiler.addConstant(program.Number(float64(index)))
+		if err != nil {
+			return err
+		}
+		if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpConstant, A: property}, binding.Span()); err != nil {
+			return err
+		}
+		if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpGetProperty}, binding.Span()); err != nil {
+			return err
+		}
+		name, err := compiler.stringConstant(binding.Name)
+		if err != nil {
+			return err
+		}
+		opcode := browserruntime.OpInitializeBinding
+		if kind == ast.VariableVar {
+			opcode = browserruntime.OpStoreBinding
+		}
+		if err := compiler.emit(browserruntime.Instruction{Op: opcode, A: name}, binding.Span()); err != nil {
+			return err
+		}
+		if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpPop}, binding.Span()); err != nil {
 			return err
 		}
 	}
@@ -247,19 +299,21 @@ func (compiler *functionCompiler) compileFor(statement *ast.ForStatement, name s
 	defer compiler.popScope()
 	if declaration := statement.InitDeclaration; declaration != nil && declaration.Kind != ast.VariableVar {
 		for _, item := range declaration.Declarations {
-			if err := compiler.declare(item.Name.Name, declaration.Kind == ast.VariableLet, item.Name.Span()); err != nil {
-				return err
-			}
-			nameConstant, err := compiler.stringConstant(item.Name.Name)
-			if err != nil {
-				return err
-			}
-			mutable := uint32(0)
-			if declaration.Kind == ast.VariableLet {
-				mutable = 1
-			}
-			if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpDeclareBinding, A: nameConstant, B: mutable}, item.Name.Span()); err != nil {
-				return err
+			for _, binding := range item.BindingIdentifiers() {
+				if err := compiler.declare(binding.Name, declaration.Kind == ast.VariableLet, binding.Span()); err != nil {
+					return err
+				}
+				nameConstant, err := compiler.stringConstant(binding.Name)
+				if err != nil {
+					return err
+				}
+				mutable := uint32(0)
+				if declaration.Kind == ast.VariableLet {
+					mutable = 1
+				}
+				if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpDeclareBinding, A: nameConstant, B: mutable}, binding.Span()); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -464,6 +518,9 @@ func (compiler *functionCompiler) compileForIn(statement *ast.ForInStatement, la
 func (compiler *functionCompiler) initializeForBinding(statement *ast.ForInStatement) error {
 	if declaration := statement.LeftDeclaration; declaration != nil {
 		item := declaration.Declarations[0]
+		if item.Name == nil {
+			return compiler.problem(item.Span(), "for-in/of array binding patterns are not implemented")
+		}
 		name, err := compiler.stringConstant(item.Name.Name)
 		if err != nil {
 			return err

@@ -35,6 +35,8 @@ func (compiler *functionCompiler) compileExpression(expression ast.Expression) e
 			return err
 		}
 		return compiler.emit(browserruntime.Instruction{Op: browserruntime.OpConstant, A: index}, expression.Span())
+	case *ast.TemplateLiteral:
+		return compiler.compileTemplateLiteral(expression)
 	case *ast.BoolLiteral:
 		opcode := browserruntime.OpFalse
 		if expression.Value {
@@ -90,6 +92,38 @@ func (compiler *functionCompiler) compileExpression(expression ast.Expression) e
 	default:
 		return compiler.problem(expression.Span(), fmt.Sprintf("unsupported expression %T", expression))
 	}
+}
+
+func (compiler *functionCompiler) compileTemplateLiteral(expression *ast.TemplateLiteral) error {
+	if len(expression.Quasis) != len(expression.Expressions)+1 {
+		return compiler.problem(expression.Span(), "malformed template literal")
+	}
+	first, err := compiler.stringConstant(expression.Quasis[0])
+	if err != nil {
+		return err
+	}
+	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpConstant, A: first}, expression.Span()); err != nil {
+		return err
+	}
+	for index, item := range expression.Expressions {
+		if err := compiler.compileExpression(item); err != nil {
+			return err
+		}
+		if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpAdd}, item.Span()); err != nil {
+			return err
+		}
+		quasi, err := compiler.stringConstant(expression.Quasis[index+1])
+		if err != nil {
+			return err
+		}
+		if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpConstant, A: quasi}, expression.Span()); err != nil {
+			return err
+		}
+		if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpAdd}, expression.Span()); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (compiler *functionCompiler) compileArrowFunctionExpression(expression *ast.ArrowFunctionExpression) error {
@@ -166,12 +200,26 @@ func (compiler *functionCompiler) compileFunctionExpression(expression *ast.Func
 }
 
 func (compiler *functionCompiler) compileArray(array *ast.ArrayLiteral) error {
+	if len(array.Elements) == 1 {
+		if spread, ok := array.Elements[0].(*ast.SpreadElement); ok {
+			property := &ast.Identifier{Base: ast.Base{Range: spread.Span()}, Name: "slice"}
+			return compiler.compileCall(&ast.CallExpression{
+				Base: ast.Base{Range: array.Span()},
+				Callee: &ast.MemberExpression{
+					Base: ast.Base{Range: spread.Span()}, Object: spread.Argument, Property: property,
+				},
+			})
+		}
+	}
 	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpNewArray, A: uint32(len(array.Elements))}, array.Span()); err != nil {
 		return err
 	}
 	for index, element := range array.Elements {
 		if element == nil {
 			continue
+		}
+		if _, spread := element.(*ast.SpreadElement); spread {
+			return compiler.problem(element.Span(), "native array spread currently requires a single spread element")
 		}
 		if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpDup}, element.Span()); err != nil {
 			return err

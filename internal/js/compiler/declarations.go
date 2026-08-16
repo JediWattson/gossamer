@@ -164,12 +164,14 @@ func directLexicalDeclarations(statements []ast.Statement) ([]lexicalDeclaration
 			continue
 		}
 		for _, declarator := range declaration.Declarations {
-			name := declarator.Name.Name
-			if previous, duplicate := seen[name]; duplicate {
-				return nil, &declarationProblem{span: declarator.Name.Span(), message: fmt.Sprintf("binding %q already declared at %d:%d", name, previous.Start.Line, previous.Start.Column)}
+			for _, binding := range declarator.BindingIdentifiers() {
+				name := binding.Name
+				if previous, duplicate := seen[name]; duplicate {
+					return nil, &declarationProblem{span: binding.Span(), message: fmt.Sprintf("binding %q already declared at %d:%d", name, previous.Start.Line, previous.Start.Column)}
+				}
+				seen[name] = binding.Span()
+				declarations = append(declarations, lexicalDeclaration{name: name, mutable: declaration.Kind == ast.VariableLet, span: binding.Span()})
 			}
-			seen[name] = declarator.Name.Span()
-			declarations = append(declarations, lexicalDeclaration{name: name, mutable: declaration.Kind == ast.VariableLet, span: declarator.Name.Span()})
 		}
 	}
 	return declarations, nil
@@ -185,7 +187,9 @@ func collectHoistedDeclarations(statements []ast.Statement) []hoistedDeclaration
 				return
 			}
 			for _, declarator := range statement.Declarations {
-				declarations = append(declarations, hoistedDeclaration{name: declarator.Name.Name, span: declarator.Name.Span()})
+				for _, binding := range declarator.BindingIdentifiers() {
+					declarations = append(declarations, hoistedDeclaration{name: binding.Name, span: binding.Span()})
+				}
 			}
 		case *ast.FunctionDeclaration:
 			declarations = append(declarations, hoistedDeclaration{name: statement.Name.Name, span: statement.Name.Span(), function: statement})

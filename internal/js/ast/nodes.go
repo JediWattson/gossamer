@@ -57,8 +57,25 @@ const (
 
 type VariableDeclarator struct {
 	Base
-	Name *Identifier
-	Init Expression
+	Name         *Identifier
+	ArrayPattern []*Identifier
+	Init         Expression
+}
+
+func (declarator *VariableDeclarator) BindingIdentifiers() []*Identifier {
+	if declarator == nil {
+		return nil
+	}
+	if declarator.Name != nil {
+		return []*Identifier{declarator.Name}
+	}
+	bindings := make([]*Identifier, 0, len(declarator.ArrayPattern))
+	for _, identifier := range declarator.ArrayPattern {
+		if identifier != nil {
+			bindings = append(bindings, identifier)
+		}
+	}
+	return bindings
 }
 
 type VariableDeclaration struct {
@@ -211,6 +228,14 @@ type StringLiteral struct {
 
 func (*StringLiteral) expressionNode() {}
 
+type TemplateLiteral struct {
+	Base
+	Quasis      []string
+	Expressions []Expression
+}
+
+func (*TemplateLiteral) expressionNode() {}
+
 type BoolLiteral struct {
 	Base
 	Value bool
@@ -241,6 +266,13 @@ type ArrayLiteral struct {
 }
 
 func (*ArrayLiteral) expressionNode() {}
+
+type SpreadElement struct {
+	Base
+	Argument Expression
+}
+
+func (*SpreadElement) expressionNode() {}
 
 type ObjectProperty struct {
 	Base

@@ -68,6 +68,27 @@ if (vector.namespaceURI !== "http://www.w3.org/2000/svg" || vector.prefix !== "s
 }
 let first = document.createTextNode("abc");
 let second = document.createTextNode("d");
+
+let template = document.createElement("template");
+template.innerHTML = "<button id=from-template>Count <span>0</span></button>";
+if (template.content !== template.content || template.content.nodeType !== 11 ||
+    template.firstChild !== null || document.createElement("div").content !== undefined) {
+  throw new Error("HTMLTemplateElement content parity failed");
+}
+let imported = document.importNode(template.content.firstChild, true);
+if (imported.id !== "from-template" || imported.firstChild.data !== "Count ") {
+  throw new Error("document.importNode/Text.data parity failed");
+}
+imported.firstChild.data = "Value ";
+root.appendChild(imported);
+if (imported.textContent !== "Value 0") {
+  throw new Error("Text.data mutation parity failed");
+}
+imported.remove();
+if (imported.parentNode !== null || document.getElementById("from-template") !== null) {
+  throw new Error("ChildNode.remove parity failed");
+}
+
 fragment.appendChild(first);
 fragment.appendChild(second);
 first.nodeValue = "abc";

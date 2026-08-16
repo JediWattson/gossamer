@@ -110,6 +110,127 @@ func TestParseHonorsPrecedenceAssociativityAndASI(t *testing.T) {
 	}
 }
 
+func TestParseBuildsTemplateLiteralExpressions(t *testing.T) {
+	t.Parallel()
+
+	script, err := parser.Parse("const text = `count ${value + 1}, nested ${{answer: 42}.answer}`;")
+	if err != nil {
+		t.Fatal(err)
+	}
+	declaration := script.Body[0].(*ast.VariableDeclaration)
+	template, ok := declaration.Declarations[0].Init.(*ast.TemplateLiteral)
+	if !ok {
+		t.Fatalf("initializer = %#v", declaration.Declarations[0].Init)
+	}
+	if len(template.Quasis) != 3 || len(template.Expressions) != 2 || template.Quasis[0] != "count " || template.Quasis[1] != ", nested " || template.Quasis[2] != "" {
+		t.Fatalf("TemplateLiteral = %#v", template)
+	}
+	if _, ok := template.Expressions[0].(*ast.BinaryExpression); !ok {
+		t.Fatalf("first substitution = %#v", template.Expressions[0])
+	}
+	if _, ok := template.Expressions[1].(*ast.MemberExpression); !ok {
+		t.Fatalf("second substitution = %#v", template.Expressions[1])
+	}
+}
+
+func TestParseObjectConciseMethods(t *testing.T) {
+	t.Parallel()
+
+	script, err := parser.Parse("const registry = { next(value) { return value + 1; }, empty() {} };")
+	if err != nil {
+		t.Fatal(err)
+	}
+	declaration := script.Body[0].(*ast.VariableDeclaration)
+	object := declaration.Declarations[0].Init.(*ast.ObjectLiteral)
+	if len(object.Properties) != 2 {
+		t.Fatalf("properties = %#v", object.Properties)
+	}
+	method, ok := object.Properties[0].Value.(*ast.FunctionExpression)
+	if !ok || len(method.Parameters) != 1 || method.Parameters[0].Name != "value" {
+		t.Fatalf("method = %#v", object.Properties[0].Value)
+	}
+	if object.Properties[0].Shorthand || object.Properties[0].Key != "next" {
+		t.Fatalf("method property = %#v", object.Properties[0])
+	}
+}
+
+func TestParseArrayBindingPatterns(t *testing.T) {
+	t.Parallel()
+
+	script, err := parser.Parse("const [first,,third] = values; let [left, right] = pair;")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := script.Body[0].(*ast.VariableDeclaration).Declarations[0]
+	if first.Name != nil || len(first.ArrayPattern) != 3 || first.ArrayPattern[0].Name != "first" || first.ArrayPattern[1] != nil || first.ArrayPattern[2].Name != "third" {
+		t.Fatalf("first pattern = %#v", first)
+	}
+	second := script.Body[1].(*ast.VariableDeclaration).Declarations[0]
+	if len(second.BindingIdentifiers()) != 2 || second.BindingIdentifiers()[1].Name != "right" {
+		t.Fatalf("second pattern = %#v", second)
+	}
+}
+
+func TestParseLowersDefaultParametersInSourceOrder(t *testing.T) {
+	t.Parallel()
+
+	script, err := parser.Parse("function build(first, second = first + 1, third = null) { return third; }")
+	if err != nil {
+		t.Fatal(err)
+	}
+	function := script.Body[0].(*ast.FunctionDeclaration)
+	if len(function.Parameters) != 3 || len(function.Body.Body) != 3 {
+		t.Fatalf("Function = %#v", function)
+	}
+	firstDefault, ok := function.Body.Body[0].(*ast.IfStatement)
+	if !ok {
+		t.Fatalf("first default prologue = %#v", function.Body.Body[0])
+	}
+	assignment := firstDefault.Consequent.(*ast.ExpressionStatement).Expression.(*ast.AssignmentExpression)
+	if assignment.Left.(*ast.Identifier).Name != "second" {
+		t.Fatalf("first default assignment = %#v", assignment)
+	}
+	secondDefault := function.Body.Body[1].(*ast.IfStatement)
+	assignment = secondDefault.Consequent.(*ast.ExpressionStatement).Expression.(*ast.AssignmentExpression)
+	if assignment.Left.(*ast.Identifier).Name != "third" {
+		t.Fatalf("second default assignment = %#v", assignment)
+	}
+}
+
+func TestParseLowersDestructuredArrowParameter(t *testing.T) {
+	t.Parallel()
+
+	script, err := parser.Parse("const match = ([type, event]) => event === target;")
+	if err != nil {
+		t.Fatal(err)
+	}
+	arrow := script.Body[0].(*ast.VariableDeclaration).Declarations[0].Init.(*ast.ArrowFunctionExpression)
+	if len(arrow.Parameters) != 1 || arrow.Body == nil || arrow.Expression != nil || len(arrow.Body.Body) != 2 {
+		t.Fatalf("ArrowFunctionExpression = %#v", arrow)
+	}
+	declaration := arrow.Body.Body[0].(*ast.VariableDeclaration).Declarations[0]
+	if len(declaration.ArrayPattern) != 2 || declaration.ArrayPattern[0].Name != "type" || declaration.ArrayPattern[1].Name != "event" {
+		t.Fatalf("arrow binding pattern = %#v", declaration)
+	}
+}
+
+func TestParseRetainsSingleArraySpread(t *testing.T) {
+	t.Parallel()
+
+	script, err := parser.Parse("const snapshot = [...node.childNodes];")
+	if err != nil {
+		t.Fatal(err)
+	}
+	array := script.Body[0].(*ast.VariableDeclaration).Declarations[0].Init.(*ast.ArrayLiteral)
+	spread, ok := array.Elements[0].(*ast.SpreadElement)
+	if !ok {
+		t.Fatalf("spread = %#v", array.Elements)
+	}
+	if _, ok := spread.Argument.(*ast.MemberExpression); !ok {
+		t.Fatalf("spread argument = %#v", spread.Argument)
+	}
+}
+
 func TestParseFunctionExpressionsCallsConstructionAndUpdates(t *testing.T) {
 	t.Parallel()
 

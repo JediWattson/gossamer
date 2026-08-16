@@ -545,6 +545,18 @@ func setDataValue(context *browserruntime.TaskContext, object memory.Ref, name s
 	if err != nil {
 		return err
 	}
+	// Event dispatch state is represented as writable own data properties in
+	// the first native surface. A framework may intentionally shadow one with
+	// an own accessor (Solid does this for delegated currentTarget). Native
+	// dispatch updates its internal state without invoking or replacing that
+	// language-level override.
+	descriptor, found, err := context.GetOwnPropertyDescriptor(object, nameRef)
+	if err != nil {
+		return err
+	}
+	if found && descriptor.Kind == memory.PropertyAccessor {
+		return nil
+	}
 	return context.SetProperty(object, nameRef, value)
 }
 

@@ -324,6 +324,7 @@ let order = "";
 let microtasks = 0;
 let passiveCanceled = true;
 let lastEvent = null;
+let delegatedCurrentTarget = null;
 let target = document.getElementById("target");
 let outer = document.getElementById("outer");
 window.addEventListener("click", function (event) {
@@ -354,6 +355,15 @@ target.addEventListener("click", function (event) {
   queueMicrotask(function () { microtasks = microtasks + 1; });
 });
 outer.addEventListener("click", function () { order = order + "b"; }, {once: true});
+document.addEventListener("click", function (event) {
+  Object.defineProperty(event, "currentTarget", {
+    configurable: true,
+    get: function () { return delegatedCurrentTarget; }
+  });
+  delegatedCurrentTarget = document;
+  if (event.currentTarget !== document) throw new Error("delegated currentTarget getter");
+  delegatedCurrentTarget = null;
+});
 window.addEventListener("click", function (event) {
   if (event.eventPhase !== 3) throw new Error("window bubble phase");
   order = order + "W";
