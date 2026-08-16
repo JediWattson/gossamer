@@ -79,6 +79,12 @@ const (
 	nativePromiseThen
 	nativePromiseCatch
 	nativeQueueMicrotask
+	nativeSymbolConstructor
+	nativeSymbolFor
+	nativeSymbolToString
+	nativeSymbolValueOf
+	nativeSymbolDescription
+	nativeIteratorIdentity
 )
 
 // Intrinsics is one task-local instantiation of the native ECMAScript
@@ -99,6 +105,7 @@ type Intrinsics struct {
 	MapPrototype            memory.Ref
 	SetPrototype            memory.Ref
 	PromisePrototype        memory.Ref
+	SymbolPrototype         memory.Ref
 
 	ObjectConstructor         memory.Ref
 	FunctionConstructor       memory.Ref
@@ -112,9 +119,12 @@ type Intrinsics struct {
 	TypeErrorConstructor      memory.Ref
 	RangeErrorConstructor     memory.Ref
 	ReferenceErrorConstructor memory.Ref
+	SymbolConstructor         memory.Ref
+	SymbolRegistry            memory.Ref
+	SymbolIterator            memory.Ref
 }
 
-const intrinsicRootCount = 25
+const intrinsicRootCount = 29
 
 // Roots returns every Ref needed to carry one intrinsic environment across an
 // explicit ownership boundary. The ordering is private to this package and is
@@ -149,6 +159,10 @@ func (intrinsics *Intrinsics) Roots() []memory.Ref {
 		intrinsics.TypeErrorConstructor,
 		intrinsics.RangeErrorConstructor,
 		intrinsics.ReferenceErrorConstructor,
+		intrinsics.SymbolPrototype,
+		intrinsics.SymbolConstructor,
+		intrinsics.SymbolRegistry,
+		intrinsics.SymbolIterator,
 	}
 }
 
@@ -189,6 +203,10 @@ func RestoreIntrinsics(roots []memory.Ref) (*Intrinsics, error) {
 		TypeErrorConstructor:      roots[22],
 		RangeErrorConstructor:     roots[23],
 		ReferenceErrorConstructor: roots[24],
+		SymbolPrototype:           roots[25],
+		SymbolConstructor:         roots[26],
+		SymbolRegistry:            roots[27],
+		SymbolIterator:            roots[28],
 	}, nil
 }
 
@@ -250,13 +268,14 @@ func (interpreter *Interpreter) Bootstrap(context *TaskContext) (*Intrinsics, er
 		&intrinsics.MapPrototype,
 		&intrinsics.SetPrototype,
 		&intrinsics.PromisePrototype,
+		&intrinsics.SymbolPrototype,
 	} {
 		*target, err = context.NewHeapObject()
 		if err != nil {
 			return nil, err
 		}
 	}
-	for _, target := range []memory.Ref{intrinsics.StringPrototype, intrinsics.IteratorPrototype, intrinsics.ErrorPrototype, intrinsics.MapPrototype, intrinsics.SetPrototype, intrinsics.PromisePrototype} {
+	for _, target := range []memory.Ref{intrinsics.StringPrototype, intrinsics.IteratorPrototype, intrinsics.ErrorPrototype, intrinsics.MapPrototype, intrinsics.SetPrototype, intrinsics.PromisePrototype, intrinsics.SymbolPrototype} {
 		if err := context.SetPrototype(target, memory.RefValue(intrinsics.ObjectPrototype)); err != nil {
 			return nil, err
 		}
@@ -277,6 +296,10 @@ func (interpreter *Interpreter) Bootstrap(context *TaskContext) (*Intrinsics, er
 		context.intrinsics = nil
 		return nil, err
 	}
+	if err := intrinsics.installSymbolBuiltins(context); err != nil {
+		context.intrinsics = nil
+		return nil, err
+	}
 	if err := intrinsics.installObjectBuiltins(context); err != nil {
 		context.intrinsics = nil
 		return nil, err
@@ -286,6 +309,10 @@ func (interpreter *Interpreter) Bootstrap(context *TaskContext) (*Intrinsics, er
 		return nil, err
 	}
 	if err := intrinsics.installCollectionBuiltins(context); err != nil {
+		context.intrinsics = nil
+		return nil, err
+	}
+	if err := intrinsics.installSymbolIteratorAliases(context); err != nil {
 		context.intrinsics = nil
 		return nil, err
 	}
@@ -316,6 +343,7 @@ func (interpreter *Interpreter) Bootstrap(context *TaskContext) (*Intrinsics, er
 		{"TypeError", memory.RefValue(intrinsics.TypeErrorConstructor)},
 		{"RangeError", memory.RefValue(intrinsics.RangeErrorConstructor)},
 		{"ReferenceError", memory.RefValue(intrinsics.ReferenceErrorConstructor)},
+		{"Symbol", memory.RefValue(intrinsics.SymbolConstructor)},
 	} {
 		if err := intrinsics.defineGlobal(context, global.name, global.value); err != nil {
 			context.intrinsics = nil
@@ -403,6 +431,12 @@ func (interpreter *Interpreter) registerBuiltinCallbacks() error {
 		nativePromiseThen:                    builtinPromiseThen,
 		nativePromiseCatch:                   builtinPromiseCatch,
 		nativeQueueMicrotask:                 builtinQueueMicrotask,
+		nativeSymbolConstructor:              builtinSymbolConstructor,
+		nativeSymbolFor:                      builtinSymbolFor,
+		nativeSymbolToString:                 builtinSymbolToString,
+		nativeSymbolValueOf:                  builtinSymbolValueOf,
+		nativeSymbolDescription:              builtinSymbolDescription,
+		nativeIteratorIdentity:               builtinIteratorIdentity,
 	}
 	for id, callback := range callbacks {
 		interpreter.nativeMutex.RLock()
@@ -814,7 +848,11 @@ func builtinObjectKeys(execution *execution, _ memory.Ref, _ memory.Function, _ 
 		return memory.Value{}, err
 	}
 	for _, property := range header.Properties {
-		if property.Enumerable {
+		kind, err := execution.context.HeapKind(property.Name)
+		if err != nil {
+			return memory.Value{}, err
+		}
+		if property.Enumerable && kind == memory.HeapString {
 			keys = append(keys, memory.RefValue(property.Name))
 		}
 	}

@@ -105,6 +105,51 @@ counter;
 	}
 }
 
+func TestSymbolRegistryAndKeysSurviveRealmCheckpoints(t *testing.T) {
+	t.Parallel()
+
+	engine := nativeengine.New(nativeengine.Config{})
+	browserRuntime, err := browser.NewWithEngine(engine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer browserRuntime.Close()
+	location, _ := url.Parse("https://gossamer.test/symbols/")
+	page, err := browserRuntime.NewPage(dom.NewDocument(), location)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer page.Close()
+
+	run := func(label, source string) {
+		t.Helper()
+		if _, err := page.QueueScript(browser.ScriptSource{URL: label + ".js", Source: source}); err != nil {
+			t.Fatalf("QueueScript(%s): %v", label, err)
+		}
+		if err := page.Realm.RunOne(context.Background()); err != nil {
+			t.Fatalf("RunOne(%s): %v", label, err)
+		}
+	}
+	run("create", `
+let registrySymbol = Symbol.for("gossamer.checkpoint");
+let localSymbol = Symbol("local");
+let symbolTarget = {};
+symbolTarget[registrySymbol] = 41;
+symbolTarget[localSymbol] = 42;
+`)
+	run("verify", `
+if (Symbol.for("gossamer.checkpoint") !== registrySymbol ||
+    symbolTarget[Symbol.for("gossamer.checkpoint")] !== 41 ||
+    symbolTarget[localSymbol] !== 42 ||
+    Symbol.iterator !== Symbol.iterator) {
+  throw new Error("Symbol identity was lost across the Realm checkpoint");
+}
+`)
+	if err := page.Realm.Store().CheckInvariants(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestNativeRealmRejectsCallsWithoutRuntimeTaskHost(t *testing.T) {
 	t.Parallel()
 

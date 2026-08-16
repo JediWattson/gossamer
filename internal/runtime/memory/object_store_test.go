@@ -83,6 +83,72 @@ func TestNativeObjectPropertiesAndPrototypeMaintainEdges(t *testing.T) {
 	}
 }
 
+func TestNativeObjectSymbolPropertiesUseSemanticIdentity(t *testing.T) {
+	t.Parallel()
+
+	store := memory.NewStore(nil)
+	defer store.Close()
+	owner := realmOwner(23)
+	reader := realmOwner(24)
+	region := mustRegion(t, store, owner)
+	object, _ := store.AllocObject(owner, region)
+	description, _ := store.AllocString(owner, region, "token")
+	first, _ := store.AllocSymbol(owner, region, memory.RefValue(description))
+	second, _ := store.AllocSymbol(owner, region, memory.RefValue(description))
+	stringKey, _ := store.AllocString(owner, region, "token")
+
+	if err := store.SetProperty(owner, object, first, memory.NumberValue(1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetProperty(owner, object, second, memory.NumberValue(2)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetProperty(owner, object, stringKey, memory.NumberValue(3)); err != nil {
+		t.Fatal(err)
+	}
+	for _, check := range []struct {
+		key  memory.Ref
+		want float64
+	}{{first, 1}, {second, 2}, {stringKey, 3}} {
+		value, found, err := store.GetOwnProperty(owner, object, check.key)
+		if err != nil || !found || value.Number() != check.want {
+			t.Fatalf("GetOwnProperty(%s) = %#v, %t, %v; want %v", check.key, value, found, err, check.want)
+		}
+	}
+
+	copied, err := store.Copy(owner, reader, object, first, second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	copiedObject, err := store.DerefObject(reader, copied[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(copiedObject.Properties) != 3 {
+		firstSymbol, _ := store.DerefSymbol(reader, copied[1])
+		secondSymbol, _ := store.DerefSymbol(reader, copied[2])
+		t.Fatalf("copied property count = %d, want 3: %#v; symbols=%#v/%#v", len(copiedObject.Properties), copiedObject.Properties, firstSymbol, secondSymbol)
+	}
+	copiedFirst, err := store.DerefSymbol(reader, copiedObject.Properties[0].Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	copiedSecond, err := store.DerefSymbol(reader, copiedObject.Properties[1].Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if copiedFirst.ID == copiedSecond.ID {
+		t.Fatalf("distinct copied Symbol keys share identity %d", copiedFirst.ID)
+	}
+	value, found, err := store.GetOwnProperty(reader, copied[0], copied[1])
+	if err != nil || !found || value.Number() != 1 {
+		t.Fatalf("copied Symbol property = %#v, %t, %v; want 1", value, found, err)
+	}
+	if err := store.CheckInvariants(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestNativeObjectPromotionPreservesGraphAndPropertyOrder(t *testing.T) {
 	t.Parallel()
 

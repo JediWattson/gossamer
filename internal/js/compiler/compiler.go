@@ -112,6 +112,7 @@ var nativeGlobalBindings = map[string]bool{
 	"Function":       true,
 	"Array":          true,
 	"String":         true,
+	"Symbol":         true,
 	"Error":          true,
 	"TypeError":      true,
 	"RangeError":     true,
