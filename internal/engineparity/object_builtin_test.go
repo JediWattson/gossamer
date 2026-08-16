@@ -33,7 +33,9 @@ Object.defineProperty(copySource, "hidden", {value: 9, enumerable: false});
 let copyTarget = Object.assign({base: 6}, null, copySource, undefined);
 let ownNames = Object.getOwnPropertyNames(copySource);
 let stringTarget = Object.assign({}, "go");
-if (globalThis !== window || copyTarget.base !== 6 || copyTarget.visible !== 7 || copyTarget[copyKey] !== 8 ||
+globalThis.dynamicGlobal = 23;
+if (globalThis !== window || dynamicGlobal !== 23 || typeof HTMLIFrameElement !== "function" ||
+    document instanceof window.HTMLIFrameElement || copyTarget.base !== 6 || copyTarget.visible !== 7 || copyTarget[copyKey] !== 8 ||
     copyTarget.hidden !== undefined || ownNames.join(",") !== "visible,hidden" ||
     !copySource.hasOwnProperty("visible") || !copySource.hasOwnProperty(copyKey) ||
     copySource.hasOwnProperty("missing") || !Array.isArray([]) || Array.isArray({}) ||

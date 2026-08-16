@@ -128,6 +128,7 @@ const (
 	nativeWindowScrollX
 	nativeWindowScrollY
 	nativeDOMRectToJSON
+	nativeDOMInterfaceConstructor
 )
 
 const (
@@ -316,6 +317,7 @@ func (realm *Realm) installBrowserNatives() error {
 		{nativeWindowScrollX, realm.windowGeometryValue("scrollX")},
 		{nativeWindowScrollY, realm.windowGeometryValue("scrollY")},
 		{nativeDOMRectToJSON, realm.domRectToJSON},
+		{nativeDOMInterfaceConstructor, realm.domInterfaceConstructor},
 		{nativeGlobalSetTimeout, realm.globalSetTimeout},
 		{nativeGlobalClearTimeout, realm.globalClearTimeout},
 		{nativeGlobalRequestAnimationFrame, realm.globalRequestAnimationFrame},
@@ -502,6 +504,10 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 	if err != nil {
 		return err
 	}
+	htmlIFrameElement, err := realm.newDOMInterfaceConstructor(context, "HTMLIFrameElement", bindings.elementPrototype)
+	if err != nil {
+		return err
+	}
 	for _, property := range []struct {
 		name  string
 		value memory.Value
@@ -518,6 +524,7 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{"performance", memory.RefValue(bindings.performance)},
 		{"MutationObserver", memory.RefValue(bindings.mutationObserverConstructor)},
 		{"getComputedStyle", memory.RefValue(getComputedStyle)},
+		{"HTMLIFrameElement", memory.RefValue(htmlIFrameElement)},
 	} {
 		if err := defineData(context, bindings.window, property.name, property.value, true, false, true); err != nil {
 			return err
@@ -558,6 +565,7 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{"requestAnimationFrame", requestAnimationFrame, true},
 		{"cancelAnimationFrame", cancelAnimationFrame, true},
 		{"getComputedStyle", getComputedStyle, true},
+		{"HTMLIFrameElement", htmlIFrameElement, true},
 	} {
 		if err := declareGlobal(context, realm.active.Global, binding.name, memory.RefValue(binding.value), binding.mutable); err != nil {
 			return err
@@ -740,6 +748,33 @@ func (realm *Realm) newNativeFunction(context *browserruntime.TaskContext, name 
 		return memory.Ref{}, err
 	}
 	return context.NewNativeFunction(nameValue, memory.RefValue(realm.active.Global), arity, id)
+}
+
+func (realm *Realm) newDOMInterfaceConstructor(context *browserruntime.TaskContext, name string, parentPrototype memory.Ref) (memory.Ref, error) {
+	nameValue, err := newString(context, name)
+	if err != nil {
+		return memory.Ref{}, err
+	}
+	constructor, err := context.NewNativeConstructor(nameValue, memory.RefValue(realm.active.Global), 0, nativeDOMInterfaceConstructor)
+	if err != nil {
+		return memory.Ref{}, err
+	}
+	prototypeName, err := context.NewString("prototype")
+	if err != nil {
+		return memory.Ref{}, err
+	}
+	prototype, found, err := context.GetOwnProperty(constructor, prototypeName)
+	if err != nil || !found || !prototype.IsRef() {
+		return memory.Ref{}, fmt.Errorf("nativeengine: %s constructor lost its prototype", name)
+	}
+	if err := context.SetPrototype(prototype.Ref(), memory.RefValue(parentPrototype)); err != nil {
+		return memory.Ref{}, err
+	}
+	return constructor, nil
+}
+
+func (realm *Realm) domInterfaceConstructor(_ *browserruntime.TaskContext, _ memory.Value, _ []memory.Value) (memory.Value, error) {
+	return memory.Value{}, fmt.Errorf("%w: illegal DOM constructor", browserruntime.ErrOperandType)
 }
 
 func (realm *Realm) newHostWrapperLocked(context *browserruntime.TaskContext, record memory.HostObject, prototype memory.Ref) (memory.Ref, error) {

@@ -130,11 +130,56 @@ func compileRegExp(context *TaskContext, expression memory.RegExp) (*regexp.Rege
 		modes.WriteByte('s')
 	}
 	if modes.Len() != 0 {
-		pattern = "(?" + modes.String() + ")" + pattern
+		pattern = "(?" + modes.String() + ")" + translateJavaScriptRegExpPattern(pattern)
+	} else {
+		pattern = translateJavaScriptRegExpPattern(pattern)
 	}
 	compiled, err := regexp.Compile(pattern)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", memory.ErrInvalidRegExp, err)
+		return nil, fmt.Errorf("%w: pattern %q: %v", memory.ErrInvalidRegExp, pattern, err)
 	}
 	return compiled, nil
+}
+
+func translateJavaScriptRegExpPattern(pattern string) string {
+	var translated strings.Builder
+	translated.Grow(len(pattern))
+	for index := 0; index < len(pattern); {
+		if pattern[index] != '\\' || index+1 >= len(pattern) {
+			translated.WriteByte(pattern[index])
+			index++
+			continue
+		}
+		if pattern[index+1] == '\\' {
+			translated.WriteString(`\\`)
+			index += 2
+			continue
+		}
+		if pattern[index+1] == 'u' && index+6 <= len(pattern) && isHexQuad(pattern[index+2:index+6]) {
+			translated.WriteString(`\x{`)
+			translated.WriteString(pattern[index+2 : index+6])
+			translated.WriteByte('}')
+			index += 6
+			continue
+		}
+		translated.WriteByte(pattern[index])
+		translated.WriteByte(pattern[index+1])
+		index += 2
+	}
+	return translated.String()
+}
+
+func isHexQuad(value string) bool {
+	if len(value) != 4 {
+		return false
+	}
+	for index := range value {
+		character := value[index]
+		if !((character >= '0' && character <= '9') ||
+			(character >= 'a' && character <= 'f') ||
+			(character >= 'A' && character <= 'F')) {
+			return false
+		}
+	}
+	return true
 }

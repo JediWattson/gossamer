@@ -31,10 +31,13 @@ let parityGlobalExpression = new RegExp("a", "g");
 let parityFirstMatch = parityGlobalExpression.test("ba");
 let parityFirstIndex = parityGlobalExpression.lastIndex;
 let paritySecondMatch = parityGlobalExpression.test("ba");
+let parityUnicodeExpression = RegExp("^[\\u00C0-\\u00D6]+$");
 if (!parityExpression.test("GOO") || parityExpression.test("stop") ||
     parityExpression.source !== "^go+$" || parityExpression.flags !== "i" ||
     parityExpression.toString() !== "/^go+$/i" || !parityFirstMatch ||
-    parityFirstIndex !== 2 || paritySecondMatch || parityGlobalExpression.lastIndex !== 0) {
+    parityFirstIndex !== 2 || paritySecondMatch || parityGlobalExpression.lastIndex !== 0 ||
+    !parityUnicodeExpression.test("ÀÖ") || parityUnicodeExpression.test("AZ") ||
+    parityUnicodeExpression.source !== "^[\\u00C0-\\u00D6]+$") {
   throw new Error("RegExp builtin parity failed");
 }
 `}); err != nil {
