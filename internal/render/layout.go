@@ -22,6 +22,7 @@ type layoutContext struct {
 type inlineToken struct {
 	text         string
 	node         *dom.Node
+	pseudo       computed.PseudoElement
 	style        computedStyle
 	image        image.Image
 	replaced     bool
@@ -34,6 +35,7 @@ type inlineToken struct {
 type inlinePiece struct {
 	text     string
 	node     *dom.Node
+	pseudo   computed.PseudoElement
 	style    computedStyle
 	image    image.Image
 	replaced bool
@@ -57,6 +59,8 @@ func layoutDocument(root *styledNode, viewport Viewport, images map[*dom.Node]im
 		Node:          root.node,
 		Bounds:        Rect{Width: float64(viewport.Width), Height: float64(viewport.Height)},
 		ContentBounds: Rect{Width: float64(viewport.Width), Height: float64(viewport.Height)},
+		style:         root.style,
+		hasStyle:      true,
 	}
 	html := findStyledElement(root, "html")
 	if html == nil || html.style.Display() == displayNone {
@@ -67,6 +71,8 @@ func layoutDocument(root *styledNode, viewport Viewport, images map[*dom.Node]im
 		Node:          html.node,
 		Bounds:        Rect{Width: float64(viewport.Width), Height: float64(viewport.Height)},
 		ContentBounds: Rect{Width: float64(viewport.Width), Height: float64(viewport.Height)},
+		style:         html.style,
+		hasStyle:      true,
 	}
 	documentBox.Children = append(documentBox.Children, htmlBox)
 
@@ -95,7 +101,7 @@ func (context *layoutContext) indexStyles(node *styledNode) {
 	if node == nil {
 		return
 	}
-	if node.node != nil {
+	if node.node != nil && node.pseudo == computed.PseudoElementNone {
 		context.styles[node.node] = node.style
 	}
 	for _, child := range node.children {
@@ -123,10 +129,13 @@ func (context *layoutContext) layoutBlockSized(node *styledNode, containingX, co
 		if !ok {
 			box := &Box{
 				Node:          node.node,
+				Pseudo:        node.pseudo,
 				Bounds:        Rect{X: containingX + left, Y: contentY, Width: border.Left + padding.Left + padding.Right + border.Right, Height: border.Top + padding.Top + padding.Bottom + border.Bottom},
 				ContentBounds: Rect{X: containingX + left + border.Left + padding.Left, Y: contentY + border.Top + padding.Top},
 				Padding:       padding,
 				Border:        border,
+				style:         node.style,
+				hasStyle:      true,
 			}
 			return context.finalizeBlock(node, box, availableWidth)
 		}
@@ -146,12 +155,15 @@ func (context *layoutContext) layoutBlockSized(node *styledNode, containingX, co
 		}
 		box := &Box{
 			Node:          node.node,
+			Pseudo:        node.pseudo,
 			Bounds:        bounds,
 			ContentBounds: contentBounds,
 			Padding:       padding,
 			Border:        border,
 			Fragments:     []InlineFragment{fragment},
 			flow:          []flowItem{{fragment: fragment}},
+			style:         node.style,
+			hasStyle:      true,
 		}
 		return context.finalizeBlock(node, box, availableWidth)
 	}
@@ -179,10 +191,13 @@ func (context *layoutContext) layoutBlockSized(node *styledNode, containingX, co
 	}
 
 	box := &Box{
-		Node:    node.node,
-		Bounds:  Rect{X: containingX + left, Y: contentY, Width: outerWidth},
-		Padding: padding,
-		Border:  border,
+		Node:     node.node,
+		Pseudo:   node.pseudo,
+		Bounds:   Rect{X: containingX + left, Y: contentY, Width: outerWidth},
+		Padding:  padding,
+		Border:   border,
+		style:    node.style,
+		hasStyle: true,
 	}
 	box.ContentBounds = Rect{
 		X:     box.Bounds.X + border.Left + padding.Left,
@@ -580,12 +595,17 @@ func translateInlineFragment(fragment *InlineFragment, deltaX, deltaY float64) {
 	}
 }
 
-func indexLayoutBoxes(box *Box, boxes map[*dom.Node]*Box) {
+type layoutNodeKey struct {
+	node   *dom.Node
+	pseudo computed.PseudoElement
+}
+
+func indexLayoutBoxes(box *Box, boxes map[layoutNodeKey]*Box) {
 	if box == nil {
 		return
 	}
 	if box.Node != nil {
-		boxes[box.Node] = box
+		boxes[layoutNodeKey{node: box.Node, pseudo: box.Pseudo}] = box
 	}
 	for _, child := range box.Children {
 		indexLayoutBoxes(child, boxes)
@@ -598,7 +618,7 @@ func indexLayoutBoxes(box *Box, boxes map[*dom.Node]*Box) {
 // while their used coordinates come from the nearest positioned ancestor (or
 // the viewport for fixed positioning).
 func (context *layoutContext) layoutPositionedDescendants(root *styledNode, rootBox *Box) error {
-	boxes := make(map[*dom.Node]*Box)
+	boxes := make(map[layoutNodeKey]*Box)
 	indexLayoutBoxes(rootBox, boxes)
 	viewport := Rect{Width: float64(context.viewport.Width), Height: float64(context.viewport.Height)}
 
@@ -607,7 +627,7 @@ func (context *layoutContext) layoutPositionedDescendants(root *styledNode, root
 		if node == nil || node.style.Display() == displayNone {
 			return nil
 		}
-		currentBox := boxes[node.node]
+		currentBox := boxes[layoutNodeKey{node: node.node, pseudo: node.pseudo}]
 		if isOutOfFlow(node.style.Position()) {
 			if parentBox == nil {
 				parentBox = rootBox
@@ -691,6 +711,7 @@ func (context *layoutContext) addListMarker(node *styledNode, box *Box) error {
 	}
 	marker := TextFragment{
 		Node:       node.node,
+		Pseudo:     node.pseudo,
 		Text:       markerText,
 		X:          box.Bounds.X - node.style.FontSize()*.5 - metrics.width,
 		BaselineY:  baseline,
@@ -701,6 +722,8 @@ func (context *layoutContext) addListMarker(node *styledNode, box *Box) error {
 		FontWeight: node.style.FontWeight(),
 		FontStyle:  node.style.FontStyle(),
 		Color:      node.style.Color(),
+		Visible:    node.style.Visibility() == visibilityVisible,
+		Underline:  node.style.Underline(),
 	}
 	fragment := InlineFragment{Kind: TextFragmentKind, Text: marker}
 	box.flow = append([]flowItem{{fragment: fragment}}, box.flow...)
@@ -853,6 +876,7 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 			textColor.A = uint8(math.Round(float64(textColor.A) * clamp(piece.opacity, 0, 1)))
 			text := TextFragment{
 				Node:       piece.node,
+				Pseudo:     piece.pseudo,
 				Text:       piece.text,
 				X:          x + lineOffset + piece.x,
 				BaselineY:  baseline,
@@ -863,10 +887,13 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 				FontWeight: piece.style.FontWeight(),
 				FontStyle:  piece.style.FontStyle(),
 				Color:      textColor,
+				Visible:    piece.style.Visibility() == visibilityVisible,
+				Underline:  piece.style.Underline(),
 			}
 			if len(fragments) != 0 && fragments[len(fragments)-1].Kind == TextFragmentKind {
 				previous := &fragments[len(fragments)-1].Text
 				if previous.Node == text.Node &&
+					previous.Pseudo == text.Pseudo &&
 					previous.BaselineY == text.BaselineY &&
 					previous.FontSize == text.FontSize &&
 					previous.FontFamily == text.FontFamily &&
@@ -951,7 +978,7 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 		if err != nil {
 			return nil, 0, err
 		}
-		line = append(line, inlinePiece{text: pieceText, node: token.node, style: token.style, opacity: token.opacity, x: lineWidth, width: pieceMetrics.width, metrics: pieceMetrics})
+		line = append(line, inlinePiece{text: pieceText, node: token.node, pseudo: token.pseudo, style: token.style, opacity: token.opacity, x: lineWidth, width: pieceMetrics.width, metrics: pieceMetrics})
 		lineWidth += pieceMetrics.width
 	}
 	if lastWasBreak {
@@ -1085,6 +1112,10 @@ func (builder *inlineTokenBuilder) add(node *styledNode, inheritedOpacity float6
 		return
 	}
 	opacity := clamp(inheritedOpacity*node.style.Opacity(), 0, 1)
+	if node.pseudo != computed.PseudoElementNone {
+		builder.addText(node.generatedText, node.node, node.pseudo, node.style, opacity)
+		return
+	}
 	if node.node.Type == dom.ElementNode && node.node.Data == "br" {
 		builder.tokens = append(builder.tokens, inlineToken{node: node.node, style: node.style, lineBreak: true})
 		builder.pendingSpace = false
@@ -1110,7 +1141,7 @@ func (builder *inlineTokenBuilder) add(node *styledNode, inheritedOpacity float6
 		return
 	}
 	if node.node.Type == dom.TextNode {
-		builder.addText(node.node.Data, node.node, node.style, opacity)
+		builder.addText(node.node.Data, node.node, computed.PseudoElementNone, node.style, opacity)
 		return
 	}
 	for _, child := range node.children {
@@ -1120,28 +1151,28 @@ func (builder *inlineTokenBuilder) add(node *styledNode, inheritedOpacity float6
 	}
 }
 
-func (builder *inlineTokenBuilder) addText(source string, node *dom.Node, style computedStyle, opacity float64) {
+func (builder *inlineTokenBuilder) addText(source string, node *dom.Node, pseudo computed.PseudoElement, style computedStyle, opacity float64) {
 	switch style.WhiteSpace() {
 	case whiteSpacePre:
-		builder.addPreservedText(source, node, style, opacity, false)
+		builder.addPreservedText(source, node, pseudo, style, opacity, false)
 	case whiteSpacePreWrap, whiteSpaceBreak:
-		builder.addPreservedText(source, node, style, opacity, true)
+		builder.addPreservedText(source, node, pseudo, style, opacity, true)
 	case whiteSpacePreLine:
-		builder.addCollapsedText(source, node, style, opacity, true, true)
+		builder.addCollapsedText(source, node, pseudo, style, opacity, true, true)
 	case whiteSpaceNoWrap:
-		builder.addCollapsedText(source, node, style, opacity, false, false)
+		builder.addCollapsedText(source, node, pseudo, style, opacity, false, false)
 	default:
-		builder.addCollapsedText(source, node, style, opacity, true, false)
+		builder.addCollapsedText(source, node, pseudo, style, opacity, true, false)
 	}
 }
 
-func (builder *inlineTokenBuilder) addCollapsedText(source string, node *dom.Node, style computedStyle, opacity float64, wrap, preserveBreaks bool) {
+func (builder *inlineTokenBuilder) addCollapsedText(source string, node *dom.Node, pseudo computed.PseudoElement, style computedStyle, opacity float64, wrap, preserveBreaks bool) {
 	if preserveBreaks {
 		parts := strings.Split(normalizeSegmentBreaks(source), "\n")
 		for index, part := range parts {
-			builder.addCollapsedText(part, node, style, opacity, wrap, false)
+			builder.addCollapsedText(part, node, pseudo, style, opacity, wrap, false)
 			if index != len(parts)-1 {
-				builder.tokens = append(builder.tokens, inlineToken{node: node, style: style, lineBreak: true})
+				builder.tokens = append(builder.tokens, inlineToken{node: node, pseudo: pseudo, style: style, lineBreak: true})
 				builder.pendingSpace = false
 				builder.hasContent = false
 			}
@@ -1157,6 +1188,7 @@ func (builder *inlineTokenBuilder) addCollapsedText(source string, node *dom.Nod
 		builder.tokens = append(builder.tokens, inlineToken{
 			text:         source[start:end],
 			node:         node,
+			pseudo:       pseudo,
 			style:        style,
 			opacity:      opacity,
 			leadingSpace: leadingSpace,
@@ -1181,13 +1213,13 @@ func (builder *inlineTokenBuilder) addCollapsedText(source string, node *dom.Nod
 	flushWord(len(source))
 }
 
-func (builder *inlineTokenBuilder) addPreservedText(source string, node *dom.Node, style computedStyle, opacity float64, wrap bool) {
+func (builder *inlineTokenBuilder) addPreservedText(source string, node *dom.Node, pseudo computed.PseudoElement, style computedStyle, opacity float64, wrap bool) {
 	source = strings.ReplaceAll(normalizeSegmentBreaks(source), "\t", "        ")
 	parts := strings.Split(source, "\n")
 	for partIndex, part := range parts {
 		if part != "" {
 			if !wrap {
-				builder.tokens = append(builder.tokens, inlineToken{text: part, node: node, style: style, opacity: opacity})
+				builder.tokens = append(builder.tokens, inlineToken{text: part, node: node, pseudo: pseudo, style: style, opacity: opacity})
 			} else {
 				start := 0
 				wrapBefore := false
@@ -1196,19 +1228,19 @@ func (builder *inlineTokenBuilder) addPreservedText(source string, node *dom.Nod
 						continue
 					}
 					end := index + 1
-					builder.tokens = append(builder.tokens, inlineToken{text: part[start:end], node: node, style: style, opacity: opacity, wrapBefore: wrapBefore})
+					builder.tokens = append(builder.tokens, inlineToken{text: part[start:end], node: node, pseudo: pseudo, style: style, opacity: opacity, wrapBefore: wrapBefore})
 					start = end
 					wrapBefore = true
 				}
 				if start < len(part) {
-					builder.tokens = append(builder.tokens, inlineToken{text: part[start:], node: node, style: style, opacity: opacity, wrapBefore: wrapBefore})
+					builder.tokens = append(builder.tokens, inlineToken{text: part[start:], node: node, pseudo: pseudo, style: style, opacity: opacity, wrapBefore: wrapBefore})
 				}
 			}
 			builder.hasContent = true
 		}
 		builder.pendingSpace = false
 		if partIndex != len(parts)-1 {
-			builder.tokens = append(builder.tokens, inlineToken{node: node, style: style, lineBreak: true})
+			builder.tokens = append(builder.tokens, inlineToken{node: node, pseudo: pseudo, style: style, lineBreak: true})
 			builder.hasContent = false
 		}
 	}

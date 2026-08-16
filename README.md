@@ -311,7 +311,8 @@ The following are intentionally still outside the current milestone:
   and full inline positioned layout, and retained inline boxes
 - The remaining CSS math grammar beyond the current bounded length
   `calc()`/`min()`/`max()`/`clamp()` slice, plus gradients, background images,
-  border radii, shadows, transforms, and generated content
+  border radii, shadows, transforms, counters, quotation marks, and generated
+  images
 - Escaped literal dots in layer-name segments, `@font-face`, keyframes,
   arbitrary or repeated non-leading `&` nesting selectors, and the remaining
   media-query and `@supports` syntax beyond the current
@@ -330,8 +331,12 @@ The first `getComputedStyle()` surface reports typed computed values and uses a
 separate synchronous layout snapshot for width and the currently definite
 height cases. Other box-dependent values, percentage heights, ordinary inline
 elements, and `display:none` retain their layout-independent serialization.
-Unsupported pseudo-elements return an empty live declaration; pseudo-element
-layout and generated boxes remain future work.
+`::before` and `::after` have independent live computed-style slots and can
+generate inline or block content from bounded string and `attr()` values.
+Their layout commands and hit-test ownership remain attached to the originating
+element. Other pseudo-elements return an empty live declaration; counters,
+quotation marks, generated images, and retained empty inline boxes remain
+future work.
 
 ## Development
 

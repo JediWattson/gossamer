@@ -539,6 +539,51 @@ func (page *Page) ComputedStyle(handle NodeHandle) (computed.ComputedStyle, erro
 	return result, err
 }
 
+// ComputedPseudoStyle synchronously returns the layout-independent style of a
+// supported generated pseudo-element. It shares the element style snapshot
+// cache and does not publish a frame.
+func (page *Page) ComputedPseudoStyle(handle NodeHandle, pseudo computed.PseudoElement) (computed.ComputedStyle, error) {
+	if page == nil {
+		return computed.ComputedStyle{}, fmt.Errorf("browser: nil page")
+	}
+	if pseudo == computed.PseudoElementNone {
+		return page.ComputedStyle(handle)
+	}
+	page.mutex.Lock()
+	defer page.mutex.Unlock()
+	if page.closed {
+		return computed.ComputedStyle{}, ErrPageClosed
+	}
+	if handle.Document == 0 || handle.Node == dom.InvalidNodeID || handle.Document != page.documentGeneration {
+		return computed.ComputedStyle{}, ErrStaleNodeHandle
+	}
+	if _, err := page.syncStylesheetsLocked(); err != nil {
+		return computed.ComputedStyle{}, err
+	}
+	resources := page.resources.rendererResources(page.document)
+	var result computed.ComputedStyle
+	err := page.document.WithReadView(func(view dom.ReadView) error {
+		node, ok := view.Resolve(handle.Node)
+		if !ok {
+			return fmt.Errorf("%w: %d", dom.ErrUnknownNode, handle.Node)
+		}
+		if node.Type != dom.ElementNode {
+			return fmt.Errorf("%w: node %d is %d, want element", dom.ErrWrongNodeKind, handle.Node, node.Type)
+		}
+		snapshot, snapshotErr := page.styleSnapshotForViewLocked(view, resources)
+		if snapshotErr != nil {
+			return snapshotErr
+		}
+		var found bool
+		result, found = snapshot.LookupPseudoID(handle.Node, pseudo)
+		if !found {
+			return fmt.Errorf("%w: node %d", ErrComputedStyleUnavailable, handle.Node)
+		}
+		return nil
+	})
+	return result, err
+}
+
 // ComputedStyleProperty synchronously returns one computed-style property and
 // overlays layout-backed used width/height values when the element has a
 // principal box. It does not publish a Frame or clear Page dirtiness.
@@ -604,6 +649,82 @@ func (page *Page) ComputedStyleProperty(handle NodeHandle, property string) (str
 			used = geometry.ContentBounds.Height
 		}
 		if computedStyle.BoxSizing() == computed.BoxSizingBorderBox {
+			if canonical == "width" {
+				used = geometry.Bounds.Width
+			} else {
+				used = geometry.Bounds.Height
+			}
+		}
+		value = serializeUsedPixels(used)
+		return nil
+	})
+	return value, found, err
+}
+
+// ComputedPseudoStyleProperty returns a supported generated pseudo-element's
+// property, overlaying width/height from its retained block box when present.
+// Inline generated content retains its layout-independent computed values.
+func (page *Page) ComputedPseudoStyleProperty(handle NodeHandle, pseudo computed.PseudoElement, property string) (string, bool, error) {
+	if pseudo == computed.PseudoElementNone {
+		return page.ComputedStyleProperty(handle, property)
+	}
+	if page == nil {
+		return "", false, fmt.Errorf("browser: nil page")
+	}
+	page.mutex.Lock()
+	defer page.mutex.Unlock()
+	if page.closed {
+		return "", false, ErrPageClosed
+	}
+	if handle.Document == 0 || handle.Node == dom.InvalidNodeID || handle.Document != page.documentGeneration {
+		return "", false, ErrStaleNodeHandle
+	}
+	if _, err := page.syncStylesheetsLocked(); err != nil {
+		return "", false, err
+	}
+	resources := page.resources.rendererResources(page.document)
+	var value string
+	var found bool
+	err := page.document.WithReadView(func(view dom.ReadView) error {
+		node, ok := view.Resolve(handle.Node)
+		if !ok {
+			return fmt.Errorf("%w: %d", dom.ErrUnknownNode, handle.Node)
+		}
+		if node.Type != dom.ElementNode {
+			return fmt.Errorf("%w: node %d is %d, want element", dom.ErrWrongNodeKind, handle.Node, node.Type)
+		}
+		styleSnapshot, snapshotErr := page.styleSnapshotForViewLocked(view, resources)
+		if snapshotErr != nil {
+			return snapshotErr
+		}
+		pseudoStyle, available := styleSnapshot.LookupPseudoID(handle.Node, pseudo)
+		if !available {
+			return fmt.Errorf("%w: node %d", ErrComputedStyleUnavailable, handle.Node)
+		}
+		value, found = computed.ComputedPropertyValue(pseudoStyle, property)
+		if !found {
+			return nil
+		}
+		canonical := lowerASCIIProperty(property)
+		if canonical != "width" && canonical != "height" {
+			return nil
+		}
+		if canonical == "height" && pseudoStyle.Height().DependsOnPercent() {
+			return nil
+		}
+		layout, layoutErr := page.layoutSnapshotForViewLocked(view, resources, styleSnapshot)
+		if layoutErr != nil {
+			return layoutErr
+		}
+		geometry, hasGeometry := layout.PseudoGeometryID(handle.Node, pseudo)
+		if !hasGeometry {
+			return nil
+		}
+		used := geometry.ContentBounds.Width
+		if canonical == "height" {
+			used = geometry.ContentBounds.Height
+		}
+		if pseudoStyle.BoxSizing() == computed.BoxSizingBorderBox {
 			if canonical == "width" {
 				used = geometry.Bounds.Width
 			} else {

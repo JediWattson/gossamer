@@ -253,12 +253,20 @@ number, range, date, month, ISO week, time, and local date-time value spaces.
 They honor valid one-sided or two-sided limits, reversed periodic time ranges,
 empty-value semantics, range-input defaults/sanitization, and live value or
 attribute mutations.
+`::before` and `::after` now target generated subjects without leaking into
+ordinary element matching. Sparse pseudo style slots inherit from the
+originating element, participate in the same origin/layer/custom-property
+cascade, and expose live computed values through the existing browser/V8
+CSSOM boundary. Typed `content` supports bounded strings and `attr()` values;
+layout projects generated inline text and block boxes in tree order while
+retaining the originating element for geometry, paint ownership, and hit
+testing.
 
-- Finish pseudo-elements and the remaining stateful selector grammar.
+- Finish the remaining pseudo-elements and stateful selector grammar.
 - Add memoization and selector/property dependency indexes after profiling the
   now-bounded combinator backtracking paths.
-- Introduce pseudo-element style slots and generated boxes only when layout can
-  consume them.
+- Extend generated content to counters, quotation marks, images, and retained
+  empty inline boxes only with matching layout consumers.
 
 Acceptance: static and dynamic selector state uses an explicit match context;
 unknown state never silently matches.
@@ -292,8 +300,10 @@ stable-ID layout snapshot and serialize principal content-box geometry in
 pixels; the next render reuses that exact layout result. Percentage heights,
 ordinary inline and `display:none` elements, and the current inline-block
 fallback retain their layout-independent computed values. Broader
-box-dependent resolved-value serialization and pseudo-element style slots are
-pending.
+box-dependent resolved-value serialization remains pending. `::before` and
+`::after` use sparse stable-ID style and layout slots, so retained computed
+declarations observe generated content changes without publishing an early
+frame; other pseudo-elements remain empty.
 
 - Expose stylesheet, rule, declaration, and computed-style APIs through stable
   numeric browser handles.

@@ -65,6 +65,9 @@ func expandNestedSelectorGroup(source string, values []ComponentValue, parent Se
 			return Selector{}, false
 		}
 		if combinator, next, ok := leadingNestedCombinator(values, position); ok {
+			if parent.pseudo != PseudoElementNone {
+				return Selector{}, false
+			}
 			child, valid := parseNestedRemainder(source, values[next:])
 			if !valid {
 				return Selector{}, false
@@ -76,6 +79,9 @@ func expandNestedSelectorGroup(source string, values []ComponentValue, parent Se
 			return Selector{}, false
 		}
 		if hadWhitespace {
+			if parent.pseudo != PseudoElementNone {
+				return Selector{}, false
+			}
 			return appendNestedSelector(parent, child, descendantCombinator), true
 		}
 		return mergeNestedSelectorCompound(parent, child)
@@ -85,6 +91,9 @@ func expandNestedSelectorGroup(source string, values []ComponentValue, parent Se
 	}
 
 	if combinator, next, ok := leadingNestedCombinator(values, position); ok {
+		if parent.pseudo != PseudoElementNone {
+			return Selector{}, false
+		}
 		child, valid := parseNestedRemainder(source, values[next:])
 		if !valid {
 			return Selector{}, false
@@ -93,6 +102,9 @@ func expandNestedSelectorGroup(source string, values []ComponentValue, parent Se
 	}
 	child, valid := parseNestedRemainder(source, values[position:])
 	if !valid {
+		return Selector{}, false
+	}
+	if parent.pseudo != PseudoElementNone {
 		return Selector{}, false
 	}
 	return appendNestedSelector(parent, child, descendantCombinator), true
@@ -148,11 +160,12 @@ func appendNestedSelector(parent, child Selector, combinator selectorCombinator)
 	result.combinators = append(result.combinators, combinator)
 	result.combinators = append(result.combinators, child.combinators...)
 	result.specificity = result.specificity.add(child.specificity)
+	result.pseudo = child.pseudo
 	return result
 }
 
 func mergeNestedSelectorCompound(parent, suffix Selector) (Selector, bool) {
-	if len(parent.compounds) == 0 || len(suffix.compounds) == 0 || suffix.compounds[0].typeName != "" {
+	if len(parent.compounds) == 0 || len(suffix.compounds) == 0 || suffix.compounds[0].typeName != "" || parent.pseudo != PseudoElementNone {
 		return Selector{}, false
 	}
 	result := cloneSelector(parent)
@@ -165,6 +178,7 @@ func mergeNestedSelectorCompound(parent, suffix Selector) (Selector, bool) {
 	result.compounds = append(result.compounds, cloneCompounds(suffix.compounds[1:])...)
 	result.combinators = append(result.combinators, suffix.combinators...)
 	result.specificity = result.specificity.add(suffix.specificity)
+	result.pseudo = suffix.pseudo
 	return result, true
 }
 
@@ -174,6 +188,7 @@ func cloneSelector(source Selector) Selector {
 		compounds:   cloneCompounds(source.compounds),
 		combinators: append([]selectorCombinator(nil), source.combinators...),
 		leading:     source.leading,
+		pseudo:      source.pseudo,
 	}
 }
 

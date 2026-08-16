@@ -33,6 +33,7 @@ type cascadeStyleContext struct {
 	author           originStyleContext
 	mediaEnvironment css.MediaEnvironment
 	selectorContext  css.MatchContext
+	pseudoElements   [3]bool
 }
 
 // winningDeclaration is one validated declaration expanded to a longhand (or

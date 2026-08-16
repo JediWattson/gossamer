@@ -4,6 +4,7 @@ import (
 	"math"
 	"strings"
 
+	"github.com/JediWattson/gossamer/internal/css"
 	"github.com/JediWattson/gossamer/internal/dom"
 	computed "github.com/JediWattson/gossamer/internal/style"
 )
@@ -87,9 +88,11 @@ const (
 )
 
 type styledNode struct {
-	node     *dom.Node
-	style    computedStyle
-	children []*styledNode
+	node          *dom.Node
+	pseudo        css.PseudoElement
+	generatedText string
+	style         computedStyle
+	children      []*styledNode
 }
 
 func projectStyleTree(node *dom.Node, snapshot *computed.Snapshot) *styledNode {
@@ -101,11 +104,17 @@ func projectStyleTree(node *dom.Node, snapshot *computed.Snapshot) *styledNode {
 		return nil
 	}
 	projected := &styledNode{node: node, style: value}
-	projected.children = make([]*styledNode, 0, len(node.Children))
+	projected.children = make([]*styledNode, 0, len(node.Children)+2)
+	if before := projectPseudoStyle(node, css.PseudoElementBefore, snapshot.LookupPseudo); before != nil {
+		projected.children = append(projected.children, before)
+	}
 	for _, child := range node.Children {
 		if projectedChild := projectStyleTree(child, snapshot); projectedChild != nil {
 			projected.children = append(projected.children, projectedChild)
 		}
+	}
+	if after := projectPseudoStyle(node, css.PseudoElementAfter, snapshot.LookupPseudo); after != nil {
+		projected.children = append(projected.children, after)
 	}
 	return projected
 }
@@ -123,13 +132,45 @@ func projectReadAccessStyleTree(node *dom.Node, access *dom.ReadAccess, snapshot
 		return nil
 	}
 	projected := &styledNode{node: node, style: value}
-	projected.children = make([]*styledNode, 0, len(node.Children))
+	projected.children = make([]*styledNode, 0, len(node.Children)+2)
+	lookupPseudo := func(origin *dom.Node, pseudo css.PseudoElement) (computedStyle, bool) {
+		originID, found := access.ID(origin)
+		if !found {
+			return computedStyle{}, false
+		}
+		return snapshot.LookupPseudoID(originID, pseudo)
+	}
+	if before := projectPseudoStyle(node, css.PseudoElementBefore, lookupPseudo); before != nil {
+		projected.children = append(projected.children, before)
+	}
 	for _, child := range node.Children {
 		if projectedChild := projectReadAccessStyleTree(child, access, snapshot); projectedChild != nil {
 			projected.children = append(projected.children, projectedChild)
 		}
 	}
+	if after := projectPseudoStyle(node, css.PseudoElementAfter, lookupPseudo); after != nil {
+		projected.children = append(projected.children, after)
+	}
 	return projected
+}
+
+func projectPseudoStyle(
+	origin *dom.Node,
+	pseudo css.PseudoElement,
+	lookup func(*dom.Node, css.PseudoElement) (computedStyle, bool),
+) *styledNode {
+	if origin == nil || origin.Type != dom.ElementNode || origin.Data == "img" {
+		return nil
+	}
+	value, ok := lookup(origin, pseudo)
+	if !ok || value.Display() == displayNone {
+		return nil
+	}
+	text, generated := value.Content().GeneratedText(origin)
+	if !generated {
+		return nil
+	}
+	return &styledNode{node: origin, pseudo: pseudo, generatedText: text, style: value}
 }
 
 func styleEnvironment(viewport Viewport) computed.Environment {

@@ -60,6 +60,16 @@ type SelectorState struct {
 	DefaultLanguage string
 }
 
+// PseudoElement is shared with the selector AST so style, layout, and CSSOM
+// use one generated-subject identity.
+type PseudoElement = css.PseudoElement
+
+const (
+	PseudoElementNone   = css.PseudoElementNone
+	PseudoElementBefore = css.PseudoElementBefore
+	PseudoElementAfter  = css.PseudoElementAfter
+)
+
 // DisplayMode is the computed outer display mode supported by the current
 // formatting model.
 type DisplayMode uint8
@@ -406,6 +416,7 @@ type ComputedStyle struct {
 	alignItems        AlignItems
 	rowGap            Length
 	columnGap         Length
+	content           ContentValue
 	flexGrow          float64
 	flexShrink        float64
 	flexBasis         Length
@@ -468,6 +479,7 @@ func (computed ComputedStyle) JustifyContent() JustifyContent { return computed.
 func (computed ComputedStyle) AlignItems() AlignItems         { return computed.alignItems }
 func (computed ComputedStyle) RowGap() Length                 { return computed.rowGap }
 func (computed ComputedStyle) ColumnGap() Length              { return computed.columnGap }
+func (computed ComputedStyle) Content() ContentValue          { return computed.content }
 func (computed ComputedStyle) FlexGrow() float64              { return computed.flexGrow }
 func (computed ComputedStyle) FlexShrink() float64            { return computed.flexShrink }
 func (computed ComputedStyle) FlexBasis() Length              { return computed.flexBasis }
@@ -535,7 +547,23 @@ type styledNode struct {
 	parent       *styledNode
 	style        ComputedStyle
 	explanations map[string]PropertyExplanation
+	pseudos      map[css.PseudoElement]pseudoStyledNode
 	children     []*styledNode
+}
+
+type pseudoStyledNode struct {
+	style        ComputedStyle
+	explanations map[string]PropertyExplanation
+}
+
+type pointerPseudoKey struct {
+	node   *dom.Node
+	pseudo css.PseudoElement
+}
+
+type stablePseudoKey struct {
+	id     dom.NodeID
+	pseudo css.PseudoElement
 }
 
 // Snapshot is an immutable set of computed styles for one DOM tree and one
@@ -549,6 +577,8 @@ type Snapshot struct {
 	environment      Environment
 	byNode           map[*dom.Node]ComputedStyle
 	byID             map[dom.NodeID]ComputedStyle
+	byPseudoNode     map[pointerPseudoKey]ComputedStyle
+	byPseudoID       map[stablePseudoKey]ComputedStyle
 	provenance       provenanceStore
 }
 
@@ -559,11 +589,13 @@ func Compute(root *dom.Node, input Input) *Snapshot {
 	input.selectorContext.DefaultLanguage = input.SelectorState.DefaultLanguage
 	styledRoot := buildStyleTree(root, input)
 	snapshot := &Snapshot{
-		root:        root,
-		environment: input.Environment,
-		byNode:      make(map[*dom.Node]ComputedStyle),
+		root:         root,
+		environment:  input.Environment,
+		byNode:       make(map[*dom.Node]ComputedStyle),
+		byPseudoNode: make(map[pointerPseudoKey]ComputedStyle),
 	}
 	indexPointerStyles(styledRoot, snapshot.byNode)
+	indexPointerPseudoStyles(styledRoot, snapshot.byPseudoNode)
 	snapshot.provenance = indexPointerProvenance(styledRoot)
 	return snapshot
 }
@@ -603,8 +635,10 @@ func ComputeReadView(view dom.ReadView, input Input) (*Snapshot, error) {
 		version:          access.Version(),
 		environment:      input.Environment,
 		byID:             make(map[dom.NodeID]ComputedStyle),
+		byPseudoID:       make(map[stablePseudoKey]ComputedStyle),
 	}
 	indexStableStyles(styledRoot, snapshot.byID, access)
+	indexStablePseudoStyles(styledRoot, snapshot.byPseudoID, access)
 	snapshot.provenance = indexStableProvenance(styledRoot, access)
 	snapshot.rootID, _ = access.ID(root)
 	return snapshot, nil
@@ -686,6 +720,32 @@ func indexStableStyles(node *styledNode, destination map[dom.NodeID]ComputedStyl
 	}
 }
 
+func indexPointerPseudoStyles(node *styledNode, destination map[pointerPseudoKey]ComputedStyle) {
+	if node == nil {
+		return
+	}
+	for pseudo, styled := range node.pseudos {
+		destination[pointerPseudoKey{node: node.node, pseudo: pseudo}] = styled.style
+	}
+	for _, child := range node.children {
+		indexPointerPseudoStyles(child, destination)
+	}
+}
+
+func indexStablePseudoStyles(node *styledNode, destination map[stablePseudoKey]ComputedStyle, access *dom.ReadAccess) {
+	if node == nil {
+		return
+	}
+	if id, ok := access.ID(node.node); ok {
+		for pseudo, styled := range node.pseudos {
+			destination[stablePseudoKey{id: id, pseudo: pseudo}] = styled.style
+		}
+	}
+	for _, child := range node.children {
+		indexStablePseudoStyles(child, destination, access)
+	}
+}
+
 func (snapshot *Snapshot) Root() *dom.Node {
 	if snapshot == nil {
 		return nil
@@ -746,6 +806,54 @@ func (snapshot *Snapshot) LookupID(id dom.NodeID) (ComputedStyle, bool) {
 	return computed, ok
 }
 
+// LookupPseudo returns the computed style for ::before or ::after on an
+// element in a pointer snapshot. Pseudo defaults are synthesized from the
+// originating element so snapshots retain only matched pseudo overrides.
+func (snapshot *Snapshot) LookupPseudo(node *dom.Node, pseudo css.PseudoElement) (ComputedStyle, bool) {
+	if snapshot == nil || node == nil || node.Type != dom.ElementNode || pseudo == css.PseudoElementNone {
+		return ComputedStyle{}, false
+	}
+	origin, ok := snapshot.byNode[node]
+	if !ok {
+		return ComputedStyle{}, false
+	}
+	if value, found := snapshot.byPseudoNode[pointerPseudoKey{node: node, pseudo: pseudo}]; found {
+		return value, true
+	}
+	return pseudoInitialStyle(origin, snapshot.environment), true
+}
+
+// LookupPseudoID returns the computed style for ::before or ::after on a
+// stable element identity. Callers must validate that id denotes an element.
+func (snapshot *Snapshot) LookupPseudoID(id dom.NodeID, pseudo css.PseudoElement) (ComputedStyle, bool) {
+	if snapshot == nil || id == dom.InvalidNodeID || pseudo == css.PseudoElementNone {
+		return ComputedStyle{}, false
+	}
+	origin, ok := snapshot.byID[id]
+	if !ok {
+		return ComputedStyle{}, false
+	}
+	if value, found := snapshot.byPseudoID[stablePseudoKey{id: id, pseudo: pseudo}]; found {
+		return value, true
+	}
+	return pseudoInitialStyle(origin, snapshot.environment), true
+}
+
+func pseudoInitialStyle(origin ComputedStyle, viewport Viewport) ComputedStyle {
+	style := cssInitialStyle(viewport)
+	for index := range propertyDefinitions {
+		definition := propertyDefinitions[index]
+		if definition.inherited {
+			definition.copy(&style, origin)
+		}
+	}
+	style.ancestorUnderline = origin.underline
+	style.underline = origin.underline
+	style.customProperties = origin.customProperties
+	style.content = ContentValue{kind: contentNone}
+	return style
+}
+
 const maxCustomPropertyCascadePasses = 128
 
 func buildStyleTree(document *dom.Node, input Input) *styledNode {
@@ -766,6 +874,18 @@ func buildStyleTree(document *dom.Node, input Input) *styledNode {
 		author:           originStyleContext{sheets: authorSheets, layerRanks: originLayerRanks(authorSheets, mediaEnvironment)},
 		mediaEnvironment: mediaEnvironment,
 		selectorContext:  input.selectorContext,
+	}
+	for _, origin := range []originStyleContext{context.userAgent, context.user, context.author} {
+		for _, source := range origin.sheets {
+			for _, rule := range source.stylesheet.Rules {
+				for _, selector := range rule.Selectors {
+					pseudo := selector.PseudoElement()
+					if pseudo > css.PseudoElementNone && int(pseudo) < len(context.pseudoElements) {
+						context.pseudoElements[pseudo] = true
+					}
+				}
+			}
+		}
 	}
 	return styleNode(document, nil, context, input.Environment)
 }
@@ -837,9 +957,27 @@ func collectAuthorStyles(root *dom.Node, external map[*dom.Node]css.Stylesheet, 
 func styleNode(node *dom.Node, parent *styledNode, context cascadeStyleContext, viewport Viewport) *styledNode {
 	style, explanations := initialStyle(node, parent, viewport)
 	if node != nil && node.Type == dom.ElementNode {
-		applyCascade(&style, explanations, node, context, viewport, parent)
+		applyCascade(&style, explanations, node, css.PseudoElementNone, context, viewport, parent)
 	}
 	styled := &styledNode{node: node, parent: parent, style: style, explanations: explanations}
+	if node != nil && node.Type == dom.ElementNode {
+		for _, pseudo := range []css.PseudoElement{css.PseudoElementBefore, css.PseudoElementAfter} {
+			if !context.pseudoElements[pseudo] {
+				continue
+			}
+			pseudoStyle, pseudoExplanations := initialStyle(node, styled, viewport)
+			if !applyCascade(&pseudoStyle, pseudoExplanations, node, pseudo, context, viewport, styled) {
+				continue
+			}
+			if pseudoStyle.content.kind == contentNormal {
+				pseudoStyle.content = ContentValue{kind: contentNone}
+			}
+			if styled.pseudos == nil {
+				styled.pseudos = make(map[css.PseudoElement]pseudoStyledNode)
+			}
+			styled.pseudos[pseudo] = pseudoStyledNode{style: pseudoStyle, explanations: pseudoExplanations}
+		}
+	}
 	for _, child := range node.Children {
 		styled.children = append(styled.children, styleNode(child, styled, context, viewport))
 	}
@@ -902,6 +1040,7 @@ func cssInitialStyle(viewport Viewport) computedStyle {
 		alignItems:      AlignStretch,
 		rowGap:          px(0),
 		columnGap:       px(0),
+		content:         ContentValue{kind: contentNormal},
 		flexShrink:      1,
 		flexBasis:       length{unit: lengthAuto},
 		color:           color.NRGBA{A: 0xff},
@@ -971,8 +1110,9 @@ func mustParseBuiltInUserAgentStylesheet(source string) css.Stylesheet {
 	return stylesheet
 }
 
-func applyCascade(style *computedStyle, explanations map[string]PropertyExplanation, node *dom.Node, context cascadeStyleContext, viewport Viewport, parent *styledNode) {
+func applyCascade(style *computedStyle, explanations map[string]PropertyExplanation, node *dom.Node, pseudo css.PseudoElement, context cascadeStyleContext, viewport Viewport, parent *styledNode) bool {
 	candidatesByTarget := make(map[string][]winningDeclaration)
+	recorded := false
 	sourceOrders := make(map[CascadeOrigin]int)
 	layerRanks := func(origin CascadeOrigin) map[layerIdentity]int {
 		switch origin {
@@ -1013,6 +1153,7 @@ func applyCascade(style *computedStyle, explanations map[string]PropertyExplanat
 			expanded := candidate
 			expanded.target = target
 			candidatesByTarget[target] = append(candidatesByTarget[target], expanded)
+			recorded = true
 		}
 	}
 	reserveSourceOrder := func(origin CascadeOrigin) int {
@@ -1027,7 +1168,13 @@ func applyCascade(style *computedStyle, explanations map[string]PropertyExplanat
 	recordSheets := func(origin CascadeOrigin, originContext originStyleContext) {
 		for _, source := range originContext.sheets {
 			for ruleIndex, rule := range source.stylesheet.Rules {
-				specificity, matches := rule.MatchWithContext(node, context.selectorContext)
+				var specificity css.Specificity
+				var matches bool
+				if pseudo == css.PseudoElementNone {
+					specificity, matches = rule.MatchWithContext(node, context.selectorContext)
+				} else {
+					specificity, matches = rule.MatchPseudoWithContext(node, pseudo, context.selectorContext)
+				}
 				matches = matches && rule.MatchesMedia(context.mediaEnvironment)
 				matches = matches && rule.MatchesSupports(SupportsDeclaration)
 				for declarationIndex, declaration := range rule.Declarations {
@@ -1053,7 +1200,7 @@ func applyCascade(style *computedStyle, explanations map[string]PropertyExplanat
 	recordSheets(CascadeOriginUserAgent, context.userAgent)
 	recordSheets(CascadeOriginUser, context.user)
 
-	if node.Data == "img" {
+	if pseudo == css.PseudoElementNone && node.Data == "img" {
 		for declarationIndex, name := range []string{"width", "height"} {
 			order := reserveSourceOrder(CascadeOriginPresentationalHint)
 			value, ok := dimensionAttribute(node, name)
@@ -1072,14 +1219,16 @@ func applyCascade(style *computedStyle, explanations map[string]PropertyExplanat
 
 	recordSheets(CascadeOriginAuthor, context.author)
 
-	if source, ok := attribute(node, "style"); ok {
-		declarations, _ := css.ParseRawDeclarationListWithSources(source)
-		for declarationIndex, sourced := range declarations {
-			recordInSourceOrder(winningDeclaration{
-				declaration: sourced.Declaration, declarationSource: sourced.Source, origin: CascadeOriginAuthor, kind: SourceInlineStyle,
-				owner: node, inline: true, stylesheetOrder: -1, ruleOrder: -1,
-				declarationOrder: declarationIndex,
-			})
+	if pseudo == css.PseudoElementNone {
+		if source, ok := attribute(node, "style"); ok {
+			declarations, _ := css.ParseRawDeclarationListWithSources(source)
+			for declarationIndex, sourced := range declarations {
+				recordInSourceOrder(winningDeclaration{
+					declaration: sourced.Declaration, declarationSource: sourced.Source, origin: CascadeOriginAuthor, kind: SourceInlineStyle,
+					owner: node, inline: true, stylesheetOrder: -1, ruleOrder: -1,
+					declarationOrder: declarationIndex,
+				})
+			}
 		}
 	}
 
@@ -1112,6 +1261,7 @@ func applyCascade(style *computedStyle, explanations map[string]PropertyExplanat
 	for _, target := range targets {
 		applyDeclarationCandidates(style, explanations, parent, candidatesByTarget[target], viewport)
 	}
+	return recorded
 }
 
 func resolveCustomPropertyCandidates(parentProperties css.CustomProperties, candidatesByName map[string][]winningDeclaration, explanations map[string]PropertyExplanation, parent *styledNode) css.CustomProperties {

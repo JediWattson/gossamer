@@ -34,6 +34,18 @@ type LayoutSnapshot struct {
 	version        uint64
 	byNode         map[*dom.Node]LayoutGeometry
 	byID           map[dom.NodeID]LayoutGeometry
+	byPseudoNode   map[pointerPseudoGeometryKey]LayoutGeometry
+	byPseudoID     map[stablePseudoGeometryKey]LayoutGeometry
+}
+
+type pointerPseudoGeometryKey struct {
+	node   *dom.Node
+	pseudo computed.PseudoElement
+}
+
+type stablePseudoGeometryKey struct {
+	id     dom.NodeID
+	pseudo computed.PseudoElement
 }
 
 // Viewport returns the CSS-pixel viewport used to compute the snapshot.
@@ -88,6 +100,27 @@ func (snapshot *LayoutSnapshot) GeometryID(id dom.NodeID) (LayoutGeometry, bool)
 	return geometry, ok
 }
 
+// PseudoGeometry returns used geometry for a generated pseudo-element box in
+// a pointer snapshot. Inline generated content has no principal box until the
+// retained inline-box formatter lands.
+func (snapshot *LayoutSnapshot) PseudoGeometry(node *dom.Node, pseudo computed.PseudoElement) (LayoutGeometry, bool) {
+	if snapshot == nil || node == nil || pseudo == computed.PseudoElementNone {
+		return LayoutGeometry{}, false
+	}
+	geometry, ok := snapshot.byPseudoNode[pointerPseudoGeometryKey{node: node, pseudo: pseudo}]
+	return geometry, ok
+}
+
+// PseudoGeometryID returns used geometry for a generated pseudo-element box
+// in a stable-ID snapshot.
+func (snapshot *LayoutSnapshot) PseudoGeometryID(id dom.NodeID, pseudo computed.PseudoElement) (LayoutGeometry, bool) {
+	if snapshot == nil || id == dom.InvalidNodeID || pseudo == computed.PseudoElementNone {
+		return LayoutGeometry{}, false
+	}
+	geometry, ok := snapshot.byPseudoID[stablePseudoGeometryKey{id: id, pseudo: pseudo}]
+	return geometry, ok
+}
+
 func newPointerLayoutSnapshot(
 	document *dom.Node,
 	root *Box,
@@ -102,8 +135,9 @@ func newPointerLayoutSnapshot(
 		computedStyles: computedStyles,
 		rootNode:       document,
 		byNode:         make(map[*dom.Node]LayoutGeometry),
+		byPseudoNode:   make(map[pointerPseudoGeometryKey]LayoutGeometry),
 	}
-	indexPointerGeometry(root, snapshot.byNode)
+	indexPointerGeometry(root, snapshot.byNode, snapshot.byPseudoNode)
 	return snapshot
 }
 
@@ -128,8 +162,9 @@ func newStableLayoutSnapshot(
 		document:       access.Identity(),
 		version:        access.Version(),
 		byID:           make(map[dom.NodeID]LayoutGeometry),
+		byPseudoID:     make(map[stablePseudoGeometryKey]LayoutGeometry),
 	}
-	indexStableGeometry(root, access, snapshot.byID)
+	indexStableGeometry(root, access, snapshot.byID, snapshot.byPseudoID)
 	return snapshot, nil
 }
 
@@ -177,7 +212,7 @@ func boxGeometry(box *Box, extent layoutExtent) LayoutGeometry {
 	}
 }
 
-func indexPointerGeometry(box *Box, index map[*dom.Node]LayoutGeometry) layoutExtent {
+func indexPointerGeometry(box *Box, index map[*dom.Node]LayoutGeometry, pseudoIndex map[pointerPseudoGeometryKey]LayoutGeometry) layoutExtent {
 	if box == nil {
 		return layoutExtent{}
 	}
@@ -201,7 +236,7 @@ func indexPointerGeometry(box *Box, index map[*dom.Node]LayoutGeometry) layoutEx
 		}
 	}
 	for _, child := range box.Children {
-		childExtent := indexPointerGeometry(child, index)
+		childExtent := indexPointerGeometry(child, index, pseudoIndex)
 		if childExtent.right > extent.right {
 			extent.right = childExtent.right
 		}
@@ -210,7 +245,11 @@ func indexPointerGeometry(box *Box, index map[*dom.Node]LayoutGeometry) layoutEx
 		}
 	}
 	if box.Node != nil && box.Node.Type == dom.ElementNode {
-		index[box.Node] = boxGeometry(box, extent)
+		if box.Pseudo == computed.PseudoElementNone {
+			index[box.Node] = boxGeometry(box, extent)
+		} else {
+			pseudoIndex[pointerPseudoGeometryKey{node: box.Node, pseudo: box.Pseudo}] = boxGeometry(box, extent)
+		}
 	}
 	for _, fragment := range box.Fragments {
 		if fragment.Kind != ImageFragmentKind || fragment.Image.Node == nil {
@@ -229,7 +268,7 @@ func indexPointerGeometry(box *Box, index map[*dom.Node]LayoutGeometry) layoutEx
 	return extent
 }
 
-func indexStableGeometry(box *Box, access *dom.ReadAccess, index map[dom.NodeID]LayoutGeometry) layoutExtent {
+func indexStableGeometry(box *Box, access *dom.ReadAccess, index map[dom.NodeID]LayoutGeometry, pseudoIndex map[stablePseudoGeometryKey]LayoutGeometry) layoutExtent {
 	if box == nil {
 		return layoutExtent{}
 	}
@@ -253,7 +292,7 @@ func indexStableGeometry(box *Box, access *dom.ReadAccess, index map[dom.NodeID]
 		}
 	}
 	for _, child := range box.Children {
-		childExtent := indexStableGeometry(child, access, index)
+		childExtent := indexStableGeometry(child, access, index, pseudoIndex)
 		if childExtent.right > extent.right {
 			extent.right = childExtent.right
 		}
@@ -263,7 +302,11 @@ func indexStableGeometry(box *Box, access *dom.ReadAccess, index map[dom.NodeID]
 	}
 	if box.Node != nil && box.Node.Type == dom.ElementNode {
 		if id, ok := access.ID(box.Node); ok {
-			index[id] = boxGeometry(box, extent)
+			if box.Pseudo == computed.PseudoElementNone {
+				index[id] = boxGeometry(box, extent)
+			} else {
+				pseudoIndex[stablePseudoGeometryKey{id: id, pseudo: box.Pseudo}] = boxGeometry(box, extent)
+			}
 		}
 	}
 	for _, fragment := range box.Fragments {

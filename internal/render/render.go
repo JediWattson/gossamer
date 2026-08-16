@@ -372,19 +372,23 @@ func paintBox(list *DisplayList, box *Box, styles map[*dom.Node]computedStyle) {
 	if box == nil {
 		return
 	}
-	style, hasStyle := styles[box.Node]
+	style, hasStyle := box.style, box.hasStyle
+	if !hasStyle {
+		style, hasStyle = styles[box.Node]
+	}
 	visible := hasStyle && style.Visibility() == visibilityVisible
 	grouped := hasStyle && style.Opacity() < 1
 	if grouped {
-		list.Commands = append(list.Commands, Command{Kind: BeginOpacityCommand, Opacity: style.Opacity()})
+		list.Commands = append(list.Commands, Command{Kind: BeginOpacityCommand, Node: box.Node, Pseudo: box.Pseudo, Opacity: style.Opacity()})
 	}
 	background, hasBackground := style.Background()
 	if visible && hasBackground && box.Bounds.Width > 0 && box.Bounds.Height > 0 {
 		list.Commands = append(list.Commands, Command{
-			Kind:  FillRectCommand,
-			Node:  box.Node,
-			Rect:  box.Bounds,
-			Color: background,
+			Kind:   FillRectCommand,
+			Node:   box.Node,
+			Pseudo: box.Pseudo,
+			Rect:   box.Bounds,
+			Color:  background,
 		})
 	}
 	if visible {
@@ -423,7 +427,7 @@ func paintBox(list *DisplayList, box *Box, styles map[*dom.Node]computedStyle) {
 		paintBox(list, child, styles)
 	}
 	if grouped {
-		list.Commands = append(list.Commands, Command{Kind: EndOpacityCommand})
+		list.Commands = append(list.Commands, Command{Kind: EndOpacityCommand, Node: box.Node, Pseudo: box.Pseudo})
 	}
 }
 
@@ -464,17 +468,17 @@ func paintBoxBorders(list *DisplayList, box *Box, style computedStyle) {
 	// Physical sides are painted in top/right/bottom/left order. Uniform solid
 	// borders are exact; diagonal corner splitting for differently colored
 	// adjacent sides is deferred with the remaining advanced border geometry.
-	paintBorderEdge(list, box.Node, Rect{X: bounds.X, Y: bounds.Y, Width: bounds.Width, Height: borders.Top}, borderPaintColor(style.BorderTop(), style.Color()))
-	paintBorderEdge(list, box.Node, Rect{X: bounds.X + bounds.Width - borders.Right, Y: bounds.Y, Width: borders.Right, Height: bounds.Height}, borderPaintColor(style.BorderRight(), style.Color()))
-	paintBorderEdge(list, box.Node, Rect{X: bounds.X, Y: bounds.Y + bounds.Height - borders.Bottom, Width: bounds.Width, Height: borders.Bottom}, borderPaintColor(style.BorderBottom(), style.Color()))
-	paintBorderEdge(list, box.Node, Rect{X: bounds.X, Y: bounds.Y, Width: borders.Left, Height: bounds.Height}, borderPaintColor(style.BorderLeft(), style.Color()))
+	paintBorderEdge(list, box.Node, box.Pseudo, Rect{X: bounds.X, Y: bounds.Y, Width: bounds.Width, Height: borders.Top}, borderPaintColor(style.BorderTop(), style.Color()))
+	paintBorderEdge(list, box.Node, box.Pseudo, Rect{X: bounds.X + bounds.Width - borders.Right, Y: bounds.Y, Width: borders.Right, Height: bounds.Height}, borderPaintColor(style.BorderRight(), style.Color()))
+	paintBorderEdge(list, box.Node, box.Pseudo, Rect{X: bounds.X, Y: bounds.Y + bounds.Height - borders.Bottom, Width: bounds.Width, Height: borders.Bottom}, borderPaintColor(style.BorderBottom(), style.Color()))
+	paintBorderEdge(list, box.Node, box.Pseudo, Rect{X: bounds.X, Y: bounds.Y, Width: borders.Left, Height: bounds.Height}, borderPaintColor(style.BorderLeft(), style.Color()))
 }
 
-func paintBorderEdge(list *DisplayList, node *dom.Node, rectangle Rect, edgeColor color.NRGBA) {
+func paintBorderEdge(list *DisplayList, node *dom.Node, pseudo computed.PseudoElement, rectangle Rect, edgeColor color.NRGBA) {
 	if rectangle.Width <= 0 || rectangle.Height <= 0 || edgeColor.A == 0 {
 		return
 	}
-	list.Commands = append(list.Commands, Command{Kind: FillRectCommand, Node: node, Rect: rectangle, Color: edgeColor})
+	list.Commands = append(list.Commands, Command{Kind: FillRectCommand, Node: node, Pseudo: pseudo, Rect: rectangle, Color: edgeColor})
 }
 
 func borderPaintColor(side borderSide, currentColor color.NRGBA) color.NRGBA {
@@ -497,21 +501,22 @@ func paintInlineFragment(list *DisplayList, fragment InlineFragment, styles map[
 }
 
 func paintTextFragment(list *DisplayList, fragment TextFragment, styles map[*dom.Node]computedStyle) {
-	if style, ok := styles[fragment.Node]; ok && style.Visibility() != visibilityVisible {
+	if !fragment.Visible {
 		return
 	}
 	list.Commands = append(list.Commands, Command{
-		Kind: DrawTextCommand, Node: fragment.Node, Color: fragment.Color, Text: fragment.Text,
+		Kind: DrawTextCommand, Node: fragment.Node, Pseudo: fragment.Pseudo, Color: fragment.Color, Text: fragment.Text,
 		X: fragment.X, BaselineY: fragment.BaselineY,
 		FontSize: fragment.FontSize, FontFamily: fragment.FontFamily,
 		FontWeight: fragment.FontWeight, FontStyle: fragment.FontStyle,
 	})
-	if fragmentStyle, ok := styles[fragment.Node]; ok && fragmentStyle.Underline() {
+	if fragment.Underline {
 		list.Commands = append(list.Commands, Command{
-			Kind:  FillRectCommand,
-			Node:  fragment.Node,
-			Rect:  Rect{X: fragment.X, Y: fragment.BaselineY + math.Max(1, fragment.FontSize/16), Width: fragment.Width, Height: math.Max(1, fragment.FontSize/16)},
-			Color: fragment.Color,
+			Kind:   FillRectCommand,
+			Node:   fragment.Node,
+			Pseudo: fragment.Pseudo,
+			Rect:   Rect{X: fragment.X, Y: fragment.BaselineY + math.Max(1, fragment.FontSize/16), Width: fragment.Width, Height: math.Max(1, fragment.FontSize/16)},
+			Color:  fragment.Color,
 		})
 	}
 }

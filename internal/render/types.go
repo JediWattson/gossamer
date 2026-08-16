@@ -78,6 +78,7 @@ const (
 // Box is retained layout geometry for painting and future hit testing.
 type Box struct {
 	Node          *dom.Node
+	Pseudo        css.PseudoElement
 	Bounds        Rect
 	ContentBounds Rect
 	Padding       Edges
@@ -89,6 +90,8 @@ type Box struct {
 	positioned    bool
 	zIndex        int
 	zIndexAuto    bool
+	style         computedStyle
+	hasStyle      bool
 }
 
 type flowItem struct {
@@ -115,6 +118,7 @@ type InlineFragment struct {
 // TextFragment is one positioned run of text.
 type TextFragment struct {
 	Node       *dom.Node
+	Pseudo     css.PseudoElement
 	Text       string
 	X          float64
 	BaselineY  float64
@@ -125,6 +129,8 @@ type TextFragment struct {
 	FontWeight FontWeight
 	FontStyle  FontStyle
 	Color      color.NRGBA
+	Visible    bool
+	Underline  bool
 }
 
 // ImageFragment is one positioned decoded image.
@@ -153,6 +159,9 @@ type Command struct {
 	// only with the Frame and lets Page project immutable document-space paint
 	// through mutable scroll offsets without rebuilding layout.
 	Node *dom.Node
+	// Pseudo identifies generated paint owned by Node. Zero is principal DOM
+	// content.
+	Pseudo css.PseudoElement
 
 	Rect  Rect
 	Color color.NRGBA

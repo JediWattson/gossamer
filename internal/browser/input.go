@@ -1439,6 +1439,14 @@ func (host *taskHost) StylePropertyNames(handle NodeHandle) ([]string, error) {
 
 func (host *taskHost) ComputedStyleProperty(handle NodeHandle, pseudo, property string) (string, bool, error) {
 	if pseudo != "" {
+		pseudoElement, supported := css.ParsePseudoElement(pseudo)
+		if supported {
+			value, found, err := host.page.ComputedPseudoStyleProperty(handle, pseudoElement, property)
+			if errors.Is(err, ErrComputedStyleUnavailable) {
+				return "", false, nil
+			}
+			return value, found, err
+		}
 		_, err := host.page.ComputedStyle(handle)
 		if err != nil {
 			if errors.Is(err, ErrComputedStyleUnavailable) {
@@ -1456,7 +1464,13 @@ func (host *taskHost) ComputedStyleProperty(handle NodeHandle, pseudo, property 
 }
 
 func (host *taskHost) ComputedStylePropertyNames(handle NodeHandle, pseudo string) ([]string, error) {
-	computedStyle, err := host.page.ComputedStyle(handle)
+	var computedStyle computed.ComputedStyle
+	var err error
+	if pseudoElement, supported := css.ParsePseudoElement(pseudo); pseudo != "" && supported {
+		computedStyle, err = host.page.ComputedPseudoStyle(handle, pseudoElement)
+	} else {
+		computedStyle, err = host.page.ComputedStyle(handle)
+	}
 	if err != nil {
 		if errors.Is(err, ErrComputedStyleUnavailable) {
 			return []string{}, nil
@@ -1464,6 +1478,9 @@ func (host *taskHost) ComputedStylePropertyNames(handle NodeHandle, pseudo strin
 		return nil, err
 	}
 	if pseudo != "" {
+		if _, supported := css.ParsePseudoElement(pseudo); supported {
+			return computed.ComputedPropertyNames(computedStyle), nil
+		}
 		return []string{}, nil
 	}
 	return computed.ComputedPropertyNames(computedStyle), nil

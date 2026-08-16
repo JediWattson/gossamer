@@ -313,7 +313,7 @@ func TestUnsupportedRulesDoNotDiscardSupportedMediaRule(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse() error = %v", err)
 	}
-	if got, want := len(stylesheet.Rules), 1; got != want {
+	if got, want := len(stylesheet.Rules), 2; got != want {
 		t.Fatalf("len(Rules) = %d, want %d", got, want)
 	}
 	rule := stylesheet.Rules[0]
@@ -322,6 +322,10 @@ func TestUnsupportedRulesDoNotDiscardSupportedMediaRule(t *testing.T) {
 	}
 	if len(rule.Selectors) != 1 || !rule.Selectors[0].Matches(dom.NewElement("body")) {
 		t.Error("supported @media rule did not retain its body selector")
+	}
+	pseudoRule := stylesheet.Rules[1]
+	if len(pseudoRule.Selectors) != 1 || pseudoRule.Selectors[0].PseudoElement() != css.PseudoElementBefore {
+		t.Error("supported ::before rule did not retain its pseudo-element target")
 	}
 }
 
@@ -384,6 +388,9 @@ func FuzzParseDoesNotPanic(f *testing.F) {
 	f.Add(`/* comment */ .x { content: "};:" !important }`)
 	f.Add(`@media screen { p { color: blue } }`)
 	f.Add("p { color: url(data:image/png;base64,a;b:c) }")
+	f.Add(`.card::before { content: "prefix" } .card:after { content: attr(data-label) }`)
+	f.Add(`.card { &::before { content: var(--marker, "") } }`)
+	f.Add(`:is(.card, ::before), div::before:hover { color: red }`)
 
 	f.Fuzz(func(t *testing.T, source string) {
 		_, _ = css.Parse(source)

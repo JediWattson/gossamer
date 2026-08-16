@@ -154,23 +154,64 @@ func TestTaskHostComputedStyleReadsCurrentCascadeWithoutPublishingFrame(t *testi
 	}
 }
 
-func TestTaskHostComputedStylePseudoAndHandleValidation(t *testing.T) {
+func TestTaskHostComputedPseudoStyleAndHandleValidation(t *testing.T) {
 	t.Parallel()
 
-	engine, page, target := computedStyleTestPage(t, `<html><body><div id="target">text</div></body></html>`)
+	engine, page, target := computedStyleTestPage(t, `<html><head><style>
+		#target::before { content:"generated"; display:block; width:50%; height:10px; color:#ff0000 }
+	</style></head><body><div id="target">text</div></body></html>`)
 	defer engine.Close()
 
 	host := &taskHost{page: page, generation: page.DocumentGeneration()}
 	handle := NodeHandle{Document: page.DocumentGeneration(), Node: target}
-	if got, found, err := host.ComputedStyleProperty(handle, "::before", "color"); err != nil || found || got != "" {
+	if got, found, err := host.ComputedStyleProperty(handle, "::before", "color"); err != nil || !found || got != "rgb(255, 0, 0)" {
+		t.Fatalf("pseudo color = %q, %t, %v", got, found, err)
+	}
+	if got, found, err := host.ComputedStyleProperty(handle, ":before", "content"); err != nil || !found || got != `"generated"` {
+		t.Fatalf("legacy pseudo content = %q, %t, %v", got, found, err)
+	}
+	if got, found, err := host.ComputedStyleProperty(handle, "::before", "height"); err != nil || !found || got != "10px" {
+		t.Fatalf("layout-backed pseudo height = %q, %t, %v", got, found, err)
+	}
+	if got, found, err := host.ComputedStyleProperty(handle, "::marker", "color"); err != nil || found || got != "" {
 		t.Fatalf("unsupported pseudo property = %q, %t, %v; want empty, false, nil", got, found, err)
 	}
 	names, err := host.ComputedStylePropertyNames(handle, "::before")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if names == nil || len(names) != 0 {
-		t.Fatalf("unsupported pseudo names = %#v, want non-nil empty list", names)
+	if !slices.Contains(names, "content") || !slices.Contains(names, "color") {
+		t.Fatalf("pseudo names = %#v", names)
+	}
+	unsupportedNames, err := host.ComputedStylePropertyNames(handle, "::marker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unsupportedNames == nil || len(unsupportedNames) != 0 {
+		t.Fatalf("unsupported pseudo names = %#v, want non-nil empty list", unsupportedNames)
+	}
+	if page.Frame() != nil || !page.Dirty() {
+		t.Fatal("pseudo computed-style read published a frame or cleared dirtiness")
+	}
+	styleNode := computedStyleTestElement(page.document.Root(), "style")
+	styleID, ok := page.document.ID(styleNode)
+	if !ok {
+		t.Fatal("style element has no stable ID")
+	}
+	if err := host.SetTextContent(
+		NodeHandle{Document: page.DocumentGeneration(), Node: styleID},
+		`#target::before { content:"updated"; color:#008000 }`,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if got, found, err := host.ComputedStyleProperty(handle, "::before", "content"); err != nil || !found || got != `"updated"` {
+		t.Fatalf("live pseudo content = %q, %t, %v", got, found, err)
+	}
+	if got, found, err := host.ComputedStyleProperty(handle, "::before", "color"); err != nil || !found || got != "rgb(0, 128, 0)" {
+		t.Fatalf("live pseudo color = %q, %t, %v", got, found, err)
+	}
+	if page.Frame() != nil {
+		t.Fatal("live pseudo reread published a frame")
 	}
 
 	stale := NodeHandle{Document: page.DocumentGeneration() + 1, Node: target}
@@ -193,6 +234,9 @@ func TestTaskHostComputedStylePseudoAndHandleValidation(t *testing.T) {
 	if _, err := host.ComputedStylePropertyNames(textHandle, ""); !errors.Is(err, dom.ErrWrongNodeKind) {
 		t.Fatalf("text computed names error = %v, want %v", err, dom.ErrWrongNodeKind)
 	}
+	if _, _, err := host.ComputedStyleProperty(textHandle, "::before", "color"); !errors.Is(err, dom.ErrWrongNodeKind) {
+		t.Fatalf("text pseudo property error = %v, want %v", err, dom.ErrWrongNodeKind)
+	}
 
 	parent, ok, err := page.document.RelatedNode(target, dom.ParentNode)
 	if err != nil || !ok {
@@ -206,6 +250,9 @@ func TestTaskHostComputedStylePseudoAndHandleValidation(t *testing.T) {
 	}
 	if got, found, err := host.ComputedStyleProperty(handle, "", "width"); err != nil || found || got != "" {
 		t.Fatalf("detached resolved width = %q, %t, %v; want empty, false, nil", got, found, err)
+	}
+	if got, found, err := host.ComputedStyleProperty(handle, "::before", "content"); err != nil || found || got != "" {
+		t.Fatalf("detached pseudo property = %q, %t, %v; want empty, false, nil", got, found, err)
 	}
 	names, err = host.ComputedStylePropertyNames(handle, "")
 	if err != nil {

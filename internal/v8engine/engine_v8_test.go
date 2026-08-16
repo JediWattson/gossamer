@@ -546,6 +546,7 @@ func TestStockV8GetComputedStyleIsFreshLiveAndReadOnly(t *testing.T) {
 		staticDocumentLoader{document: `<!doctype html><html><head><style>
 			.parent { color: #123456; }
 			.target { display: block; width: 25%; background-color: #010203; --accent: ready; }
+			.target::before { content:"generated"; color:#008000; }
 		</style></head><body class="parent"><div id="target" class="target">text</div></body></html>`},
 	)
 	if err != nil {
@@ -623,16 +624,24 @@ func TestStockV8GetComputedStyleIsFreshLiveAndReadOnly(t *testing.T) {
 				}
 
 				const pseudo = getComputedStyle(target, "::before");
-				if (!(pseudo instanceof CSSStyleDeclaration) || pseudo.length !== 0 ||
-					pseudo.getPropertyValue("color") !== "") {
-					throw new Error("unsupported pseudo computed style is not an empty live declaration");
+				if (!(pseudo instanceof CSSStyleDeclaration) || pseudo.length < 30 ||
+					pseudo.getPropertyValue("color") !== "rgb(0, 128, 0)" ||
+					pseudo.content !== '"generated"' || !("content" in pseudo)) {
+					throw new Error("generated pseudo computed style is incorrect");
 				}
 				if (getComputedStyle(target, null).color !== "rgb(171, 205, 239)" ||
 					getComputedStyle(target, "").color !== "rgb(171, 205, 239)" ||
 					getComputedStyle(target, "::gossamer-unsupported").length !== 0 ||
-					getComputedStyle(target, ":before").length !== 0) {
+					getComputedStyle(target, ":before").content !== '"generated"') {
 					throw new Error("valid computed-style pseudo boundary is incorrect");
 				}
+				document.querySelector("style").textContent +=
+					'#target::before { content:"updated"; color:#0000ff }';
+				if (pseudo.content !== '"updated"' || pseudo.color !== "rgb(0, 0, 255)") {
+					throw new Error("retained pseudo declaration is not live");
+				}
+				mustReject(() => { pseudo.color = "red"; });
+				mustReject(() => pseudo.setProperty("content", '"blocked"'));
 				for (const invalidPseudo of [
 					"before", ":hover", "::", "::1before", " ::before",
 					"::before:hover", "::before trailing", "::part", "::part(icon)",
@@ -656,6 +665,7 @@ func TestStockV8GetComputedStyleIsFreshLiveAndReadOnly(t *testing.T) {
 				}
 				if (!wrongTargetRejected) throw new Error("getComputedStyle accepted a non-Element");
 				globalThis.__heldComputedStyle = computed;
+				globalThis.__heldPseudoStyle = pseudo;
 			})();
 		`,
 	})
@@ -707,10 +717,12 @@ func TestStockV8GetComputedStyleIsFreshLiveAndReadOnly(t *testing.T) {
 		URL: "https://gossamer.test/computed-style-detached.js",
 		Source: `
 			if (__heldComputedStyle.length !== 0 || __heldComputedStyle.cssText !== "" ||
-				__heldComputedStyle.getPropertyValue("background-color") !== "") {
+				__heldComputedStyle.getPropertyValue("background-color") !== "" ||
+				__heldPseudoStyle.length !== 0 || __heldPseudoStyle.content !== "") {
 				throw new Error("held computed declaration lost its detached-node anchor");
 			}
 			globalThis.__heldComputedStyle = undefined;
+			globalThis.__heldPseudoStyle = undefined;
 		`,
 	})
 	if err != nil {

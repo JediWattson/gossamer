@@ -3,7 +3,8 @@
 // structural and linguistic pseudo-classes, common CSS nesting forms, nested
 // cascade layers, viewport media queries, escaped selector identifiers, and
 // tokenized declarations consumed by the renderer. Selector namespaces,
-// pseudo-elements, and the remaining at-rules are outside the current subset.
+// pseudo-elements beyond ::before/::after, and the remaining at-rules are
+// outside the current subset.
 package css
 
 import (
@@ -94,6 +95,42 @@ type Selector struct {
 	compounds   []compoundSelector
 	combinators []selectorCombinator
 	leading     selectorCombinator
+	pseudo      PseudoElement
+}
+
+// PseudoElement identifies the generated subject selected after the final
+// compound of a complex selector. Zero selects the originating element.
+type PseudoElement uint8
+
+const (
+	PseudoElementNone PseudoElement = iota
+	PseudoElementBefore
+	PseudoElementAfter
+)
+
+// String returns the canonical pseudo-element selector spelling.
+func (pseudo PseudoElement) String() string {
+	switch pseudo {
+	case PseudoElementBefore:
+		return "::before"
+	case PseudoElementAfter:
+		return "::after"
+	default:
+		return ""
+	}
+}
+
+// ParsePseudoElement recognizes the generated pseudo-elements implemented by
+// the engine, including their legacy single-colon spellings.
+func ParsePseudoElement(source string) (PseudoElement, bool) {
+	switch lowerASCII(source) {
+	case "::before", ":before":
+		return PseudoElementBefore, true
+	case "::after", ":after":
+		return PseudoElementAfter, true
+	default:
+		return PseudoElementNone, false
+	}
 }
 
 // ParseSelectorList parses the unforgiving selector-list grammar used by DOM
@@ -126,6 +163,12 @@ func MatchesAnyWithContext(selectors []Selector, node *dom.Node, context MatchCo
 // Specificity returns the selector's static CSS specificity.
 func (selector Selector) Specificity() Specificity {
 	return selector.specificity
+}
+
+// PseudoElement returns the selector's generated subject, or zero when it
+// selects an ordinary element.
+func (selector Selector) PseudoElement() PseudoElement {
+	return selector.pseudo
 }
 
 type compoundSelector struct {

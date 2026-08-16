@@ -69,6 +69,20 @@ type selectorMatchFrame struct {
 }
 
 func (selector Selector) matchesWithState(node *dom.Node, context MatchContext, state *selectorMatchState) bool {
+	if selector.pseudo != PseudoElementNone {
+		return false
+	}
+	return selector.matchesOriginWithState(node, context, state)
+}
+
+func (selector Selector) matchesPseudoWithState(node *dom.Node, pseudo PseudoElement, context MatchContext, state *selectorMatchState) bool {
+	if pseudo == PseudoElementNone || selector.pseudo != pseudo {
+		return false
+	}
+	return selector.matchesOriginWithState(node, context, state)
+}
+
+func (selector Selector) matchesOriginWithState(node *dom.Node, context MatchContext, state *selectorMatchState) bool {
 	if node == nil || node.Type != dom.ElementNode || len(selector.compounds) == 0 {
 		return false
 	}
@@ -97,6 +111,13 @@ func (selector Selector) matchesWithState(node *dom.Node, context MatchContext, 
 		}
 	}
 	return false
+}
+
+// MatchesPseudoWithContext reports whether selector targets pseudo on node.
+// Ordinary selector matching deliberately never treats a pseudo-element as its
+// originating element.
+func (selector Selector) MatchesPseudoWithContext(node *dom.Node, pseudo PseudoElement, context MatchContext) bool {
+	return selector.matchesPseudoWithState(node, pseudo, context, newSelectorMatchState(context))
 }
 
 func appendReverseRelationFrames(frames []selectorMatchFrame, compoundIndex int, node *dom.Node, combinator selectorCombinator, state *selectorMatchState) ([]selectorMatchFrame, bool) {
@@ -287,11 +308,27 @@ func (rule Rule) Match(node *dom.Node) (Specificity, bool) {
 
 // MatchWithContext reports the greatest matching specificity under context.
 func (rule Rule) MatchWithContext(node *dom.Node, context MatchContext) (Specificity, bool) {
+	return rule.matchSubjectWithContext(node, PseudoElementNone, context)
+}
+
+// MatchPseudoWithContext reports the greatest specificity among selectors in
+// rule that target pseudo on node.
+func (rule Rule) MatchPseudoWithContext(node *dom.Node, pseudo PseudoElement, context MatchContext) (Specificity, bool) {
+	if pseudo == PseudoElementNone {
+		return Specificity{}, false
+	}
+	return rule.matchSubjectWithContext(node, pseudo, context)
+}
+
+func (rule Rule) matchSubjectWithContext(node *dom.Node, pseudo PseudoElement, context MatchContext) (Specificity, bool) {
 	state := newSelectorMatchState(context)
 	var greatest Specificity
 	matched := false
 	for _, selector := range rule.Selectors {
 		selectorMatched := selector.matchesWithState(node, context, state)
+		if pseudo != PseudoElementNone {
+			selectorMatched = selector.matchesPseudoWithState(node, pseudo, context, state)
+		}
 		if state.exhausted {
 			return Specificity{}, false
 		}

@@ -20,10 +20,14 @@ func parseTokenSelectorListAtDepth(source string, nesting int) ([]Selector, bool
 }
 
 func parseTokenSelectorComponents(source string, values []ComponentValue, nesting int, forgiving bool) ([]Selector, bool) {
-	return parseTokenSelectorComponentsWithContext(source, values, nesting, forgiving, false)
+	return parseTokenSelectorComponentsWithOptions(source, values, nesting, forgiving, false, true)
 }
 
 func parseTokenSelectorComponentsWithContext(source string, values []ComponentValue, nesting int, forgiving, insideHas bool) ([]Selector, bool) {
+	return parseTokenSelectorComponentsWithOptions(source, values, nesting, forgiving, insideHas, false)
+}
+
+func parseTokenSelectorComponentsWithOptions(source string, values []ComponentValue, nesting int, forgiving, insideHas, allowPseudo bool) ([]Selector, bool) {
 	if nesting > maxSelectorNesting {
 		return nil, false
 	}
@@ -37,7 +41,7 @@ func parseTokenSelectorComponentsWithContext(source string, values []ComponentVa
 			}
 			return nil, false
 		}
-		parser := tokenSelectorParser{source: source, values: group, nesting: nesting, insideHas: insideHas}
+		parser := tokenSelectorParser{source: source, values: group, nesting: nesting, insideHas: insideHas, allowPseudo: allowPseudo}
 		selector, ok := parser.parseComplexSelector()
 		parser.skipWhitespace()
 		if !ok || !parser.done() {
@@ -89,11 +93,12 @@ func splitSelectorComponentGroups(values []ComponentValue) [][]ComponentValue {
 }
 
 type tokenSelectorParser struct {
-	source    string
-	values    []ComponentValue
-	pos       int
-	nesting   int
-	insideHas bool
+	source      string
+	values      []ComponentValue
+	pos         int
+	nesting     int
+	insideHas   bool
+	allowPseudo bool
 }
 
 func (parser *tokenSelectorParser) parseRelativeSelector() (Selector, bool) {
@@ -124,15 +129,18 @@ func (parser *tokenSelectorParser) parseRelativeSelector() (Selector, bool) {
 
 func (parser *tokenSelectorParser) parseComplexSelector() (Selector, bool) {
 	parser.skipWhitespace()
-	first, specificity, ok := parser.parseCompoundSelector()
+	first, pseudo, specificity, ok := parser.parseCompoundSelector()
 	if !ok {
 		return Selector{}, false
 	}
-	selector := Selector{compounds: []compoundSelector{first}, specificity: specificity}
+	selector := Selector{compounds: []compoundSelector{first}, specificity: specificity, pseudo: pseudo}
 	for {
 		hadWhitespace := parser.skipWhitespace()
 		if parser.done() {
 			return selector, true
+		}
+		if selector.pseudo != PseudoElementNone {
+			return Selector{}, false
 		}
 
 		var combinator selectorCombinator
@@ -158,18 +166,20 @@ func (parser *tokenSelectorParser) parseComplexSelector() (Selector, bool) {
 		if parser.done() || parser.peekDelim(">") || parser.peekDelim("+") || parser.peekDelim("~") {
 			return Selector{}, false
 		}
-		compound, compoundSpecificity, ok := parser.parseCompoundSelector()
+		compound, pseudo, compoundSpecificity, ok := parser.parseCompoundSelector()
 		if !ok {
 			return Selector{}, false
 		}
 		selector.compounds = append(selector.compounds, compound)
 		selector.combinators = append(selector.combinators, combinator)
 		selector.specificity = selector.specificity.add(compoundSpecificity)
+		selector.pseudo = pseudo
 	}
 }
 
-func (parser *tokenSelectorParser) parseCompoundSelector() (compoundSelector, Specificity, bool) {
+func (parser *tokenSelectorParser) parseCompoundSelector() (compoundSelector, PseudoElement, Specificity, bool) {
 	var compound compoundSelector
+	var pseudoElement PseudoElement
 	var specificity Specificity
 	found := false
 
@@ -189,7 +199,7 @@ func (parser *tokenSelectorParser) parseCompoundSelector() (compoundSelector, Sp
 		switch {
 		case value.Kind == ComponentToken && value.Token.Kind == TokenHash:
 			if !value.Token.Identifier {
-				return compoundSelector{}, Specificity{}, false
+				return compoundSelector{}, PseudoElementNone, Specificity{}, false
 			}
 			compound.ids = append(compound.ids, value.Token.Value)
 			parser.pos++
@@ -199,7 +209,7 @@ func (parser *tokenSelectorParser) parseCompoundSelector() (compoundSelector, Sp
 			parser.pos++
 			identifier, ok := parser.peekToken(TokenIdent)
 			if !ok {
-				return compoundSelector{}, Specificity{}, false
+				return compoundSelector{}, PseudoElementNone, Specificity{}, false
 			}
 			compound.classes = append(compound.classes, identifier.Value)
 			parser.pos++
@@ -208,7 +218,7 @@ func (parser *tokenSelectorParser) parseCompoundSelector() (compoundSelector, Sp
 		case value.Kind == ComponentBlock && value.Token.Kind == TokenOpenSquare:
 			attribute, ok := parseTokenAttributeSelector(value.Values)
 			if !ok {
-				return compoundSelector{}, Specificity{}, false
+				return compoundSelector{}, PseudoElementNone, Specificity{}, false
 			}
 			compound.attributes = append(compound.attributes, attribute)
 			parser.pos++
@@ -216,18 +226,64 @@ func (parser *tokenSelectorParser) parseCompoundSelector() (compoundSelector, Sp
 			found = true
 		case value.Kind == ComponentToken && value.Token.Kind == TokenColon:
 			parser.pos++
+			if parsed, ok := parser.parsePseudoElement(); ok {
+				if !parser.allowPseudo || pseudoElement != PseudoElementNone {
+					return compoundSelector{}, PseudoElementNone, Specificity{}, false
+				}
+				pseudoElement = parsed
+				specificity.Types++
+				found = true
+				if !parser.done() {
+					return compoundSelector{}, PseudoElementNone, Specificity{}, false
+				}
+				return compound, pseudoElement, specificity, true
+			}
 			pseudo, pseudoSpecificity, ok := parser.parsePseudoClass()
 			if !ok {
-				return compoundSelector{}, Specificity{}, false
+				return compoundSelector{}, PseudoElementNone, Specificity{}, false
 			}
 			compound.pseudos = append(compound.pseudos, pseudo)
 			specificity = specificity.add(pseudoSpecificity)
 			found = true
 		default:
-			return compound, specificity, found
+			return compound, pseudoElement, specificity, found
 		}
 	}
-	return compound, specificity, found
+	return compound, pseudoElement, specificity, found
+}
+
+func (parser *tokenSelectorParser) parsePseudoElement() (PseudoElement, bool) {
+	start := parser.pos
+	if parser.done() {
+		return PseudoElementNone, false
+	}
+	if parser.values[parser.pos].Kind == ComponentToken && parser.values[parser.pos].Token.Kind == TokenColon {
+		parser.pos++
+		identifier, ok := parser.peekToken(TokenIdent)
+		if !ok {
+			parser.pos = start
+			return PseudoElementNone, false
+		}
+		pseudo, supported := ParsePseudoElement("::" + identifier.Value)
+		if !supported {
+			parser.pos = start
+			return PseudoElementNone, false
+		}
+		parser.pos++
+		return pseudo, true
+	}
+	identifier, ok := parser.peekToken(TokenIdent)
+	if !ok {
+		parser.pos = start
+		return PseudoElementNone, false
+	}
+	pseudo, supported := ParsePseudoElement(":" + identifier.Value)
+	if !supported {
+		parser.pos = start
+		return PseudoElementNone, false
+	}
+	parser.pos++
+	return pseudo, true
 }
 
 func parseTokenAttributeSelector(values []ComponentValue) (attributeSelector, bool) {

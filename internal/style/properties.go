@@ -31,6 +31,7 @@ const (
 	propertyBorderWidth
 	propertyBoxSizing
 	propertyColor
+	propertyContent
 	propertyDisplay
 	propertyFlexBasis
 	propertyFlexDirection
@@ -113,6 +114,7 @@ var propertyDefinitions = [...]propertyDefinition{
 	{name: "box-sizing", kind: propertyBoxSizing, invalidation: propertyInvalidatesLayout},
 	{name: "color", kind: propertyColor, inherited: true, invalidation: propertyInvalidatesPaint},
 	{name: "column-gap", kind: propertyGap, edge: propertyRight, invalidation: propertyInvalidatesLayout},
+	{name: "content", kind: propertyContent, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "display", kind: propertyDisplay, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "flex-basis", kind: propertyFlexBasis, invalidation: propertyInvalidatesLayout},
 	{name: "flex-direction", kind: propertyFlexDirection, invalidation: propertyInvalidatesLayout},
@@ -251,6 +253,8 @@ func (definition propertyDefinition) copy(destination *computedStyle, source com
 		destination.boxSizing = source.boxSizing
 	case propertyColor:
 		destination.color = source.color
+	case propertyContent:
+		destination.content = source.content
 	case propertyDisplay:
 		destination.display = source.display
 	case propertyFlexBasis:
@@ -346,6 +350,9 @@ func (definition propertyDefinition) valid(source string, viewport Viewport) boo
 		return ok && (keyword == "content-box" || keyword == "border-box")
 	case propertyColor:
 		_, ok := parseComputedColor(source)
+		return ok
+	case propertyContent:
+		_, ok := parseContentValue(source)
 		return ok
 	case propertyDisplay:
 		keyword, ok := singleCSSKeyword(source)
@@ -516,6 +523,10 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 			} else {
 				style.color = parsed.value
 			}
+		}
+	case propertyContent:
+		if parsed, ok := parseContentValue(source); ok {
+			style.content = parsed
 		}
 	case propertyDisplay:
 		keyword, _ := singleCSSKeyword(source)
@@ -790,6 +801,8 @@ func (definition propertyDefinition) serialize(computed ComputedStyle) string {
 		return "content-box"
 	case propertyColor:
 		return serializeComputedColor(computed.color)
+	case propertyContent:
+		return serializeContentValue(computed.content)
 	case propertyDisplay:
 		return serializeComputedDisplay(computed.display)
 	case propertyFlexBasis:
