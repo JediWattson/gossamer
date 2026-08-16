@@ -40,6 +40,9 @@ func verifyInstructions(instructions []Instruction, constantCount int) error {
 		if instruction.Op == OpEnterTry && instruction.B != uint32(HandlerCatch) && instruction.B != uint32(HandlerFinally) {
 			return fmt.Errorf("%w: EnterTry handler kind %d", ErrInvalidBytecode, instruction.B)
 		}
+		if instruction.Op == OpUpdateProperty && (instruction.A > 1 || instruction.B > 1) {
+			return fmt.Errorf("%w: UpdateProperty mode %d/%d", ErrInvalidBytecode, instruction.A, instruction.B)
+		}
 	}
 
 	depths := map[int]int{0: 0}
@@ -119,9 +122,10 @@ func instructionStackEffect(instruction Instruction) (required, delta int, termi
 		return 1, 1, false, nil
 	case OpReturn:
 		return 0, 0, true, nil
-	case OpGetOwnProperty, OpDeleteOwnProperty, OpGetElement, OpDeleteElement:
+	case OpGetOwnProperty, OpDeleteOwnProperty, OpGetElement, OpDeleteElement,
+		OpGetProperty, OpDeleteProperty, OpUpdateProperty:
 		return 2, -1, false, nil
-	case OpSetOwnProperty, OpSetElement:
+	case OpSetOwnProperty, OpSetElement, OpSetProperty:
 		return 3, -2, false, nil
 	case OpGetLength:
 		return 1, 0, false, nil
@@ -150,6 +154,12 @@ func instructionStackEffect(instruction Instruction) (required, delta int, termi
 		}
 		count := int(instruction.A)
 		return count + 1, -count, false, nil
+	case OpCallMethod:
+		if uint64(instruction.A) > uint64(^uint(0)>>1)-2 {
+			return 0, 0, false, fmt.Errorf("method argument count %d is too large", instruction.A)
+		}
+		count := int(instruction.A)
+		return count + 2, -(count + 1), false, nil
 	case OpThrow:
 		return 1, -1, true, nil
 	case OpEnterCatch:

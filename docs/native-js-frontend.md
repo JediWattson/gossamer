@@ -25,13 +25,13 @@ and ordinary task release invalidates every unpromoted loaded Ref.
 - block-scoped `let` and `const` with temporal dead zones, plus
   Function-scoped `var`;
 - numbers, Strings, booleans, null, objects, sparse arrays, and `this`;
-- own named properties and numeric array elements;
-- assignment, deletion, prefix/postfix identifier updates;
+- dynamic named properties, numeric array elements, and Array `length`;
+- assignment, deletion, and prefix/postfix identifier or property updates;
 - numeric, bitwise, strict comparison, logical, nullish, and conditional
   expressions;
 - `if`, `while`, `break`, and `continue`;
 - Function declarations and expressions, lexical capture, calls, recursion,
-  construction, and explicit `this` for constructors;
+  construction, and explicit `this` for constructors and method receivers;
 - `return`, `throw`, `try`, `catch`, and `finally`, with general abrupt
   completions routing return, throw, break, and continue through nested
   finally blocks.
@@ -52,9 +52,8 @@ This is not yet an ECMAScript-compatible engine. In particular:
 - Annex B block-Function compatibility and the full global-environment split
   are not implemented; Function declarations use the containing Function or
   script scope;
-- property access is own-property access, and computed access is a numeric
-  Array index;
-- method calls do not yet preserve a receiver as `this`;
+- property lookup is still own-property-only, and Arrays support only canonical
+  indices plus `length` rather than arbitrary named properties;
 - unary plus and coercive equality are rejected;
 - prototype lookup, descriptors, accessors, coercion, regex and template
   literals, modules, generators, async Functions, and Promise jobs are absent;

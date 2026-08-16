@@ -72,6 +72,11 @@ const (
 	OpLeaveScope
 	OpBreak
 	OpContinue
+	OpGetProperty
+	OpSetProperty
+	OpDeleteProperty
+	OpCallMethod
+	OpUpdateProperty
 )
 
 func (opcode Opcode) String() string {
@@ -206,11 +211,21 @@ func (opcode Opcode) String() string {
 		return "Break"
 	case OpContinue:
 		return "Continue"
+	case OpGetProperty:
+		return "GetProperty"
+	case OpSetProperty:
+		return "SetProperty"
+	case OpDeleteProperty:
+		return "DeleteProperty"
+	case OpCallMethod:
+		return "CallMethod"
+	case OpUpdateProperty:
+		return "UpdateProperty"
 	default:
 		return fmt.Sprintf("Opcode(%d)", opcode)
 	}
 }
 
 func (opcode Opcode) valid() bool {
-	return opcode >= OpConstant && opcode <= OpContinue
+	return opcode >= OpConstant && opcode <= OpUpdateProperty
 }

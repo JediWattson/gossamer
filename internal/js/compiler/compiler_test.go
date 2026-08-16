@@ -136,7 +136,6 @@ func TestCompileRejectsSemanticWorkOutsideN5(t *testing.T) {
 		"let value = 1; +value;",
 		"let value = 1; value == 1;",
 		"break;",
-		"let object = {value: 1}; object.value++;",
 	} {
 		_, err := compiler.Compile(source)
 		if !errors.Is(err, compiler.ErrCompile) {
@@ -146,6 +145,46 @@ func TestCompileRejectsSemanticWorkOutsideN5(t *testing.T) {
 		if !errors.As(err, &problem) || problem.Span.Start.Line == 0 || problem.Span.Start.Column == 0 {
 			t.Fatalf("Compile(%q) diagnostic = %#v", source, problem)
 		}
+	}
+}
+
+func TestCompileUsesPropertyReferencesAndMethodReceivers(t *testing.T) {
+	t.Parallel()
+
+	image, err := compiler.Compile(`
+function Box() {
+  this.count = 1;
+  this.bump = function(delta) {
+    this.count = this.count + delta;
+    return this.count;
+  };
+}
+let box = new Box();
+let calls = 0;
+function choose() { calls++; return box; }
+let old = choose()["count"]++;
+let current = box["bump"](2);
+box[0] = 5;
+let values = [3];
+let before = values["0"]++;
+old * 1000 + current * 100 + calls * 10 + before + values[0] + box["0"] + values.length;
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, _ := image.Function(image.Entry())
+	disassembly, err := browserruntime.Disassemble(entry.Code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, opcode := range []string{"GetProperty", "SetProperty", "CallMethod", "UpdateProperty"} {
+		if !strings.Contains(disassembly, opcode) {
+			t.Fatalf("disassembly does not contain %s:\n%s", opcode, disassembly)
+		}
+	}
+	result := execute(t, 820, image)
+	if result.Kind() != memory.ValueNumber || result.Number() != 1423 {
+		t.Fatalf("property result = %#v, want 1423", result)
 	}
 }
 

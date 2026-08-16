@@ -264,6 +264,54 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 				return memory.Value{}, err
 			}
 			frame.push(memory.BoolValue(deleted))
+		case OpGetProperty:
+			key, err := frame.pop()
+			if err != nil {
+				return memory.Value{}, err
+			}
+			base, err := frame.pop()
+			if err != nil {
+				return memory.Value{}, err
+			}
+			value, present, err := context.getProperty(base, key)
+			if err != nil {
+				return memory.Value{}, err
+			}
+			if !present {
+				value = memory.UndefinedValue()
+			}
+			frame.push(value)
+		case OpSetProperty:
+			value, err := frame.pop()
+			if err != nil {
+				return memory.Value{}, err
+			}
+			key, err := frame.pop()
+			if err != nil {
+				return memory.Value{}, err
+			}
+			base, err := frame.pop()
+			if err != nil {
+				return memory.Value{}, err
+			}
+			if err := context.setPropertyValue(base, key, value); err != nil {
+				return memory.Value{}, err
+			}
+			frame.push(value)
+		case OpDeleteProperty:
+			key, err := frame.pop()
+			if err != nil {
+				return memory.Value{}, err
+			}
+			base, err := frame.pop()
+			if err != nil {
+				return memory.Value{}, err
+			}
+			deleted, err := context.deletePropertyValue(base, key)
+			if err != nil {
+				return memory.Value{}, err
+			}
+			frame.push(memory.BoolValue(deleted))
 		case OpNewArray:
 			ref, err := context.NewArray(instruction.A)
 			if err != nil {
@@ -439,7 +487,42 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 			if jump {
 				frame.ip = instruction.A
 			}
-		case OpCall, OpCallNative, OpConstruct:
+		case OpCall, OpCallNative, OpConstruct, OpCallMethod:
+			if instruction.Op == OpCallMethod {
+				base, key, arguments, err := popMethodOperands(frame, instruction.A)
+				if err != nil {
+					return memory.Value{}, err
+				}
+				calleeValue, present, err := context.getProperty(base, key)
+				if err != nil {
+					return memory.Value{}, err
+				}
+				if !present {
+					return memory.Value{}, ErrNotCallable
+				}
+				callee, err := requireRef(calleeValue, "method Function")
+				if err != nil {
+					return memory.Value{}, err
+				}
+				result, err := execution.call(callee, base, arguments, callAny)
+				if err != nil {
+					value, thrown := ThrownValue(err)
+					if !thrown {
+						return memory.Value{}, err
+					}
+					frame.completion = nil
+					completed, result, routed := routeCompletion(frame, abruptCompletion{kind: completionThrow, value: value})
+					if routed != nil {
+						return memory.Value{}, routed
+					}
+					if completed {
+						return result, Throw(value)
+					}
+					continue
+				}
+				frame.push(result)
+				continue
+			}
 			callee, arguments, err := popCallOperands(frame, instruction.A)
 			if err != nil {
 				return memory.Value{}, err
@@ -505,6 +588,35 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 				return memory.Value{}, err
 			}
 			frame.push(memory.RefValue(closure))
+		case OpUpdateProperty:
+			key, err := frame.pop()
+			if err != nil {
+				return memory.Value{}, err
+			}
+			base, err := frame.pop()
+			if err != nil {
+				return memory.Value{}, err
+			}
+			old, present, err := context.getProperty(base, key)
+			if err != nil {
+				return memory.Value{}, err
+			}
+			if !present || old.Kind() != memory.ValueNumber {
+				return memory.Value{}, fmt.Errorf("%w: updated property must be a number", ErrOperandType)
+			}
+			delta := 1.0
+			if instruction.A == 1 {
+				delta = -1
+			}
+			updated := memory.NumberValue(old.Number() + delta)
+			if err := context.setPropertyValue(base, key, updated); err != nil {
+				return memory.Value{}, err
+			}
+			if instruction.B == 1 {
+				frame.push(updated)
+			} else {
+				frame.push(old)
+			}
 		case OpThrow:
 			value, err := frame.pop()
 			if err != nil {
@@ -778,6 +890,29 @@ func popCallOperands(frame *Frame, count uint32) (memory.Ref, []memory.Value, er
 		return memory.Ref{}, nil, err
 	}
 	return callee, arguments, nil
+}
+
+func popMethodOperands(frame *Frame, count uint32) (memory.Value, memory.Value, []memory.Value, error) {
+	if uint64(count)+2 > uint64(len(frame.Stack)) {
+		return memory.Value{}, memory.Value{}, nil, ErrStackUnderflow
+	}
+	arguments := make([]memory.Value, count)
+	for index := int(count) - 1; index >= 0; index-- {
+		value, err := frame.pop()
+		if err != nil {
+			return memory.Value{}, memory.Value{}, nil, err
+		}
+		arguments[index] = value
+	}
+	key, err := frame.pop()
+	if err != nil {
+		return memory.Value{}, memory.Value{}, nil, err
+	}
+	base, err := frame.pop()
+	if err != nil {
+		return memory.Value{}, memory.Value{}, nil, err
+	}
+	return base, key, arguments, nil
 }
 
 func isObjectValue(context *TaskContext, value memory.Value) (bool, error) {

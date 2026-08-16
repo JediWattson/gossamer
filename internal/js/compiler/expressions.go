@@ -70,6 +70,20 @@ func (compiler *functionCompiler) compileExpression(expression ast.Expression) e
 }
 
 func (compiler *functionCompiler) compileCall(call *ast.CallExpression) error {
+	if member, ok := call.Callee.(*ast.MemberExpression); ok {
+		if err := compiler.compileExpression(member.Object); err != nil {
+			return err
+		}
+		if err := compiler.compileMemberKey(member); err != nil {
+			return err
+		}
+		for _, argument := range call.Arguments {
+			if err := compiler.compileExpression(argument); err != nil {
+				return err
+			}
+		}
+		return compiler.emit(browserruntime.Instruction{Op: browserruntime.OpCallMethod, A: uint32(len(call.Arguments))}, call.Span())
+	}
 	if err := compiler.compileExpression(call.Callee); err != nil {
 		return err
 	}
@@ -175,11 +189,7 @@ func (compiler *functionCompiler) compileMember(member *ast.MemberExpression) er
 	if err := compiler.compileMemberKey(member); err != nil {
 		return err
 	}
-	opcode := browserruntime.OpGetOwnProperty
-	if member.Computed {
-		opcode = browserruntime.OpGetElement
-	}
-	return compiler.emit(browserruntime.Instruction{Op: opcode}, member.Span())
+	return compiler.emit(browserruntime.Instruction{Op: browserruntime.OpGetProperty}, member.Span())
 }
 
 func (compiler *functionCompiler) compileMemberKey(member *ast.MemberExpression) error {
@@ -225,20 +235,33 @@ func (compiler *functionCompiler) compileAssignment(assignment *ast.AssignmentEx
 		if err := compiler.compileExpression(assignment.Right); err != nil {
 			return err
 		}
-		opcode := browserruntime.OpSetOwnProperty
-		if target.Computed {
-			opcode = browserruntime.OpSetElement
-		}
-		return compiler.emit(browserruntime.Instruction{Op: opcode}, assignment.Span())
+		return compiler.emit(browserruntime.Instruction{Op: browserruntime.OpSetProperty}, assignment.Span())
 	default:
 		return compiler.problem(assignment.Left.Span(), "unsupported assignment target")
 	}
 }
 
 func (compiler *functionCompiler) compileUpdate(update *ast.UpdateExpression) error {
+	if target, ok := update.Argument.(*ast.MemberExpression); ok {
+		if err := compiler.compileExpression(target.Object); err != nil {
+			return err
+		}
+		if err := compiler.compileMemberKey(target); err != nil {
+			return err
+		}
+		decrement := uint32(0)
+		if update.Operator == lexer.MinusMinus {
+			decrement = 1
+		}
+		prefix := uint32(0)
+		if update.Prefix {
+			prefix = 1
+		}
+		return compiler.emit(browserruntime.Instruction{Op: browserruntime.OpUpdateProperty, A: decrement, B: prefix}, update.Span())
+	}
 	target, ok := update.Argument.(*ast.Identifier)
 	if !ok {
-		return compiler.problem(update.Argument.Span(), "member updates require the later property semantic layer")
+		return compiler.problem(update.Argument.Span(), "unsupported update target")
 	}
 	binding, exists := compiler.resolve(target.Name)
 	if !exists {
@@ -287,11 +310,7 @@ func (compiler *functionCompiler) compileUnary(unary *ast.UnaryExpression) error
 		if err := compiler.compileMemberKey(member); err != nil {
 			return err
 		}
-		opcode := browserruntime.OpDeleteOwnProperty
-		if member.Computed {
-			opcode = browserruntime.OpDeleteElement
-		}
-		return compiler.emit(browserruntime.Instruction{Op: opcode}, unary.Span())
+		return compiler.emit(browserruntime.Instruction{Op: browserruntime.OpDeleteProperty}, unary.Span())
 	}
 	if unary.Operator == lexer.Plus {
 		return compiler.problem(unary.Span(), "unary plus requires JavaScript coercion semantics")
