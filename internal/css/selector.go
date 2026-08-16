@@ -433,6 +433,14 @@ func matchesPseudoClass(pseudo pseudoClassSelector, node *dom.Node, context Matc
 	case "optional":
 		eligible, required := htmlRequiredState(node)
 		return eligible && !required
+	case "read-write":
+		readWrite, ok := htmlReadWriteState(node, state)
+		return ok && readWrite
+	case "read-only":
+		readWrite, ok := htmlReadWriteState(node, state)
+		return ok && !readWrite
+	case "placeholder-shown":
+		return htmlPlaceholderShown(node, state)
 	case "lang":
 		return matchesLanguageRanges(node, pseudo.arguments, context, state)
 	case "dir":
@@ -464,7 +472,8 @@ func supportedSimplePseudoClass(name string) bool {
 		"first-of-type", "last-of-type", "only-of-type",
 		"link", "any-link", "visited",
 		"hover", "active", "focus", "focus-visible", "focus-within", "target",
-		"checked", "disabled", "enabled", "required", "optional":
+		"checked", "disabled", "enabled", "required", "optional",
+		"read-only", "read-write", "placeholder-shown":
 		return true
 	default:
 		return false

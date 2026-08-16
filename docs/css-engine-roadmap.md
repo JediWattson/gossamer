@@ -213,9 +213,15 @@ values. Language ancestor walks and Unicode direction scans consume the same
 fail-closed selector operation budget. Browser navigation supplies a single
 protocol-level default language through match context without letting the
 selector package reach outside a coherent DOM read.
+HTML mutability selectors now distinguish the input types to which `readonly`
+applies, actual disabledness, textarea state, and inherited `contenteditable`
+editing hosts. `:placeholder-shown` follows applicable input/textarea controls
+and their dirty live values; ancestor and textarea scans share the fail-closed
+selector operation budget.
 
-- Add the remaining form-state pseudo-classes and browser history plumbing for
-  the matcher-level visited-link hook.
+- Add default/indeterminate and validation/range/user-interaction form-state
+  pseudo-classes, plus browser history plumbing for the matcher-level
+  visited-link hook.
 - Finish pseudo-elements and the remaining stateful selector grammar.
 - Add memoization and selector/property dependency indexes after profiling the
   now-bounded combinator backtracking paths.
