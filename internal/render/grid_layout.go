@@ -491,6 +491,9 @@ type gridTrackState struct {
 	limit         float64
 	flexIntrinsic float64
 	fraction      float64
+	fitContent    bool
+	fitLimit      float64
+	fitLimitKnown bool
 }
 
 func sizeGridTrackAxis(tracks []computed.GridTrackSize, contributions []gridTrackContribution, available *float64, gap float64, viewport Viewport) []float64 {
@@ -518,12 +521,16 @@ func initializeGridTrackStates(tracks []computed.GridTrackSize, available *float
 	for index, track := range tracks {
 		minKind := effectiveGridBreadthKind(track.MinKind(), track.MinLength(), available != nil)
 		maxKind := effectiveGridBreadthKind(track.MaxKind(), track.MaxLength(), available != nil)
-		state := gridTrackState{minKind: minKind, maxKind: maxKind, fraction: track.MaxFraction()}
+		state := gridTrackState{minKind: minKind, maxKind: maxKind, fraction: track.MaxFraction(), fitContent: track.IsFitContent()}
 		if minKind == computed.GridTrackLength {
 			state.base = math.Max(0, resolveLength(track.MinLength(), percentageBase, viewport, 0))
 		}
 		if maxKind == computed.GridTrackLength {
 			state.limit = math.Max(0, resolveLength(track.MaxLength(), percentageBase, viewport, 0))
+		}
+		if track.IsFitContent() && (available != nil || !track.FitContentLimit().DependsOnPercent()) {
+			state.fitLimit = math.Max(0, resolveLength(track.FitContentLimit(), percentageBase, viewport, 0))
+			state.fitLimitKnown = true
 		}
 		state.limit = math.Max(state.limit, state.base)
 		state.flexIntrinsic = state.base
@@ -575,7 +582,11 @@ func applyGridTrackContributions(states []gridTrackState, contributions []gridTr
 		})
 	}
 	for index := range states {
-		states[index].limit = math.Max(limits[index], states[index].base)
+		limit := limits[index]
+		if states[index].fitContent && states[index].fitLimitKnown {
+			limit = math.Min(limit, states[index].fitLimit)
+		}
+		states[index].limit = math.Max(limit, states[index].base)
 		states[index].flexIntrinsic = math.Max(flexIntrinsic[index], states[index].base)
 	}
 }

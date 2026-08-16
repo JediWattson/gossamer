@@ -340,6 +340,33 @@ func TestGridPercentageMinMaxMaximumDependsOnDefiniteAxis(t *testing.T) {
 	assertNear(t, "definite percentage maximum", definite.GridRowSizes()[0], 50)
 }
 
+func TestGridFitContentClampsMaxContentWithoutCrossingMinimum(t *testing.T) {
+	t.Parallel()
+
+	document, err := htmlparser.Parse(strings.NewReader(`<!doctype html><html><body style="margin:0">
+		<section id=grid style="display:grid;width:400px;grid-template-columns:fit-content(50px) fit-content(20px) fit-content(25%)">
+			<div style="grid-column:1">aaaa aaaa</div>
+			<div style="grid-column:2">aaaa aaaa</div>
+			<div style="grid-column:3">aaaa aaaa aaaa aaaa</div>
+		</section>
+	</body></html>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame, err := render.Render(document, render.Viewport{Width: 440, Height: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	grid, _ := frame.Layout.Geometry(findStaticPageElementByID(document, "grid"))
+	tracks := grid.GridColumnSizes()
+	if len(tracks) != 3 {
+		t.Fatalf("fit-content tracks = %v", tracks)
+	}
+	assertNear(t, "fixed fit-content limit", tracks[0], 50)
+	assertNear(t, "fit-content floor at min-content", tracks[1], 36)
+	assertNear(t, "percentage fit-content limit", tracks[2], 100)
+}
+
 func TestGridAlignmentOverlapPaintAndHitOrderFollowOrderModifiedItems(t *testing.T) {
 	t.Parallel()
 

@@ -20,7 +20,7 @@ func FuzzGridLayoutPlacementStaysFinite(f *testing.F) {
 		itemCount := int(rawItems%32) + 1
 		span := int(rawSpan%4) + 1
 		track := "1fr"
-		switch (rawModes >> 2) % 7 {
+		switch (rawModes >> 2) % 8 {
 		case 1:
 			track = fmt.Sprintf("%dpx", 10+rawModes%20)
 		case 2:
@@ -33,6 +33,8 @@ func FuzzGridLayoutPlacementStaysFinite(f *testing.F) {
 			track = "max-content"
 		case 6:
 			track = fmt.Sprintf("minmax(%dpx, %dfr)", rawModes%11, rawSpan%3)
+		case 7:
+			track = fmt.Sprintf("fit-content(%d%%)", 5+rawSpan%90)
 		}
 		flow := "row"
 		if rawModes&1 != 0 {

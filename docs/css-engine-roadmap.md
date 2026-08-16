@@ -378,23 +378,23 @@ block and inline Grid formatting contexts, blockifies element and anonymous
 text items without mutating computed snapshots, and bounds placement by item,
 track, occupied-cell, and operation budgets. Explicit and implicit tracks
 accept fixed/percentage/`auto`/`fr`/`min-content`/`max-content` breadths,
-bounded `minmax()` ranges, and bounded integer `repeat()`. The used-value track
-model retains separate bases, growth limits, intrinsic contributions, and
-flexible maxima; it floors inverted ranges and treats percentage breadths as
-automatic only when their axis is indefinite. Items support numbered and
-negative lines, spans, stable `order`, row/column auto-flow, dense backfill,
-gaps, and overlap paint/hit order. Definite and indefinite flexible tracks
-follow their distinct fraction sizing rules, and retained stable-ID geometry
-exposes resolved explicit and implicit `grid-template-*` tracks to live CSSOM
-reads.
+bounded `minmax()` ranges, clamped `fit-content()` maxima, and bounded integer
+`repeat()`. The used-value track model retains separate bases, growth limits,
+intrinsic contributions, and flexible maxima; it floors inverted ranges and
+treats percentage breadths as automatic only when their axis is indefinite.
+Items support numbered and negative lines, spans, stable `order`, row/column
+auto-flow, dense backfill, gaps, and overlap paint/hit order. Definite and
+indefinite flexible tracks follow their distinct fraction sizing rules, and
+retained stable-ID geometry exposes resolved explicit and implicit
+`grid-template-*` tracks to live CSSOM reads.
 
 - Complete table track merging/missing-cell fixup, percentage/intrinsic sizing
   edge cases, row/column `visibility: collapse`, table-wrapper separation,
   direction/writing-mode placement, and collapsed-border junctions once the
   wider border-style set exists.
-- Extend Grid with `fit-content()` tracks, line names, auto-fill/auto-fit,
-  template areas, multi-value auto-track patterns, justify/align properties,
-  subgrid, and the remaining intrinsic/overflow interactions.
+- Extend Grid with line names, auto-fill/auto-fit, template areas, multi-value
+  auto-track patterns, justify/align properties, subgrid, and the remaining
+  intrinsic/overflow interactions.
 - Add multicolumn and fragmentation only after their block/inline consumers
   are retained and testable.
 - Keep each formatting context as an independent computed-to-used vertical

@@ -32,6 +32,8 @@ type GridTrackSize struct {
 	maxLength    Length
 	maxFraction  float64
 	minmaxSyntax bool
+	fitContent   bool
+	fitLimit     Length
 }
 
 // Kind, Length, and Fraction expose the maximum breadth for compatibility with
@@ -45,6 +47,10 @@ func (track GridTrackSize) IsMinMax() bool         { return track.minmaxSyntax }
 func (track GridTrackSize) MaxKind() GridTrackKind { return track.maxKind }
 func (track GridTrackSize) MaxLength() Length      { return track.maxLength }
 func (track GridTrackSize) MaxFraction() float64   { return track.maxFraction }
+func (track GridTrackSize) IsFitContent() bool     { return track.fitContent }
+func (track GridTrackSize) FitContentLimit() Length {
+	return track.fitLimit
+}
 
 // GridTrackList is an immutable explicit track list. Tracks returns a copy so
 // style snapshots cannot be mutated through CSSOM or renderer callers.
@@ -179,6 +185,20 @@ type gridTrackBreadth struct {
 }
 
 func parseGridTrackSizeComponent(component css.ComponentValue, source string, fontSize float64, viewport Viewport) (GridTrackSize, bool) {
+	if component.Kind == css.ComponentFunction && lowerASCIIValue(component.Token.Value) == "fit-content" {
+		values := nonWhitespaceComponents(trimValueWhitespace(component.Values))
+		if len(values) != 1 {
+			return GridTrackSize{}, false
+		}
+		limit, ok := parseLengthComponent(values[0], source, fontSize, viewport)
+		if !ok || limit.unit == lengthAuto || !nonNegativeLength(limit) {
+			return GridTrackSize{}, false
+		}
+		track := gridTrackRange(gridTrackBreadth{kind: GridTrackAuto}, gridTrackBreadth{kind: GridTrackMaxContent}, false)
+		track.fitContent = true
+		track.fitLimit = limit
+		return track, true
+	}
 	if component.Kind == css.ComponentFunction && lowerASCIIValue(component.Token.Value) == "minmax" {
 		minimumComponent, maximumComponent, ok := gridMinMaxParts(component)
 		if !ok {
@@ -436,6 +456,9 @@ func parseGridLineShorthand(source string) (GridLine, GridLine, bool) {
 }
 
 func serializeGridTrackSize(track GridTrackSize) string {
+	if track.fitContent {
+		return "fit-content(" + serializeComputedLength(track.fitLimit) + ")"
+	}
 	if track.minmaxSyntax {
 		return "minmax(" + serializeGridTrackBreadth(track.minKind, track.minLength, 0) + ", " +
 			serializeGridTrackBreadth(track.maxKind, track.maxLength, track.maxFraction) + ")"
