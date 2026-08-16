@@ -85,6 +85,49 @@ const (
 	nativeStyleSetProperty
 	nativeStyleRemoveProperty
 	nativeStyleItem
+	nativeElementFormValueGet
+	nativeElementFormValueSet
+	nativeElementFormCheckedGet
+	nativeElementFormCheckedSet
+	nativeElementFormSelectedGet
+	nativeElementFormSelectedSet
+	nativeElementFormSelectedIndexGet
+	nativeElementFormSelectedIndexSet
+	nativeElementSelectionStartGet
+	nativeElementSelectionStartSet
+	nativeElementSelectionEndGet
+	nativeElementSelectionEndSet
+	nativeElementSelectionDirectionGet
+	nativeElementSelectionDirectionSet
+	nativeElementSetSelectionRange
+	nativeElementSelect
+	nativeElementFocus
+	nativeElementBlur
+	nativeDocumentActiveElement
+	nativeDocumentScrollingElement
+	nativeGlobalGetComputedStyle
+	nativeComputedStyleCSSText
+	nativeComputedStyleLength
+	nativeComputedStyleGetPropertyValue
+	nativeComputedStyleGetPropertyPriority
+	nativeComputedStyleItem
+	nativeElementGetBoundingClientRect
+	nativeElementGetClientRects
+	nativeElementClientWidth
+	nativeElementClientHeight
+	nativeElementOffsetWidth
+	nativeElementOffsetHeight
+	nativeElementScrollWidth
+	nativeElementScrollHeight
+	nativeElementScrollLeftGet
+	nativeElementScrollLeftSet
+	nativeElementScrollTopGet
+	nativeElementScrollTopSet
+	nativeWindowInnerWidth
+	nativeWindowInnerHeight
+	nativeWindowScrollX
+	nativeWindowScrollY
+	nativeDOMRectToJSON
 )
 
 const (
@@ -93,46 +136,51 @@ const (
 	hostClassClassList
 	hostClassDataset
 	hostClassStyle
+	hostClassComputedStyle
 )
 
 const (
-	bindingWindowPrototype    = "\x00gossamer.window.prototype"
-	bindingDocumentPrototype  = "\x00gossamer.document.prototype"
-	bindingNodePrototype      = "\x00gossamer.node.prototype"
-	bindingElementPrototype   = "\x00gossamer.element.prototype"
-	bindingTextPrototype      = "\x00gossamer.text.prototype"
-	bindingFragmentPrototype  = "\x00gossamer.fragment.prototype"
-	bindingEventPrototype     = "\x00gossamer.event.prototype"
-	bindingClassListPrototype = "\x00gossamer.class-list.prototype"
-	bindingDatasetPrototype   = "\x00gossamer.dataset.prototype"
-	bindingStylePrototype     = "\x00gossamer.style.prototype"
-	bindingWrapperCache       = "\x00gossamer.wrapper.cache"
-	bindingCallbackCache      = "\x00gossamer.callback.cache"
-	bindingFacadeCache        = "\x00gossamer.facade.cache"
-	bindingCollectionCache    = "\x00gossamer.collection.cache"
-	bindingWindow             = "window"
-	bindingSelf               = "self"
-	bindingDocument           = "document"
-	hostRecordProperty        = "\x00gossamer.host.record"
+	bindingWindowPrototype        = "\x00gossamer.window.prototype"
+	bindingDocumentPrototype      = "\x00gossamer.document.prototype"
+	bindingNodePrototype          = "\x00gossamer.node.prototype"
+	bindingElementPrototype       = "\x00gossamer.element.prototype"
+	bindingTextPrototype          = "\x00gossamer.text.prototype"
+	bindingFragmentPrototype      = "\x00gossamer.fragment.prototype"
+	bindingEventPrototype         = "\x00gossamer.event.prototype"
+	bindingClassListPrototype     = "\x00gossamer.class-list.prototype"
+	bindingDatasetPrototype       = "\x00gossamer.dataset.prototype"
+	bindingStylePrototype         = "\x00gossamer.style.prototype"
+	bindingComputedStylePrototype = "\x00gossamer.computed-style.prototype"
+	bindingDOMRectPrototype       = "\x00gossamer.dom-rect.prototype"
+	bindingWrapperCache           = "\x00gossamer.wrapper.cache"
+	bindingCallbackCache          = "\x00gossamer.callback.cache"
+	bindingFacadeCache            = "\x00gossamer.facade.cache"
+	bindingCollectionCache        = "\x00gossamer.collection.cache"
+	bindingWindow                 = "window"
+	bindingSelf                   = "self"
+	bindingDocument               = "document"
+	hostRecordProperty            = "\x00gossamer.host.record"
 )
 
 type browserBindings struct {
-	windowPrototype    memory.Ref
-	documentPrototype  memory.Ref
-	nodePrototype      memory.Ref
-	elementPrototype   memory.Ref
-	textPrototype      memory.Ref
-	fragmentPrototype  memory.Ref
-	eventPrototype     memory.Ref
-	classListPrototype memory.Ref
-	datasetPrototype   memory.Ref
-	stylePrototype     memory.Ref
-	wrapperCache       memory.Ref
-	callbackCache      memory.Ref
-	facadeCache        memory.Ref
-	collectionCache    memory.Ref
-	window             memory.Ref
-	document           memory.Ref
+	windowPrototype        memory.Ref
+	documentPrototype      memory.Ref
+	nodePrototype          memory.Ref
+	elementPrototype       memory.Ref
+	textPrototype          memory.Ref
+	fragmentPrototype      memory.Ref
+	eventPrototype         memory.Ref
+	classListPrototype     memory.Ref
+	datasetPrototype       memory.Ref
+	stylePrototype         memory.Ref
+	computedStylePrototype memory.Ref
+	domRectPrototype       memory.Ref
+	wrapperCache           memory.Ref
+	callbackCache          memory.Ref
+	facadeCache            memory.Ref
+	collectionCache        memory.Ref
+	window                 memory.Ref
+	document               memory.Ref
 }
 
 type nativeRegistration struct {
@@ -215,6 +263,49 @@ func (realm *Realm) installBrowserNatives() error {
 		{nativeStyleSetProperty, realm.styleSetProperty},
 		{nativeStyleRemoveProperty, realm.styleRemoveProperty},
 		{nativeStyleItem, realm.styleItem},
+		{nativeElementFormValueGet, realm.elementFormValueGet},
+		{nativeElementFormValueSet, realm.elementFormValueSet},
+		{nativeElementFormCheckedGet, realm.elementFormCheckedGet},
+		{nativeElementFormCheckedSet, realm.elementFormCheckedSet},
+		{nativeElementFormSelectedGet, realm.elementFormSelectedGet},
+		{nativeElementFormSelectedSet, realm.elementFormSelectedSet},
+		{nativeElementFormSelectedIndexGet, realm.elementFormSelectedIndexGet},
+		{nativeElementFormSelectedIndexSet, realm.elementFormSelectedIndexSet},
+		{nativeElementSelectionStartGet, realm.elementSelectionStartGet},
+		{nativeElementSelectionStartSet, realm.elementSelectionStartSet},
+		{nativeElementSelectionEndGet, realm.elementSelectionEndGet},
+		{nativeElementSelectionEndSet, realm.elementSelectionEndSet},
+		{nativeElementSelectionDirectionGet, realm.elementSelectionDirectionGet},
+		{nativeElementSelectionDirectionSet, realm.elementSelectionDirectionSet},
+		{nativeElementSetSelectionRange, realm.elementSetSelectionRange},
+		{nativeElementSelect, realm.elementSelect},
+		{nativeElementFocus, realm.elementFocus},
+		{nativeElementBlur, realm.elementBlur},
+		{nativeDocumentActiveElement, realm.documentActiveElement},
+		{nativeDocumentScrollingElement, realm.documentScrollingElement},
+		{nativeGlobalGetComputedStyle, realm.globalGetComputedStyle},
+		{nativeComputedStyleCSSText, realm.computedStyleCSSText},
+		{nativeComputedStyleLength, realm.computedStyleLength},
+		{nativeComputedStyleGetPropertyValue, realm.computedStyleGetPropertyValue},
+		{nativeComputedStyleGetPropertyPriority, realm.computedStyleGetPropertyPriority},
+		{nativeComputedStyleItem, realm.computedStyleItem},
+		{nativeElementGetBoundingClientRect, realm.elementGetBoundingClientRect},
+		{nativeElementGetClientRects, realm.elementGetClientRects},
+		{nativeElementClientWidth, realm.elementGeometryValue("clientWidth")},
+		{nativeElementClientHeight, realm.elementGeometryValue("clientHeight")},
+		{nativeElementOffsetWidth, realm.elementGeometryValue("offsetWidth")},
+		{nativeElementOffsetHeight, realm.elementGeometryValue("offsetHeight")},
+		{nativeElementScrollWidth, realm.elementGeometryValue("scrollWidth")},
+		{nativeElementScrollHeight, realm.elementGeometryValue("scrollHeight")},
+		{nativeElementScrollLeftGet, realm.elementGeometryValue("scrollLeft")},
+		{nativeElementScrollLeftSet, realm.elementScrollSet(false)},
+		{nativeElementScrollTopGet, realm.elementGeometryValue("scrollTop")},
+		{nativeElementScrollTopSet, realm.elementScrollSet(true)},
+		{nativeWindowInnerWidth, realm.windowGeometryValue("innerWidth")},
+		{nativeWindowInnerHeight, realm.windowGeometryValue("innerHeight")},
+		{nativeWindowScrollX, realm.windowGeometryValue("scrollX")},
+		{nativeWindowScrollY, realm.windowGeometryValue("scrollY")},
+		{nativeDOMRectToJSON, realm.domRectToJSON},
 		{nativeGlobalSetTimeout, realm.globalSetTimeout},
 		{nativeGlobalClearTimeout, realm.globalClearTimeout},
 		{nativeEventTargetAdd, realm.eventTargetAdd},
@@ -255,6 +346,8 @@ func (realm *Realm) prepareBrowserBindingsLocked(context *browserruntime.TaskCon
 			{bindingClassListPrototype, &bindings.classListPrototype},
 			{bindingDatasetPrototype, &bindings.datasetPrototype},
 			{bindingStylePrototype, &bindings.stylePrototype},
+			{bindingComputedStylePrototype, &bindings.computedStylePrototype},
+			{bindingDOMRectPrototype, &bindings.domRectPrototype},
 			{bindingWrapperCache, &bindings.wrapperCache},
 			{bindingCallbackCache, &bindings.callbackCache},
 			{bindingFacadeCache, &bindings.facadeCache},
@@ -296,6 +389,8 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		&bindings.classListPrototype,
 		&bindings.datasetPrototype,
 		&bindings.stylePrototype,
+		&bindings.computedStylePrototype,
+		&bindings.domRectPrototype,
 	} {
 		*destination, err = context.NewHeapObject()
 		if err != nil {
@@ -355,6 +450,10 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 	if err != nil {
 		return err
 	}
+	getComputedStyle, err := realm.newNativeFunction(context, "getComputedStyle", 1, nativeGlobalGetComputedStyle)
+	if err != nil {
+		return err
+	}
 	for _, property := range []struct {
 		name  string
 		value memory.Value
@@ -365,6 +464,7 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{"queueMicrotask", memory.RefValue(realm.active.QueueMicrotask)},
 		{"setTimeout", memory.RefValue(setTimeout)},
 		{"clearTimeout", memory.RefValue(clearTimeout)},
+		{"getComputedStyle", memory.RefValue(getComputedStyle)},
 	} {
 		if err := defineData(context, bindings.window, property.name, property.value, true, false, true); err != nil {
 			return err
@@ -385,6 +485,8 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{bindingClassListPrototype, bindings.classListPrototype, false},
 		{bindingDatasetPrototype, bindings.datasetPrototype, false},
 		{bindingStylePrototype, bindings.stylePrototype, false},
+		{bindingComputedStylePrototype, bindings.computedStylePrototype, false},
+		{bindingDOMRectPrototype, bindings.domRectPrototype, false},
 		{bindingWrapperCache, bindings.wrapperCache, false},
 		{bindingCallbackCache, bindings.callbackCache, false},
 		{bindingFacadeCache, bindings.facadeCache, false},
@@ -394,6 +496,7 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{bindingDocument, bindings.document, false},
 		{"setTimeout", setTimeout, true},
 		{"clearTimeout", clearTimeout, true},
+		{"getComputedStyle", getComputedStyle, true},
 	} {
 		if err := declareGlobal(context, realm.active.Global, binding.name, memory.RefValue(binding.value), binding.mutable); err != nil {
 			return err
@@ -434,6 +537,12 @@ func (realm *Realm) installDOMPrototypeProperties(context *browserruntime.TaskCo
 		{realm.bindings.elementPrototype, "closest", 1, nativeElementClosest},
 		{realm.bindings.elementPrototype, "getAttributeNames", 0, nativeElementGetAttributeNames},
 		{realm.bindings.elementPrototype, "insertAdjacentHTML", 2, nativeElementInsertAdjacentHTML},
+		{realm.bindings.elementPrototype, "setSelectionRange", 2, nativeElementSetSelectionRange},
+		{realm.bindings.elementPrototype, "select", 0, nativeElementSelect},
+		{realm.bindings.elementPrototype, "focus", 0, nativeElementFocus},
+		{realm.bindings.elementPrototype, "blur", 0, nativeElementBlur},
+		{realm.bindings.elementPrototype, "getBoundingClientRect", 0, nativeElementGetBoundingClientRect},
+		{realm.bindings.elementPrototype, "getClientRects", 0, nativeElementGetClientRects},
 		{realm.bindings.classListPrototype, "add", 1, nativeClassListAdd},
 		{realm.bindings.classListPrototype, "remove", 1, nativeClassListRemove},
 		{realm.bindings.classListPrototype, "contains", 1, nativeClassListContains},
@@ -445,6 +554,10 @@ func (realm *Realm) installDOMPrototypeProperties(context *browserruntime.TaskCo
 		{realm.bindings.stylePrototype, "setProperty", 2, nativeStyleSetProperty},
 		{realm.bindings.stylePrototype, "removeProperty", 1, nativeStyleRemoveProperty},
 		{realm.bindings.stylePrototype, "item", 1, nativeStyleItem},
+		{realm.bindings.computedStylePrototype, "getPropertyValue", 1, nativeComputedStyleGetPropertyValue},
+		{realm.bindings.computedStylePrototype, "getPropertyPriority", 1, nativeComputedStyleGetPropertyPriority},
+		{realm.bindings.computedStylePrototype, "item", 1, nativeComputedStyleItem},
+		{realm.bindings.domRectPrototype, "toJSON", 0, nativeDOMRectToJSON},
 		{realm.bindings.nodePrototype, "addEventListener", 2, nativeEventTargetAdd},
 		{realm.bindings.nodePrototype, "removeEventListener", 2, nativeEventTargetRemove},
 		{realm.bindings.windowPrototype, "addEventListener", 2, nativeEventTargetAdd},
@@ -480,6 +593,8 @@ func (realm *Realm) installDOMPrototypeProperties(context *browserruntime.TaskCo
 		{realm.bindings.documentPrototype, "defaultView", nativeDocumentDefaultView, 0},
 		{realm.bindings.documentPrototype, "baseURI", nativeDocumentBaseURI, 0},
 		{realm.bindings.documentPrototype, "readyState", nativeDocumentReadyState, 0},
+		{realm.bindings.documentPrototype, "activeElement", nativeDocumentActiveElement, 0},
+		{realm.bindings.documentPrototype, "scrollingElement", nativeDocumentScrollingElement, 0},
 		{realm.bindings.nodePrototype, "nodeType", nativeNodeType, 0},
 		{realm.bindings.nodePrototype, "nodeName", nativeNodeName, 0},
 		{realm.bindings.nodePrototype, "parentNode", nativeNodeParent, 0},
@@ -503,10 +618,33 @@ func (realm *Realm) installDOMPrototypeProperties(context *browserruntime.TaskCo
 		{realm.bindings.elementPrototype, "dataset", nativeElementDataset, 0},
 		{realm.bindings.elementPrototype, "innerHTML", nativeElementInnerHTMLGet, nativeElementInnerHTMLSet},
 		{realm.bindings.elementPrototype, "style", nativeElementStyle, 0},
+		{realm.bindings.elementPrototype, "value", nativeElementFormValueGet, nativeElementFormValueSet},
+		{realm.bindings.elementPrototype, "checked", nativeElementFormCheckedGet, nativeElementFormCheckedSet},
+		{realm.bindings.elementPrototype, "selected", nativeElementFormSelectedGet, nativeElementFormSelectedSet},
+		{realm.bindings.elementPrototype, "selectedIndex", nativeElementFormSelectedIndexGet, nativeElementFormSelectedIndexSet},
+		{realm.bindings.elementPrototype, "selectionStart", nativeElementSelectionStartGet, nativeElementSelectionStartSet},
+		{realm.bindings.elementPrototype, "selectionEnd", nativeElementSelectionEndGet, nativeElementSelectionEndSet},
+		{realm.bindings.elementPrototype, "selectionDirection", nativeElementSelectionDirectionGet, nativeElementSelectionDirectionSet},
+		{realm.bindings.elementPrototype, "clientWidth", nativeElementClientWidth, 0},
+		{realm.bindings.elementPrototype, "clientHeight", nativeElementClientHeight, 0},
+		{realm.bindings.elementPrototype, "offsetWidth", nativeElementOffsetWidth, 0},
+		{realm.bindings.elementPrototype, "offsetHeight", nativeElementOffsetHeight, 0},
+		{realm.bindings.elementPrototype, "scrollWidth", nativeElementScrollWidth, 0},
+		{realm.bindings.elementPrototype, "scrollHeight", nativeElementScrollHeight, 0},
+		{realm.bindings.elementPrototype, "scrollLeft", nativeElementScrollLeftGet, nativeElementScrollLeftSet},
+		{realm.bindings.elementPrototype, "scrollTop", nativeElementScrollTopGet, nativeElementScrollTopSet},
 		{realm.bindings.classListPrototype, "value", nativeClassListValue, nativeElementClassNameSet},
 		{realm.bindings.classListPrototype, "length", nativeClassListLength, 0},
 		{realm.bindings.stylePrototype, "cssText", nativeStyleCSSTextGet, nativeStyleCSSTextSet},
 		{realm.bindings.stylePrototype, "length", nativeStyleLength, 0},
+		{realm.bindings.computedStylePrototype, "cssText", nativeComputedStyleCSSText, 0},
+		{realm.bindings.computedStylePrototype, "length", nativeComputedStyleLength, 0},
+		{realm.bindings.windowPrototype, "innerWidth", nativeWindowInnerWidth, 0},
+		{realm.bindings.windowPrototype, "innerHeight", nativeWindowInnerHeight, 0},
+		{realm.bindings.windowPrototype, "scrollX", nativeWindowScrollX, 0},
+		{realm.bindings.windowPrototype, "scrollY", nativeWindowScrollY, 0},
+		{realm.bindings.windowPrototype, "pageXOffset", nativeWindowScrollX, 0},
+		{realm.bindings.windowPrototype, "pageYOffset", nativeWindowScrollY, 0},
 	}
 	for _, accessor := range accessors {
 		getter, err := realm.newAccessorFunction(context, "get "+accessor.name, accessor.getter, 0)
