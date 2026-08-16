@@ -9,14 +9,31 @@ import (
 // Matches reports whether selector matches node. Matching proceeds from the
 // rightmost compound and backtracks across ancestor and sibling candidates.
 func (selector Selector) Matches(node *dom.Node) bool {
+	return selector.MatchesWithContext(node, MatchContext{})
+}
+
+// MatchContext supplies browser state that cannot be inferred from the DOM.
+// Stateful nodes are callback-scoped DOM pointers owned by the caller's
+// coherent read; selectors never retain them.
+type MatchContext struct {
+	Hovered      *dom.Node
+	Active       *dom.Node
+	Focused      *dom.Node
+	FocusVisible bool
+	Target       *dom.Node
+	Visited      func(*dom.Node) bool
+}
+
+// MatchesWithContext reports whether selector matches node under context.
+func (selector Selector) MatchesWithContext(node *dom.Node, context MatchContext) bool {
 	if node == nil || node.Type != dom.ElementNode || len(selector.compounds) == 0 {
 		return false
 	}
-	return selector.matchesAt(len(selector.compounds)-1, node)
+	return selector.matchesAt(len(selector.compounds)-1, node, context)
 }
 
-func (selector Selector) matchesAt(compoundIndex int, node *dom.Node) bool {
-	if !matchesCompound(selector.compounds[compoundIndex], node) {
+func (selector Selector) matchesAt(compoundIndex int, node *dom.Node, context MatchContext) bool {
+	if !matchesCompound(selector.compounds[compoundIndex], node, context) {
 		return false
 	}
 	if compoundIndex == 0 {
@@ -24,17 +41,17 @@ func (selector Selector) matchesAt(compoundIndex int, node *dom.Node) bool {
 	}
 	switch selector.combinators[compoundIndex-1] {
 	case childCombinator:
-		return node.Parent != nil && selector.matchesAt(compoundIndex-1, node.Parent)
+		return node.Parent != nil && selector.matchesAt(compoundIndex-1, node.Parent, context)
 	case descendantCombinator:
 		for ancestor := node.Parent; ancestor != nil; ancestor = ancestor.Parent {
-			if selector.matchesAt(compoundIndex-1, ancestor) {
+			if selector.matchesAt(compoundIndex-1, ancestor, context) {
 				return true
 			}
 		}
 		return false
 	case adjacentSiblingCombinator:
 		sibling := previousElementSibling(node)
-		return sibling != nil && selector.matchesAt(compoundIndex-1, sibling)
+		return sibling != nil && selector.matchesAt(compoundIndex-1, sibling, context)
 	case generalSiblingCombinator:
 		if node.Parent == nil {
 			return false
@@ -42,7 +59,7 @@ func (selector Selector) matchesAt(compoundIndex int, node *dom.Node) bool {
 		index := childIndex(node.Parent, node)
 		for siblingIndex := index - 1; siblingIndex >= 0; siblingIndex-- {
 			sibling := node.Parent.Children[siblingIndex]
-			if sibling != nil && sibling.Type == dom.ElementNode && selector.matchesAt(compoundIndex-1, sibling) {
+			if sibling != nil && sibling.Type == dom.ElementNode && selector.matchesAt(compoundIndex-1, sibling, context) {
 				return true
 			}
 		}
@@ -55,10 +72,15 @@ func (selector Selector) matchesAt(compoundIndex int, node *dom.Node) bool {
 // Match reports whether any selector in the rule matches node. When more than
 // one selector matches, it returns the greatest matching specificity.
 func (rule Rule) Match(node *dom.Node) (Specificity, bool) {
+	return rule.MatchWithContext(node, MatchContext{})
+}
+
+// MatchWithContext reports the greatest matching specificity under context.
+func (rule Rule) MatchWithContext(node *dom.Node, context MatchContext) (Specificity, bool) {
 	var greatest Specificity
 	matched := false
 	for _, selector := range rule.Selectors {
-		if !selector.Matches(node) {
+		if !selector.MatchesWithContext(node, context) {
 			continue
 		}
 		if !matched || selector.specificity.Compare(greatest) > 0 {
@@ -69,7 +91,7 @@ func (rule Rule) Match(node *dom.Node) (Specificity, bool) {
 	return greatest, matched
 }
 
-func matchesCompound(compound compoundSelector, node *dom.Node) bool {
+func matchesCompound(compound compoundSelector, node *dom.Node, context MatchContext) bool {
 	if node == nil || node.Type != dom.ElementNode {
 		return false
 	}
@@ -94,7 +116,7 @@ func matchesCompound(compound compoundSelector, node *dom.Node) bool {
 		}
 	}
 	for _, pseudo := range compound.pseudos {
-		if !matchesPseudoClass(pseudo, node) {
+		if !matchesPseudoClass(pseudo, node, context) {
 			return false
 		}
 	}
@@ -134,7 +156,7 @@ func matchesAttribute(selector attributeSelector, node *dom.Node) bool {
 	}
 }
 
-func matchesPseudoClass(pseudo pseudoClassSelector, node *dom.Node) bool {
+func matchesPseudoClass(pseudo pseudoClassSelector, node *dom.Node, context MatchContext) bool {
 	switch pseudo.name {
 	case "root":
 		return isDocumentElement(node)
@@ -152,22 +174,36 @@ func matchesPseudoClass(pseudo pseudoClassSelector, node *dom.Node) bool {
 		return isLastElementSibling(node, true)
 	case "only-of-type":
 		return isFirstElementSibling(node, true) && isLastElementSibling(node, true)
-	case "link", "any-link":
+	case "link":
+		return isUnvisitedLink(node) && !isVisitedLink(node, context)
+	case "any-link":
 		return isUnvisitedLink(node)
+	case "visited":
+		return isUnvisitedLink(node) && isVisitedLink(node, context)
+	case "hover":
+		return inclusiveAncestor(node, context.Hovered)
+	case "active":
+		return inclusiveAncestor(node, context.Active)
+	case "focus":
+		return node == context.Focused
+	case "focus-visible":
+		return context.FocusVisible && node == context.Focused
+	case "focus-within":
+		return inclusiveAncestor(node, context.Focused)
+	case "target":
+		return node == context.Target
 	case "is", "where":
-		return selectorListMatches(pseudo.selectors, node)
+		return selectorListMatches(pseudo.selectors, node, context)
 	case "not":
-		return !selectorListMatches(pseudo.selectors, node)
+		return !selectorListMatches(pseudo.selectors, node, context)
 	case "nth-child":
-		return matchesNth(pseudo, node, false, false)
+		return matchesNth(pseudo, node, false, false, context)
 	case "nth-last-child":
-		return matchesNth(pseudo, node, true, false)
+		return matchesNth(pseudo, node, true, false, context)
 	case "nth-of-type":
-		return matchesNth(pseudo, node, false, true)
+		return matchesNth(pseudo, node, false, true, context)
 	case "nth-last-of-type":
-		return matchesNth(pseudo, node, true, true)
-	case "visited", "hover", "active", "focus", "focus-visible", "focus-within", "target":
-		return false
+		return matchesNth(pseudo, node, true, true, context)
 	default:
 		return false
 	}
@@ -186,17 +222,17 @@ func supportedSimplePseudoClass(name string) bool {
 	}
 }
 
-func selectorListMatches(selectors []Selector, node *dom.Node) bool {
+func selectorListMatches(selectors []Selector, node *dom.Node, context MatchContext) bool {
 	for _, selector := range selectors {
-		if selector.Matches(node) {
+		if selector.MatchesWithContext(node, context) {
 			return true
 		}
 	}
 	return false
 }
 
-func matchesNth(pseudo pseudoClassSelector, node *dom.Node, fromEnd, ofType bool) bool {
-	index, ok := elementSiblingIndex(node, fromEnd, ofType, pseudo.selectors)
+func matchesNth(pseudo pseudoClassSelector, node *dom.Node, fromEnd, ofType bool, context MatchContext) bool {
+	index, ok := elementSiblingIndex(node, fromEnd, ofType, pseudo.selectors, context)
 	if !ok {
 		return false
 	}
@@ -207,7 +243,7 @@ func matchesNth(pseudo pseudoClassSelector, node *dom.Node, fromEnd, ofType bool
 	return difference%pseudo.nth.a == 0 && difference/pseudo.nth.a >= 0
 }
 
-func elementSiblingIndex(node *dom.Node, fromEnd, ofType bool, filter []Selector) (int, bool) {
+func elementSiblingIndex(node *dom.Node, fromEnd, ofType bool, filter []Selector, context MatchContext) (int, bool) {
 	if node.Parent == nil {
 		return 0, false
 	}
@@ -215,7 +251,7 @@ func elementSiblingIndex(node *dom.Node, fromEnd, ofType bool, filter []Selector
 	if fromEnd {
 		for siblingIndex := len(node.Parent.Children) - 1; siblingIndex >= 0; siblingIndex-- {
 			sibling := node.Parent.Children[siblingIndex]
-			if !includedSibling(sibling, node, ofType, filter) {
+			if !includedSibling(sibling, node, ofType, filter, context) {
 				continue
 			}
 			index++
@@ -226,7 +262,7 @@ func elementSiblingIndex(node *dom.Node, fromEnd, ofType bool, filter []Selector
 		return 0, false
 	}
 	for _, sibling := range node.Parent.Children {
-		if !includedSibling(sibling, node, ofType, filter) {
+		if !includedSibling(sibling, node, ofType, filter, context) {
 			continue
 		}
 		index++
@@ -237,14 +273,27 @@ func elementSiblingIndex(node *dom.Node, fromEnd, ofType bool, filter []Selector
 	return 0, false
 }
 
-func includedSibling(sibling, subject *dom.Node, ofType bool, filter []Selector) bool {
+func includedSibling(sibling, subject *dom.Node, ofType bool, filter []Selector, context MatchContext) bool {
 	if sibling == nil || sibling.Type != dom.ElementNode {
 		return false
 	}
 	if ofType && !equalASCIIFold(sibling.Data, subject.Data) {
 		return false
 	}
-	return len(filter) == 0 || selectorListMatches(filter, sibling)
+	return len(filter) == 0 || selectorListMatches(filter, sibling, context)
+}
+
+func inclusiveAncestor(candidate, descendant *dom.Node) bool {
+	for current := descendant; current != nil; current = current.Parent {
+		if current == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+func isVisitedLink(node *dom.Node, context MatchContext) bool {
+	return context.Visited != nil && context.Visited(node)
 }
 
 func isDocumentElement(node *dom.Node) bool {

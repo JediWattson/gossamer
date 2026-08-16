@@ -183,8 +183,18 @@ in place; imported-sheet identity and rule-object exposure remain.
 
 ### 6. Selectors and state
 
-- Finish escaped identifiers, pseudo-elements, `:has()`, language/direction,
-  form-state, link-state, focus, hover, and active matching.
+Current foundation: selector matching accepts an explicit non-retained match
+context. Nested logical selectors and nth-child filters share it; hover and
+active propagate through the inclusive ancestor chain, focus/focus-visible and
+focus-within use the Page's stable focused node and modality bit, URL fragments
+drive `:target`, and a history hook distinguishes `:link` from `:visited`.
+Pointer and focus transitions advance the Page style revision, invalidate the
+cached snapshot, and coalesce a render at the existing task boundary even when
+scripting is disabled.
+
+- Add `:has()`, language/direction, form-state pseudo-classes, and browser
+  history plumbing for the matcher-level visited-link hook.
+- Finish pseudo-elements and the remaining stateful selector grammar.
 - Add bounded matching and memoization for selectors with combinator
   backtracking.
 - Introduce pseudo-element style slots and generated boxes only when layout can

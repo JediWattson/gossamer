@@ -108,8 +108,13 @@ func ParseSelectorList(source string) ([]Selector, error) {
 
 // MatchesAny reports whether at least one selector matches node.
 func MatchesAny(selectors []Selector, node *dom.Node) bool {
+	return MatchesAnyWithContext(selectors, node, MatchContext{})
+}
+
+// MatchesAnyWithContext reports whether a selector matches under context.
+func MatchesAnyWithContext(selectors []Selector, node *dom.Node, context MatchContext) bool {
 	for _, selector := range selectors {
-		if selector.Matches(node) {
+		if selector.MatchesWithContext(node, context) {
 			return true
 		}
 	}

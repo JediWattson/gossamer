@@ -392,6 +392,9 @@ func (page *Page) commitNavigationDocument(
 	page.document = prepared.document
 	page.documentGeneration = generation
 	page.activeElement = dom.InvalidNodeID
+	page.hoveredElement = dom.InvalidNodeID
+	page.pressedElement = dom.InvalidNodeID
+	page.focusVisible = false
 	page.scrollX = 0
 	page.scrollY = 0
 	page.elementScroll = make(map[dom.NodeID]scrollOffset)

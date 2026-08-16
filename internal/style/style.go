@@ -38,6 +38,19 @@ type Input struct {
 	Stylesheets          map[*dom.Node]css.Stylesheet
 	UserStylesheets      []css.Stylesheet
 	UserAgentStylesheets []css.Stylesheet
+	SelectorState        SelectorState
+	selectorContext      css.MatchContext
+}
+
+// SelectorState identifies browser-controlled pseudo-class subjects by
+// stable DOM identity. ComputeReadView resolves them within its coherent read.
+type SelectorState struct {
+	Hovered      dom.NodeID
+	Active       dom.NodeID
+	Focused      dom.NodeID
+	FocusVisible bool
+	Target       dom.NodeID
+	TargetID     string
 }
 
 // DisplayMode is the computed outer display mode supported by the current
@@ -561,6 +574,13 @@ func ComputeReadView(view dom.ReadView, input Input) (*Snapshot, error) {
 	if root == nil || root.Type != dom.DocumentNode {
 		return nil, fmt.Errorf("%w: read view root must be a document node", dom.ErrInvalidDocument)
 	}
+	input.selectorContext = css.MatchContext{
+		Hovered:      resolveSelectorStateNode(access, input.SelectorState.Hovered),
+		Active:       resolveSelectorStateNode(access, input.SelectorState.Active),
+		Focused:      resolveSelectorStateNode(access, input.SelectorState.Focused),
+		FocusVisible: input.SelectorState.FocusVisible,
+		Target:       resolveSelectorTarget(root, access, input.SelectorState),
+	}
 	styledRoot := buildStyleTree(root, input)
 	snapshot := &Snapshot{
 		documentIdentity: access.Identity(),
@@ -572,6 +592,43 @@ func ComputeReadView(view dom.ReadView, input Input) (*Snapshot, error) {
 	snapshot.provenance = indexStableProvenance(styledRoot, access)
 	snapshot.rootID, _ = access.ID(root)
 	return snapshot, nil
+}
+
+func resolveSelectorStateNode(access *dom.ReadAccess, id dom.NodeID) *dom.Node {
+	if id == dom.InvalidNodeID {
+		return nil
+	}
+	node, _ := access.Resolve(id)
+	return node
+}
+
+func resolveSelectorTarget(root *dom.Node, access *dom.ReadAccess, state SelectorState) *dom.Node {
+	if target := resolveSelectorStateNode(access, state.Target); target != nil {
+		return target
+	}
+	if state.TargetID == "" {
+		return nil
+	}
+	var found *dom.Node
+	var visit func(*dom.Node)
+	visit = func(node *dom.Node) {
+		if node == nil || found != nil {
+			return
+		}
+		if node.Type == dom.ElementNode {
+			for _, attribute := range node.Attributes {
+				if attribute.Name == "id" && attribute.Value == state.TargetID {
+					found = node
+					return
+				}
+			}
+		}
+		for _, child := range node.Children {
+			visit(child)
+		}
+	}
+	visit(root)
+	return found
 }
 
 func indexPointerStyles(node *styledNode, destination map[*dom.Node]ComputedStyle) {
@@ -679,6 +736,7 @@ func buildStyleTree(document *dom.Node, input Input) *styledNode {
 		user:             originStyleContext{sheets: userSheets, layerRanks: originLayerRanks(userSheets, mediaEnvironment)},
 		author:           originStyleContext{sheets: authorSheets, layerRanks: originLayerRanks(authorSheets, mediaEnvironment)},
 		mediaEnvironment: mediaEnvironment,
+		selectorContext:  input.selectorContext,
 	}
 	return styleNode(document, nil, context, input.Environment)
 }
@@ -940,7 +998,7 @@ func applyCascade(style *computedStyle, explanations map[string]PropertyExplanat
 	recordSheets := func(origin CascadeOrigin, originContext originStyleContext) {
 		for _, source := range originContext.sheets {
 			for ruleIndex, rule := range source.stylesheet.Rules {
-				specificity, matches := rule.Match(node)
+				specificity, matches := rule.MatchWithContext(node, context.selectorContext)
 				matches = matches && rule.MatchesMedia(context.mediaEnvironment)
 				matches = matches && rule.MatchesSupports(SupportsDeclaration)
 				for declarationIndex, declaration := range rule.Declarations {

@@ -58,6 +58,9 @@ type Page struct {
 	dirty              bool
 	renderedVersion    uint64
 	activeElement      dom.NodeID
+	hoveredElement     dom.NodeID
+	pressedElement     dom.NodeID
+	focusVisible       bool
 	nextNavigation     NavigationID
 	navigation         navigationRecord
 	nextTimer          TimerID
@@ -621,6 +624,7 @@ func (page *Page) styleSnapshotForViewLocked(view dom.ReadView, resources render
 		return state.snapshot, nil
 	}
 
+	resources.SelectorState = page.selectorStateLocked()
 	snapshot, err := render.ComputeStyleSnapshotFromReadView(view, page.viewport, resources)
 	if err != nil {
 		return nil, err
@@ -632,6 +636,19 @@ func (page *Page) styleSnapshotForViewLocked(view dom.ReadView, resources render
 		styleRevision:   page.styleRevision,
 	}
 	return snapshot, nil
+}
+
+func (page *Page) selectorStateLocked() computed.SelectorState {
+	state := computed.SelectorState{
+		Hovered:      page.hoveredElement,
+		Active:       page.pressedElement,
+		Focused:      page.activeElement,
+		FocusVisible: page.focusVisible,
+	}
+	if page.location != nil && page.location.Fragment != "" {
+		state.TargetID = page.location.Fragment
+	}
+	return state
 }
 
 // layoutSnapshotForViewLocked returns the current non-published layout result

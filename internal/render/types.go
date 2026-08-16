@@ -28,6 +28,7 @@ type Resources struct {
 	Stylesheets          map[*dom.Node]css.Stylesheet
 	UserStylesheets      []css.Stylesheet
 	UserAgentStylesheets []css.Stylesheet
+	SelectorState        computed.SelectorState
 	Images               map[*dom.Node]image.Image
 }
 

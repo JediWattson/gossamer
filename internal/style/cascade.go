@@ -32,6 +32,7 @@ type cascadeStyleContext struct {
 	user             originStyleContext
 	author           originStyleContext
 	mediaEnvironment css.MediaEnvironment
+	selectorContext  css.MatchContext
 }
 
 // winningDeclaration is one validated declaration expanded to a longhand (or

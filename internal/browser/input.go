@@ -101,9 +101,9 @@ func (page *Page) QueueInputEvent(event InputEvent) (browserruntime.TaskID, erro
 }
 
 func (page *Page) dispatchInput(context *browserruntime.TaskContext, event InputEvent) error {
-	page.mutex.RLock()
+	page.mutex.Lock()
 	if page.closed {
-		page.mutex.RUnlock()
+		page.mutex.Unlock()
 		return ErrPageClosed
 	}
 	target := event.Target
@@ -115,22 +115,42 @@ func (page *Page) dispatchInput(context *browserruntime.TaskContext, event Input
 	}
 	if event.RelatedTarget.Node != dom.InvalidNodeID {
 		if event.RelatedTarget.Document != page.documentGeneration {
-			page.mutex.RUnlock()
+			page.mutex.Unlock()
 			return nil
 		}
 		if _, relatedOK := page.document.Resolve(event.RelatedTarget.Node); !relatedOK {
-			page.mutex.RUnlock()
+			page.mutex.Unlock()
 			return nil
 		}
 	}
-	script := page.script
-	generation := page.documentGeneration
-	page.mutex.RUnlock()
-	if !ok || script == nil {
+	if !ok {
+		page.mutex.Unlock()
 		return nil
 	}
 	event.Target = target
-	host := &taskHost{page: page, task: context, generation: generation, autoRender: true}
+	styleRevision := page.styleRevision
+	clearPressedAfterDispatch := page.updatePointerSelectorStateLocked(event)
+	selectorStateChanged := page.styleRevision != styleRevision
+	script := page.script
+	generation := page.documentGeneration
+	page.mutex.Unlock()
+	host := &taskHost{page: page, task: context, generation: generation, autoRender: true, styleChanged: selectorStateChanged}
+	clearPressed := func() {
+		if !clearPressedAfterDispatch {
+			return
+		}
+		page.mutex.Lock()
+		if page.pressedElement != dom.InvalidNodeID {
+			page.pressedElement = dom.InvalidNodeID
+			page.invalidateStyleLocked()
+			host.styleChanged = true
+		}
+		page.mutex.Unlock()
+	}
+	if script == nil {
+		clearPressed()
+		return host.finish()
+	}
 	if event.Type == InputBeforeInput {
 		result, beforeInputErr := script.DispatchEvent(host, event)
 		var editErr error
@@ -153,10 +173,46 @@ func (page *Page) dispatchInput(context *browserruntime.TaskContext, event Input
 	if result.DefaultPrevented && rollback != nil {
 		defaultErr = errors.Join(defaultErr, rollback())
 	} else if !result.DefaultPrevented && event.Type == InputClick {
-		defaultErr = errors.Join(defaultErr, host.Focus(event.Target))
+		defaultErr = errors.Join(defaultErr, host.focus(event.Target, false))
 	}
+	clearPressed()
 	microtaskErr := script.DrainMicrotasks(host)
 	return errors.Join(defaultErr, dispatchErr, microtaskErr, host.finish())
+}
+
+func (page *Page) updatePointerSelectorStateLocked(event InputEvent) bool {
+	changed := false
+	set := func(destination *dom.NodeID, value dom.NodeID) {
+		if *destination != value {
+			*destination = value
+			changed = true
+		}
+	}
+	switch event.Type {
+	case InputPointerDown:
+		set(&page.hoveredElement, event.Target.Node)
+		set(&page.pressedElement, event.Target.Node)
+	case InputPointerMove, InputPointerOver, InputPointerEnter:
+		set(&page.hoveredElement, event.Target.Node)
+	case InputPointerOut, InputPointerLeave:
+		next := dom.InvalidNodeID
+		if event.RelatedTarget.Document == page.documentGeneration {
+			next = event.RelatedTarget.Node
+		}
+		set(&page.hoveredElement, next)
+	case InputPointerUp:
+		set(&page.hoveredElement, event.Target.Node)
+		if changed {
+			page.invalidateStyleLocked()
+		}
+		return true
+	case InputPointerCancel:
+		set(&page.pressedElement, dom.InvalidNodeID)
+	}
+	if changed {
+		page.invalidateStyleLocked()
+	}
+	return false
 }
 
 func (host *taskHost) applyInputStateBeforeDispatch(event InputEvent) (func() error, error) {
@@ -256,11 +312,12 @@ func (page *Page) invokeScript(
 		return nil
 	}
 	script := page.script
+	pendingStyle := page.dirty
 	page.mutex.RUnlock()
 	if script == nil {
 		return ErrScriptDisabled
 	}
-	host := &taskHost{page: page, task: context, generation: generation, autoRender: autoRender}
+	host := &taskHost{page: page, task: context, generation: generation, autoRender: autoRender, styleChanged: pendingStyle}
 	invokeErr := script.Invoke(host, callback)
 	microtaskErr := script.DrainMicrotasks(host)
 	return errors.Join(invokeErr, microtaskErr, host.finish())
@@ -315,6 +372,8 @@ type taskHost struct {
 	scrollTargets      map[NodeHandle]struct{}
 	animationRequested bool
 	resized            bool
+	styleChanged       bool
+	followupQueued     bool
 	autoRender         bool
 }
 
@@ -617,6 +676,7 @@ func (host *taskHost) QuerySelector(handle NodeHandle, source string, all bool) 
 	if scope.Type != dom.DocumentNode && scope.Type != dom.ElementNode && scope.Type != dom.DocumentFragmentNode {
 		return nil, fmt.Errorf("%w: selector scope is not a document, fragment, or element", dom.ErrWrongNodeKind)
 	}
+	matchContext := host.page.selectorMatchContextLocked()
 	stack := make([]*dom.Node, 0, len(scope.Children))
 	for index := len(scope.Children) - 1; index >= 0; index-- {
 		stack = append(stack, scope.Children[index])
@@ -626,7 +686,7 @@ func (host *taskHost) QuerySelector(handle NodeHandle, source string, all bool) 
 		last := len(stack) - 1
 		node := stack[last]
 		stack = stack[:last]
-		if node.Type == dom.ElementNode && css.MatchesAny(selectors, node) {
+		if node.Type == dom.ElementNode && css.MatchesAnyWithContext(selectors, node, matchContext) {
 			id, found := host.page.document.ID(node)
 			if !found {
 				return nil, dom.ErrUnknownNode
@@ -660,7 +720,7 @@ func (host *taskHost) MatchesSelector(handle NodeHandle, source string) (bool, e
 	if node.Type != dom.ElementNode {
 		return false, fmt.Errorf("%w: selector target is not an element", dom.ErrWrongNodeKind)
 	}
-	return css.MatchesAny(selectors, node), nil
+	return css.MatchesAnyWithContext(selectors, node, host.page.selectorMatchContextLocked()), nil
 }
 
 func (host *taskHost) ClosestSelector(handle NodeHandle, source string) (NodeHandle, bool, error) {
@@ -680,8 +740,9 @@ func (host *taskHost) ClosestSelector(handle NodeHandle, source string) (NodeHan
 	if node.Type != dom.ElementNode {
 		return NodeHandle{}, false, fmt.Errorf("%w: closest target is not an element", dom.ErrWrongNodeKind)
 	}
+	matchContext := host.page.selectorMatchContextLocked()
 	for candidate := node; candidate != nil; candidate = candidate.Parent {
-		if candidate.Type != dom.ElementNode || !css.MatchesAny(selectors, candidate) {
+		if candidate.Type != dom.ElementNode || !css.MatchesAnyWithContext(selectors, candidate, matchContext) {
 			continue
 		}
 		id, found := host.page.document.ID(candidate)
@@ -691,6 +752,28 @@ func (host *taskHost) ClosestSelector(handle NodeHandle, source string) (NodeHan
 		return NodeHandle{Document: host.generation, Node: id}, true, nil
 	}
 	return NodeHandle{}, false, nil
+}
+
+func (page *Page) selectorMatchContextLocked() css.MatchContext {
+	resolve := func(id dom.NodeID) *dom.Node {
+		if id == dom.InvalidNodeID {
+			return nil
+		}
+		node, _ := page.document.Resolve(id)
+		return node
+	}
+	context := css.MatchContext{
+		Hovered:      resolve(page.hoveredElement),
+		Active:       resolve(page.pressedElement),
+		Focused:      resolve(page.activeElement),
+		FocusVisible: page.focusVisible,
+	}
+	if page.location != nil && page.location.Fragment != "" {
+		if id, ok := page.document.ElementByID(page.location.Fragment); ok {
+			context.Target = resolve(id)
+		}
+	}
+	return context
 }
 
 func (host *taskHost) CloneNode(handle NodeHandle, deep bool) (NodeHandle, error) {
@@ -1099,6 +1182,10 @@ func (host *taskHost) MutationRecordsSince(sequence uint64) ([]dom.MutationRecor
 }
 
 func (host *taskHost) Focus(handle NodeHandle) error {
+	return host.focus(handle, true)
+}
+
+func (host *taskHost) focus(handle NodeHandle, visible bool) error {
 	host.page.mutex.Lock()
 	defer host.page.mutex.Unlock()
 	if err := host.validateHandleLocked(handle); err != nil {
@@ -1121,8 +1208,11 @@ func (host *taskHost) Focus(handle NodeHandle) error {
 	default:
 		_, focusable, _ = host.page.document.GetAttribute(handle.Node, "tabindex")
 	}
-	if snapshot.Connected && focusable {
+	if snapshot.Connected && focusable && (host.page.activeElement != handle.Node || host.page.focusVisible != visible) {
 		host.page.activeElement = handle.Node
+		host.page.focusVisible = visible
+		host.page.invalidateStyleLocked()
+		host.styleChanged = true
 	}
 	return nil
 }
@@ -1135,6 +1225,9 @@ func (host *taskHost) Blur(handle NodeHandle) error {
 	}
 	if host.page.activeElement == handle.Node {
 		host.page.activeElement = dom.InvalidNodeID
+		host.page.focusVisible = false
+		host.page.invalidateStyleLocked()
+		host.styleChanged = true
 	}
 	return nil
 }
@@ -1473,6 +1566,9 @@ func (host *taskHost) QueueCallback(callback ValueHandle) error {
 	_, err = host.task.Copy(host.page.Realm, func(next *browserruntime.TaskContext) error {
 		return host.page.invokeAsyncScript(next, browserCallbackHostClass, host.generation, uint64(callback), callback, host.autoRender)
 	}, record)
+	if err == nil {
+		host.followupQueued = true
+	}
 	return err
 }
 
@@ -1488,6 +1584,9 @@ func (host *taskHost) QueueMicrotask(callback ValueHandle) error {
 	_, err = host.task.QueueMicrotaskCopy(func(next *browserruntime.TaskContext) error {
 		return host.page.invokeAsyncScript(next, browserCallbackHostClass, host.generation, uint64(callback), callback, host.autoRender)
 	}, record)
+	if err == nil {
+		host.followupQueued = true
+	}
 	return err
 }
 
@@ -1594,7 +1693,11 @@ func (host *taskHost) finish() error {
 	if host.mutated {
 		err = errors.Join(err, host.page.syncAndLoadStylesheets())
 	}
-	if host.mutated || host.scrolled || host.resized {
+	shouldRender := host.mutated || host.scrolled || host.resized || host.styleChanged
+	if host.followupQueued && host.styleChanged && !host.mutated && !host.scrolled && !host.resized {
+		shouldRender = false
+	}
+	if shouldRender {
 		err = errors.Join(err, host.page.queueRenderFromTask(host.task))
 	}
 	return err
