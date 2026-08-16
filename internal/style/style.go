@@ -931,16 +931,17 @@ type stablePseudoKey struct {
 // Environment. It deliberately does not own browser document generations or
 // invalidation state.
 type Snapshot struct {
-	root             *dom.Node
-	documentIdentity dom.DocumentIdentity
-	rootID           dom.NodeID
-	version          uint64
-	environment      Environment
-	byNode           map[*dom.Node]ComputedStyle
-	byID             map[dom.NodeID]ComputedStyle
-	byPseudoNode     map[pointerPseudoKey]ComputedStyle
-	byPseudoID       map[stablePseudoKey]ComputedStyle
-	provenance       provenanceStore
+	root                 *dom.Node
+	documentIdentity     dom.DocumentIdentity
+	rootID               dom.NodeID
+	version              uint64
+	environment          Environment
+	byNode               map[*dom.Node]ComputedStyle
+	byID                 map[dom.NodeID]ComputedStyle
+	byPseudoNode         map[pointerPseudoKey]ComputedStyle
+	byPseudoID           map[stablePseudoKey]ComputedStyle
+	provenance           provenanceStore
+	mutationDependencies snapshotMutationDependencies
 }
 
 // Compute performs a complete style pass over an unindexed DOM tree. Browser
@@ -950,10 +951,11 @@ func Compute(root *dom.Node, input Input) *Snapshot {
 	input.selectorContext.DefaultLanguage = input.SelectorState.DefaultLanguage
 	styledRoot := buildStyleTree(root, input)
 	snapshot := &Snapshot{
-		root:         root,
-		environment:  input.Environment,
-		byNode:       make(map[*dom.Node]ComputedStyle),
-		byPseudoNode: make(map[pointerPseudoKey]ComputedStyle),
+		root:                 root,
+		environment:          input.Environment,
+		byNode:               make(map[*dom.Node]ComputedStyle),
+		byPseudoNode:         make(map[pointerPseudoKey]ComputedStyle),
+		mutationDependencies: compileSnapshotMutationDependencies(input),
 	}
 	indexPointerStyles(styledRoot, snapshot.byNode)
 	indexPointerPseudoStyles(styledRoot, snapshot.byPseudoNode)
@@ -992,11 +994,12 @@ func ComputeReadView(view dom.ReadView, input Input) (*Snapshot, error) {
 	}
 	styledRoot := buildStyleTree(root, input)
 	snapshot := &Snapshot{
-		documentIdentity: access.Identity(),
-		version:          access.Version(),
-		environment:      input.Environment,
-		byID:             make(map[dom.NodeID]ComputedStyle),
-		byPseudoID:       make(map[stablePseudoKey]ComputedStyle),
+		documentIdentity:     access.Identity(),
+		version:              access.Version(),
+		environment:          input.Environment,
+		byID:                 make(map[dom.NodeID]ComputedStyle),
+		byPseudoID:           make(map[stablePseudoKey]ComputedStyle),
+		mutationDependencies: compileSnapshotMutationDependencies(input),
 	}
 	indexStableStyles(styledRoot, snapshot.byID, access)
 	indexStablePseudoStyles(styledRoot, snapshot.byPseudoID, access)

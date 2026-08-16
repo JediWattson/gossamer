@@ -80,10 +80,12 @@ type Page struct {
 // style snapshot current. Document generations remain a browser concern; the
 // style package deliberately owns neither navigation nor invalidation state.
 type computedStyleState struct {
-	snapshot        *computed.Snapshot
-	document        DocumentGeneration
-	documentVersion uint64
-	styleRevision   uint64
+	snapshot         *computed.Snapshot
+	document         DocumentGeneration
+	documentVersion  uint64
+	styleRevision    uint64
+	mutationSequence uint64
+	incremental      bool
 }
 
 // layoutState records the browser inputs that make one immutable layout
@@ -790,6 +792,30 @@ func (page *Page) styleSnapshotForViewLocked(view dom.ReadView, resources render
 		state.styleRevision == page.styleRevision {
 		return state.snapshot, nil
 	}
+	if state.snapshot != nil && state.document == page.documentGeneration && state.styleRevision == page.styleRevision {
+		access, accessErr := view.Acquire()
+		if accessErr != nil {
+			return nil, accessErr
+		}
+		records, latest, recordsErr := access.MutationRecordsSince(state.mutationSequence)
+		access.Close()
+		if recordsErr == nil {
+			rebound, reused, rebindErr := state.snapshot.RebindReadViewAfterMutations(view, records)
+			if rebindErr != nil {
+				return nil, rebindErr
+			}
+			if reused {
+				page.computedStyle = computedStyleState{
+					snapshot: rebound, document: page.documentGeneration,
+					documentVersion: view.Version(), styleRevision: page.styleRevision,
+					mutationSequence: latest, incremental: true,
+				}
+				return rebound, nil
+			}
+		} else if !errors.Is(recordsErr, dom.ErrMutationJournalOverflow) {
+			return nil, recordsErr
+		}
+	}
 	inlineDeclarations, err := page.resources.inlineStyles.declarationsForView(view)
 	if err != nil {
 		return nil, err
@@ -806,10 +832,11 @@ func (page *Page) styleSnapshotForViewLocked(view dom.ReadView, resources render
 		return nil, err
 	}
 	page.computedStyle = computedStyleState{
-		snapshot:        snapshot,
-		document:        page.documentGeneration,
-		documentVersion: view.Version(),
-		styleRevision:   page.styleRevision,
+		snapshot:         snapshot,
+		document:         page.documentGeneration,
+		documentVersion:  view.Version(),
+		styleRevision:    page.styleRevision,
+		mutationSequence: view.MutationSequence(),
 	}
 	return snapshot, nil
 }

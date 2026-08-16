@@ -559,7 +559,15 @@ also retain immutable, conservative rightmost-compound indexes for ID, class,
 and type candidates. Full selector matching remains authoritative, and an
 indexed-versus-full-scan cascade oracle, fuzz target, and benchmark protect
 both source-order equivalence and the measured reduction in selector work.
-Style, layout, and paint still rebuild globally after connected mutations.
+Selector indexes also retain conservative attribute, character-data,
+native-control-state, and directional tree dependencies. The bounded native
+mutation journal records mutation-time connectedness and fails closed when its
+history is truncated. When every retained record is disconnected or proven
+style-neutral, the browser advances only an immutable snapshot header while
+sharing its computed/provenance storage; a full-pass oracle, fuzz target, and
+benchmark guard that fast path. Connected tree changes and selector-relevant
+mutations still rebuild style globally, and layout and paint still rebuild
+globally after connected mutations.
 
 - Extend parsed-rule caches with script-visible stylesheet identities and
   generation-aware rule handles.

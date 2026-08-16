@@ -155,6 +155,20 @@ func (access *ReadAccess) Version() uint64 {
 	return access.lease.version
 }
 
+// MutationSequence returns the latest journal sequence visible to this
+// coherent read access.
+func (access *ReadAccess) MutationSequence() uint64 {
+	if access == nil {
+		return 0
+	}
+	access.mutex.RLock()
+	defer access.mutex.RUnlock()
+	if access.closed || access.lease == nil || access.lease.document == nil {
+		return 0
+	}
+	return access.lease.document.mutationSequence
+}
+
 // MutationRecordsSince returns the coherent journal suffix visible to this
 // read access without recursively acquiring the document store lock.
 func (access *ReadAccess) MutationRecordsSince(sequence uint64) ([]MutationRecord, uint64, error) {
@@ -229,6 +243,17 @@ func (view ReadView) Version() uint64 {
 	}
 	defer access.Close()
 	return access.Version()
+}
+
+// MutationSequence returns the coherent journal sequence while the view is
+// active and zero after expiry.
+func (view ReadView) MutationSequence() uint64 {
+	access, err := view.Acquire()
+	if err != nil {
+		return 0
+	}
+	defer access.Close()
+	return access.MutationSequence()
 }
 
 // ID performs one callback-scoped stable-identity lookup. Callers that need a

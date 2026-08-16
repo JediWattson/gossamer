@@ -7,10 +7,11 @@ import (
 )
 
 type stylesheetSelectorIndex struct {
-	universal []int
-	byType    map[string][]int
-	byClass   map[string][]int
-	byID      map[string][]int
+	universal    []int
+	byType       map[string][]int
+	byClass      map[string][]int
+	byID         map[string][]int
+	dependencies SelectorDependencies
 }
 
 // WithSelectorIndex returns a stylesheet sharing an immutable conservative
@@ -30,10 +31,11 @@ func (stylesheet Stylesheet) WithSelectorIndex() Stylesheet {
 		keys := make([]SelectorCandidateKey, 0, len(rule.Selectors))
 		universal := false
 		for _, selector := range rule.Selectors {
+			collectSelectorDependencies(selector, &index.dependencies)
 			key := selector.CandidateKey()
 			if key.Kind == SelectorCandidateUniversal {
 				universal = true
-				break
+				continue
 			}
 			duplicate := false
 			for _, existing := range keys {
