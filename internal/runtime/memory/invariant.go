@@ -198,7 +198,7 @@ func (store *Store) CheckInvariants() error {
 						return invariantError("Object %s has non-Object prototype %s", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, prototype)
 					}
 				}
-				names := make(map[string]struct{}, len(slot.Object.Properties))
+				names := make(map[propertyKey]struct{}, len(slot.Object.Properties))
 				for propertyIndex, property := range slot.Object.Properties {
 					if property.Kind != PropertyData && property.Kind != PropertyAccessor {
 						return invariantError("Object %s property %d has invalid descriptor kind %d", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, propertyIndex, property.Kind)
@@ -229,13 +229,17 @@ func (store *Store) CheckInvariants() error {
 						return invariantError("Object %s property %d has stale name %s", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, propertyIndex, property.Name)
 					}
 					nameSlot := &targetRegion.Slots[property.Name.Slot]
-					if !nameSlot.Occupied || nameSlot.Generation != property.Name.Gen || nameSlot.Kind != HeapString {
-						return invariantError("Object %s property %d has non-String name %s", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, propertyIndex, property.Name)
+					if !nameSlot.Occupied || nameSlot.Generation != property.Name.Gen || (nameSlot.Kind != HeapString && nameSlot.Kind != HeapSymbol) {
+						return invariantError("Object %s property %d has non-property-key name %s", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, propertyIndex, property.Name)
 					}
-					if _, duplicate := names[nameSlot.String.Text]; duplicate {
-						return invariantError("Object %s has duplicate property %q", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, nameSlot.String.Text)
+					key, err := store.propertyKeyLocked(property.Name)
+					if err != nil {
+						return invariantError("Object %s property %d key: %v", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, propertyIndex, err)
 					}
-					names[nameSlot.String.Text] = struct{}{}
+					if _, duplicate := names[key]; duplicate {
+						return invariantError("Object %s has duplicate property %s", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, key)
+					}
+					names[key] = struct{}{}
 				}
 			case HeapArray:
 				liveArrays++
@@ -764,7 +768,7 @@ func (store *Store) checkObjectHeaderLocked(ref Ref, slot *Slot) error {
 			return invariantError("%s has non-Object prototype %s", ref, prototype)
 		}
 	}
-	names := make(map[string]struct{}, len(header.Properties))
+	names := make(map[propertyKey]struct{}, len(header.Properties))
 	for propertyIndex, property := range header.Properties {
 		if property.Kind != PropertyData && property.Kind != PropertyAccessor {
 			return invariantError("%s property %d has invalid descriptor kind %d", ref, propertyIndex, property.Kind)
@@ -795,13 +799,17 @@ func (store *Store) checkObjectHeaderLocked(ref Ref, slot *Slot) error {
 			return invariantError("%s property %d has stale name %s", ref, propertyIndex, property.Name)
 		}
 		nameSlot := &targetRegion.Slots[property.Name.Slot]
-		if !nameSlot.Occupied || nameSlot.Generation != property.Name.Gen || nameSlot.Kind != HeapString {
-			return invariantError("%s property %d has non-String name %s", ref, propertyIndex, property.Name)
+		if !nameSlot.Occupied || nameSlot.Generation != property.Name.Gen || (nameSlot.Kind != HeapString && nameSlot.Kind != HeapSymbol) {
+			return invariantError("%s property %d has non-property-key name %s", ref, propertyIndex, property.Name)
 		}
-		if _, duplicate := names[nameSlot.String.Text]; duplicate {
-			return invariantError("%s has duplicate property %q", ref, nameSlot.String.Text)
+		key, err := store.propertyKeyLocked(property.Name)
+		if err != nil {
+			return invariantError("%s property %d key: %v", ref, propertyIndex, err)
 		}
-		names[nameSlot.String.Text] = struct{}{}
+		if _, duplicate := names[key]; duplicate {
+			return invariantError("%s has duplicate property %s", ref, key)
+		}
+		names[key] = struct{}{}
 	}
 	return nil
 }

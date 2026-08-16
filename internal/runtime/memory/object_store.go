@@ -101,8 +101,8 @@ func (store *Store) setPrototypeLocked(owner ownership.OwnerID, object Ref, prot
 }
 
 // SetProperty inserts or replaces an own property. Name must reference a
-// native String. Equal String contents address the same property even when the
-// caller supplies a different String Ref.
+// native String or Symbol. Equal String contents address the same property;
+// Symbols address properties by semantic identity even after graph copying.
 func (store *Store) SetProperty(owner ownership.OwnerID, object, name Ref, value Value) error {
 	if store == nil {
 		return fmt.Errorf("memory: nil store")
@@ -121,21 +121,21 @@ func (store *Store) setPropertyLocked(owner ownership.OwnerID, object, name Ref,
 	if !ok {
 		return objectHeaderTypeError(object, slot.Kind)
 	}
-	nameText, err := store.stringTextLocked(owner, name, internal)
+	key, err := store.propertyKeyLocked(name)
 	if err != nil {
 		return err
 	}
-	index, err := store.findPropertyLocked(slot, nameText)
+	index, err := store.findPropertyLocked(slot, key)
 	if err != nil {
 		return err
 	}
 	if index >= 0 {
 		property := header.Properties[index]
 		if property.Kind == PropertyAccessor {
-			return fmt.Errorf("%w: %q", ErrAccessorProperty, nameText)
+			return fmt.Errorf("%w: %s", ErrAccessorProperty, key)
 		}
 		if !property.Writable && !internal {
-			return fmt.Errorf("%w: %q", ErrReadOnlyProperty, nameText)
+			return fmt.Errorf("%w: %s", ErrReadOnlyProperty, key)
 		}
 		property.Value = value
 		property.Name = Ref{}
@@ -164,7 +164,7 @@ func (store *Store) definePropertyLocked(owner ownership.OwnerID, object, name R
 	if !ok {
 		return objectHeaderTypeError(object, slot.Kind)
 	}
-	nameText, err := store.stringTextLocked(owner, name, internal)
+	key, err := store.propertyKeyLocked(name)
 	if err != nil {
 		return err
 	}
@@ -179,7 +179,7 @@ func (store *Store) definePropertyLocked(owner ownership.OwnerID, object, name R
 	if err := store.validatePropertyDescriptorLocked(descriptor); err != nil {
 		return err
 	}
-	index, err := store.findPropertyLocked(slot, nameText)
+	index, err := store.findPropertyLocked(slot, key)
 	if err != nil {
 		return err
 	}
@@ -187,7 +187,7 @@ func (store *Store) definePropertyLocked(owner ownership.OwnerID, object, name R
 		previous := header.Properties[index]
 		if !internal {
 			if err := compatiblePropertyDescriptor(previous, descriptor); err != nil {
-				return fmt.Errorf("%w: %q", err, nameText)
+				return fmt.Errorf("%w: %s", err, key)
 			}
 		}
 		prepared, err := store.replacePropertyValuesLocked(owner, region, slot, previous, descriptor, internal)
@@ -298,11 +298,11 @@ func (store *Store) GetOwnPropertyDescriptor(owner ownership.OwnerID, object, na
 	if !ok {
 		return Property{}, false, objectHeaderTypeError(object, slot.Kind)
 	}
-	nameText, err := store.stringTextLocked(owner, name, false)
+	key, err := store.propertyKeyLocked(name)
 	if err != nil {
 		return Property{}, false, err
 	}
-	index, err := store.findPropertyLocked(slot, nameText)
+	index, err := store.findPropertyLocked(slot, key)
 	if err != nil {
 		return Property{}, false, err
 	}
@@ -326,11 +326,11 @@ func (store *Store) DeleteProperty(owner ownership.OwnerID, object, name Ref) (b
 	if !ok {
 		return false, objectHeaderTypeError(object, slot.Kind)
 	}
-	nameText, err := store.stringTextLocked(owner, name, false)
+	key, err := store.propertyKeyLocked(name)
 	if err != nil {
 		return false, err
 	}
-	index, err := store.findPropertyLocked(slot, nameText)
+	index, err := store.findPropertyLocked(slot, key)
 	if err != nil || index < 0 {
 		return false, err
 	}
@@ -389,20 +389,45 @@ func (store *Store) stringTextLocked(owner ownership.OwnerID, ref Ref, internal 
 	return slot.String.Text, nil
 }
 
-func (store *Store) findPropertyLocked(slot *Slot, name string) (int, error) {
+type propertyKey struct {
+	kind   HeapKind
+	text   string
+	symbol SymbolID
+}
+
+func (key propertyKey) String() string {
+	if key.kind == HeapSymbol {
+		return fmt.Sprintf("Symbol(%d)", key.symbol)
+	}
+	return fmt.Sprintf("%q", key.text)
+}
+
+func (store *Store) propertyKeyLocked(ref Ref) (propertyKey, error) {
+	_, slot, err := store.slotLocked(ref)
+	if err != nil {
+		return propertyKey{}, err
+	}
+	switch slot.Kind {
+	case HeapString:
+		return propertyKey{kind: HeapString, text: slot.String.Text}, nil
+	case HeapSymbol:
+		return propertyKey{kind: HeapSymbol, symbol: slot.Symbol.ID}, nil
+	default:
+		return propertyKey{}, fmt.Errorf("%w: property key %s is a %s, want String or Symbol", ErrTypeMismatch, ref, slot.Kind)
+	}
+}
+
+func (store *Store) findPropertyLocked(slot *Slot, key propertyKey) (int, error) {
 	header, ok := objectHeaderForSlot(slot)
 	if !ok {
 		return -1, objectHeaderTypeError(Ref{}, slot.Kind)
 	}
 	for index, property := range header.Properties {
-		_, nameSlot, err := store.slotLocked(property.Name)
+		propertyKey, err := store.propertyKeyLocked(property.Name)
 		if err != nil {
 			return -1, err
 		}
-		if nameSlot.Kind != HeapString {
-			return -1, typeError(property.Name, nameSlot.Kind, HeapString)
-		}
-		if nameSlot.String.Text == name {
+		if propertyKey == key {
 			return index, nil
 		}
 	}

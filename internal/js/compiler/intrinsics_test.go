@@ -151,6 +151,66 @@ secondCharacter.value === "o" && stringDone.done;
 	}
 }
 
+func TestNativeSymbolIntrinsicAndPropertyKeys(t *testing.T) {
+	t.Parallel()
+
+	image, err := compiler.Compile(`
+let first = Symbol("token");
+let second = Symbol("token");
+let registered = Symbol.for("react.element");
+let object = {};
+object[first] = 1;
+object[second] = 2;
+object[Symbol.iterator] = function() { return "iterator"; };
+let rejectedConstructor = false;
+try { new Symbol("nope"); } catch (error) { rejectedConstructor = error instanceof TypeError; }
+
+typeof Symbol === "function" && typeof first === "symbol" &&
+first !== second && registered === Symbol.for("react.element") &&
+Symbol.iterator === Symbol.iterator &&
+first.description === "token" && String(first) === "Symbol(token)" &&
+object[first] === 1 && object[second] === 2 && object[Symbol.iterator]() === "iterator" &&
+Object.keys(object).length === 0 &&
+Array.prototype[Symbol.iterator] === Array.prototype.values &&
+"go"[Symbol.iterator]().next().value === "g" && rejectedConstructor;
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	realm, err := browserruntime.NewRealm(829, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer realm.Close()
+	interpreter := browserruntime.NewInterpreter(browserruntime.InterpreterConfig{})
+	var result memory.Value
+	_, err = realm.EnqueueTask(func(task *browserruntime.TaskContext) error {
+		intrinsics, err := interpreter.Bootstrap(task)
+		if err != nil {
+			return err
+		}
+		loaded, err := program.Load(task, image, memory.RefValue(intrinsics.Global))
+		if err != nil {
+			return err
+		}
+		result, err = interpreter.Execute(task, loaded.Entry)
+		if err != nil {
+			return err
+		}
+		return task.Realm.Store().CheckInvariants()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if result.Kind() != memory.ValueBool || !result.Bool() {
+		t.Fatalf("Symbol result = %#v, want true", result)
+	}
+}
+
 func TestN10PromisesAndDeterministicMicrotaskCheckpoint(t *testing.T) {
 	t.Parallel()
 

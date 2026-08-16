@@ -124,7 +124,19 @@ func builtinStringConstructor(execution *execution, _ memory.Ref, _ memory.Funct
 	text := ""
 	var err error
 	if len(arguments) != 0 {
-		text, err = execution.toString(arguments[0])
+		if arguments[0].IsRef() {
+			kind, kindErr := execution.context.HeapKind(arguments[0].Ref())
+			if kindErr != nil {
+				return memory.Value{}, kindErr
+			}
+			if kind == memory.HeapSymbol {
+				text, err = symbolDescriptiveString(execution.context, arguments[0])
+			} else {
+				text, err = execution.toString(arguments[0])
+			}
+		} else {
+			text, err = execution.toString(arguments[0])
+		}
 		if err != nil {
 			return memory.Value{}, err
 		}

@@ -46,27 +46,38 @@ func (execution *execution) getProperty(base, key memory.Value) (memory.Value, b
 		if err != nil {
 			return memory.Value{}, false, err
 		}
-		keyText, err := context.DerefString(name)
+		keyText, stringKey, err := execution.stringPropertyName(name)
 		if err != nil {
 			return memory.Value{}, false, err
 		}
-		text, err := context.DerefString(ref)
-		if err != nil {
-			return memory.Value{}, false, err
-		}
-		units := []rune(text)
-		if keyText == "length" {
-			return memory.NumberValue(float64(len(units))), true, nil
-		}
-		if parsed, parseErr := strconv.ParseUint(keyText, 10, 32); parseErr == nil && strconv.FormatUint(parsed, 10) == keyText && parsed < uint64(len(units)) {
-			character := string(units[parsed])
-			value, err := context.NewString(character)
-			return memory.RefValue(value), true, err
+		if stringKey {
+			text, err := context.DerefString(ref)
+			if err != nil {
+				return memory.Value{}, false, err
+			}
+			units := []rune(text)
+			if keyText == "length" {
+				return memory.NumberValue(float64(len(units))), true, nil
+			}
+			if parsed, parseErr := strconv.ParseUint(keyText, 10, 32); parseErr == nil && strconv.FormatUint(parsed, 10) == keyText && parsed < uint64(len(units)) {
+				character := string(units[parsed])
+				value, err := context.NewString(character)
+				return memory.RefValue(value), true, err
+			}
 		}
 		if context.intrinsics == nil {
 			return memory.Value{}, false, nil
 		}
 		return execution.getNamedProperty(base, context.intrinsics.StringPrototype, name)
+	case memory.HeapSymbol:
+		name, err := execution.propertyName(key)
+		if err != nil {
+			return memory.Value{}, false, err
+		}
+		if context.intrinsics == nil {
+			return memory.Value{}, false, nil
+		}
+		return execution.getNamedProperty(base, context.intrinsics.SymbolPrototype, name)
 	case memory.HeapError:
 		name, err := execution.propertyName(key)
 		if err != nil {
@@ -75,9 +86,12 @@ func (execution *execution) getProperty(base, key memory.Value) (memory.Value, b
 		if value, found, err := execution.getNamedProperty(base, ref, name); err != nil || found {
 			return value, found, err
 		}
-		keyText, err := context.DerefString(name)
+		keyText, stringKey, err := execution.stringPropertyName(name)
 		if err != nil {
 			return memory.Value{}, false, err
+		}
+		if !stringKey {
+			return memory.Value{}, false, nil
 		}
 		errorObject, err := context.DerefError(ref)
 		if err != nil {
@@ -154,17 +168,19 @@ func (execution *execution) getNamedProperty(base memory.Value, ref, name memory
 		return memory.Value{}, found, err
 	}
 	if !found {
-		nameText, nameErr := execution.context.DerefString(name)
+		nameText, stringKey, nameErr := execution.stringPropertyName(name)
 		if nameErr != nil {
 			return memory.Value{}, false, nameErr
 		}
-		for _, interceptor := range execution.interpreter.propertyInterceptors() {
-			if interceptor.Get == nil {
-				continue
-			}
-			value, interceptedFound, handled, interceptErr := interceptor.Get(execution.context, ref, nameText)
-			if interceptErr != nil || handled {
-				return value, interceptedFound, interceptErr
+		if stringKey {
+			for _, interceptor := range execution.interpreter.propertyInterceptors() {
+				if interceptor.Get == nil {
+					continue
+				}
+				value, interceptedFound, handled, interceptErr := interceptor.Get(execution.context, ref, nameText)
+				if interceptErr != nil || handled {
+					return value, interceptedFound, interceptErr
+				}
 			}
 		}
 		return memory.Value{}, false, nil
@@ -204,17 +220,19 @@ func (execution *execution) setPropertyValue(base, key, value memory.Value) erro
 			return err
 		}
 		if !found {
-			nameText, nameErr := context.DerefString(name)
+			nameText, stringKey, nameErr := execution.stringPropertyName(name)
 			if nameErr != nil {
 				return nameErr
 			}
-			for _, interceptor := range execution.interpreter.propertyInterceptors() {
-				if interceptor.Set == nil {
-					continue
-				}
-				handled, interceptErr := interceptor.Set(context, ref, nameText, value)
-				if interceptErr != nil || handled {
-					return interceptErr
+			if stringKey {
+				for _, interceptor := range execution.interpreter.propertyInterceptors() {
+					if interceptor.Set == nil {
+						continue
+					}
+					handled, interceptErr := interceptor.Set(context, ref, nameText, value)
+					if interceptErr != nil || handled {
+						return interceptErr
+					}
 				}
 			}
 			return context.SetProperty(ref, name, value)
@@ -253,7 +271,7 @@ func (execution *execution) setPropertyValue(base, key, value memory.Value) erro
 			return context.SetArrayElement(ref, index, value)
 		}
 		return execution.setNamedProperty(base, ref, name, value)
-	case memory.HeapString:
+	case memory.HeapString, memory.HeapSymbol:
 		return memory.ErrReadOnlyProperty
 	default:
 		return fmt.Errorf("%w: HeapKind(%d) has no properties", ErrOperandType, kind)
@@ -332,17 +350,19 @@ func (execution *execution) deletePropertyValue(base, key memory.Value) (bool, e
 		if _, found, err := context.GetOwnPropertyDescriptor(ref, name); err != nil {
 			return false, err
 		} else if !found {
-			nameText, nameErr := context.DerefString(name)
+			nameText, stringKey, nameErr := execution.stringPropertyName(name)
 			if nameErr != nil {
 				return false, nameErr
 			}
-			for _, interceptor := range execution.interpreter.propertyInterceptors() {
-				if interceptor.Delete == nil {
-					continue
-				}
-				deleted, handled, interceptErr := interceptor.Delete(context, ref, nameText)
-				if interceptErr != nil || handled {
-					return deleted, interceptErr
+			if stringKey {
+				for _, interceptor := range execution.interpreter.propertyInterceptors() {
+					if interceptor.Delete == nil {
+						continue
+					}
+					deleted, handled, interceptErr := interceptor.Delete(context, ref, nameText)
+					if interceptErr != nil || handled {
+						return deleted, interceptErr
+					}
 				}
 			}
 			return true, nil
@@ -368,7 +388,7 @@ func (execution *execution) deletePropertyValue(base, key memory.Value) (bool, e
 			return true, nil
 		}
 		return context.DeleteProperty(ref, name)
-	case memory.HeapString:
+	case memory.HeapString, memory.HeapSymbol:
 		return false, nil
 	default:
 		return false, fmt.Errorf("%w: HeapKind(%d) has no properties", ErrOperandType, kind)
@@ -385,11 +405,8 @@ func (execution *execution) propertyName(key memory.Value) (memory.Ref, error) {
 		if err != nil {
 			return memory.Ref{}, err
 		}
-		if kind == memory.HeapString {
+		if kind == memory.HeapString || kind == memory.HeapSymbol {
 			return primitive.Ref(), nil
-		}
-		if kind == memory.HeapSymbol {
-			return memory.Ref{}, fmt.Errorf("%w: Symbol property keys are not implemented", ErrOperandType)
 		}
 	}
 	text, err := execution.toString(primitive)
@@ -404,9 +421,12 @@ func (execution *execution) arrayPropertyKey(key memory.Value) (index uint32, le
 	if err != nil {
 		return 0, false, false, memory.Ref{}, err
 	}
-	text, err := execution.context.DerefString(name)
+	text, stringKey, err := execution.stringPropertyName(name)
 	if err != nil {
 		return 0, false, false, memory.Ref{}, err
+	}
+	if !stringKey {
+		return 0, false, false, name, nil
 	}
 	if text == "length" {
 		return 0, true, false, name, nil
@@ -416,4 +436,20 @@ func (execution *execution) arrayPropertyKey(key memory.Value) (index uint32, le
 		return 0, false, false, name, nil
 	}
 	return uint32(parsed), false, true, name, nil
+}
+
+func (execution *execution) stringPropertyName(name memory.Ref) (string, bool, error) {
+	kind, err := execution.context.HeapKind(name)
+	if err != nil {
+		return "", false, err
+	}
+	switch kind {
+	case memory.HeapString:
+		text, err := execution.context.DerefString(name)
+		return text, true, err
+	case memory.HeapSymbol:
+		return "", false, nil
+	default:
+		return "", false, fmt.Errorf("%w: property name is a %s", ErrOperandType, kind)
+	}
 }

@@ -1571,11 +1571,20 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 			_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
 			return nil, fmt.Errorf("%w: cannot copy heap kind %d", ErrTypeMismatch, sourceSlot.Kind)
 		}
-		if sourceHeader, objectLike := objectHeaderForSlot(sourceSlot); objectLike {
-			if err := store.copyObjectHeaderLocked(to, copyRef, *sourceHeader, mapping); err != nil {
-				_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
-				return nil, err
-			}
+	}
+	// Object headers are copied only after every typed payload is initialized.
+	// Symbol property keys compare by semantic ID and accessors validate their
+	// Function refs, so copying a header earlier could observe zero-value
+	// destination payloads and collapse distinct keys or reject valid getters.
+	for _, source := range order {
+		_, sourceSlot, _ := store.slotLocked(source)
+		sourceHeader, objectLike := objectHeaderForSlot(sourceSlot)
+		if !objectLike {
+			continue
+		}
+		if err := store.copyObjectHeaderLocked(to, mapping[source], *sourceHeader, mapping); err != nil {
+			_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
+			return nil, err
 		}
 	}
 	result := make([]Ref, len(roots))

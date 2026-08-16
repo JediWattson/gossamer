@@ -7,10 +7,10 @@ const (
 	PropertyAccessor
 )
 
-// Property is one insertion-ordered own property. Accessor getter/setter
-// values are Undefined or Function Refs. Descriptor flags are physical graph
-// state so copy, promotion, barriers, and teardown cannot disagree with the
-// language layer.
+// Property is one insertion-ordered own property. Name references either a
+// String or a Symbol. Accessor getter/setter values are Undefined or Function
+// Refs. Descriptor flags are physical graph state so copy, promotion,
+// barriers, and teardown cannot disagree with the language layer.
 type Property struct {
 	Name         Ref
 	Kind         PropertyKind
