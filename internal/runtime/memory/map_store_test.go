@@ -65,11 +65,19 @@ func TestNativeMapUsesSameValueZeroAndMaintainsEdges(t *testing.T) {
 	if err != nil || len(snapshot.Entries) != 6 {
 		t.Fatalf("Map entries = %#v, %v; want String, NaN, zero, BigInt, and two Symbols", snapshot.Entries, err)
 	}
+	prototypeRegion := mustRegion(t, store, owner)
+	prototype, _ := store.AllocObject(owner, prototypeRegion)
+	if err := store.SetPrototype(owner, ref, memory.RefValue(prototype)); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.MapClear(owner, ref); err != nil {
 		t.Fatal(err)
 	}
 	if got := store.EdgeCount(mapRegion, valueRegion); got != 0 {
 		t.Fatalf("edge count after clear = %d, want 0", got)
+	}
+	if got := store.EdgeCount(mapRegion, prototypeRegion); got != 1 {
+		t.Fatalf("prototype edge count after clear = %d, want 1", got)
 	}
 	if err := store.CheckInvariants(); err != nil {
 		t.Fatal(err)

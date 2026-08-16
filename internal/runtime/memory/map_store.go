@@ -160,7 +160,15 @@ func (store *Store) MapClear(owner ownership.OwnerID, ref Ref) error {
 	if slot.Kind != HeapMap {
 		return typeError(ref, slot.Kind, HeapMap)
 	}
-	values := slotReferences(slot)
+	values := make([]Value, 0, len(slot.Map.Entries)*2)
+	for _, entry := range slot.Map.Entries {
+		if entry.Key.IsRef() {
+			values = append(values, entry.Key)
+		}
+		if entry.Value.IsRef() {
+			values = append(values, entry.Value)
+		}
+	}
 	unlinked := make([]Value, 0, len(values))
 	for _, value := range values {
 		if _, err := store.replaceValueLocked(owner, region, slot, value, Value{}, false); err != nil {
