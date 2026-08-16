@@ -127,14 +127,12 @@ object.name;
 	}
 }
 
-func TestCompileRejectsSemanticWorkOutsideN5(t *testing.T) {
+func TestCompileRejectsSemanticWorkOutsideN7(t *testing.T) {
 	t.Parallel()
 
 	for _, source := range []string{
 		"missing;",
 		"const fixed = 1; fixed = 2;",
-		"let value = 1; +value;",
-		"let value = 1; value == 1;",
 		"break;",
 	} {
 		_, err := compiler.Compile(source)
@@ -362,21 +360,88 @@ func TestCompileLexicalBindingsHaveTemporalDeadZones(t *testing.T) {
 	t.Parallel()
 
 	image, err := compiler.Compile(`
-let value = 1;
-{
-  value;
-  let value = 2;
+function readInsideTDZ() {
+  try {
+    let value = 1;
+    { value; let value = 2; }
+  } catch (error) {
+    return error.name === "ReferenceError";
+  }
+  return false;
 }
+readInsideTDZ() ? 1 : 0;
 `)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := executeError(t, 819, image); !errors.Is(err, memory.ErrBindingUninitialized) {
-		t.Fatalf("TDZ error = %v, want ErrBindingUninitialized", err)
+	if result := execute(t, 819, image); result.Kind() != memory.ValueNumber || result.Number() != 1 {
+		t.Fatalf("caught TDZ result = %#v, want 1", result)
 	}
 
 	if _, err := compiler.Compile("const missing;"); err == nil {
 		t.Fatalf("const without initializer error = %v", err)
+	}
+}
+
+func TestCompileExecutesPrimitiveCoercionAndLooseEquality(t *testing.T) {
+	t.Parallel()
+
+	image, err := compiler.Compile(`
+function primitives() {
+  let absent;
+  let total = 0;
+  if ("42" == 42) { total++; }
+  if (false == 0) { total++; }
+  if (null == absent) { total++; }
+  if (("4" + 2) === "42") { total++; }
+  if ("10" < "2") { total++; }
+  let object = {
+    amount: "5",
+    valueOf: function() { return this.amount; }
+  };
+  if (object == 5) { total++; }
+	if (object == "5") { total++; }
+	object[true] = 1;
+	total = total + object["true"];
+  return total + +"40" + ("6" * 7) + +object;
+}
+primitives();
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := execute(t, 821, image)
+	if result.Kind() != memory.ValueNumber || result.Number() != 95 {
+		t.Fatalf("coercion result = %#v, want 95", result)
+	}
+}
+
+func TestCompileCatchesNativeLanguageErrors(t *testing.T) {
+	t.Parallel()
+
+	image, err := compiler.Compile(`
+function catchesTypeError() {
+	let finalized = 0;
+	try {
+		try { return +{}; }
+		finally { finalized = 1; }
+	} catch (error) {
+		return finalized === 1 && error.name === "TypeError" && error.message != "";
+	}
+}
+function catchesReferenceError() {
+  try { { value; let value = 1; } }
+  catch (error) { return error.name === "ReferenceError"; }
+  return false;
+}
+(catchesTypeError() && catchesReferenceError()) ? 1 : 0;
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := execute(t, 822, image)
+	if result.Kind() != memory.ValueNumber || result.Number() != 1 {
+		t.Fatalf("caught language errors = %#v, want 1", result)
 	}
 }
 
@@ -428,30 +493,4 @@ func execute(t *testing.T, realmID browserruntime.RealmID, image program.Program
 		t.Fatal(err)
 	}
 	return result
-}
-
-func executeError(t *testing.T, realmID browserruntime.RealmID, image program.Program) error {
-	t.Helper()
-	realm, err := browserruntime.NewRealm(realmID, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer realm.Close()
-	interpreter := browserruntime.NewInterpreter(browserruntime.InterpreterConfig{})
-	_, err = realm.EnqueueTask(func(task *browserruntime.TaskContext) error {
-		environment, err := task.NewContext(memory.NullValue())
-		if err != nil {
-			return err
-		}
-		loaded, err := program.Load(task, image, memory.RefValue(environment))
-		if err != nil {
-			return err
-		}
-		_, err = interpreter.Execute(task, loaded.Entry)
-		return err
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return realm.RunOne(context.Background())
 }

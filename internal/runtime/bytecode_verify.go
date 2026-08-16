@@ -134,12 +134,12 @@ func instructionStackEffect(instruction Instruction) (required, delta int, termi
 	case OpDeclareBinding, OpEnterTry, OpLeaveTry, OpEnterFinally, OpEndFinally, OpEnterScope, OpLeaveScope:
 		return 0, 0, false, nil
 	case OpInitializeBinding, OpStoreBinding,
-		OpNegate, OpIncrement, OpDecrement, OpLogicalNot, OpTypeOf:
+		OpNegate, OpIncrement, OpDecrement, OpLogicalNot, OpTypeOf, OpToNumber:
 		return 1, 0, false, nil
 	case OpAdd, OpSubtract, OpMultiply, OpDivide, OpRemainder,
 		OpBitwiseAnd, OpBitwiseOr, OpBitwiseXor,
 		OpShiftLeft, OpShiftRight, OpUnsignedShiftRight,
-		OpStrictEqual, OpStrictNotEqual,
+		OpStrictEqual, OpStrictNotEqual, OpEqual, OpNotEqual,
 		OpLessThan, OpLessThanOrEqual, OpGreaterThan, OpGreaterThanOrEqual:
 		return 2, -1, false, nil
 	case OpJump:

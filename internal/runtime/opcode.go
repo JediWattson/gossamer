@@ -77,6 +77,9 @@ const (
 	OpDeleteProperty
 	OpCallMethod
 	OpUpdateProperty
+	OpToNumber
+	OpEqual
+	OpNotEqual
 )
 
 func (opcode Opcode) String() string {
@@ -221,11 +224,17 @@ func (opcode Opcode) String() string {
 		return "CallMethod"
 	case OpUpdateProperty:
 		return "UpdateProperty"
+	case OpToNumber:
+		return "ToNumber"
+	case OpEqual:
+		return "Equal"
+	case OpNotEqual:
+		return "NotEqual"
 	default:
 		return fmt.Sprintf("Opcode(%d)", opcode)
 	}
 }
 
 func (opcode Opcode) valid() bool {
-	return opcode >= OpConstant && opcode <= OpUpdateProperty
+	return opcode >= OpConstant && opcode <= OpNotEqual
 }

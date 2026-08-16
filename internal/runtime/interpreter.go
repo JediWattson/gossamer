@@ -275,7 +275,11 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 			}
 			value, present, err := execution.getProperty(base, key)
 			if err != nil {
-				return memory.Value{}, err
+				if handled, terminal := execution.routeFrameError(frame, err); handled {
+					continue
+				} else {
+					return memory.Value{}, terminal
+				}
 			}
 			if !present {
 				value = memory.UndefinedValue()
@@ -295,7 +299,11 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 				return memory.Value{}, err
 			}
 			if err := execution.setPropertyValue(base, key, value); err != nil {
-				return memory.Value{}, err
+				if handled, terminal := execution.routeFrameError(frame, err); handled {
+					continue
+				} else {
+					return memory.Value{}, terminal
+				}
 			}
 			frame.push(value)
 		case OpDeleteProperty:
@@ -307,9 +315,13 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 			if err != nil {
 				return memory.Value{}, err
 			}
-			deleted, err := context.deletePropertyValue(base, key)
+			deleted, err := execution.deletePropertyValue(base, key)
 			if err != nil {
-				return memory.Value{}, err
+				if handled, terminal := execution.routeFrameError(frame, err); handled {
+					continue
+				} else {
+					return memory.Value{}, terminal
+				}
 			}
 			frame.push(memory.BoolValue(deleted))
 		case OpNewArray:
@@ -396,10 +408,19 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 			}
 			value, found, err := context.ResolveBinding(environment, name)
 			if err != nil {
-				return memory.Value{}, err
+				if handled, terminal := execution.routeFrameError(frame, err); handled {
+					continue
+				} else {
+					return memory.Value{}, terminal
+				}
 			}
 			if !found {
-				return memory.Value{}, fmt.Errorf("%w: constant %d", memory.ErrBindingNotFound, instruction.A)
+				err := fmt.Errorf("%w: constant %d", memory.ErrBindingNotFound, instruction.A)
+				if handled, terminal := execution.routeFrameError(frame, err); handled {
+					continue
+				} else {
+					return memory.Value{}, terminal
+				}
 			}
 			frame.push(value)
 		case OpDeclareBinding:
@@ -436,7 +457,11 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 				return memory.Value{}, err
 			}
 			if err := context.SetBinding(environment, name, value); err != nil {
-				return memory.Value{}, err
+				if handled, terminal := execution.routeFrameError(frame, err); handled {
+					continue
+				} else {
+					return memory.Value{}, terminal
+				}
 			}
 			frame.push(value)
 		case OpLoadThis:
@@ -445,11 +470,15 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 			OpNegate, OpIncrement, OpDecrement,
 			OpBitwiseAnd, OpBitwiseOr, OpBitwiseXor,
 			OpShiftLeft, OpShiftRight, OpUnsignedShiftRight,
-			OpLogicalNot, OpTypeOf,
-			OpStrictEqual, OpStrictNotEqual,
+			OpLogicalNot, OpTypeOf, OpToNumber,
+			OpStrictEqual, OpStrictNotEqual, OpEqual, OpNotEqual,
 			OpLessThan, OpLessThanOrEqual, OpGreaterThan, OpGreaterThanOrEqual:
-			if err := executeOperator(context, frame, instruction.Op); err != nil {
-				return memory.Value{}, err
+			if err := executeOperator(execution, frame, instruction.Op); err != nil {
+				if handled, terminal := execution.routeFrameError(frame, err); handled {
+					continue
+				} else {
+					return memory.Value{}, terminal
+				}
 			}
 		case OpJump:
 			frame.ip = instruction.A
@@ -495,37 +524,45 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 				}
 				calleeValue, present, err := execution.getProperty(base, key)
 				if err != nil {
-					return memory.Value{}, err
+					if handled, terminal := execution.routeFrameError(frame, err); handled {
+						continue
+					} else {
+						return memory.Value{}, terminal
+					}
 				}
 				if !present {
-					return memory.Value{}, ErrNotCallable
+					if handled, terminal := execution.routeFrameError(frame, ErrNotCallable); handled {
+						continue
+					} else {
+						return memory.Value{}, terminal
+					}
 				}
 				callee, err := requireRef(calleeValue, "method Function")
 				if err != nil {
-					return memory.Value{}, err
+					if handled, terminal := execution.routeFrameError(frame, err); handled {
+						continue
+					} else {
+						return memory.Value{}, terminal
+					}
 				}
 				result, err := execution.call(callee, base, arguments, callAny)
 				if err != nil {
-					value, thrown := ThrownValue(err)
-					if !thrown {
-						return memory.Value{}, err
+					if handled, terminal := execution.routeFrameError(frame, err); handled {
+						continue
+					} else {
+						return memory.Value{}, terminal
 					}
-					frame.completion = nil
-					completed, result, routed := routeCompletion(frame, abruptCompletion{kind: completionThrow, value: value})
-					if routed != nil {
-						return memory.Value{}, routed
-					}
-					if completed {
-						return result, Throw(value)
-					}
-					continue
 				}
 				frame.push(result)
 				continue
 			}
 			callee, arguments, err := popCallOperands(frame, instruction.A)
 			if err != nil {
-				return memory.Value{}, err
+				if handled, terminal := execution.routeFrameError(frame, err); handled {
+					continue
+				} else {
+					return memory.Value{}, terminal
+				}
 			}
 			this := memory.UndefinedValue()
 			mode := callAny
@@ -542,19 +579,11 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 			}
 			result, err := execution.call(callee, this, arguments, mode)
 			if err != nil {
-				value, thrown := ThrownValue(err)
-				if !thrown {
-					return memory.Value{}, err
+				if handled, terminal := execution.routeFrameError(frame, err); handled {
+					continue
+				} else {
+					return memory.Value{}, terminal
 				}
-				frame.completion = nil
-				completed, result, routed := routeCompletion(frame, abruptCompletion{kind: completionThrow, value: value})
-				if routed != nil {
-					return memory.Value{}, routed
-				}
-				if completed {
-					return result, Throw(value)
-				}
-				continue
 			}
 			if instruction.Op == OpConstruct {
 				object, err := isObjectValue(context, result)
@@ -599,18 +628,34 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 			}
 			old, present, err := execution.getProperty(base, key)
 			if err != nil {
-				return memory.Value{}, err
+				if handled, terminal := execution.routeFrameError(frame, err); handled {
+					continue
+				} else {
+					return memory.Value{}, terminal
+				}
 			}
-			if !present || old.Kind() != memory.ValueNumber {
-				return memory.Value{}, fmt.Errorf("%w: updated property must be a number", ErrOperandType)
+			if !present {
+				old = memory.UndefinedValue()
+			}
+			number, err := execution.toNumber(old)
+			if err != nil {
+				if handled, terminal := execution.routeFrameError(frame, err); handled {
+					continue
+				} else {
+					return memory.Value{}, terminal
+				}
 			}
 			delta := 1.0
 			if instruction.A == 1 {
 				delta = -1
 			}
-			updated := memory.NumberValue(old.Number() + delta)
+			updated := memory.NumberValue(number + delta)
 			if err := execution.setPropertyValue(base, key, updated); err != nil {
-				return memory.Value{}, err
+				if handled, terminal := execution.routeFrameError(frame, err); handled {
+					continue
+				} else {
+					return memory.Value{}, terminal
+				}
 			}
 			if instruction.B == 1 {
 				frame.push(updated)
@@ -931,10 +976,15 @@ func isObjectValue(context *TaskContext, value memory.Value) (bool, error) {
 	}
 }
 
-func executeOperator(context *TaskContext, frame *Frame, opcode Opcode) error {
+func executeOperator(execution *execution, frame *Frame, opcode Opcode) error {
+	context := execution.context
 	switch opcode {
-	case OpNegate, OpIncrement, OpDecrement:
-		value, err := popNumber(frame, opcode.String())
+	case OpNegate, OpIncrement, OpDecrement, OpToNumber:
+		operand, err := frame.pop()
+		if err != nil {
+			return err
+		}
+		value, err := execution.toNumber(operand)
 		if err != nil {
 			return err
 		}
@@ -988,47 +1038,79 @@ func executeOperator(context *TaskContext, frame *Frame, opcode Opcode) error {
 		}
 		frame.push(memory.BoolValue(equal))
 		return nil
+	case OpEqual, OpNotEqual:
+		right, left, err := popBinary(frame)
+		if err != nil {
+			return err
+		}
+		equal, err := execution.abstractEqual(left, right)
+		if err != nil {
+			return err
+		}
+		if opcode == OpNotEqual {
+			equal = !equal
+		}
+		frame.push(memory.BoolValue(equal))
+		return nil
 	case OpAdd:
 		right, left, err := popBinary(frame)
 		if err != nil {
 			return err
 		}
-		if left.Kind() == memory.ValueNumber && right.Kind() == memory.ValueNumber {
-			frame.push(memory.NumberValue(left.Number() + right.Number()))
+		left, err = execution.toPrimitive(left, hintDefault)
+		if err != nil {
+			return err
+		}
+		right, err = execution.toPrimitive(right, hintDefault)
+		if err != nil {
+			return err
+		}
+		leftString, err := execution.isString(left)
+		if err != nil {
+			return err
+		}
+		rightString, err := execution.isString(right)
+		if err != nil {
+			return err
+		}
+		if leftString || rightString {
+			leftText, err := execution.toString(left)
+			if err != nil {
+				return err
+			}
+			rightText, err := execution.toString(right)
+			if err != nil {
+				return err
+			}
+			ref, err := context.NewString(leftText + rightText)
+			if err != nil {
+				return err
+			}
+			frame.push(memory.RefValue(ref))
 			return nil
 		}
-		if left.IsRef() && right.IsRef() {
-			leftKind, leftErr := context.HeapKind(left.Ref())
-			rightKind, rightErr := context.HeapKind(right.Ref())
-			if leftErr != nil {
-				return leftErr
-			}
-			if rightErr != nil {
-				return rightErr
-			}
-			if leftKind == memory.HeapString && rightKind == memory.HeapString {
-				leftText, err := context.DerefString(left.Ref())
-				if err != nil {
-					return err
-				}
-				rightText, err := context.DerefString(right.Ref())
-				if err != nil {
-					return err
-				}
-				ref, err := context.NewString(leftText + rightText)
-				if err != nil {
-					return err
-				}
-				frame.push(memory.RefValue(ref))
-				return nil
-			}
+		leftNumber, err := execution.toNumber(left)
+		if err != nil {
+			return err
 		}
-		return fmt.Errorf("%w: Add requires two numbers or two Strings", ErrOperandType)
+		rightNumber, err := execution.toNumber(right)
+		if err != nil {
+			return err
+		}
+		frame.push(memory.NumberValue(leftNumber + rightNumber))
+		return nil
 	case OpSubtract, OpMultiply, OpDivide, OpRemainder,
 		OpBitwiseAnd, OpBitwiseOr, OpBitwiseXor,
-		OpShiftLeft, OpShiftRight, OpUnsignedShiftRight,
-		OpLessThan, OpLessThanOrEqual, OpGreaterThan, OpGreaterThanOrEqual:
-		right, left, err := popNumberPair(frame, opcode.String())
+		OpShiftLeft, OpShiftRight, OpUnsignedShiftRight:
+		rightValue, leftValue, err := popBinary(frame)
+		if err != nil {
+			return err
+		}
+		left, err := execution.toNumber(leftValue)
+		if err != nil {
+			return err
+		}
+		right, err := execution.toNumber(rightValue)
 		if err != nil {
 			return err
 		}
@@ -1053,15 +1135,31 @@ func executeOperator(context *TaskContext, frame *Frame, opcode Opcode) error {
 			frame.push(memory.NumberValue(float64(toInt32(left) >> (toUint32(right) & 31))))
 		case OpUnsignedShiftRight:
 			frame.push(memory.NumberValue(float64(toUint32(left) >> (toUint32(right) & 31))))
-		case OpLessThan:
-			frame.push(memory.BoolValue(left < right))
-		case OpLessThanOrEqual:
-			frame.push(memory.BoolValue(left <= right))
-		case OpGreaterThan:
-			frame.push(memory.BoolValue(left > right))
-		case OpGreaterThanOrEqual:
-			frame.push(memory.BoolValue(left >= right))
 		}
+		return nil
+	case OpLessThan, OpLessThanOrEqual, OpGreaterThan, OpGreaterThanOrEqual:
+		right, left, err := popBinary(frame)
+		if err != nil {
+			return err
+		}
+		comparison, unordered, err := execution.comparePrimitives(left, right)
+		if err != nil {
+			return err
+		}
+		result := false
+		if !unordered {
+			switch opcode {
+			case OpLessThan:
+				result = comparison < 0
+			case OpLessThanOrEqual:
+				result = comparison <= 0
+			case OpGreaterThan:
+				result = comparison > 0
+			case OpGreaterThanOrEqual:
+				result = comparison >= 0
+			}
+		}
+		frame.push(memory.BoolValue(result))
 		return nil
 	default:
 		return fmt.Errorf("%w: operator %s", ErrInvalidBytecode, opcode)
@@ -1076,29 +1174,6 @@ func popBinary(frame *Frame) (memory.Value, memory.Value, error) {
 	left, err := frame.pop()
 	if err != nil {
 		return memory.Value{}, memory.Value{}, err
-	}
-	return right, left, nil
-}
-
-func popNumber(frame *Frame, label string) (float64, error) {
-	value, err := frame.pop()
-	if err != nil {
-		return 0, err
-	}
-	if value.Kind() != memory.ValueNumber {
-		return 0, fmt.Errorf("%w: %s requires a number", ErrOperandType, label)
-	}
-	return value.Number(), nil
-}
-
-func popNumberPair(frame *Frame, label string) (float64, float64, error) {
-	right, err := popNumber(frame, label)
-	if err != nil {
-		return 0, 0, err
-	}
-	left, err := popNumber(frame, label)
-	if err != nil {
-		return 0, 0, err
 	}
 	return right, left, nil
 }

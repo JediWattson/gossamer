@@ -49,7 +49,7 @@ func FuzzInterpreterPreservesStoreInvariants(f *testing.F) {
 					raw[offset] = operations[position]
 				}
 			}
-			opcode := browserruntime.Opcode(raw[0]%byte(browserruntime.OpRethrow) + 1)
+			opcode := browserruntime.Opcode(raw[0]%byte(browserruntime.OpNotEqual) + 1)
 			instruction := browserruntime.Instruction{Op: opcode, A: uint32(raw[1]), B: uint32(raw[2])}
 			switch opcode {
 			case browserruntime.OpConstant, browserruntime.OpLoadBinding, browserruntime.OpDeclareBinding, browserruntime.OpInitializeBinding, browserruntime.OpStoreBinding, browserruntime.OpCreateClosure:
@@ -57,18 +57,24 @@ func FuzzInterpreterPreservesStoreInvariants(f *testing.F) {
 				if opcode == browserruntime.OpDeclareBinding {
 					instruction.B &= 1
 				}
-			case browserruntime.OpJump, browserruntime.OpJumpIfTrue, browserruntime.OpJumpIfFalse, browserruntime.OpJumpIfNullish:
+			case browserruntime.OpJump, browserruntime.OpJumpIfTrue, browserruntime.OpJumpIfFalse, browserruntime.OpJumpIfNullish, browserruntime.OpBreak, browserruntime.OpContinue:
 				instruction.A %= uint32(count + 1)
+				if opcode == browserruntime.OpBreak || opcode == browserruntime.OpContinue {
+					instruction.B = 0
+				}
 			case browserruntime.OpEnterTry:
 				instruction.A %= uint32(count + 1)
 				instruction.B = uint32(browserruntime.HandlerCatch)
 				if raw[2]&1 != 0 {
 					instruction.B = uint32(browserruntime.HandlerFinally)
 				}
-			case browserruntime.OpCall, browserruntime.OpCallNative, browserruntime.OpConstruct:
+			case browserruntime.OpCall, browserruntime.OpCallNative, browserruntime.OpConstruct, browserruntime.OpCallMethod:
 				instruction.A %= 4
 			case browserruntime.OpNewArray:
 				instruction.A %= 8
+			case browserruntime.OpUpdateProperty:
+				instruction.A &= 1
+				instruction.B &= 1
 			}
 			instructions = append(instructions, instruction)
 		}

@@ -14,6 +14,7 @@ func FuzzCompileNeverPanicsAndEmitsVerifiedPrograms(f *testing.F) {
 	f.Add("let i = 0; while (i < 4) { i++; } i;")
 	f.Add("let value = {items: [1,,3]}; value.items;")
 	f.Add("function make(x) { return function(y) { try { return x + y; } finally {} }; } make(40)(2);")
+	f.Add(`function convert(value) { try { return +value == 42; } catch (error) { return error.name; } } convert("42");`)
 	f.Fuzz(func(t *testing.T, source string) {
 		image, err := compiler.Compile(source)
 		if err != nil {

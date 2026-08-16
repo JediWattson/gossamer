@@ -30,13 +30,16 @@ and ordinary task release invalidates every unpromoted loaded Ref.
   descriptors with writable, enumerable, and configurable attributes;
 - assignment, deletion, and prefix/postfix identifier or property updates;
 - numeric, bitwise, strict comparison, logical, nullish, and conditional
-  expressions;
+  expressions, plus coercive arithmetic, relational comparison, unary `+`,
+  and loose equality;
 - `if`, `while`, `break`, and `continue`;
 - Function declarations and expressions, lexical capture, calls, recursion,
   construction, and explicit `this` for constructors and method receivers;
 - `return`, `throw`, `try`, `catch`, and `finally`, with general abrupt
   completions routing return, throw, break, and continue through nested
-  finally blocks.
+  finally blocks;
+- native ReferenceError, TypeError, and RangeError values for classified
+  language failures, routed through the same `catch`/`finally` machinery.
 
 Every compiled Function invocation and ordinary block enters a fresh native
 Context whose parent is its captured or enclosing Context. Catch bindings enter
@@ -56,9 +59,11 @@ This is not yet an ECMAScript-compatible engine. In particular:
   script scope;
 - Arrays support only canonical indices plus `length` rather than arbitrary
   named properties or an Array prototype;
-- unary plus and coercive equality are rejected;
-- coercion, regex and template literals, modules, generators, async Functions,
-  and Promise jobs are absent;
+- primitive coercion includes Boolean, Number, String, null, and undefined;
+  Object coercion supports explicit `valueOf`/`toString` hooks, but the default
+  Object prototype and its built-ins are not installed yet;
+- full BigInt/Symbol and built-in Object coercion, regex and template literals,
+  modules, generators, async Functions, and Promise jobs are absent;
 - source evaluation is not wired into `browser.Engine` or `browser.JSRealm`.
 
 Unsupported constructs fail with source-ranged compiler diagnostics. There is

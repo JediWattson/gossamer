@@ -20,7 +20,7 @@ func (execution *execution) getProperty(base, key memory.Value) (memory.Value, b
 	}
 	switch kind {
 	case memory.HeapObject:
-		name, err := context.propertyName(key)
+		name, err := execution.propertyName(key)
 		if err != nil {
 			return memory.Value{}, false, err
 		}
@@ -41,7 +41,7 @@ func (execution *execution) getProperty(base, key memory.Value) (memory.Value, b
 		value, err := execution.call(getter, base, nil, callAny)
 		return value, true, err
 	case memory.HeapArray:
-		index, length, err := context.arrayPropertyKey(key)
+		index, length, err := execution.arrayPropertyKey(key)
 		if err != nil {
 			return memory.Value{}, false, err
 		}
@@ -53,6 +53,28 @@ func (execution *execution) getProperty(base, key memory.Value) (memory.Value, b
 			return memory.NumberValue(float64(array.Length)), true, nil
 		}
 		return context.ArrayElement(ref, index)
+	case memory.HeapError:
+		name, err := execution.propertyName(key)
+		if err != nil {
+			return memory.Value{}, false, err
+		}
+		keyText, err := context.DerefString(name)
+		if err != nil {
+			return memory.Value{}, false, err
+		}
+		errorObject, err := context.DerefError(ref)
+		if err != nil {
+			return memory.Value{}, false, err
+		}
+		switch keyText {
+		case "name":
+			nameRef, err := context.NewString(errorObject.Kind.Name())
+			return memory.RefValue(nameRef), true, err
+		case "message":
+			return errorObject.Message, true, nil
+		default:
+			return memory.Value{}, false, nil
+		}
 	default:
 		return memory.Value{}, false, fmt.Errorf("%w: HeapKind(%d) has no properties", ErrOperandType, kind)
 	}
@@ -70,7 +92,7 @@ func (execution *execution) setPropertyValue(base, key, value memory.Value) erro
 	}
 	switch kind {
 	case memory.HeapObject:
-		name, err := context.propertyName(key)
+		name, err := execution.propertyName(key)
 		if err != nil {
 			return err
 		}
@@ -100,7 +122,7 @@ func (execution *execution) setPropertyValue(base, key, value memory.Value) erro
 		}
 		return context.SetProperty(ref, name, value)
 	case memory.HeapArray:
-		index, length, err := context.arrayPropertyKey(key)
+		index, length, err := execution.arrayPropertyKey(key)
 		if err != nil {
 			return err
 		}
@@ -143,7 +165,8 @@ func resolveObjectProperty(context *TaskContext, object, name memory.Ref) (memor
 	}
 }
 
-func (context *TaskContext) deletePropertyValue(base, key memory.Value) (bool, error) {
+func (execution *execution) deletePropertyValue(base, key memory.Value) (bool, error) {
+	context := execution.context
 	ref, err := requireRef(base, "property base")
 	if err != nil {
 		return false, err
@@ -154,7 +177,7 @@ func (context *TaskContext) deletePropertyValue(base, key memory.Value) (bool, e
 	}
 	switch kind {
 	case memory.HeapObject:
-		name, err := context.propertyName(key)
+		name, err := execution.propertyName(key)
 		if err != nil {
 			return false, err
 		}
@@ -165,7 +188,7 @@ func (context *TaskContext) deletePropertyValue(base, key memory.Value) (bool, e
 		}
 		return context.DeleteProperty(ref, name)
 	case memory.HeapArray:
-		index, length, err := context.arrayPropertyKey(key)
+		index, length, err := execution.arrayPropertyKey(key)
 		if err != nil {
 			return false, err
 		}
@@ -181,38 +204,36 @@ func (context *TaskContext) deletePropertyValue(base, key memory.Value) (bool, e
 	}
 }
 
-func (context *TaskContext) propertyName(key memory.Value) (memory.Ref, error) {
-	if key.IsRef() {
-		if kind, err := context.HeapKind(key.Ref()); err != nil {
-			return memory.Ref{}, err
-		} else if kind == memory.HeapString {
-			return key.Ref(), nil
-		}
+func (execution *execution) propertyName(key memory.Value) (memory.Ref, error) {
+	primitive, err := execution.toPrimitive(key, hintString)
+	if err != nil {
+		return memory.Ref{}, err
 	}
-	if key.Kind() == memory.ValueNumber {
-		index, err := requireUint32(key, "property key", true)
+	if primitive.IsRef() {
+		kind, err := execution.context.HeapKind(primitive.Ref())
 		if err != nil {
 			return memory.Ref{}, err
 		}
-		return context.NewString(strconv.FormatUint(uint64(index), 10))
+		if kind == memory.HeapString {
+			return primitive.Ref(), nil
+		}
+		if kind == memory.HeapSymbol {
+			return memory.Ref{}, fmt.Errorf("%w: Symbol property keys are not implemented", ErrOperandType)
+		}
 	}
-	return memory.Ref{}, fmt.Errorf("%w: property key must be a String or uint32", ErrOperandType)
+	text, err := execution.toString(primitive)
+	if err != nil {
+		return memory.Ref{}, err
+	}
+	return execution.context.NewString(text)
 }
 
-func (context *TaskContext) arrayPropertyKey(key memory.Value) (index uint32, length bool, err error) {
-	if key.Kind() == memory.ValueNumber {
-		index, err = requireUint32(key, "Array index", false)
-		return index, false, err
+func (execution *execution) arrayPropertyKey(key memory.Value) (index uint32, length bool, err error) {
+	name, err := execution.propertyName(key)
+	if err != nil {
+		return 0, false, err
 	}
-	if !key.IsRef() {
-		return 0, false, fmt.Errorf("%w: Array property key must be a String or uint32", ErrOperandType)
-	}
-	if kind, kindErr := context.HeapKind(key.Ref()); kindErr != nil {
-		return 0, false, kindErr
-	} else if kind != memory.HeapString {
-		return 0, false, fmt.Errorf("%w: Array property key must be a String or uint32", ErrOperandType)
-	}
-	text, err := context.DerefString(key.Ref())
+	text, err := execution.context.DerefString(name)
 	if err != nil {
 		return 0, false, err
 	}

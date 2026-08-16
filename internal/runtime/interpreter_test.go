@@ -312,8 +312,8 @@ func TestInterpreterBindingVerbsUseCapturedContexts(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if _, err := interpreter.Execute(task, immutableStore); !errors.Is(err, memory.ErrImmutableBinding) {
-			t.Fatalf("immutable binding store = %v, want ErrImmutableBinding", err)
+		if _, err := interpreter.Execute(task, immutableStore); nativeErrorKind(t, task, err) != memory.ErrorType {
+			t.Fatalf("immutable binding store = %v, want native TypeError", err)
 		}
 
 		thisFunction, err := task.NewBytecodeFunction(
@@ -1064,7 +1064,7 @@ func TestInterpreterResolvesPrototypeDescriptorsAndAccessors(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if _, err := interpreter.Execute(task, writeFixed); !errors.Is(err, memory.ErrReadOnlyProperty) {
+		if _, err := interpreter.Execute(task, writeFixed); nativeErrorKind(t, task, err) != memory.ErrorType {
 			t.Fatalf("inherited fixed write error = %v", err)
 		}
 		return task.Realm.Store().CheckInvariants()
@@ -1108,6 +1108,19 @@ func TestFrameVisitsBorrowedRefsWithoutCreatingOwnership(t *testing.T) {
 			t.Fatalf("visited[%d] = %s, want %s", index, visited[index], refs[index])
 		}
 	}
+}
+
+func nativeErrorKind(t *testing.T, task *browserruntime.TaskContext, err error) memory.ErrorKind {
+	t.Helper()
+	value, ok := browserruntime.ThrownValue(err)
+	if !ok || !value.IsRef() {
+		return 0
+	}
+	errorObject, derefErr := task.DerefError(value.Ref())
+	if derefErr != nil {
+		t.Fatalf("DerefError(%s) = %v", value.Ref(), derefErr)
+	}
+	return errorObject.Kind
 }
 
 func TestInterpreterCreatesAndRestoresExplicitLexicalScopes(t *testing.T) {

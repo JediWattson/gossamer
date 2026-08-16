@@ -313,7 +313,10 @@ func (compiler *functionCompiler) compileUnary(unary *ast.UnaryExpression) error
 		return compiler.emit(browserruntime.Instruction{Op: browserruntime.OpDeleteProperty}, unary.Span())
 	}
 	if unary.Operator == lexer.Plus {
-		return compiler.problem(unary.Span(), "unary plus requires JavaScript coercion semantics")
+		if err := compiler.compileExpression(unary.Argument); err != nil {
+			return err
+		}
+		return compiler.emit(browserruntime.Instruction{Op: browserruntime.OpToNumber}, unary.Span())
 	}
 	if err := compiler.compileExpression(unary.Argument); err != nil {
 		return err
@@ -376,6 +379,10 @@ func binaryOpcode(operator lexer.Kind) (browserruntime.Opcode, bool) {
 		return browserruntime.OpStrictEqual, true
 	case lexer.StrictNotEqual:
 		return browserruntime.OpStrictNotEqual, true
+	case lexer.EqualEqual:
+		return browserruntime.OpEqual, true
+	case lexer.BangEqual:
+		return browserruntime.OpNotEqual, true
 	case lexer.Less:
 		return browserruntime.OpLessThan, true
 	case lexer.LessEqual:
