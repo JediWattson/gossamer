@@ -280,10 +280,13 @@ func (definition propertyDefinition) copy(destination *computedStyle, source com
 	switch definition.kind {
 	case propertyAlignContent:
 		destination.alignContent = source.alignContent
+		destination.alignContentOvf = source.alignContentOvf
 	case propertyAlignItems:
 		destination.alignItems = source.alignItems
+		destination.alignItemsOvf = source.alignItemsOvf
 	case propertyAlignSelf:
 		destination.alignSelf = source.alignSelf
+		destination.alignSelfOvf = source.alignSelfOvf
 	case propertyBackgroundColor:
 		destination.background = source.background
 		destination.hasBackground = source.hasBackground
@@ -356,10 +359,13 @@ func (definition propertyDefinition) copy(destination *computedStyle, source com
 		*definition.boxLength(destination) = *definition.boxLength(&source)
 	case propertyJustifyContent:
 		destination.justifyContent = source.justifyContent
+		destination.justifyContentOvf = source.justifyContentOvf
 	case propertyJustifyItems:
 		destination.justifyItems = source.justifyItems
+		destination.justifyItemsOvf = source.justifyItemsOvf
 	case propertyJustifySelf:
 		destination.justifySelf = source.justifySelf
+		destination.justifySelfOvf = source.justifySelfOvf
 	case propertyLineHeight:
 		destination.lineHeight = source.lineHeight
 	case propertyListStyleType:
@@ -610,15 +616,18 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 	switch definition.kind {
 	case propertyAlignContent:
 		if parsed, ok := parseContentAlignment(source); ok {
-			style.alignContent = parsed
+			style.alignContent = parsed.position
+			style.alignContentOvf = parsed.overflow
 		}
 	case propertyAlignItems:
 		if parsed, ok := parseSelfAlignment(source, false); ok {
-			style.alignItems = parsed
+			style.alignItems = parsed.position
+			style.alignItemsOvf = parsed.overflow
 		}
 	case propertyAlignSelf:
 		if parsed, ok := parseSelfAlignment(source, true); ok {
-			style.alignSelf = parsed
+			style.alignSelf = parsed.position
+			style.alignSelfOvf = parsed.overflow
 		}
 	case propertyBackgroundColor:
 		if parsed, ok := parseComputedColor(source); ok {
@@ -834,15 +843,18 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 		}
 	case propertyJustifyContent:
 		if parsed, ok := parseContentAlignment(source); ok {
-			style.justifyContent = parsed
+			style.justifyContent = parsed.position
+			style.justifyContentOvf = parsed.overflow
 		}
 	case propertyJustifyItems:
 		if parsed, ok := parseSelfAlignment(source, false); ok {
-			style.justifyItems = parsed
+			style.justifyItems = parsed.position
+			style.justifyItemsOvf = parsed.overflow
 		}
 	case propertyJustifySelf:
 		if parsed, ok := parseSelfAlignment(source, true); ok {
-			style.justifySelf = parsed
+			style.justifySelf = parsed.position
+			style.justifySelfOvf = parsed.overflow
 		}
 	case propertyLineHeight:
 		if keyword, ok := singleCSSKeyword(source); ok && keyword == "normal" {
@@ -1018,11 +1030,11 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 func (definition propertyDefinition) serialize(computed ComputedStyle) string {
 	switch definition.kind {
 	case propertyAlignContent:
-		return serializeContentAlignment(computed.alignContent)
+		return serializeContentAlignment(computed.alignContent, computed.alignContentOvf)
 	case propertyAlignItems:
-		return serializeSelfAlignment(computed.alignItems)
+		return serializeSelfAlignment(computed.alignItems, computed.alignItemsOvf)
 	case propertyAlignSelf:
-		return serializeSelfAlignment(computed.alignSelf)
+		return serializeSelfAlignment(computed.alignSelf, computed.alignSelfOvf)
 	case propertyBackgroundColor:
 		background, _ := computed.Background()
 		return serializeComputedColor(background)
@@ -1121,11 +1133,11 @@ func (definition propertyDefinition) serialize(computed ComputedStyle) string {
 	case propertyInset:
 		return serializeComputedLength(*definition.boxLength(&computed))
 	case propertyJustifyContent:
-		return serializeContentAlignment(computed.justifyContent)
+		return serializeContentAlignment(computed.justifyContent, computed.justifyContentOvf)
 	case propertyJustifyItems:
-		return serializeSelfAlignment(computed.justifyItems)
+		return serializeSelfAlignment(computed.justifyItems, computed.justifyItemsOvf)
 	case propertyJustifySelf:
-		return serializeSelfAlignment(computed.justifySelf)
+		return serializeSelfAlignment(computed.justifySelf, computed.justifySelfOvf)
 	case propertyLineHeight:
 		if computed.lineHeight.normal {
 			return "normal"
@@ -1575,116 +1587,175 @@ func validOverflowKeyword(keyword string) bool {
 	}
 }
 
-func parseSelfAlignment(source string, allowAuto bool) (AlignItems, bool) {
-	keyword, ok := singleCSSKeyword(source)
-	if !ok {
-		return AlignAuto, false
+type selfAlignmentValue struct {
+	position AlignItems
+	overflow OverflowAlignment
+}
+
+type contentAlignmentValue struct {
+	position JustifyContent
+	overflow OverflowAlignment
+}
+
+func parseAlignmentKeywords(source string) (string, OverflowAlignment, bool) {
+	value, ok := parsePropertyValue(source)
+	if !ok || len(value.terms) < 1 || len(value.terms) > 2 {
+		return "", OverflowAlignmentDefault, false
 	}
+	overflow := OverflowAlignmentDefault
+	keywordIndex := 0
+	if len(value.terms) == 2 {
+		prefix, prefixOK := componentKeyword(value.terms[0])
+		if !prefixOK {
+			return "", OverflowAlignmentDefault, false
+		}
+		switch prefix {
+		case "safe":
+			overflow = OverflowAlignmentSafe
+		case "unsafe":
+			overflow = OverflowAlignmentUnsafe
+		default:
+			return "", OverflowAlignmentDefault, false
+		}
+		keywordIndex = 1
+	}
+	keyword, ok := componentKeyword(value.terms[keywordIndex])
+	return keyword, overflow, ok
+}
+
+func parseSelfAlignment(source string, allowAuto bool) (selfAlignmentValue, bool) {
+	keyword, overflow, ok := parseAlignmentKeywords(source)
+	if !ok {
+		return selfAlignmentValue{}, false
+	}
+	parsed := selfAlignmentValue{overflow: overflow}
 	switch keyword {
 	case "auto":
-		return AlignAuto, allowAuto
+		parsed.position = AlignAuto
+		return parsed, allowAuto && overflow == OverflowAlignmentDefault
 	case "normal":
-		return AlignNormal, true
+		parsed.position = AlignNormal
+		return parsed, allowAuto || overflow == OverflowAlignmentDefault
 	case "stretch":
-		return AlignStretch, true
+		parsed.position = AlignStretch
+		return parsed, overflow == OverflowAlignmentDefault
 	case "start":
-		return AlignStartItems, true
+		parsed.position = AlignStartItems
 	case "end":
-		return AlignEndItems, true
+		parsed.position = AlignEndItems
 	case "flex-start":
-		return AlignFlexStart, true
+		parsed.position = AlignFlexStart
 	case "flex-end":
-		return AlignFlexEnd, true
+		parsed.position = AlignFlexEnd
 	case "self-start":
-		return AlignSelfStart, true
+		parsed.position = AlignSelfStart
 	case "self-end":
-		return AlignSelfEnd, true
+		parsed.position = AlignSelfEnd
 	case "center":
-		return AlignCenterItems, true
+		parsed.position = AlignCenterItems
 	default:
-		return AlignAuto, false
+		return selfAlignmentValue{}, false
+	}
+	return parsed, true
+}
+
+func serializeAlignmentOverflow(overflow OverflowAlignment) string {
+	switch overflow {
+	case OverflowAlignmentSafe:
+		return "safe "
+	case OverflowAlignmentUnsafe:
+		return "unsafe "
+	default:
+		return ""
 	}
 }
 
-func serializeSelfAlignment(alignment AlignItems) string {
+func serializeSelfAlignment(alignment AlignItems, overflow OverflowAlignment) string {
+	value := "center"
 	switch alignment {
 	case AlignAuto:
-		return "auto"
+		value = "auto"
 	case AlignNormal:
-		return "normal"
+		value = "normal"
 	case AlignStretch:
-		return "stretch"
+		value = "stretch"
 	case AlignStartItems:
-		return "start"
+		value = "start"
 	case AlignEndItems:
-		return "end"
+		value = "end"
 	case AlignFlexStart:
-		return "flex-start"
+		value = "flex-start"
 	case AlignFlexEnd:
-		return "flex-end"
+		value = "flex-end"
 	case AlignSelfStart:
-		return "self-start"
+		value = "self-start"
 	case AlignSelfEnd:
-		return "self-end"
-	default:
-		return "center"
+		value = "self-end"
 	}
+	return serializeAlignmentOverflow(overflow) + value
 }
 
-func parseContentAlignment(source string) (JustifyContent, bool) {
-	keyword, ok := singleCSSKeyword(source)
+func parseContentAlignment(source string) (contentAlignmentValue, bool) {
+	keyword, overflow, ok := parseAlignmentKeywords(source)
 	if !ok {
-		return JustifyNormal, false
+		return contentAlignmentValue{}, false
 	}
+	parsed := contentAlignmentValue{overflow: overflow}
 	switch keyword {
 	case "normal":
-		return JustifyNormal, true
+		parsed.position = JustifyNormal
+		return parsed, overflow == OverflowAlignmentDefault
 	case "stretch":
-		return JustifyStretch, true
+		parsed.position = JustifyStretch
+		return parsed, overflow == OverflowAlignmentDefault
 	case "start":
-		return JustifyStart, true
+		parsed.position = JustifyStart
 	case "end":
-		return JustifyEnd, true
+		parsed.position = JustifyEnd
 	case "flex-start":
-		return JustifyFlexStart, true
+		parsed.position = JustifyFlexStart
 	case "flex-end":
-		return JustifyFlexEnd, true
+		parsed.position = JustifyFlexEnd
 	case "center":
-		return JustifyCenter, true
+		parsed.position = JustifyCenter
 	case "space-between":
-		return JustifySpaceBetween, true
+		parsed.position = JustifySpaceBetween
+		return parsed, overflow == OverflowAlignmentDefault
 	case "space-around":
-		return JustifySpaceAround, true
+		parsed.position = JustifySpaceAround
+		return parsed, overflow == OverflowAlignmentDefault
 	case "space-evenly":
-		return JustifySpaceEvenly, true
+		parsed.position = JustifySpaceEvenly
+		return parsed, overflow == OverflowAlignmentDefault
 	default:
-		return JustifyNormal, false
+		return contentAlignmentValue{}, false
 	}
+	return parsed, true
 }
 
-func serializeContentAlignment(alignment JustifyContent) string {
+func serializeContentAlignment(alignment JustifyContent, overflow OverflowAlignment) string {
+	value := "normal"
 	switch alignment {
 	case JustifyStretch:
-		return "stretch"
+		value = "stretch"
 	case JustifyStart:
-		return "start"
+		value = "start"
 	case JustifyEnd:
-		return "end"
+		value = "end"
 	case JustifyFlexStart:
-		return "flex-start"
+		value = "flex-start"
 	case JustifyFlexEnd:
-		return "flex-end"
+		value = "flex-end"
 	case JustifyCenter:
-		return "center"
+		value = "center"
 	case JustifySpaceBetween:
-		return "space-between"
+		value = "space-between"
 	case JustifySpaceAround:
-		return "space-around"
+		value = "space-around"
 	case JustifySpaceEvenly:
-		return "space-evenly"
-	default:
-		return "normal"
+		value = "space-evenly"
 	}
+	return serializeAlignmentOverflow(overflow) + value
 }
 
 func parseOverflowShorthand(source string) (OverflowMode, OverflowMode, bool) {

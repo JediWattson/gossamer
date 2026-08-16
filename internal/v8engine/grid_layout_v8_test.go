@@ -109,6 +109,37 @@ func TestStockV8GridComputedStyleAndGeometryStayLive(t *testing.T) {
 				if (retained["grid-template-columns"] !== "100px 100px 100px 100px") {
 					throw new Error("live auto-fill grid tracks: " + retained["grid-template-columns"]);
 				}
+				second.style.display = "none";
+				grid.style.cssText = "display:grid;width:100px;height:100px;grid-template-columns:150px;grid-template-rows:150px;justify-content:safe center;align-content:safe center";
+				first.style.cssText = "grid-column:1;grid-row:1";
+				const safeGrid = grid.getBoundingClientRect();
+				const safeContent = first.getBoundingClientRect();
+				if (retained.justifyContent !== "safe center" || retained.alignContent !== "safe center" ||
+					safeContent.left !== safeGrid.left || safeContent.top !== safeGrid.top) {
+					throw new Error("safe grid content alignment: " + [retained.justifyContent, retained.alignContent, safeContent.left - safeGrid.left, safeContent.top - safeGrid.top]);
+				}
+				grid.style.justifyContent = "unsafe center";
+				grid.style.alignContent = "unsafe center";
+				const unsafeContent = first.getBoundingClientRect();
+				if (retained.justifyContent !== "unsafe center" || retained.alignContent !== "unsafe center" ||
+					unsafeContent.left - safeGrid.left !== -25 || unsafeContent.top - safeGrid.top !== -25) {
+					throw new Error("unsafe grid content alignment: " + [retained.justifyContent, retained.alignContent, unsafeContent.left - safeGrid.left, unsafeContent.top - safeGrid.top]);
+				}
+				grid.style.cssText = "display:grid;width:100px;height:100px;grid-template-columns:100px;grid-template-rows:100px";
+				first.style.cssText = "grid-column:1;grid-row:1;width:150px;height:150px;justify-self:safe center;align-self:safe center";
+				const retainedItem = getComputedStyle(first);
+				const safeSelf = first.getBoundingClientRect();
+				if (retainedItem.justifySelf !== "safe center" || retainedItem.alignSelf !== "safe center" ||
+					safeSelf.left !== safeGrid.left || safeSelf.top !== safeGrid.top) {
+					throw new Error("safe grid self alignment: " + [retainedItem.justifySelf, retainedItem.alignSelf, safeSelf.left - safeGrid.left, safeSelf.top - safeGrid.top]);
+				}
+				first.style.justifySelf = "unsafe center";
+				first.style.alignSelf = "unsafe center";
+				const unsafeSelf = first.getBoundingClientRect();
+				if (retainedItem.justifySelf !== "unsafe center" || retainedItem.alignSelf !== "unsafe center" ||
+					unsafeSelf.left - safeGrid.left !== -25 || unsafeSelf.top - safeGrid.top !== -25) {
+					throw new Error("unsafe grid self alignment: " + [retainedItem.justifySelf, retainedItem.alignSelf, unsafeSelf.left - safeGrid.left, unsafeSelf.top - safeGrid.top]);
+				}
 			})();
 		`,
 	}); err != nil {

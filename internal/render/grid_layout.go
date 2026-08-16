@@ -260,7 +260,7 @@ func (context *layoutContext) layoutGridContainer(node *styledNode, box *Box, co
 	if err != nil {
 		return 0, err
 	}
-	columnStarts, columnEnds, _ := alignedGridTrackGeometry(columnSizes, collapsedColumns, columnGap, contentWidth, node.style.JustifyContent())
+	columnStarts, columnEnds, _ := alignedGridTrackGeometry(columnSizes, collapsedColumns, columnGap, contentWidth, node.style.JustifyContent(), node.style.JustifyContentOverflow())
 	box.gridColumnSizes = append([]float64(nil), columnSizes...)
 	box.gridColumnLineNames = gridUsedLineNames(model.columnAxis.template, len(columnSizes), model.columnOffset)
 
@@ -278,7 +278,7 @@ func (context *layoutContext) layoutGridContainer(node *styledNode, box *Box, co
 	if definiteHeight != nil {
 		rowAvailable = *definiteHeight
 	}
-	rowStarts, rowEnds, gridHeight := alignedGridTrackGeometry(rowSizes, collapsedRows, rowGap, rowAvailable, node.style.AlignContent())
+	rowStarts, rowEnds, gridHeight := alignedGridTrackGeometry(rowSizes, collapsedRows, rowGap, rowAvailable, node.style.AlignContent(), node.style.AlignContentOverflow())
 	if err := context.placeGridItems(node, box, &model, columnStarts, columnEnds, rowStarts, rowEnds); err != nil {
 		return 0, err
 	}
@@ -1133,7 +1133,9 @@ func (context *layoutContext) placeGridItems(container *styledNode, box *Box, mo
 		cellWidth := gridTrackSpan(columnStarts, columnEnds, item.column.start, item.column.span)
 		cellHeight := gridTrackSpan(rowStarts, rowEnds, item.row.start, item.row.span)
 		horizontalAlignment := resolvedSelfAlignment(item.node.style.JustifySelf(), container.style.JustifyItems())
+		horizontalOverflow := resolvedSelfOverflow(item.node.style.JustifySelf(), item.node.style.JustifySelfOverflow(), container.style.JustifyItemsOverflow())
 		verticalAlignment := resolvedSelfAlignment(item.node.style.AlignSelf(), container.style.AlignItems())
+		verticalOverflow := resolvedSelfOverflow(item.node.style.AlignSelf(), item.node.style.AlignSelfOverflow(), container.style.AlignItemsOverflow())
 		childContainingWidth := cellWidth
 		if !alignmentStretches(horizontalAlignment) && item.node.style.Width().Unit() == lengthAuto {
 			intrinsic, intrinsicErr := context.gridItemIntrinsicWidths(item.node, cellWidth)
@@ -1150,10 +1152,10 @@ func (context *layoutContext) placeGridItems(container *styledNode, box *Box, mo
 		if item.node.style.Height().Unit() == lengthAuto && alignmentStretches(verticalAlignment) {
 			setBoxOuterHeight(childBox, availableHeight)
 		}
-		verticalFree := math.Max(0, availableHeight-childBox.Bounds.Height)
-		yOffset := alignFlexOffset(verticalAlignment, verticalFree)
+		verticalFree := availableHeight - childBox.Bounds.Height
+		yOffset := alignFlexOffset(verticalAlignment, verticalOverflow, verticalFree)
 		availableWidth := math.Max(0, cellWidth-item.marginLeft-item.marginRight)
-		xOffset := alignFlexOffset(horizontalAlignment, math.Max(0, availableWidth-childBox.Bounds.Width))
+		xOffset := alignFlexOffset(horizontalAlignment, horizontalOverflow, availableWidth-childBox.Bounds.Width)
 		translateLayoutBox(childBox, cellX+xOffset, cellY+item.marginTop+yOffset-childBox.Bounds.Y)
 		item.box = childBox
 		box.Children = append(box.Children, childBox)
@@ -1164,10 +1166,10 @@ func (context *layoutContext) placeGridItems(container *styledNode, box *Box, mo
 
 func gridTrackGeometry(sizes []float64, gap float64) ([]float64, []float64, float64) {
 	available := sumFloat64(sizes) + gap*float64(max(0, len(sizes)-1))
-	return alignedGridTrackGeometry(sizes, nil, gap, available, computed.JustifyStart)
+	return alignedGridTrackGeometry(sizes, nil, gap, available, computed.JustifyStart, computed.OverflowAlignmentDefault)
 }
 
-func alignedGridTrackGeometry(sizes []float64, collapsed []bool, gap, available float64, alignment computed.JustifyContent) ([]float64, []float64, float64) {
+func alignedGridTrackGeometry(sizes []float64, collapsed []bool, gap, available float64, alignment computed.JustifyContent, overflow computed.OverflowAlignment) ([]float64, []float64, float64) {
 	starts := make([]float64, len(sizes))
 	ends := make([]float64, len(sizes))
 	used := sumFloat64(sizes) + gridGapTotal(collapsed, len(sizes), gap)
@@ -1180,7 +1182,7 @@ func alignedGridTrackGeometry(sizes []float64, collapsed []bool, gap, available 
 			}
 		}
 	}
-	start, extraGap := gridContentSpace(alignment, math.Max(0, available-used), visible)
+	start, extraGap := gridContentSpace(alignment, overflow, available-used, visible)
 	cursor := start
 	for index, size := range sizes {
 		starts[index] = cursor
@@ -1229,8 +1231,24 @@ func gridHasVisibleTrackAfter(collapsed []bool, count, index int) bool {
 	return false
 }
 
-func gridContentSpace(alignment computed.JustifyContent, free float64, count int) (start, extraGap float64) {
-	if count == 0 || free <= 0 {
+func gridContentSpace(alignment computed.JustifyContent, overflow computed.OverflowAlignment, free float64, count int) (start, extraGap float64) {
+	if count == 0 {
+		return 0, 0
+	}
+	if free < 0 {
+		if overflow == computed.OverflowAlignmentSafe {
+			return 0, 0
+		}
+		switch alignment {
+		case computed.JustifyEnd, computed.JustifyFlexEnd:
+			return free, 0
+		case computed.JustifyCenter:
+			return free / 2, 0
+		default:
+			return 0, 0
+		}
+	}
+	if free == 0 {
 		return 0, 0
 	}
 	switch alignment {

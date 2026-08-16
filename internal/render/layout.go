@@ -736,7 +736,7 @@ func (context *layoutContext) layoutFlexRow(node *styledNode, box *Box, contentW
 		}
 		free = 0
 	}
-	start, extraGap := justifyFlexSpace(node.style.JustifyContent(), math.Max(0, free), len(items))
+	start, extraGap := justifyFlexSpace(node.style.JustifyContent(), node.style.JustifyContentOverflow(), free, len(items), node.style.FlexDirection() == computed.FlexDirectionRowReverse)
 	cursorX := box.ContentBounds.X + start
 	maxCross := 0.0
 	for index := range items {
@@ -759,10 +759,11 @@ func (context *layoutContext) layoutFlexRow(node *styledNode, box *Box, contentW
 		marginBottom := resolveLength(item.node.style.MarginBottom(), contentWidth, context.viewport, 0)
 		availableCross := math.Max(0, containerHeight-marginTop-marginBottom)
 		alignment := resolvedSelfAlignment(item.node.style.AlignSelf(), node.style.AlignItems())
+		overflow := resolvedSelfOverflow(item.node.style.AlignSelf(), item.node.style.AlignSelfOverflow(), node.style.AlignItemsOverflow())
 		if alignmentStretches(alignment) && item.node.style.Height().Unit() == lengthAuto {
 			setBoxOuterHeight(item.box, availableCross)
 		}
-		offset := alignFlexOffset(alignment, math.Max(0, availableCross-item.box.Bounds.Height))
+		offset := alignFlexOffset(alignment, overflow, availableCross-item.box.Bounds.Height)
 		translateLayoutBox(item.box, 0, box.ContentBounds.Y+marginTop+offset-item.box.Bounds.Y)
 		box.Children = append(box.Children, item.box)
 		box.flow = append(box.flow, flowItem{box: item.box})
@@ -824,7 +825,7 @@ func (context *layoutContext) layoutFlexColumn(node *styledNode, box *Box, conte
 		}
 		free = 0
 	}
-	start, extraGap := justifyFlexSpace(node.style.JustifyContent(), math.Max(0, free), len(items))
+	start, extraGap := justifyFlexSpace(node.style.JustifyContent(), node.style.JustifyContentOverflow(), free, len(items), node.style.FlexDirection() == computed.FlexDirectionColumnReverse)
 	cursorY := box.ContentBounds.Y + start
 	for index := range items {
 		item := &items[index]
@@ -835,7 +836,8 @@ func (context *layoutContext) layoutFlexColumn(node *styledNode, box *Box, conte
 		setBoxOuterHeight(item.box, item.mainSize)
 		availableCross := math.Max(0, contentWidth-marginLeft-marginRight)
 		alignment := resolvedSelfAlignment(item.node.style.AlignSelf(), node.style.AlignItems())
-		xOffset := alignFlexOffset(alignment, math.Max(0, availableCross-item.box.Bounds.Width))
+		overflow := resolvedSelfOverflow(item.node.style.AlignSelf(), item.node.style.AlignSelfOverflow(), node.style.AlignItemsOverflow())
+		xOffset := alignFlexOffset(alignment, overflow, availableCross-item.box.Bounds.Width)
 		translateLayoutBox(item.box, box.ContentBounds.X+marginLeft+xOffset-item.box.Bounds.X, cursorY+marginTop-item.box.Bounds.Y)
 		box.Children = append(box.Children, item.box)
 		box.flow = append(box.flow, flowItem{box: item.box})
@@ -859,19 +861,49 @@ func setBoxOuterHeight(box *Box, outerHeight float64) {
 	box.ContentBounds.Height = math.Max(0, box.Bounds.Height-box.Border.Top-box.Padding.Top-box.Padding.Bottom-box.Border.Bottom)
 }
 
-func justifyFlexSpace(justify computed.JustifyContent, free float64, count int) (start, extraGap float64) {
-	if count == 0 || free <= 0 {
+func justifyFlexSpace(justify computed.JustifyContent, overflow computed.OverflowAlignment, free float64, count int, reverse bool) (start, extraGap float64) {
+	if count == 0 {
+		return 0, 0
+	}
+	if free < 0 {
+		if overflow == computed.OverflowAlignmentSafe {
+			return flexMainStart(free, reverse), 0
+		}
+		switch justify {
+		case computed.JustifyEnd:
+			return free, 0
+		case computed.JustifyFlexEnd:
+			return flexMainEnd(free, reverse), 0
+		case computed.JustifyCenter:
+			return free / 2, 0
+		case computed.JustifyFlexStart, computed.JustifyNormal, computed.JustifyStretch:
+			return flexMainStart(free, reverse), 0
+		default:
+			// Distributed values use their safe fallback alignment when
+			// there is no space to distribute.
+			if justify == computed.JustifySpaceBetween || justify == computed.JustifySpaceAround || justify == computed.JustifySpaceEvenly {
+				return flexMainStart(free, reverse), 0
+			}
+			return 0, 0
+		}
+	}
+	if free == 0 {
 		return 0, 0
 	}
 	switch justify {
-	case computed.JustifyEnd, computed.JustifyFlexEnd:
+	case computed.JustifyEnd:
 		return free, 0
+	case computed.JustifyFlexEnd:
+		return flexMainEnd(free, reverse), 0
+	case computed.JustifyFlexStart, computed.JustifyNormal, computed.JustifyStretch:
+		return flexMainStart(free, reverse), 0
 	case computed.JustifyCenter:
 		return free / 2, 0
 	case computed.JustifySpaceBetween:
 		if count > 1 {
 			return 0, free / float64(count-1)
 		}
+		return flexMainStart(free, reverse), 0
 	case computed.JustifySpaceAround:
 		space := free / float64(count)
 		return space / 2, space
@@ -882,7 +914,24 @@ func justifyFlexSpace(justify computed.JustifyContent, free float64, count int) 
 	return 0, 0
 }
 
-func alignFlexOffset(align computed.AlignItems, free float64) float64 {
+func flexMainStart(free float64, reverse bool) float64 {
+	if reverse {
+		return free
+	}
+	return 0
+}
+
+func flexMainEnd(free float64, reverse bool) float64 {
+	if reverse {
+		return 0
+	}
+	return free
+}
+
+func alignFlexOffset(align computed.AlignItems, overflow computed.OverflowAlignment, free float64) float64 {
+	if free < 0 && overflow == computed.OverflowAlignmentSafe {
+		return 0
+	}
 	switch align {
 	case computed.AlignEndItems, computed.AlignFlexEnd, computed.AlignSelfEnd:
 		return free
@@ -898,6 +947,13 @@ func resolvedSelfAlignment(self, parent computed.AlignItems) computed.AlignItems
 		return parent
 	}
 	return self
+}
+
+func resolvedSelfOverflow(self computed.AlignItems, overflow, parent computed.OverflowAlignment) computed.OverflowAlignment {
+	if self == computed.AlignAuto {
+		return parent
+	}
+	return overflow
 }
 
 func alignmentStretches(align computed.AlignItems) bool {

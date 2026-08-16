@@ -43,8 +43,10 @@ func FuzzGridLayoutPlacementStaysFinite(f *testing.F) {
 		if rawModes&2 != 0 {
 			flow += " dense"
 		}
-		contentAlignment := []string{"normal", "start", "end", "center", "space-between", "space-around", "space-evenly"}[int(rawModes)%7]
-		selfAlignment := []string{"normal", "stretch", "start", "end", "center"}[int(rawSpan)%5]
+		contentAlignments := []string{"normal", "start", "end", "center", "space-between", "space-around", "space-evenly", "safe center", "unsafe end"}
+		contentAlignment := contentAlignments[int(rawModes)%len(contentAlignments)]
+		selfAlignments := []string{"normal", "stretch", "start", "end", "center", "safe center", "unsafe self-end"}
+		selfAlignment := selfAlignments[int(rawSpan)%len(selfAlignments)]
 		areaRow := strings.TrimSpace(strings.Repeat("zone ", columns))
 		templateColumns := fmt.Sprintf("repeat(%d,[slot] %s [edge])", columns, track)
 		if rawModes&0x80 != 0 {

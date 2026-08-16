@@ -205,6 +205,17 @@ const (
 	JustifySpaceEvenly
 )
 
+// OverflowAlignment records an explicitly specified CSS box-alignment
+// overflow position. The default value preserves the layout-mode-specific
+// behavior used when neither safe nor unsafe was written.
+type OverflowAlignment uint8
+
+const (
+	OverflowAlignmentDefault OverflowAlignment = iota
+	OverflowAlignmentSafe
+	OverflowAlignmentUnsafe
+)
+
 type AlignItems uint8
 
 const (
@@ -584,11 +595,17 @@ type ComputedStyle struct {
 	tableLayout       TableLayout
 	flexDirection     FlexDirection
 	justifyContent    JustifyContent
+	justifyContentOvf OverflowAlignment
 	justifyItems      AlignItems
+	justifyItemsOvf   OverflowAlignment
 	justifySelf       AlignItems
+	justifySelfOvf    OverflowAlignment
 	alignItems        AlignItems
+	alignItemsOvf     OverflowAlignment
 	alignContent      JustifyContent
+	alignContentOvf   OverflowAlignment
 	alignSelf         AlignItems
+	alignSelfOvf      OverflowAlignment
 	rowGap            Length
 	columnGap         Length
 	content           ContentValue
@@ -679,7 +696,9 @@ func (computed ComputedStyle) WithAnonymousGridItem() ComputedStyle {
 	computed.display = DisplayBlock
 	computed.order = 0
 	computed.alignSelf = AlignAuto
+	computed.alignSelfOvf = OverflowAlignmentDefault
 	computed.justifySelf = AlignAuto
+	computed.justifySelfOvf = OverflowAlignmentDefault
 	computed.gridColumnStart = GridLine{kind: GridLineAuto}
 	computed.gridColumnEnd = GridLine{kind: GridLineAuto}
 	computed.gridRowStart = GridLine{kind: GridLineAuto}
@@ -690,11 +709,29 @@ func (computed ComputedStyle) FlexDirection() FlexDirection {
 	return computed.flexDirection
 }
 func (computed ComputedStyle) JustifyContent() JustifyContent { return computed.justifyContent }
-func (computed ComputedStyle) JustifyItems() AlignItems       { return computed.justifyItems }
-func (computed ComputedStyle) JustifySelf() AlignItems        { return computed.justifySelf }
-func (computed ComputedStyle) AlignItems() AlignItems         { return computed.alignItems }
-func (computed ComputedStyle) AlignContent() JustifyContent   { return computed.alignContent }
-func (computed ComputedStyle) AlignSelf() AlignItems          { return computed.alignSelf }
+func (computed ComputedStyle) JustifyContentOverflow() OverflowAlignment {
+	return computed.justifyContentOvf
+}
+func (computed ComputedStyle) JustifyItems() AlignItems { return computed.justifyItems }
+func (computed ComputedStyle) JustifyItemsOverflow() OverflowAlignment {
+	return computed.justifyItemsOvf
+}
+func (computed ComputedStyle) JustifySelf() AlignItems { return computed.justifySelf }
+func (computed ComputedStyle) JustifySelfOverflow() OverflowAlignment {
+	return computed.justifySelfOvf
+}
+func (computed ComputedStyle) AlignItems() AlignItems { return computed.alignItems }
+func (computed ComputedStyle) AlignItemsOverflow() OverflowAlignment {
+	return computed.alignItemsOvf
+}
+func (computed ComputedStyle) AlignContent() JustifyContent { return computed.alignContent }
+func (computed ComputedStyle) AlignContentOverflow() OverflowAlignment {
+	return computed.alignContentOvf
+}
+func (computed ComputedStyle) AlignSelf() AlignItems { return computed.alignSelf }
+func (computed ComputedStyle) AlignSelfOverflow() OverflowAlignment {
+	return computed.alignSelfOvf
+}
 func (computed ComputedStyle) RowGap() Length                 { return computed.rowGap }
 func (computed ComputedStyle) ColumnGap() Length              { return computed.columnGap }
 func (computed ComputedStyle) Content() ContentValue          { return computed.content }

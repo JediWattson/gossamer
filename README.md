@@ -290,7 +290,8 @@ performance budgets; see
   generate implicit named boundaries and explicit auto-sized tracks;
   numbered/named positive and negative line placement, `grid-area`, filtered
   named spans, row/column dense auto-flow, gaps, content distribution,
-  container/item/self alignment, anonymous text items, order-modified
+  container/item/self alignment with explicit `safe`/`unsafe` overflow
+  positions, anonymous text items, order-modified
   placement and paint, retained track geometry, and live resolved
   `grid-template-*` CSSOM reads
 - HTML and CSS table display roles with anonymous wrapper fixup, bounded
@@ -336,7 +337,7 @@ The following are intentionally still outside the current milestone:
   parenting, including formatting-element reconstruction, complete template
   modes, SVG/MathML, and encoding sniffing
 - Flex wrapping and full intrinsic sizing, Grid subgrid,
-  baseline/safe/unsafe alignment, remaining table track
+  baseline alignment, remaining table track
   merging, percentage sizing, visibility-collapse, wrapper, writing-mode, and
   border junction behavior, floats, sticky and full inline positioned layout,
   and retained inline boxes
