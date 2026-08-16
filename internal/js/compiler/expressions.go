@@ -12,6 +12,9 @@ import (
 func (compiler *functionCompiler) compileExpression(expression ast.Expression) error {
 	switch expression := expression.(type) {
 	case *ast.Identifier:
+		if expression.Name == "arguments" && compiler.inFunction {
+			return compiler.emit(browserruntime.Instruction{Op: browserruntime.OpArguments}, expression.Span())
+		}
 		if _, exists := compiler.resolve(expression.Name); !exists {
 			return compiler.problem(expression.Span(), fmt.Sprintf("unknown binding %q", expression.Name))
 		}
@@ -467,6 +470,15 @@ func (compiler *functionCompiler) compileUnary(unary *ast.UnaryExpression) error
 			return err
 		}
 		return compiler.emit(browserruntime.Instruction{Op: browserruntime.OpBitwiseXor}, unary.Span())
+	}
+	if unary.Operator == lexer.Typeof {
+		if identifier, ok := unary.Argument.(*ast.Identifier); ok {
+			name, err := compiler.stringConstant(identifier.Name)
+			if err != nil {
+				return err
+			}
+			return compiler.emit(browserruntime.Instruction{Op: browserruntime.OpTypeOfBinding, A: name}, unary.Span())
+		}
 	}
 	if err := compiler.compileExpression(unary.Argument); err != nil {
 		return err
