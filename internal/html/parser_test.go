@@ -185,6 +185,118 @@ X&amp;Y</textarea><script>if (a < b) {}</script>`
 	}
 }
 
+func TestParseTableModesInsertMissingGroupsRowsAndCells(t *testing.T) {
+	t.Parallel()
+
+	input := `<table id=t><td>A<td>B<tr><th>C</table><p>after`
+	want := "" +
+		"#document\n" +
+		"  <html>\n" +
+		"    <head>\n" +
+		"    <body>\n" +
+		"      <table id=\"t\">\n" +
+		"        <tbody>\n" +
+		"          <tr>\n" +
+		"            <td>\n" +
+		"              #text \"A\"\n" +
+		"            <td>\n" +
+		"              #text \"B\"\n" +
+		"          <tr>\n" +
+		"            <th>\n" +
+		"              #text \"C\"\n" +
+		"      <p>\n" +
+		"        #text \"after\"\n"
+
+	if got := parseAndDump(t, strings.NewReader(input)); got != want {
+		t.Errorf("DOM:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestParseTableModesFosterMisnestedContentBeforeTable(t *testing.T) {
+	t.Parallel()
+
+	input := `<div>before</div><table>alpha<div>inside</div><tr><td>cell</td></tr>omega</table><p>after</p>`
+	want := "" +
+		"#document\n" +
+		"  <html>\n" +
+		"    <head>\n" +
+		"    <body>\n" +
+		"      <div>\n" +
+		"        #text \"before\"\n" +
+		"      #text \"alpha\"\n" +
+		"      <div>\n" +
+		"        #text \"inside\"\n" +
+		"      #text \"omega\"\n" +
+		"      <table>\n" +
+		"        <tbody>\n" +
+		"          <tr>\n" +
+		"            <td>\n" +
+		"              #text \"cell\"\n" +
+		"      <p>\n" +
+		"        #text \"after\"\n"
+
+	if got := parseAndDump(t, strings.NewReader(input)); got != want {
+		t.Errorf("DOM:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestParseTableModesHandleCaptionColumnsSectionsAndNestedTable(t *testing.T) {
+	t.Parallel()
+
+	input := `<table><caption>Cap<col span=2><thead><tr><th>H<tbody><tr><td>A<table><tr><td>N</table><tfoot><tr><td>F</table>`
+	want := "" +
+		"#document\n" +
+		"  <html>\n" +
+		"    <head>\n" +
+		"    <body>\n" +
+		"      <table>\n" +
+		"        <caption>\n" +
+		"          #text \"Cap\"\n" +
+		"        <colgroup>\n" +
+		"          <col span=\"2\">\n" +
+		"        <thead>\n" +
+		"          <tr>\n" +
+		"            <th>\n" +
+		"              #text \"H\"\n" +
+		"        <tbody>\n" +
+		"          <tr>\n" +
+		"            <td>\n" +
+		"              #text \"A\"\n" +
+		"              <table>\n" +
+		"                <tbody>\n" +
+		"                  <tr>\n" +
+		"                    <td>\n" +
+		"                      #text \"N\"\n" +
+		"        <tfoot>\n" +
+		"          <tr>\n" +
+		"            <td>\n" +
+		"              #text \"F\"\n"
+
+	if got := parseAndDump(t, strings.NewReader(input)); got != want {
+		t.Errorf("DOM:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestParseTableFragmentUsesContextInsertionMode(t *testing.T) {
+	t.Parallel()
+
+	fragment, err := ParseFragment(strings.NewReader(`<td>A<td>B`), "table")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := SerializeChildren(fragment), `<tbody><tr><td>A</td><td>B</td></tr></tbody>`; got != want {
+		t.Fatalf("table fragment = %q, want %q", got, want)
+	}
+}
+
+func TestParseTableTextAtEOFIsFosterParented(t *testing.T) {
+	t.Parallel()
+
+	if got, want := SerializeNode(mustParseHTML(t, `<table>tail`)), `<html><head></head><body>tail<table></table></body></html>`; got != want {
+		t.Fatalf("EOF table text = %q, want %q", got, want)
+	}
+}
+
 func TestParseProcessingInstruction(t *testing.T) {
 	t.Parallel()
 
@@ -261,4 +373,13 @@ func parseAndDump(t *testing.T, reader interface{ Read([]byte) (int, error) }) s
 		t.Fatalf("Dump() error = %v", err)
 	}
 	return output.String()
+}
+
+func mustParseHTML(t *testing.T, source string) *dom.Node {
+	t.Helper()
+	document, err := Parse(strings.NewReader(source))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return document
 }

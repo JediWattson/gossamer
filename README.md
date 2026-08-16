@@ -313,8 +313,9 @@ The following are intentionally still outside the current milestone:
 - General Web APIs beyond the current V8 DOM slice, history traversal and
   navigation globals, multiple tabs, scrollbar UI, clipboard/IME input, and
   non-macOS interactive backends
-- Full HTML error recovery, including table foster parenting, formatting
-  element reconstruction, templates, SVG/MathML, and encoding sniffing
+- Full HTML error recovery beyond the current table insertion modes and foster
+  parenting, including formatting-element reconstruction, complete template
+  modes, SVG/MathML, and encoding sniffing
 - Flex wrapping and full intrinsic sizing, Grid, table layout, floats, sticky
   and full inline positioned layout, and retained inline boxes
 - The remaining CSS math grammar beyond the current bounded length

@@ -167,6 +167,50 @@ func (node *Node) AppendChild(child *Node) {
 	node.Children = append(node.Children, child)
 }
 
+// InsertBefore inserts child immediately before reference. A nil reference
+// appends child. Inserting an attached node moves it from its previous
+// location, matching AppendChild's ownership semantics.
+func (node *Node) InsertBefore(child, reference *Node) {
+	if node == nil {
+		panic("dom: insert child into nil node")
+	}
+	if child == nil {
+		return
+	}
+	if reference == nil {
+		node.AppendChild(child)
+		return
+	}
+	if reference.Parent != node {
+		panic("dom: reference is not a child of insertion parent")
+	}
+	if child == reference {
+		return
+	}
+	for ancestor := node; ancestor != nil; ancestor = ancestor.Parent {
+		if ancestor == child {
+			panic("dom: inserting child would create a cycle")
+		}
+	}
+	if child.Parent != nil {
+		child.Parent.removeChild(child)
+	}
+	referenceIndex := -1
+	for index, candidate := range node.Children {
+		if candidate == reference {
+			referenceIndex = index
+			break
+		}
+	}
+	if referenceIndex < 0 {
+		panic("dom: reference disappeared during insertion")
+	}
+	node.Children = append(node.Children, nil)
+	copy(node.Children[referenceIndex+1:], node.Children[referenceIndex:])
+	node.Children[referenceIndex] = child
+	child.Parent = node
+}
+
 func (node *Node) removeChild(child *Node) {
 	for index, candidate := range node.Children {
 		if candidate != child {

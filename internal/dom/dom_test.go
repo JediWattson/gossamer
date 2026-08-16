@@ -140,6 +140,43 @@ func TestAppendChildNilIsNoOp(t *testing.T) {
 	}
 }
 
+func TestInsertBeforeMovesNodesAndAcceptsNilReference(t *testing.T) {
+	parent := NewElement("div")
+	other := NewElement("aside")
+	first := NewElement("first")
+	second := NewElement("second")
+	third := NewElement("third")
+	parent.AppendChild(first)
+	parent.AppendChild(third)
+	other.AppendChild(second)
+
+	parent.InsertBefore(second, third)
+	parent.InsertBefore(first, nil)
+	if got, want := parent.Children, []*Node{second, third, first}; len(got) != len(want) {
+		t.Fatalf("children = %#v, want %#v", got, want)
+	} else {
+		for index := range want {
+			if got[index] != want[index] || got[index].Parent != parent {
+				t.Fatalf("children[%d] = %p parent %p, want %p parent %p", index, got[index], got[index].Parent, want[index], parent)
+			}
+		}
+	}
+	if len(other.Children) != 0 {
+		t.Fatalf("old parent children = %#v, want empty", other.Children)
+	}
+}
+
+func TestInsertBeforeRejectsForeignReference(t *testing.T) {
+	parent := NewElement("div")
+	foreign := NewElement("span")
+	defer func() {
+		if recover() == nil {
+			t.Fatal("InsertBefore did not reject a foreign reference")
+		}
+	}()
+	parent.InsertBefore(NewElement("b"), foreign)
+}
+
 func TestAppendChildRejectsCycle(t *testing.T) {
 	t.Parallel()
 

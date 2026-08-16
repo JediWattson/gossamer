@@ -16,6 +16,13 @@ const (
 	inHeadMode
 	afterHeadMode
 	inBodyMode
+	inTableMode
+	inTableTextMode
+	inCaptionMode
+	inColumnGroupMode
+	inTableBodyMode
+	inRowMode
+	inCellMode
 	textModeState
 	afterBodyMode
 	afterAfterBodyMode
@@ -34,12 +41,14 @@ type parser struct {
 	fragmentRoot *dom.Node
 
 	ignoreLeadingLineFeed bool
+	fosterParenting       bool
+	pendingTableText      strings.Builder
 }
 
-// Parse reads an HTML stream and constructs a DOM document. This first parser
-// slice implements the ordinary document modes; table foster parenting,
-// formatting-element reconstruction, templates, and foreign content remain
-// future conformance work.
+// Parse reads an HTML stream and constructs a DOM document. Ordinary document
+// and table insertion modes are implemented; formatting-element
+// reconstruction, full template modes, and foreign content remain future
+// conformance work.
 func Parse(reader io.Reader) (*dom.Node, error) {
 	parser := &parser{
 		tokenizer: NewTokenizer(reader),
@@ -50,6 +59,7 @@ func Parse(reader io.Reader) (*dom.Node, error) {
 	for {
 		token, err := parser.tokenizer.Next()
 		if err == io.EOF {
+			parser.flushPendingTableText()
 			parser.finishDocument()
 			return parser.document, nil
 		}
@@ -79,6 +89,18 @@ func ParseFragment(reader io.Reader, contextName string) (*dom.Node, error) {
 		fragmentRoot: container,
 	}
 	switch container.Data {
+	case "table":
+		fragmentParser.mode = inTableMode
+	case "tbody", "thead", "tfoot":
+		fragmentParser.mode = inTableBodyMode
+	case "tr":
+		fragmentParser.mode = inRowMode
+	case "td", "th":
+		fragmentParser.mode = inCellMode
+	case "caption":
+		fragmentParser.mode = inCaptionMode
+	case "colgroup":
+		fragmentParser.mode = inColumnGroupMode
 	case "title", "textarea":
 		tokenizer.enterTextMode(rcdataMode, container.Data)
 		fragmentParser.priorMode = inBodyMode
@@ -95,6 +117,7 @@ func ParseFragment(reader io.Reader, contextName string) (*dom.Node, error) {
 	for {
 		token, err := tokenizer.Next()
 		if err == io.EOF {
+			fragmentParser.flushPendingTableText()
 			fragment := dom.NewDocumentFragment()
 			source := container
 			if container.TemplateContent != nil {
@@ -127,6 +150,20 @@ func (parser *parser) process(token Token) bool {
 		return parser.processAfterHead(token)
 	case inBodyMode:
 		return parser.processInBody(token)
+	case inTableMode:
+		return parser.processInTable(token)
+	case inTableTextMode:
+		return parser.processInTableText(token)
+	case inCaptionMode:
+		return parser.processInCaption(token)
+	case inColumnGroupMode:
+		return parser.processInColumnGroup(token)
+	case inTableBodyMode:
+		return parser.processInTableBody(token)
+	case inRowMode:
+		return parser.processInRow(token)
+	case inCellMode:
+		return parser.processInCell(token)
 	case textModeState:
 		return parser.processText(token)
 	case afterBodyMode:
@@ -362,6 +399,13 @@ func (parser *parser) processInBody(token Token) bool {
 		case "optgroup":
 			parser.closeIfOpen("option")
 			parser.closeIfOpen("optgroup")
+		case "table":
+			parser.closeIfOpen("p")
+			parser.insertElement(token)
+			parser.mode = inTableMode
+			return false
+		case "caption", "col", "colgroup", "tbody", "td", "tfoot", "th", "thead", "tr":
+			return false
 		case "title", "textarea":
 			parser.startTextElement(token, rcdataMode)
 			if token.Data == "textarea" {
@@ -412,6 +456,11 @@ func (parser *parser) processInBody(token Token) bool {
 		case "br":
 			parser.insertElement(Token{Type: StartTagToken, Data: "br"})
 			parser.open = parser.open[:len(parser.open)-1]
+		case "table":
+			if parser.hasInTableScope("table") {
+				parser.popUntil("table")
+				parser.resetInsertionMode()
+			}
 		default:
 			if !isVoidElement(token.Data) {
 				parser.popUntil(token.Data)
@@ -420,6 +469,274 @@ func (parser *parser) processInBody(token Token) bool {
 	}
 
 	return false
+}
+
+func (parser *parser) processInTable(token Token) bool {
+	switch token.Type {
+	case CharacterToken:
+		if isTableTextContext(parser.currentNode()) {
+			parser.pendingTableText.Reset()
+			parser.priorMode = parser.mode
+			parser.mode = inTableTextMode
+			return true
+		}
+	case CommentToken:
+		parser.insertNode(dom.NewComment(token.Data))
+		return false
+	case ProcessingInstructionToken:
+		parser.insertNode(dom.NewProcessingInstruction(token.Target, token.Data))
+		return false
+	case DoctypeToken:
+		return false
+	case StartTagToken:
+		switch token.Data {
+		case "style", "script":
+			return parser.processInHead(token)
+		case "caption":
+			parser.clearStackBackToTableContext()
+			parser.insertElement(token)
+			parser.mode = inCaptionMode
+			return false
+		case "colgroup":
+			parser.clearStackBackToTableContext()
+			parser.insertElement(token)
+			parser.mode = inColumnGroupMode
+			return false
+		case "col":
+			parser.clearStackBackToTableContext()
+			parser.insertElement(Token{Type: StartTagToken, Data: "colgroup"})
+			parser.mode = inColumnGroupMode
+			return true
+		case "tbody", "tfoot", "thead":
+			parser.clearStackBackToTableContext()
+			parser.insertElement(token)
+			parser.mode = inTableBodyMode
+			return false
+		case "td", "th", "tr":
+			parser.clearStackBackToTableContext()
+			parser.insertElement(Token{Type: StartTagToken, Data: "tbody"})
+			parser.mode = inTableBodyMode
+			return true
+		case "table":
+			if !parser.hasInTableScope("table") {
+				return false
+			}
+			parser.popUntil("table")
+			parser.resetInsertionMode()
+			return true
+		}
+	case EndTagToken:
+		switch token.Data {
+		case "table":
+			if !parser.hasInTableScope("table") {
+				return false
+			}
+			parser.popUntil("table")
+			parser.resetInsertionMode()
+			return false
+		case "body", "caption", "col", "colgroup", "html", "tbody", "td", "tfoot", "th", "thead", "tr":
+			return false
+		}
+	}
+
+	return parser.processWithFosterParenting(token)
+}
+
+func (parser *parser) processInTableText(token Token) bool {
+	if token.Type == CharacterToken {
+		parser.pendingTableText.WriteString(token.Data)
+		return false
+	}
+	parser.flushPendingTableText()
+	return true
+}
+
+func (parser *parser) flushPendingTableText() {
+	if parser.mode != inTableTextMode {
+		return
+	}
+	data := parser.pendingTableText.String()
+	parser.pendingTableText.Reset()
+	parser.mode = parser.priorMode
+	if data == "" {
+		return
+	}
+	if isAllHTMLSpace(data) {
+		parser.insertText(data)
+		return
+	}
+	parser.processWithFosterParenting(Token{Type: CharacterToken, Data: data})
+}
+
+func (parser *parser) processInCaption(token Token) bool {
+	if token.Type == EndTagToken && token.Data == "caption" {
+		if parser.hasInTableScope("caption") {
+			parser.popUntil("caption")
+			parser.mode = inTableMode
+		}
+		return false
+	}
+	if (token.Type == StartTagToken && isTableStructureStart(token.Data)) ||
+		(token.Type == EndTagToken && token.Data == "table") {
+		if !parser.hasInTableScope("caption") {
+			return false
+		}
+		parser.popUntil("caption")
+		parser.mode = inTableMode
+		return true
+	}
+	if token.Type == EndTagToken && isInvalidCaptionEnd(token.Data) {
+		return false
+	}
+	return parser.processInBody(token)
+}
+
+func (parser *parser) processInColumnGroup(token Token) bool {
+	switch token.Type {
+	case CharacterToken:
+		space, rest := splitLeadingHTMLSpace(token.Data)
+		parser.insertText(space)
+		if rest == "" {
+			return false
+		}
+		if !parser.closeColumnGroup() {
+			return false
+		}
+		parser.consumeToken(Token{Type: CharacterToken, Data: rest})
+		return false
+	case CommentToken:
+		parser.insertNode(dom.NewComment(token.Data))
+		return false
+	case ProcessingInstructionToken:
+		parser.insertNode(dom.NewProcessingInstruction(token.Target, token.Data))
+		return false
+	case DoctypeToken:
+		return false
+	case StartTagToken:
+		if token.Data == "col" {
+			parser.insertElement(token)
+			parser.open = parser.open[:len(parser.open)-1]
+			return false
+		}
+	case EndTagToken:
+		if token.Data == "colgroup" {
+			parser.closeColumnGroup()
+			return false
+		}
+		if token.Data == "col" {
+			return false
+		}
+	}
+	if !parser.closeColumnGroup() {
+		return false
+	}
+	return true
+}
+
+func (parser *parser) processInTableBody(token Token) bool {
+	if token.Type == StartTagToken {
+		switch token.Data {
+		case "tr":
+			parser.clearStackBackToTableBodyContext()
+			parser.insertElement(token)
+			parser.mode = inRowMode
+			return false
+		case "td", "th":
+			parser.clearStackBackToTableBodyContext()
+			parser.insertElement(Token{Type: StartTagToken, Data: "tr"})
+			parser.mode = inRowMode
+			return true
+		case "caption", "col", "colgroup", "tbody", "tfoot", "thead":
+			if !parser.hasOpenTableBodyInScope() {
+				return false
+			}
+			parser.clearStackBackToTableBodyContext()
+			parser.popCurrentNode()
+			parser.mode = inTableMode
+			return true
+		}
+	}
+	if token.Type == EndTagToken {
+		switch token.Data {
+		case "tbody", "tfoot", "thead":
+			if !parser.hasInTableScope(token.Data) {
+				return false
+			}
+			parser.clearStackBackToTableBodyContext()
+			parser.popCurrentNode()
+			parser.mode = inTableMode
+			return false
+		case "table":
+			if !parser.hasOpenTableBodyInScope() {
+				return false
+			}
+			parser.clearStackBackToTableBodyContext()
+			parser.popCurrentNode()
+			parser.mode = inTableMode
+			return true
+		case "body", "caption", "col", "colgroup", "html", "td", "th", "tr":
+			return false
+		}
+	}
+	return parser.processInTable(token)
+}
+
+func (parser *parser) processInRow(token Token) bool {
+	if token.Type == StartTagToken {
+		switch token.Data {
+		case "td", "th":
+			parser.clearStackBackToTableRowContext()
+			parser.insertElement(token)
+			parser.mode = inCellMode
+			return false
+		case "caption", "col", "colgroup", "tbody", "tfoot", "thead", "tr":
+			if !parser.closeTableRow() {
+				return false
+			}
+			return true
+		}
+	}
+	if token.Type == EndTagToken {
+		switch token.Data {
+		case "tr":
+			parser.closeTableRow()
+			return false
+		case "table":
+			if !parser.closeTableRow() {
+				return false
+			}
+			return true
+		case "tbody", "tfoot", "thead":
+			if !parser.hasInTableScope(token.Data) || !parser.closeTableRow() {
+				return false
+			}
+			return true
+		case "body", "caption", "col", "colgroup", "html", "td", "th":
+			return false
+		}
+	}
+	return parser.processInTable(token)
+}
+
+func (parser *parser) processInCell(token Token) bool {
+	if token.Type == EndTagToken && (token.Data == "td" || token.Data == "th") {
+		if parser.hasInTableScope(token.Data) {
+			parser.popUntil(token.Data)
+			parser.mode = inRowMode
+		}
+		return false
+	}
+	if (token.Type == StartTagToken && isTableStructureStart(token.Data)) ||
+		(token.Type == EndTagToken && isTableCellClosingStructure(token.Data)) {
+		if !parser.closeTableCell() {
+			return false
+		}
+		return true
+	}
+	if token.Type == EndTagToken && isInvalidCellEnd(token.Data) {
+		return false
+	}
+	return parser.processInBody(token)
 }
 
 func (parser *parser) processText(token Token) bool {
@@ -549,7 +866,7 @@ func (parser *parser) startTextElement(token Token, mode textMode) {
 
 func (parser *parser) insertElement(token Token) *dom.Node {
 	element := parser.elementFromToken(token)
-	parser.insertionParent().AppendChild(element)
+	parser.insertNode(element)
 	parser.open = append(parser.open, element)
 	return element
 }
@@ -574,15 +891,66 @@ func (parser *parser) insertText(data string) {
 		}
 	}
 
-	parent := parser.insertionParent()
-	if len(parent.Children) > 0 {
-		last := parent.Children[len(parent.Children)-1]
+	location := parser.adjustedInsertionLocation()
+	parent := location.parent
+	if parent == nil {
+		return
+	}
+	previous := len(parent.Children) - 1
+	if location.before != nil {
+		for index, candidate := range parent.Children {
+			if candidate == location.before {
+				previous = index - 1
+				break
+			}
+		}
+	}
+	if previous >= 0 && previous < len(parent.Children) {
+		last := parent.Children[previous]
 		if last.Type == dom.TextNode {
 			last.Data += data
 			return
 		}
 	}
-	parent.AppendChild(dom.NewText(data))
+	parent.InsertBefore(dom.NewText(data), location.before)
+}
+
+type parserInsertionLocation struct {
+	parent *dom.Node
+	before *dom.Node
+}
+
+func (parser *parser) insertNode(node *dom.Node) {
+	location := parser.adjustedInsertionLocation()
+	if location.parent != nil {
+		location.parent.InsertBefore(node, location.before)
+	}
+}
+
+func (parser *parser) adjustedInsertionLocation() parserInsertionLocation {
+	parent := parser.insertionParent()
+	location := parserInsertionLocation{parent: parent}
+	if !parser.fosterParenting || !isFosterParentTarget(parser.currentNode()) {
+		return location
+	}
+	lastTableIndex := -1
+	for index := len(parser.open) - 1; index >= 0; index-- {
+		if parser.open[index].Type == dom.ElementNode && parser.open[index].Data == "table" {
+			lastTableIndex = index
+			break
+		}
+	}
+	if lastTableIndex < 0 {
+		return location
+	}
+	lastTable := parser.open[lastTableIndex]
+	if lastTable.Parent != nil {
+		return parserInsertionLocation{parent: lastTable.Parent, before: lastTable}
+	}
+	if lastTableIndex > 0 {
+		return parserInsertionLocation{parent: parser.open[lastTableIndex-1]}
+	}
+	return location
 }
 
 func (parser *parser) currentNode() *dom.Node {
@@ -598,6 +966,149 @@ func (parser *parser) insertionParent() *dom.Node {
 		return current.TemplateContent
 	}
 	return current
+}
+
+func (parser *parser) consumeToken(token Token) {
+	for parser.process(token) {
+	}
+}
+
+func (parser *parser) processWithFosterParenting(token Token) bool {
+	previous := parser.fosterParenting
+	parser.fosterParenting = true
+	reprocess := parser.processInBody(token)
+	parser.fosterParenting = previous
+	return reprocess
+}
+
+func (parser *parser) hasInTableScope(name string) bool {
+	for index := len(parser.open) - 1; index >= 0; index-- {
+		node := parser.open[index]
+		if node.Type == dom.ElementNode && node.Data == name {
+			return true
+		}
+		if node.Type == dom.ElementNode && (node.Data == "html" || node.Data == "table" || node.Data == "template") {
+			return false
+		}
+	}
+	return false
+}
+
+func (parser *parser) hasOpenTableBodyInScope() bool {
+	for _, name := range []string{"tbody", "thead", "tfoot"} {
+		if parser.hasInTableScope(name) {
+			return true
+		}
+	}
+	return false
+}
+
+func (parser *parser) clearStackBackToTableContext() {
+	parser.clearStackBackTo("table", "template", "html")
+}
+
+func (parser *parser) clearStackBackToTableBodyContext() {
+	parser.clearStackBackTo("tbody", "tfoot", "thead", "template", "html")
+}
+
+func (parser *parser) clearStackBackToTableRowContext() {
+	parser.clearStackBackTo("tr", "template", "html")
+}
+
+func (parser *parser) clearStackBackTo(names ...string) {
+	minimum := 0
+	if parser.fragmentRoot != nil {
+		minimum = 1
+	}
+	for len(parser.open) > minimum {
+		current := parser.currentNode()
+		for _, name := range names {
+			if current.Type == dom.ElementNode && current.Data == name {
+				return
+			}
+		}
+		parser.open = parser.open[:len(parser.open)-1]
+	}
+}
+
+func (parser *parser) popCurrentNode() {
+	if len(parser.open) == 0 || (parser.fragmentRoot != nil && len(parser.open) == 1) {
+		return
+	}
+	parser.open = parser.open[:len(parser.open)-1]
+}
+
+func (parser *parser) closeColumnGroup() bool {
+	if parser.currentNode().Type != dom.ElementNode || parser.currentNode().Data != "colgroup" {
+		return false
+	}
+	parser.popCurrentNode()
+	parser.mode = inTableMode
+	return true
+}
+
+func (parser *parser) closeTableRow() bool {
+	if !parser.hasInTableScope("tr") {
+		return false
+	}
+	parser.clearStackBackToTableRowContext()
+	parser.popCurrentNode()
+	parser.mode = inTableBodyMode
+	return true
+}
+
+func (parser *parser) closeTableCell() bool {
+	for index := len(parser.open) - 1; index >= 0; index-- {
+		node := parser.open[index]
+		if node.Type != dom.ElementNode {
+			continue
+		}
+		if node.Data == "td" || node.Data == "th" {
+			parser.truncateOpen(index)
+			parser.mode = inRowMode
+			return true
+		}
+		if node.Data == "table" || node.Data == "html" || node.Data == "template" {
+			return false
+		}
+	}
+	return false
+}
+
+func (parser *parser) resetInsertionMode() {
+	for index := len(parser.open) - 1; index >= 0; index-- {
+		node := parser.open[index]
+		if node.Type != dom.ElementNode {
+			continue
+		}
+		switch node.Data {
+		case "td", "th":
+			parser.mode = inCellMode
+			return
+		case "tr":
+			parser.mode = inRowMode
+			return
+		case "tbody", "thead", "tfoot":
+			parser.mode = inTableBodyMode
+			return
+		case "caption":
+			parser.mode = inCaptionMode
+			return
+		case "colgroup":
+			parser.mode = inColumnGroupMode
+			return
+		case "table":
+			parser.mode = inTableMode
+			return
+		case "head":
+			parser.mode = inHeadMode
+			return
+		case "body", "html":
+			parser.mode = inBodyMode
+			return
+		}
+	}
+	parser.mode = inBodyMode
 }
 
 func (parser *parser) mergeAttributes(element *dom.Node, token Token) {
@@ -687,6 +1198,58 @@ func (parser *parser) truncateOpen(index int) {
 func isVoidElement(name string) bool {
 	switch name {
 	case "area", "base", "basefont", "bgsound", "br", "col", "embed", "frame", "hr", "img", "input", "keygen", "link", "meta", "param", "source", "track", "wbr":
+		return true
+	default:
+		return false
+	}
+}
+
+func isTableTextContext(node *dom.Node) bool {
+	if node == nil || node.Type != dom.ElementNode {
+		return false
+	}
+	switch node.Data {
+	case "table", "tbody", "tfoot", "thead", "tr":
+		return true
+	default:
+		return false
+	}
+}
+
+func isFosterParentTarget(node *dom.Node) bool {
+	return isTableTextContext(node)
+}
+
+func isTableStructureStart(name string) bool {
+	switch name {
+	case "caption", "col", "colgroup", "tbody", "td", "tfoot", "th", "thead", "tr":
+		return true
+	default:
+		return false
+	}
+}
+
+func isInvalidCaptionEnd(name string) bool {
+	switch name {
+	case "body", "col", "colgroup", "html", "tbody", "td", "tfoot", "th", "thead", "tr":
+		return true
+	default:
+		return false
+	}
+}
+
+func isTableCellClosingStructure(name string) bool {
+	switch name {
+	case "table", "tbody", "tfoot", "thead", "tr":
+		return true
+	default:
+		return false
+	}
+}
+
+func isInvalidCellEnd(name string) bool {
+	switch name {
+	case "body", "caption", "col", "colgroup", "html":
 		return true
 	default:
 		return false

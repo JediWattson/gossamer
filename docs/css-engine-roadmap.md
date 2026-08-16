@@ -352,8 +352,15 @@ new frame after the current task and microtask checkpoint.
 
 ### 9. Tables, Grid, and advanced formatting
 
+Current foundation: the HTML tree builder now implements table, table-text,
+caption, column-group, table-body, row, and cell insertion modes. It inserts
+missing `tbody`/`tr` structure, closes implied cells and rows, preserves nested
+tables, foster-parents misnested non-whitespace content before the owning
+table, and uses the matching modes for fragment parsing. CSS table boxes and
+layout remain pending.
+
 - Implement CSS table wrappers, anonymous table boxes, row/column sizing, and
-  HTML table fixup before exposing table geometry broadly.
+  the remaining table fixup before exposing table geometry broadly.
 - Add Grid track sizing and placement, followed by intrinsic sizing and
   alignment.
 - Add multicolumn and fragmentation only after their block/inline consumers
