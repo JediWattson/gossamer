@@ -538,7 +538,13 @@ func maxInt(left, right int) int {
 }
 
 func shellTabTitle(page *browser.Page) string {
-	if page == nil || page.URL() == nil {
+	if page == nil {
+		return "New Tab"
+	}
+	if title := page.Metadata().Title; title != "" {
+		return title
+	}
+	if page.URL() == nil {
 		return "New Tab"
 	}
 	location := page.URL()

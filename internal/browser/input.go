@@ -483,6 +483,56 @@ func (host *taskHost) DocumentReadyState() (string, error) {
 	return host.page.readyState, nil
 }
 
+func (host *taskHost) DocumentTitle() (string, error) {
+	host.page.mutex.RLock()
+	defer host.page.mutex.RUnlock()
+	if host.page.closed {
+		return "", ErrPageClosed
+	}
+	if host.page.documentGeneration != host.generation {
+		return "", ErrStaleNodeHandle
+	}
+	return documentTitle(host.page.document.Root()), nil
+}
+
+func (host *taskHost) SetDocumentTitle(value string) error {
+	host.page.mutex.Lock()
+	defer host.page.mutex.Unlock()
+	if host.page.closed {
+		return ErrPageClosed
+	}
+	if host.page.documentGeneration != host.generation {
+		return ErrStaleNodeHandle
+	}
+	title := findDocumentElement(host.page.document.Root(), "title")
+	if title == nil {
+		head := findDocumentElement(host.page.document.Root(), "head")
+		if head == nil {
+			return dom.NewException(dom.InvalidStateError, nil, "document has no head element")
+		}
+		headID, ok := host.page.document.ID(head)
+		if !ok {
+			return ErrStaleNodeHandle
+		}
+		titleID, err := host.page.document.CreateElement("title")
+		if err != nil {
+			return err
+		}
+		title, _ = host.page.document.Resolve(titleID)
+		if _, err := host.page.document.AppendChild(headID, title); err != nil {
+			return err
+		}
+	}
+	titleID, ok := host.page.document.ID(title)
+	if !ok {
+		return ErrStaleNodeHandle
+	}
+	if err := host.page.document.SetTextContent(titleID, value); err != nil {
+		return err
+	}
+	return host.page.nodeLifetimes.sync(host.task)
+}
+
 func (host *taskHost) SessionHistorySnapshot() (SessionHistorySnapshot, error) {
 	host.page.mutex.RLock()
 	defer host.page.mutex.RUnlock()

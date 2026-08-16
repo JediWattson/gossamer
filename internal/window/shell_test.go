@@ -14,6 +14,7 @@ import (
 
 	"github.com/JediWattson/gossamer/internal/browser"
 	"github.com/JediWattson/gossamer/internal/browser/fake"
+	"github.com/JediWattson/gossamer/internal/dom"
 	"github.com/JediWattson/gossamer/internal/loader"
 )
 
@@ -70,6 +71,25 @@ func TestGraphiteShellComposesChromeContentRailAndInspector(t *testing.T) {
 	}
 	if got := color.NRGBAModel.Convert(withInspector.At(panel.Min.X+4, panel.Max.Y-20)).(color.NRGBA); got == pageColor {
 		t.Fatal("open inspector did not overlay the content viewport")
+	}
+}
+
+func TestGraphiteTabTitlePrefersLiveDocumentMetadata(t *testing.T) {
+	page, closePage := newShellTestPage(t, shellTestLoader{document: `<html><head><title>Memory Browser</title></head><body></body></html>`})
+	defer closePage()
+	if got := shellTabTitle(page); got != "Memory Browser" {
+		t.Fatalf("shellTabTitle() = %q", got)
+	}
+	title := findWindowTestElement(page.Document().Root(), "title")
+	titleID, ok := page.Document().ID(title)
+	if !ok {
+		t.Fatal("title has no stable ID")
+	}
+	if err := page.Document().SetTextContent(titleID, "Live Route"); err != nil {
+		t.Fatal(err)
+	}
+	if got := shellTabTitle(page); got != "Live Route" {
+		t.Fatalf("live shellTabTitle() = %q", got)
 	}
 }
 
@@ -362,4 +382,19 @@ func newShellTestPage(t *testing.T, client shellTestLoader) (*browser.Page, func
 			t.Errorf("close browser runtime: %v", err)
 		}
 	}
+}
+
+func findWindowTestElement(root *dom.Node, name string) *dom.Node {
+	if root == nil {
+		return nil
+	}
+	if root.Type == dom.ElementNode && root.Data == name {
+		return root
+	}
+	for _, child := range root.Children {
+		if found := findWindowTestElement(child, name); found != nil {
+			return found
+		}
+	}
+	return nil
 }

@@ -139,6 +139,14 @@ func documentLifecycleHost(host browser.Host) (browser.DocumentLifecycleHost, er
 	return lifecycle, nil
 }
 
+func documentPresentationHost(host browser.Host) (browser.DocumentPresentationHost, error) {
+	presentation, ok := host.(browser.DocumentPresentationHost)
+	if !ok {
+		return nil, fmt.Errorf("V8 host does not support document presentation metadata")
+	}
+	return presentation, nil
+}
+
 func sessionHistoryHost(host browser.Host) (browser.SessionHistoryHost, error) {
 	history, ok := host.(browser.SessionHistoryHost)
 	if !ok {
@@ -210,6 +218,42 @@ func goGossamerV8HostDocumentReadyState(
 			return err
 		}
 		return writeHostString(state, valueOut, valueLengthOut)
+	}, executionID)
+}
+
+//export goGossamerV8HostDocumentTitle
+func goGossamerV8HostDocumentTitle(
+	executionID C.uint64_t,
+	valueOut **C.char,
+	valueLengthOut *C.size_t,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		presentation, err := documentPresentationHost(host)
+		if err != nil {
+			return err
+		}
+		title, err := presentation.DocumentTitle()
+		if err != nil {
+			return err
+		}
+		return writeHostString(title, valueOut, valueLengthOut)
+	}, executionID)
+}
+
+//export goGossamerV8HostSetDocumentTitle
+func goGossamerV8HostSetDocumentTitle(
+	executionID C.uint64_t,
+	value *C.char,
+	valueLength C.size_t,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		presentation, err := documentPresentationHost(host)
+		if err != nil {
+			return err
+		}
+		return presentation.SetDocumentTitle(goString(value, valueLength))
 	}, executionID)
 }
 

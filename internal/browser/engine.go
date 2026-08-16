@@ -310,6 +310,13 @@ type DocumentLifecycleHost interface {
 	DocumentReadyState() (string, error)
 }
 
+// DocumentPresentationHost exposes live document metadata without letting an
+// engine retain browser-owned DOM pointers.
+type DocumentPresentationHost interface {
+	DocumentTitle() (string, error)
+	SetDocumentTitle(string) error
+}
+
 // SessionHistoryHost exposes the Page-owned URL and session-history model to
 // one active script task. State crosses this seam as bounded JSON so engine
 // values never become browser-owned pointers.

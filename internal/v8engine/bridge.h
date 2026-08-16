@@ -89,6 +89,10 @@ typedef struct gossamer_v8_host {
                            char **error_out);
   int (*document_ready_state)(uint64_t execution_id, char **value_out,
                               size_t *value_length_out, char **error_out);
+  int (*document_title)(uint64_t execution_id, char **value_out,
+                        size_t *value_length_out, char **error_out);
+  int (*set_document_title)(uint64_t execution_id, const char *value,
+                            size_t value_length, char **error_out);
   int (*session_history_snapshot)(
       uint64_t execution_id, int32_t *length_out, int32_t *index_out,
       char **state_json_out, size_t *state_json_length_out, char **url_out,

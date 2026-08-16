@@ -9,6 +9,12 @@ extern int goGossamerV8HostDocumentMetadata(
 extern int goGossamerV8HostDocumentReadyState(
     uint64_t execution_id, char **value_out, size_t *value_length_out,
     char **error_out);
+extern int goGossamerV8HostDocumentTitle(
+    uint64_t execution_id, char **value_out, size_t *value_length_out,
+    char **error_out);
+extern int goGossamerV8HostSetDocumentTitle(
+    uint64_t execution_id, const char *value, size_t value_length,
+    char **error_out);
 extern int goGossamerV8HostSessionHistorySnapshot(
     uint64_t execution_id, int32_t *length_out, int32_t *index_out,
     char **state_json_out, size_t *state_json_length_out, char **url_out,
@@ -355,6 +361,8 @@ static gossamer_v8_host gossamer_v8_go_host(uint64_t execution_id) {
       .execution_id = execution_id,
       .document_metadata = goGossamerV8HostDocumentMetadata,
       .document_ready_state = goGossamerV8HostDocumentReadyState,
+      .document_title = goGossamerV8HostDocumentTitle,
+      .set_document_title = goGossamerV8HostSetDocumentTitle,
       .session_history_snapshot = goGossamerV8HostSessionHistorySnapshot,
       .location_component = goGossamerV8HostLocationComponent,
       .set_location_component = goGossamerV8HostSetLocationComponent,

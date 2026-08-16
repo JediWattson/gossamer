@@ -2125,6 +2125,65 @@ void DocumentReadyStateGetter(
   info.GetReturnValue().Set(value);
 }
 
+void DocumentTitleGetter(
+    v8::Local<v8::Name>, const v8::PropertyCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  char *title = nullptr;
+  size_t title_length = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->document_title(
+          realm->active_host->execution_id, &title, &title_length,
+          &host_error) == 0) {
+    error = TakeCString(host_error);
+    std::free(title);
+    ThrowError(isolate, error.empty() ? "reading document.title failed"
+                                      : error);
+    return;
+  }
+  std::free(host_error);
+  v8::Local<v8::String> value;
+  bool allocated = NewUTF8String(isolate, title == nullptr ? "" : title,
+                                 title_length, &value);
+  std::free(title);
+  if (!allocated) {
+    ThrowError(isolate, "V8 failed to allocate document.title");
+    return;
+  }
+  info.GetReturnValue().Set(value);
+}
+
+void DocumentTitleSetter(
+    v8::Local<v8::Name>, v8::Local<v8::Value> value,
+    const v8::PropertyCallbackInfo<void> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  v8::Local<v8::String> rendered;
+  if (!value->ToString(isolate->GetCurrentContext()).ToLocal(&rendered))
+    return;
+  std::string title = UTF8Value(isolate, rendered);
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  char *host_error = nullptr;
+  if (realm->active_host->set_document_title(
+          realm->active_host->execution_id, title.data(), title.size(),
+          &host_error) == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate, error.empty() ? "updating document.title failed"
+                                      : error);
+    return;
+  }
+  std::free(host_error);
+}
+
 void DocumentDefaultViewGetter(
     v8::Local<v8::Name>, const v8::PropertyCallbackInfo<v8::Value> &info) {
   info.GetReturnValue().Set(info.GetIsolate()->GetCurrentContext()->Global());
@@ -11682,6 +11741,9 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   document_template->InstanceTemplate()->SetNativeDataProperty(
       v8::String::NewFromUtf8Literal(isolate, "readyState"),
       DocumentReadyStateGetter);
+  document_template->InstanceTemplate()->SetNativeDataProperty(
+      v8::String::NewFromUtf8Literal(isolate, "title"), DocumentTitleGetter,
+      DocumentTitleSetter);
   document_template->InstanceTemplate()->SetNativeDataProperty(
       v8::String::NewFromUtf8Literal(isolate, "location"),
       DocumentLocationGetter);
