@@ -1,0 +1,569 @@
+package nativeengine
+
+import (
+	"errors"
+	"fmt"
+
+	"github.com/JediWattson/gossamer/internal/browser"
+	"github.com/JediWattson/gossamer/internal/dom"
+	browserruntime "github.com/JediWattson/gossamer/internal/runtime"
+	"github.com/JediWattson/gossamer/internal/runtime/memory"
+)
+
+const (
+	nativeEventTargetAdd uint64 = 12_000 + iota
+	nativeEventTargetRemove
+	nativeEventPreventDefault
+	nativeEventStopPropagation
+	nativeEventStopImmediatePropagation
+)
+
+const (
+	eventPhaseNone      = 0
+	eventPhaseCapturing = 1
+	eventPhaseTarget    = 2
+	eventPhaseBubbling  = 3
+)
+
+type eventTargetID struct {
+	Window   bool
+	Document browser.DocumentGeneration
+	Node     dom.NodeID
+}
+
+func nodeEventTarget(handle browser.NodeHandle) eventTargetID {
+	return eventTargetID{Document: handle.Document, Node: handle.Node}
+}
+
+func windowEventTarget(document browser.DocumentGeneration) eventTargetID {
+	return eventTargetID{Window: true, Document: document}
+}
+
+func (target eventTargetID) nodeHandle() browser.NodeHandle {
+	return browser.NodeHandle{Document: target.Document, Node: target.Node}
+}
+
+type eventListenerKey struct {
+	Target eventTargetID
+	Type   string
+}
+
+type eventListener struct {
+	Handle  browser.ValueHandle
+	Capture bool
+	Once    bool
+	Passive bool
+}
+
+type eventState struct {
+	object             memory.Ref
+	defaultPrevented   bool
+	propagationStopped bool
+	immediateStopped   bool
+	passive            bool
+	cancelable         bool
+}
+
+type eventListenerOptions struct {
+	capture bool
+	once    bool
+	passive bool
+}
+
+func (realm *Realm) eventTargetAdd(context *browserruntime.TaskContext, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+	eventType, err := stringArgument(context, arguments, 0)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	callback := argument(arguments, 1)
+	if callback.Kind() == memory.ValueNull || callback.Kind() == memory.ValueUndefined {
+		return memory.UndefinedValue(), nil
+	}
+	if err := requireFunction(context, callback); err != nil {
+		return memory.Value{}, err
+	}
+	target, err := realm.eventTarget(context, this)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	options, err := listenerOptions(context, argument(arguments, 2))
+	if err != nil {
+		return memory.Value{}, err
+	}
+	key := eventListenerKey{Target: target, Type: eventType}
+	for _, listener := range realm.listeners[key] {
+		if listener.Capture != options.capture {
+			continue
+		}
+		retained, found, lookupErr := realm.callbackLocked(context, listener.Handle)
+		if lookupErr != nil {
+			return memory.Value{}, lookupErr
+		}
+		if found && retained == callback {
+			return memory.UndefinedValue(), nil
+		}
+	}
+	handle, err := realm.retainCallbackLocked(context, callback)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	if !target.Window && realm.listenerTargets[target] == 0 {
+		lifetime, ok := realm.host.(browser.NodeEventListenerLifetimeHost)
+		if !ok {
+			_, _ = context.MapDelete(realm.bindings.callbackCache, memory.NumberValue(float64(handle)))
+			return memory.Value{}, fmt.Errorf("nativeengine: browser host does not expose event listener lifetimes")
+		}
+		if err := lifetime.RetainNodeEventTarget(target.nodeHandle()); err != nil {
+			_, _ = context.MapDelete(realm.bindings.callbackCache, memory.NumberValue(float64(handle)))
+			return memory.Value{}, err
+		}
+	}
+	realm.listeners[key] = append(realm.listeners[key], eventListener{
+		Handle: handle, Capture: options.capture, Once: options.once, Passive: options.passive,
+	})
+	realm.listenerTargets[target]++
+	return memory.UndefinedValue(), nil
+}
+
+func (realm *Realm) eventTargetRemove(context *browserruntime.TaskContext, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+	eventType, err := stringArgument(context, arguments, 0)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	callback := argument(arguments, 1)
+	if callback.Kind() == memory.ValueNull || callback.Kind() == memory.ValueUndefined {
+		return memory.UndefinedValue(), nil
+	}
+	if err := requireFunction(context, callback); err != nil {
+		return memory.UndefinedValue(), nil
+	}
+	target, err := realm.eventTarget(context, this)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	options, err := listenerOptions(context, argument(arguments, 2))
+	if err != nil {
+		return memory.Value{}, err
+	}
+	key := eventListenerKey{Target: target, Type: eventType}
+	for _, listener := range realm.listeners[key] {
+		if listener.Capture != options.capture {
+			continue
+		}
+		retained, found, lookupErr := realm.callbackLocked(context, listener.Handle)
+		if lookupErr != nil {
+			return memory.Value{}, lookupErr
+		}
+		if found && retained == callback {
+			return memory.UndefinedValue(), realm.removeEventListenerLocked(context, key, listener.Handle)
+		}
+	}
+	return memory.UndefinedValue(), nil
+}
+
+func (realm *Realm) eventPreventDefault(context *browserruntime.TaskContext, this memory.Value, _ []memory.Value) (memory.Value, error) {
+	state, err := realm.currentEvent(this)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	if state.cancelable && !state.passive {
+		state.defaultPrevented = true
+		if err := setDataValue(context, state.object, "defaultPrevented", memory.BoolValue(true)); err != nil {
+			return memory.Value{}, err
+		}
+	}
+	return memory.UndefinedValue(), nil
+}
+
+func (realm *Realm) eventStopPropagation(_ *browserruntime.TaskContext, this memory.Value, _ []memory.Value) (memory.Value, error) {
+	state, err := realm.currentEvent(this)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	state.propagationStopped = true
+	return memory.UndefinedValue(), nil
+}
+
+func (realm *Realm) eventStopImmediatePropagation(_ *browserruntime.TaskContext, this memory.Value, _ []memory.Value) (memory.Value, error) {
+	state, err := realm.currentEvent(this)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	state.propagationStopped = true
+	state.immediateStopped = true
+	return memory.UndefinedValue(), nil
+}
+
+func (realm *Realm) currentEvent(this memory.Value) (*eventState, error) {
+	if realm.activeEvent == nil || !this.IsRef() || this.Ref() != realm.activeEvent.object {
+		return nil, fmt.Errorf("%w: Event method called with an invalid receiver", browserruntime.ErrOperandType)
+	}
+	return realm.activeEvent, nil
+}
+
+func (realm *Realm) dispatchEventLocked(context *browserruntime.TaskContext, input browser.InputEvent) (browser.EventDispatchResult, error) {
+	if input.Type.String() == "" || input.Target.Node == dom.InvalidNodeID {
+		return browser.EventDispatchResult{}, fmt.Errorf("nativeengine: invalid input event")
+	}
+	path, err := realm.eventPath(context, input.Target)
+	if err != nil {
+		return browser.EventDispatchResult{}, err
+	}
+	event, err := realm.newInputEvent(context, input)
+	if err != nil {
+		return browser.EventDispatchResult{}, err
+	}
+	state := &eventState{object: event, cancelable: inputEventCancelable(input.Type)}
+	realm.activeEvent = state
+	defer func() { realm.activeEvent = nil }()
+
+	eventType := input.Type.String()
+	var dispatchErr error
+	reachedTarget := true
+	for index := len(path) - 1; index >= 1; index-- {
+		dispatchErr = errors.Join(dispatchErr, realm.invokeEventTargetLocked(context, path[index], eventType, event, eventPhaseCapturing, true))
+		if state.propagationStopped {
+			reachedTarget = false
+			break
+		}
+	}
+	if reachedTarget {
+		dispatchErr = errors.Join(dispatchErr, realm.invokeEventTargetLocked(context, path[0], eventType, event, eventPhaseTarget, true))
+		if !state.immediateStopped {
+			dispatchErr = errors.Join(dispatchErr, realm.invokeEventTargetLocked(context, path[0], eventType, event, eventPhaseTarget, false))
+		}
+		if inputEventBubbles(input.Type) && !state.propagationStopped {
+			for index := 1; index < len(path); index++ {
+				dispatchErr = errors.Join(dispatchErr, realm.invokeEventTargetLocked(context, path[index], eventType, event, eventPhaseBubbling, false))
+				if state.propagationStopped {
+					break
+				}
+			}
+		}
+	}
+	state.passive = false
+	if err := setDataValue(context, event, "currentTarget", memory.NullValue()); err != nil {
+		dispatchErr = errors.Join(dispatchErr, err)
+	}
+	if err := setDataValue(context, event, "eventPhase", memory.NumberValue(eventPhaseNone)); err != nil {
+		dispatchErr = errors.Join(dispatchErr, err)
+	}
+	return browser.EventDispatchResult{DefaultPrevented: state.defaultPrevented}, dispatchErr
+}
+
+func (realm *Realm) eventPath(context *browserruntime.TaskContext, target browser.NodeHandle) ([]eventTargetID, error) {
+	host, ok := realm.host.(browser.DOMElementHost)
+	if !ok {
+		return nil, fmt.Errorf("nativeengine: browser host does not expose event traversal")
+	}
+	path := []eventTargetID{nodeEventTarget(target)}
+	cursor := target
+	for {
+		parent, found, err := host.RelatedNode(cursor, browser.RelationParentNode)
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			break
+		}
+		path = append(path, nodeEventTarget(parent))
+		cursor = parent
+	}
+	documentHost, ok := realm.host.(browser.DOMDocumentHost)
+	if !ok {
+		return nil, fmt.Errorf("nativeengine: browser host does not expose document metadata")
+	}
+	metadata, err := documentHost.DocumentMetadata()
+	if err != nil {
+		return nil, err
+	}
+	if path[len(path)-1] == nodeEventTarget(metadata.Root) {
+		path = append(path, windowEventTarget(metadata.Root.Document))
+	}
+	return path, nil
+}
+
+func (realm *Realm) invokeEventTargetLocked(
+	context *browserruntime.TaskContext,
+	target eventTargetID,
+	eventType string,
+	event memory.Ref,
+	phase int,
+	capture bool,
+) error {
+	state := realm.activeEvent
+	if state == nil {
+		return fmt.Errorf("nativeengine: event dispatch state is unavailable")
+	}
+	targetValue, err := realm.eventTargetValue(context, target)
+	if err != nil {
+		return err
+	}
+	if err := setDataValue(context, event, "currentTarget", targetValue); err != nil {
+		return err
+	}
+	if err := setDataValue(context, event, "eventPhase", memory.NumberValue(float64(phase))); err != nil {
+		return err
+	}
+	key := eventListenerKey{Target: target, Type: eventType}
+	snapshot := append([]eventListener(nil), realm.listeners[key]...)
+	var result error
+	for _, candidate := range snapshot {
+		listener, found := realm.liveEventListener(key, candidate.Handle)
+		if !found || listener.Capture != capture {
+			continue
+		}
+		callback, found, lookupErr := realm.callbackLocked(context, listener.Handle)
+		if lookupErr != nil {
+			result = errors.Join(result, lookupErr)
+			continue
+		}
+		if !found || !callback.IsRef() {
+			continue
+		}
+		if listener.Once {
+			if removeErr := realm.removeEventListenerLocked(context, key, listener.Handle); removeErr != nil {
+				result = errors.Join(result, removeErr)
+				continue
+			}
+		}
+		state.passive = listener.Passive
+		_, callErr := realm.interpreter.CallWithoutCheckpoint(context, callback.Ref(), targetValue, memory.RefValue(event))
+		state.passive = false
+		result = errors.Join(result, callErr)
+		if state.immediateStopped {
+			break
+		}
+	}
+	return result
+}
+
+func (realm *Realm) liveEventListener(key eventListenerKey, handle browser.ValueHandle) (eventListener, bool) {
+	for _, listener := range realm.listeners[key] {
+		if listener.Handle == handle {
+			return listener, true
+		}
+	}
+	return eventListener{}, false
+}
+
+func (realm *Realm) removeEventListenerLocked(context *browserruntime.TaskContext, key eventListenerKey, handle browser.ValueHandle) error {
+	listeners := realm.listeners[key]
+	index := -1
+	for candidate, listener := range listeners {
+		if listener.Handle == handle {
+			index = candidate
+			break
+		}
+	}
+	if index < 0 {
+		return nil
+	}
+	copy(listeners[index:], listeners[index+1:])
+	listeners[len(listeners)-1] = eventListener{}
+	listeners = listeners[:len(listeners)-1]
+	if len(listeners) == 0 {
+		delete(realm.listeners, key)
+	} else {
+		realm.listeners[key] = listeners
+	}
+	if _, err := context.MapDelete(realm.bindings.callbackCache, memory.NumberValue(float64(handle))); err != nil {
+		return err
+	}
+	count := realm.listenerTargets[key.Target]
+	if count <= 1 {
+		delete(realm.listenerTargets, key.Target)
+		if !key.Target.Window {
+			lifetime, ok := realm.host.(browser.NodeEventListenerLifetimeHost)
+			if !ok {
+				return fmt.Errorf("nativeengine: browser host does not expose event listener lifetimes")
+			}
+			return lifetime.ReleaseNodeEventTarget(key.Target.nodeHandle())
+		}
+	} else {
+		realm.listenerTargets[key.Target] = count - 1
+	}
+	return nil
+}
+
+func (realm *Realm) callbackLocked(context *browserruntime.TaskContext, handle browser.ValueHandle) (memory.Value, bool, error) {
+	if handle == 0 || realm.bindings == nil {
+		return memory.Value{}, false, nil
+	}
+	return context.MapGet(realm.bindings.callbackCache, memory.NumberValue(float64(handle)))
+}
+
+func (realm *Realm) eventTarget(context *browserruntime.TaskContext, value memory.Value) (eventTargetID, error) {
+	if value.IsRef() && realm.bindings != nil && value.Ref() == realm.bindings.window {
+		documentHost, ok := realm.host.(browser.DOMDocumentHost)
+		if !ok {
+			return eventTargetID{}, fmt.Errorf("nativeengine: browser host does not expose document metadata")
+		}
+		metadata, err := documentHost.DocumentMetadata()
+		if err != nil {
+			return eventTargetID{}, err
+		}
+		return windowEventTarget(metadata.Root.Document), nil
+	}
+	handle, err := realm.unwrapNode(context, value)
+	if err != nil {
+		return eventTargetID{}, err
+	}
+	return nodeEventTarget(handle), nil
+}
+
+func (realm *Realm) eventTargetValue(context *browserruntime.TaskContext, target eventTargetID) (memory.Value, error) {
+	if target.Window {
+		return memory.RefValue(realm.bindings.window), nil
+	}
+	return realm.wrappedNodeValue(context, target.nodeHandle())
+}
+
+func (realm *Realm) newInputEvent(context *browserruntime.TaskContext, input browser.InputEvent) (memory.Ref, error) {
+	event, err := context.NewHeapObject()
+	if err != nil {
+		return memory.Ref{}, err
+	}
+	if err := context.SetPrototype(event, memory.RefValue(realm.bindings.eventPrototype)); err != nil {
+		return memory.Ref{}, err
+	}
+	target, err := realm.wrappedNodeValue(context, input.Target)
+	if err != nil {
+		return memory.Ref{}, err
+	}
+	related := memory.NullValue()
+	if input.RelatedTarget.Node != dom.InvalidNodeID {
+		related, err = realm.wrappedNodeValue(context, input.RelatedTarget)
+		if err != nil {
+			return memory.Ref{}, err
+		}
+	}
+	typeValue, err := newString(context, input.Type.String())
+	if err != nil {
+		return memory.Ref{}, err
+	}
+	pointerType, err := newString(context, input.PointerType)
+	if err != nil {
+		return memory.Ref{}, err
+	}
+	key, err := newString(context, input.Key)
+	if err != nil {
+		return memory.Ref{}, err
+	}
+	code, err := newString(context, input.Code)
+	if err != nil {
+		return memory.Ref{}, err
+	}
+	data, err := newString(context, input.Data)
+	if err != nil {
+		return memory.Ref{}, err
+	}
+	inputType, err := newString(context, input.InputType)
+	if err != nil {
+		return memory.Ref{}, err
+	}
+	properties := []struct {
+		name  string
+		value memory.Value
+	}{
+		{"type", typeValue},
+		{"target", target},
+		{"currentTarget", memory.NullValue()},
+		{"relatedTarget", related},
+		{"eventPhase", memory.NumberValue(eventPhaseNone)},
+		{"bubbles", memory.BoolValue(inputEventBubbles(input.Type))},
+		{"cancelable", memory.BoolValue(inputEventCancelable(input.Type))},
+		{"defaultPrevented", memory.BoolValue(false)},
+		{"isTrusted", memory.BoolValue(true)},
+		{"clientX", memory.NumberValue(input.X)},
+		{"clientY", memory.NumberValue(input.Y)},
+		{"button", memory.NumberValue(float64(input.Button))},
+		{"buttons", memory.NumberValue(float64(input.Buttons))},
+		{"pointerId", memory.NumberValue(float64(input.PointerID))},
+		{"pointerType", pointerType},
+		{"isPrimary", memory.BoolValue(input.IsPrimary)},
+		{"key", key},
+		{"code", code},
+		{"data", data},
+		{"inputType", inputType},
+		{"repeat", memory.BoolValue(input.Repeat)},
+		{"isComposing", memory.BoolValue(input.IsComposing)},
+		{"altKey", memory.BoolValue(input.AltKey)},
+		{"ctrlKey", memory.BoolValue(input.CtrlKey)},
+		{"metaKey", memory.BoolValue(input.MetaKey)},
+		{"shiftKey", memory.BoolValue(input.ShiftKey)},
+	}
+	for _, property := range properties {
+		if err := defineData(context, event, property.name, property.value, true, true, true); err != nil {
+			return memory.Ref{}, err
+		}
+	}
+	return event, nil
+}
+
+func listenerOptions(context *browserruntime.TaskContext, value memory.Value) (eventListenerOptions, error) {
+	options := eventListenerOptions{}
+	if value.Kind() == memory.ValueBool {
+		options.capture = value.Bool()
+		return options, nil
+	}
+	if !value.IsRef() {
+		return options, nil
+	}
+	kind, err := context.HeapKind(value.Ref())
+	if err != nil {
+		return options, err
+	}
+	if kind != memory.HeapObject {
+		return options, nil
+	}
+	for _, option := range []struct {
+		name        string
+		destination *bool
+	}{
+		{"capture", &options.capture},
+		{"once", &options.once},
+		{"passive", &options.passive},
+	} {
+		name, err := context.NewString(option.name)
+		if err != nil {
+			return options, err
+		}
+		property, found, err := context.GetOwnProperty(value.Ref(), name)
+		if err != nil {
+			return options, err
+		}
+		if found {
+			*option.destination = truthy(property)
+		}
+	}
+	return options, nil
+}
+
+func setDataValue(context *browserruntime.TaskContext, object memory.Ref, name string, value memory.Value) error {
+	nameRef, err := context.NewString(name)
+	if err != nil {
+		return err
+	}
+	return context.SetProperty(object, nameRef, value)
+}
+
+func inputEventBubbles(eventType browser.InputEventType) bool {
+	switch eventType {
+	case browser.InputPointerEnter, browser.InputPointerLeave, browser.InputFocus, browser.InputBlur, browser.InputScroll, browser.InputResize:
+		return false
+	default:
+		return true
+	}
+}
+
+func inputEventCancelable(eventType browser.InputEventType) bool {
+	switch eventType {
+	case browser.InputInput, browser.InputFocus, browser.InputBlur, browser.InputFocusIn, browser.InputFocusOut,
+		browser.InputChange, browser.InputCompositionStart, browser.InputCompositionUpdate, browser.InputCompositionEnd,
+		browser.InputScroll, browser.InputResize:
+		return false
+	default:
+		return true
+	}
+}
