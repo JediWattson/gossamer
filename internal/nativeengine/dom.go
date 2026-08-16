@@ -58,6 +58,7 @@ const (
 	bindingElementPrototype  = "\x00gossamer.element.prototype"
 	bindingTextPrototype     = "\x00gossamer.text.prototype"
 	bindingWrapperCache      = "\x00gossamer.wrapper.cache"
+	bindingCallbackCache     = "\x00gossamer.callback.cache"
 	bindingWindow            = "window"
 	bindingSelf              = "self"
 	bindingDocument          = "document"
@@ -71,6 +72,7 @@ type browserBindings struct {
 	elementPrototype  memory.Ref
 	textPrototype     memory.Ref
 	wrapperCache      memory.Ref
+	callbackCache     memory.Ref
 	window            memory.Ref
 	document          memory.Ref
 }
@@ -115,6 +117,8 @@ func (realm *Realm) installBrowserNatives() error {
 		{nativeElementQuerySelectorAll, realm.elementQuerySelector(true)},
 		{nativeElementMatches, realm.elementMatches},
 		{nativeElementClosest, realm.elementClosest},
+		{nativeGlobalSetTimeout, realm.globalSetTimeout},
+		{nativeGlobalClearTimeout, realm.globalClearTimeout},
 	}
 	for _, registration := range registrations {
 		if err := realm.interpreter.RegisterNative(registration.id, registration.callback); err != nil {
@@ -142,6 +146,7 @@ func (realm *Realm) prepareBrowserBindingsLocked(context *browserruntime.TaskCon
 			{bindingElementPrototype, &bindings.elementPrototype},
 			{bindingTextPrototype, &bindings.textPrototype},
 			{bindingWrapperCache, &bindings.wrapperCache},
+			{bindingCallbackCache, &bindings.callbackCache},
 		} {
 			ref, exists, lookupErr := globalRef(context, realm.active.Global, item.name)
 			if lookupErr != nil {
@@ -193,6 +198,10 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 	if err != nil {
 		return err
 	}
+	bindings.callbackCache, err = context.NewMap()
+	if err != nil {
+		return err
+	}
 	realm.bindings = bindings
 	if err := realm.installDOMPrototypeProperties(context); err != nil {
 		return err
@@ -210,6 +219,14 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 	if err != nil {
 		return err
 	}
+	setTimeout, err := realm.newNativeFunction(context, "setTimeout", 2, nativeGlobalSetTimeout)
+	if err != nil {
+		return err
+	}
+	clearTimeout, err := realm.newNativeFunction(context, "clearTimeout", 1, nativeGlobalClearTimeout)
+	if err != nil {
+		return err
+	}
 	for _, property := range []struct {
 		name  string
 		value memory.Value
@@ -218,6 +235,8 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{"self", memory.RefValue(bindings.window)},
 		{"document", memory.RefValue(bindings.document)},
 		{"queueMicrotask", memory.RefValue(realm.active.QueueMicrotask)},
+		{"setTimeout", memory.RefValue(setTimeout)},
+		{"clearTimeout", memory.RefValue(clearTimeout)},
 	} {
 		if err := defineData(context, bindings.window, property.name, property.value, true, false, true); err != nil {
 			return err
@@ -234,9 +253,12 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{bindingElementPrototype, bindings.elementPrototype, false},
 		{bindingTextPrototype, bindings.textPrototype, false},
 		{bindingWrapperCache, bindings.wrapperCache, false},
+		{bindingCallbackCache, bindings.callbackCache, false},
 		{bindingWindow, bindings.window, false},
 		{bindingSelf, bindings.window, false},
 		{bindingDocument, bindings.document, false},
+		{"setTimeout", setTimeout, true},
+		{"clearTimeout", clearTimeout, true},
 	} {
 		if err := declareGlobal(context, realm.active.Global, binding.name, memory.RefValue(binding.value), binding.mutable); err != nil {
 			return err
@@ -329,6 +351,10 @@ func (realm *Realm) installDOMPrototypeProperties(context *browserruntime.TaskCo
 }
 
 func (realm *Realm) newAccessorFunction(context *browserruntime.TaskContext, name string, id uint64, arity uint32) (memory.Ref, error) {
+	return realm.newNativeFunction(context, name, arity, id)
+}
+
+func (realm *Realm) newNativeFunction(context *browserruntime.TaskContext, name string, arity uint32, id uint64) (memory.Ref, error) {
 	nameValue, err := newString(context, name)
 	if err != nil {
 		return memory.Ref{}, err

@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/JediWattson/gossamer/internal/browser"
 	"github.com/JediWattson/gossamer/internal/dom"
@@ -194,6 +195,58 @@ if (document.getElementById("clone") !== null) {
 }
 `)
 
+	if err := page.Realm.Store().CheckInvariants(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNativeRealmRetainsTimerCallbacksAcrossTaskCheckpoints(t *testing.T) {
+	t.Parallel()
+
+	scriptEngine := nativeengine.New(nativeengine.Config{})
+	browserRuntime, err := browser.NewWithEngine(scriptEngine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer browserRuntime.Close()
+	location, _ := url.Parse("https://gossamer.test/native-timer/")
+	page, err := browserRuntime.NewPage(dom.NewDocument(), location)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer page.Close()
+
+	if _, err := page.QueueScript(browser.ScriptSource{URL: "schedule.js", Source: `
+let timerValue = 0;
+let canceled = setTimeout(function () { timerValue = 1000; }, 60000);
+clearTimeout(canceled);
+let captured = 40;
+setTimeout(function () {
+  timerValue = captured + 2;
+  queueMicrotask(function () { timerValue = timerValue + 1; });
+}, 0);
+`}); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	timerContext, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := page.Realm.RunOne(timerContext); err != nil {
+		t.Fatalf("run timer callback: %v", err)
+	}
+	if _, err := page.QueueScript(browser.ScriptSource{URL: "verify.js", Source: `
+if (timerValue !== 43) {
+  throw new Error("timer closure or microtask checkpoint was lost");
+}
+`}); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 	if err := page.Realm.Store().CheckInvariants(); err != nil {
 		t.Fatal(err)
 	}
