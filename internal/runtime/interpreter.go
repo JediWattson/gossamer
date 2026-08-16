@@ -31,6 +31,16 @@ type InterpreterConfig struct {
 // heap payloads retain only its numeric ID, never this Go function value.
 type NativeFunction func(*TaskContext, memory.Value, []memory.Value) (memory.Value, error)
 
+// PropertyInterceptor supplies embedder-owned named properties for ordinary
+// heap Objects after their own and inherited descriptors have been checked.
+// Handled distinguishes an absent intercepted property from an Object that is
+// not owned by this interceptor. Heap payloads retain no Go callback pointer.
+type PropertyInterceptor struct {
+	Get    func(*TaskContext, memory.Ref, string) (value memory.Value, found, handled bool, err error)
+	Set    func(*TaskContext, memory.Ref, string, memory.Value) (handled bool, err error)
+	Delete func(*TaskContext, memory.Ref, string) (deleted, handled bool, err error)
+}
+
 type nativeFunction func(*execution, memory.Ref, memory.Function, memory.Value, []memory.Value) (memory.Value, error)
 
 // ThrownError carries an interpreter Value through Go call frames without
@@ -68,6 +78,7 @@ type Interpreter struct {
 
 	nativeMutex sync.RWMutex
 	natives     map[uint64]nativeFunction
+	properties  []PropertyInterceptor
 	builtinOnce sync.Once
 	builtinErr  error
 
@@ -101,6 +112,29 @@ func (interpreter *Interpreter) RegisterNative(id uint64, function NativeFunctio
 		return function(execution.context, this, arguments)
 	}
 	return nil
+}
+
+// RegisterPropertyInterceptor adds one execution-scoped embedder property
+// provider. Interceptors are queried in registration order only when ordinary
+// descriptor lookup did not resolve the name.
+func (interpreter *Interpreter) RegisterPropertyInterceptor(interceptor PropertyInterceptor) error {
+	if interpreter == nil {
+		return fmt.Errorf("runtime: nil interpreter")
+	}
+	if interceptor.Get == nil && interceptor.Set == nil && interceptor.Delete == nil {
+		return fmt.Errorf("runtime: empty property interceptor")
+	}
+	interpreter.nativeMutex.Lock()
+	interpreter.properties = append(interpreter.properties, interceptor)
+	interpreter.nativeMutex.Unlock()
+	return nil
+}
+
+func (interpreter *Interpreter) propertyInterceptors() []PropertyInterceptor {
+	interpreter.nativeMutex.RLock()
+	result := append([]PropertyInterceptor(nil), interpreter.properties...)
+	interpreter.nativeMutex.RUnlock()
+	return result
 }
 
 func (interpreter *Interpreter) registerNative(id uint64, function nativeFunction) error {

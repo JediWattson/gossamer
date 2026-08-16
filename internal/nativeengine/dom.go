@@ -60,41 +60,79 @@ const (
 	nativeNodeReplaceChild
 	nativeNodeNormalize
 	nativeTextSplitText
+	nativeElementGetAttributeNames
+	nativeElementClassNameGet
+	nativeElementClassNameSet
+	nativeElementClassList
+	nativeElementDataset
+	nativeElementInnerHTMLGet
+	nativeElementInnerHTMLSet
+	nativeElementInsertAdjacentHTML
+	nativeElementStyle
+	nativeClassListValue
+	nativeClassListLength
+	nativeClassListAdd
+	nativeClassListRemove
+	nativeClassListContains
+	nativeClassListToggle
+	nativeClassListItem
+	nativeClassListToString
+	nativeStyleCSSTextGet
+	nativeStyleCSSTextSet
+	nativeStyleLength
+	nativeStyleGetPropertyValue
+	nativeStyleGetPropertyPriority
+	nativeStyleSetProperty
+	nativeStyleRemoveProperty
+	nativeStyleItem
 )
 
 const (
 	hostClassWindow memory.HostClass = iota + 1
 	hostClassNode
+	hostClassClassList
+	hostClassDataset
+	hostClassStyle
 )
 
 const (
-	bindingWindowPrototype   = "\x00gossamer.window.prototype"
-	bindingDocumentPrototype = "\x00gossamer.document.prototype"
-	bindingNodePrototype     = "\x00gossamer.node.prototype"
-	bindingElementPrototype  = "\x00gossamer.element.prototype"
-	bindingTextPrototype     = "\x00gossamer.text.prototype"
-	bindingFragmentPrototype = "\x00gossamer.fragment.prototype"
-	bindingEventPrototype    = "\x00gossamer.event.prototype"
-	bindingWrapperCache      = "\x00gossamer.wrapper.cache"
-	bindingCallbackCache     = "\x00gossamer.callback.cache"
-	bindingWindow            = "window"
-	bindingSelf              = "self"
-	bindingDocument          = "document"
-	hostRecordProperty       = "\x00gossamer.host.record"
+	bindingWindowPrototype    = "\x00gossamer.window.prototype"
+	bindingDocumentPrototype  = "\x00gossamer.document.prototype"
+	bindingNodePrototype      = "\x00gossamer.node.prototype"
+	bindingElementPrototype   = "\x00gossamer.element.prototype"
+	bindingTextPrototype      = "\x00gossamer.text.prototype"
+	bindingFragmentPrototype  = "\x00gossamer.fragment.prototype"
+	bindingEventPrototype     = "\x00gossamer.event.prototype"
+	bindingClassListPrototype = "\x00gossamer.class-list.prototype"
+	bindingDatasetPrototype   = "\x00gossamer.dataset.prototype"
+	bindingStylePrototype     = "\x00gossamer.style.prototype"
+	bindingWrapperCache       = "\x00gossamer.wrapper.cache"
+	bindingCallbackCache      = "\x00gossamer.callback.cache"
+	bindingFacadeCache        = "\x00gossamer.facade.cache"
+	bindingCollectionCache    = "\x00gossamer.collection.cache"
+	bindingWindow             = "window"
+	bindingSelf               = "self"
+	bindingDocument           = "document"
+	hostRecordProperty        = "\x00gossamer.host.record"
 )
 
 type browserBindings struct {
-	windowPrototype   memory.Ref
-	documentPrototype memory.Ref
-	nodePrototype     memory.Ref
-	elementPrototype  memory.Ref
-	textPrototype     memory.Ref
-	fragmentPrototype memory.Ref
-	eventPrototype    memory.Ref
-	wrapperCache      memory.Ref
-	callbackCache     memory.Ref
-	window            memory.Ref
-	document          memory.Ref
+	windowPrototype    memory.Ref
+	documentPrototype  memory.Ref
+	nodePrototype      memory.Ref
+	elementPrototype   memory.Ref
+	textPrototype      memory.Ref
+	fragmentPrototype  memory.Ref
+	eventPrototype     memory.Ref
+	classListPrototype memory.Ref
+	datasetPrototype   memory.Ref
+	stylePrototype     memory.Ref
+	wrapperCache       memory.Ref
+	callbackCache      memory.Ref
+	facadeCache        memory.Ref
+	collectionCache    memory.Ref
+	window             memory.Ref
+	document           memory.Ref
 }
 
 type nativeRegistration struct {
@@ -152,6 +190,31 @@ func (realm *Realm) installBrowserNatives() error {
 		{nativeNodeReplaceChild, realm.nodeReplaceChild},
 		{nativeNodeNormalize, realm.nodeNormalize},
 		{nativeTextSplitText, realm.textSplitText},
+		{nativeElementGetAttributeNames, realm.elementGetAttributeNames},
+		{nativeElementClassNameGet, realm.elementClassNameGet},
+		{nativeElementClassNameSet, realm.elementClassNameSet},
+		{nativeElementClassList, realm.elementClassList},
+		{nativeElementDataset, realm.elementDataset},
+		{nativeElementInnerHTMLGet, realm.elementInnerHTMLGet},
+		{nativeElementInnerHTMLSet, realm.elementInnerHTMLSet},
+		{nativeElementInsertAdjacentHTML, realm.elementInsertAdjacentHTML},
+		{nativeElementStyle, realm.elementStyle},
+		{nativeClassListValue, realm.classListValue},
+		{nativeClassListLength, realm.classListLength},
+		{nativeClassListAdd, realm.classListAdd},
+		{nativeClassListRemove, realm.classListRemove},
+		{nativeClassListContains, realm.classListContains},
+		{nativeClassListToggle, realm.classListToggle},
+		{nativeClassListItem, realm.classListItem},
+		{nativeClassListToString, realm.classListToString},
+		{nativeStyleCSSTextGet, realm.styleCSSTextGet},
+		{nativeStyleCSSTextSet, realm.styleCSSTextSet},
+		{nativeStyleLength, realm.styleLength},
+		{nativeStyleGetPropertyValue, realm.styleGetPropertyValue},
+		{nativeStyleGetPropertyPriority, realm.styleGetPropertyPriority},
+		{nativeStyleSetProperty, realm.styleSetProperty},
+		{nativeStyleRemoveProperty, realm.styleRemoveProperty},
+		{nativeStyleItem, realm.styleItem},
 		{nativeGlobalSetTimeout, realm.globalSetTimeout},
 		{nativeGlobalClearTimeout, realm.globalClearTimeout},
 		{nativeEventTargetAdd, realm.eventTargetAdd},
@@ -165,7 +228,9 @@ func (realm *Realm) installBrowserNatives() error {
 			return err
 		}
 	}
-	return nil
+	return realm.interpreter.RegisterPropertyInterceptor(browserruntime.PropertyInterceptor{
+		Get: realm.facadePropertyGet, Set: realm.facadePropertySet, Delete: realm.facadePropertyDelete,
+	})
 }
 
 func (realm *Realm) prepareBrowserBindingsLocked(context *browserruntime.TaskContext) error {
@@ -187,8 +252,13 @@ func (realm *Realm) prepareBrowserBindingsLocked(context *browserruntime.TaskCon
 			{bindingTextPrototype, &bindings.textPrototype},
 			{bindingFragmentPrototype, &bindings.fragmentPrototype},
 			{bindingEventPrototype, &bindings.eventPrototype},
+			{bindingClassListPrototype, &bindings.classListPrototype},
+			{bindingDatasetPrototype, &bindings.datasetPrototype},
+			{bindingStylePrototype, &bindings.stylePrototype},
 			{bindingWrapperCache, &bindings.wrapperCache},
 			{bindingCallbackCache, &bindings.callbackCache},
+			{bindingFacadeCache, &bindings.facadeCache},
+			{bindingCollectionCache, &bindings.collectionCache},
 		} {
 			ref, exists, lookupErr := globalRef(context, realm.active.Global, item.name)
 			if lookupErr != nil {
@@ -223,6 +293,9 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		&bindings.textPrototype,
 		&bindings.fragmentPrototype,
 		&bindings.eventPrototype,
+		&bindings.classListPrototype,
+		&bindings.datasetPrototype,
+		&bindings.stylePrototype,
 	} {
 		*destination, err = context.NewHeapObject()
 		if err != nil {
@@ -246,6 +319,14 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		return err
 	}
 	bindings.callbackCache, err = context.NewMap()
+	if err != nil {
+		return err
+	}
+	bindings.facadeCache, err = context.NewMap()
+	if err != nil {
+		return err
+	}
+	bindings.collectionCache, err = context.NewMap()
 	if err != nil {
 		return err
 	}
@@ -301,8 +382,13 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{bindingTextPrototype, bindings.textPrototype, false},
 		{bindingFragmentPrototype, bindings.fragmentPrototype, false},
 		{bindingEventPrototype, bindings.eventPrototype, false},
+		{bindingClassListPrototype, bindings.classListPrototype, false},
+		{bindingDatasetPrototype, bindings.datasetPrototype, false},
+		{bindingStylePrototype, bindings.stylePrototype, false},
 		{bindingWrapperCache, bindings.wrapperCache, false},
 		{bindingCallbackCache, bindings.callbackCache, false},
+		{bindingFacadeCache, bindings.facadeCache, false},
+		{bindingCollectionCache, bindings.collectionCache, false},
 		{bindingWindow, bindings.window, false},
 		{bindingSelf, bindings.window, false},
 		{bindingDocument, bindings.document, false},
@@ -346,6 +432,19 @@ func (realm *Realm) installDOMPrototypeProperties(context *browserruntime.TaskCo
 		{realm.bindings.elementPrototype, "querySelectorAll", 1, nativeElementQuerySelectorAll},
 		{realm.bindings.elementPrototype, "matches", 1, nativeElementMatches},
 		{realm.bindings.elementPrototype, "closest", 1, nativeElementClosest},
+		{realm.bindings.elementPrototype, "getAttributeNames", 0, nativeElementGetAttributeNames},
+		{realm.bindings.elementPrototype, "insertAdjacentHTML", 2, nativeElementInsertAdjacentHTML},
+		{realm.bindings.classListPrototype, "add", 1, nativeClassListAdd},
+		{realm.bindings.classListPrototype, "remove", 1, nativeClassListRemove},
+		{realm.bindings.classListPrototype, "contains", 1, nativeClassListContains},
+		{realm.bindings.classListPrototype, "toggle", 1, nativeClassListToggle},
+		{realm.bindings.classListPrototype, "item", 1, nativeClassListItem},
+		{realm.bindings.classListPrototype, "toString", 0, nativeClassListToString},
+		{realm.bindings.stylePrototype, "getPropertyValue", 1, nativeStyleGetPropertyValue},
+		{realm.bindings.stylePrototype, "getPropertyPriority", 1, nativeStyleGetPropertyPriority},
+		{realm.bindings.stylePrototype, "setProperty", 2, nativeStyleSetProperty},
+		{realm.bindings.stylePrototype, "removeProperty", 1, nativeStyleRemoveProperty},
+		{realm.bindings.stylePrototype, "item", 1, nativeStyleItem},
 		{realm.bindings.nodePrototype, "addEventListener", 2, nativeEventTargetAdd},
 		{realm.bindings.nodePrototype, "removeEventListener", 2, nativeEventTargetRemove},
 		{realm.bindings.windowPrototype, "addEventListener", 2, nativeEventTargetAdd},
@@ -399,6 +498,15 @@ func (realm *Realm) installDOMPrototypeProperties(context *browserruntime.TaskCo
 		{realm.bindings.elementPrototype, "localName", nativeElementLocalName, 0},
 		{realm.bindings.elementPrototype, "children", nativeElementChildren, 0},
 		{realm.bindings.elementPrototype, "id", nativeElementIDGet, nativeElementIDSet},
+		{realm.bindings.elementPrototype, "className", nativeElementClassNameGet, nativeElementClassNameSet},
+		{realm.bindings.elementPrototype, "classList", nativeElementClassList, 0},
+		{realm.bindings.elementPrototype, "dataset", nativeElementDataset, 0},
+		{realm.bindings.elementPrototype, "innerHTML", nativeElementInnerHTMLGet, nativeElementInnerHTMLSet},
+		{realm.bindings.elementPrototype, "style", nativeElementStyle, 0},
+		{realm.bindings.classListPrototype, "value", nativeClassListValue, nativeElementClassNameSet},
+		{realm.bindings.classListPrototype, "length", nativeClassListLength, 0},
+		{realm.bindings.stylePrototype, "cssText", nativeStyleCSSTextGet, nativeStyleCSSTextSet},
+		{realm.bindings.stylePrototype, "length", nativeStyleLength, 0},
 	}
 	for _, accessor := range accessors {
 		getter, err := realm.newAccessorFunction(context, "get "+accessor.name, accessor.getter, 0)
@@ -789,7 +897,10 @@ func (realm *Realm) nodeTextContentSet(context *browserruntime.TaskContext, this
 	if err != nil {
 		return memory.Value{}, err
 	}
-	return memory.UndefinedValue(), realm.host.SetTextContent(handle, text)
+	if err := realm.host.SetTextContent(handle, text); err != nil {
+		return memory.Value{}, err
+	}
+	return memory.UndefinedValue(), realm.refreshCollections(context, handle)
 }
 
 func (realm *Realm) nodeChildren(elementsOnly bool) browserruntime.NativeFunction {
@@ -798,15 +909,7 @@ func (realm *Realm) nodeChildren(elementsOnly bool) browserruntime.NativeFunctio
 		if err != nil {
 			return memory.Value{}, err
 		}
-		host, ok := realm.host.(browser.DOMElementHost)
-		if !ok {
-			return memory.Value{}, fmt.Errorf("nativeengine: browser host does not expose child traversal")
-		}
-		handles, err := host.ChildNodes(handle, elementsOnly)
-		if err != nil {
-			return memory.Value{}, err
-		}
-		return realm.nodeArray(context, handles)
+		return realm.liveNodeArray(context, handle, elementsOnly)
 	}
 }
 
@@ -820,7 +923,11 @@ func (realm *Realm) nodeAppendChild(context *browserruntime.TaskContext, this me
 	if err != nil {
 		return memory.Value{}, err
 	}
-	return childValue, realm.host.AppendChild(parent, child)
+	oldParent := realm.parentHandle(child)
+	if err := realm.host.AppendChild(parent, child); err != nil {
+		return memory.Value{}, err
+	}
+	return childValue, realm.refreshCollections(context, parent, oldParent, child)
 }
 
 func (realm *Realm) nodeInsertBefore(context *browserruntime.TaskContext, this memory.Value, arguments []memory.Value) (memory.Value, error) {
@@ -840,7 +947,11 @@ func (realm *Realm) nodeInsertBefore(context *browserruntime.TaskContext, this m
 			return memory.Value{}, err
 		}
 	}
-	return childValue, realm.host.InsertBefore(parent, child, reference)
+	oldParent := realm.parentHandle(child)
+	if err := realm.host.InsertBefore(parent, child, reference); err != nil {
+		return memory.Value{}, err
+	}
+	return childValue, realm.refreshCollections(context, parent, oldParent, child)
 }
 
 func (realm *Realm) nodeRemoveChild(context *browserruntime.TaskContext, this memory.Value, arguments []memory.Value) (memory.Value, error) {
@@ -853,7 +964,10 @@ func (realm *Realm) nodeRemoveChild(context *browserruntime.TaskContext, this me
 	if err != nil {
 		return memory.Value{}, err
 	}
-	return childValue, realm.host.RemoveChild(parent, child)
+	if err := realm.host.RemoveChild(parent, child); err != nil {
+		return memory.Value{}, err
+	}
+	return childValue, realm.refreshCollections(context, parent)
 }
 
 func (realm *Realm) nodeContains(context *browserruntime.TaskContext, this memory.Value, arguments []memory.Value) (memory.Value, error) {
@@ -907,7 +1021,11 @@ func (realm *Realm) nodeReplaceChild(context *browserruntime.TaskContext, this m
 	if !ok {
 		return memory.Value{}, fmt.Errorf("nativeengine: browser host does not expose child replacement")
 	}
-	return replacedValue, host.ReplaceChild(parent, child, replaced)
+	oldParent := realm.parentHandle(child)
+	if err := host.ReplaceChild(parent, child, replaced); err != nil {
+		return memory.Value{}, err
+	}
+	return replacedValue, realm.refreshCollections(context, parent, oldParent, child)
 }
 
 func (realm *Realm) nodeNormalize(context *browserruntime.TaskContext, this memory.Value, _ []memory.Value) (memory.Value, error) {
@@ -919,7 +1037,10 @@ func (realm *Realm) nodeNormalize(context *browserruntime.TaskContext, this memo
 	if !ok {
 		return memory.Value{}, fmt.Errorf("nativeengine: browser host does not expose node normalization")
 	}
-	return memory.UndefinedValue(), host.Normalize(handle)
+	if err := host.Normalize(handle); err != nil {
+		return memory.Value{}, err
+	}
+	return memory.UndefinedValue(), realm.refreshCollections(context, handle)
 }
 
 func (realm *Realm) textSplitText(context *browserruntime.TaskContext, this memory.Value, arguments []memory.Value) (memory.Value, error) {
@@ -939,7 +1060,23 @@ func (realm *Realm) textSplitText(context *browserruntime.TaskContext, this memo
 	if err != nil {
 		return memory.Value{}, err
 	}
+	parent := realm.parentHandle(handle)
+	if err := realm.refreshCollections(context, parent); err != nil {
+		return memory.Value{}, err
+	}
 	return realm.wrappedNodeValue(context, result)
+}
+
+func (realm *Realm) parentHandle(handle browser.NodeHandle) browser.NodeHandle {
+	host, ok := realm.host.(browser.DOMElementHost)
+	if !ok {
+		return browser.NodeHandle{}
+	}
+	parent, found, err := host.RelatedNode(handle, browser.RelationParentNode)
+	if err != nil || !found {
+		return browser.NodeHandle{}
+	}
+	return parent
 }
 
 func (realm *Realm) elementGetAttribute(context *browserruntime.TaskContext, this memory.Value, arguments []memory.Value) (memory.Value, error) {
