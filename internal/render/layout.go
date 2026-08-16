@@ -357,6 +357,8 @@ type blockLayoutOverrides struct {
 
 func (context *layoutContext) layoutBlockSizedWithSubgrid(node *styledNode, containingX, contentY, availableWidth float64, containingHeight, forcedContentWidth *float64, independentFormattingContext bool, subgrid *gridSubgridContext, overrides blockLayoutOverrides) (*Box, error) {
 	style := node.style
+	verticalTable := style.Display().Inside() == computed.DisplayInsideTable &&
+		!style.verticalLayout() && style.WritingMode() != writingModeHorizontalTB
 	leftAuto := style.MarginLeft().Unit() == lengthAuto
 	rightAuto := style.MarginRight().Unit() == lengthAuto
 	left := resolveLength(style.MarginLeft(), availableWidth, context.viewport, 0)
@@ -364,9 +366,16 @@ func (context *layoutContext) layoutBlockSizedWithSubgrid(node *styledNode, cont
 	padding := context.resolvePadding(style, availableWidth)
 	border := context.resolveBorder(style, availableWidth)
 	if style.Display().Inside() == computed.DisplayInsideTable && style.BorderCollapse() == computed.BorderCollapseCollapse {
-		collapsedBorder, err := context.collapsedTableOuterEdges(node)
+		borderNode := node
+		if verticalTable {
+			borderNode = cloneStyledNodeWithLayoutAxes(node, style.WritingMode())
+		}
+		collapsedBorder, err := context.collapsedTableOuterEdges(borderNode)
 		if err != nil {
 			return nil, err
+		}
+		if verticalTable {
+			collapsedBorder = physicalEdgesFromLogical(collapsedBorder, style.WritingMode())
 		}
 		// CSS collapsed-border tables ignore table padding and use half of the
 		// harmonized outer grid border as their table box border.
@@ -439,7 +448,7 @@ func (context *layoutContext) layoutBlockSizedWithSubgrid(node *styledNode, cont
 
 	width := availableWidth - left - right - padding.Left - padding.Right - border.Left - border.Right
 	var tableIntrinsic intrinsicWidths
-	if style.Display().Inside() == computed.DisplayInsideTable {
+	if style.Display().Inside() == computed.DisplayInsideTable && !verticalTable {
 		intrinsic, err := context.intrinsicContentWidths(node, availableWidth)
 		if err != nil {
 			return nil, err
@@ -453,12 +462,12 @@ func (context *layoutContext) layoutBlockSizedWithSubgrid(node *styledNode, cont
 		if style.BoxSizing() == boxSizingBorderBox {
 			width -= horizontalInsets
 		}
-	} else if style.Display().Inside() == computed.DisplayInsideTable {
+	} else if style.Display().Inside() == computed.DisplayInsideTable && !verticalTable {
 		availableContent := math.Max(0, width)
 		width = math.Min(math.Max(tableIntrinsic.minimum, availableContent), tableIntrinsic.preferred)
 	}
 	width = context.constrainWidth(style, math.Max(0, width), availableWidth, horizontalInsets)
-	if style.Display().Inside() == computed.DisplayInsideTable {
+	if style.Display().Inside() == computed.DisplayInsideTable && !verticalTable {
 		// A table's grid and caption minimums override a smaller specified or
 		// max-constrained width; the table overflows rather than crushing tracks.
 		width = math.Max(width, tableIntrinsic.minimum)
@@ -505,10 +514,18 @@ func (context *layoutContext) layoutBlockSizedWithSubgrid(node *styledNode, cont
 			tableRoot: tableRoot, tableWrapper: true, hitTransparent: true,
 			suppressDecorations: true, suppressBorders: true,
 		}
-		_, err := context.layoutTableContainer(
-			node, wrapper, tableRoot, width, childContainingHeight, containingHeight,
-			specifiedContentHeight, hasDefiniteHeight, verticalInsets,
-		)
+		var err error
+		if verticalTable {
+			err = context.layoutVerticalTableContainer(
+				node, wrapper, tableRoot, availableWidth, containingHeight,
+				width, forcedContentWidth != nil || style.Width().Unit() != lengthAuto,
+			)
+		} else {
+			_, err = context.layoutTableContainer(
+				node, wrapper, tableRoot, width, childContainingHeight, containingHeight,
+				specifiedContentHeight, hasDefiniteHeight, verticalInsets,
+			)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -1152,8 +1169,7 @@ func translateLayoutBox(box *Box, deltaX, deltaY float64) {
 		translateInlineFragment(&box.Fragments[index], deltaX, deltaY)
 	}
 	for index := range box.Text {
-		box.Text[index].X += deltaX
-		box.Text[index].BaselineY += deltaY
+		translateTextFragment(&box.Text[index], deltaX, deltaY)
 	}
 	for index := range box.flow {
 		if box.flow[index].box == nil {
@@ -1171,11 +1187,22 @@ func translateInlineFragment(fragment *InlineFragment, deltaX, deltaY float64) {
 	}
 	switch fragment.Kind {
 	case TextFragmentKind:
-		fragment.Text.X += deltaX
-		fragment.Text.BaselineY += deltaY
+		translateTextFragment(&fragment.Text, deltaX, deltaY)
 	case ImageFragmentKind:
 		fragment.Image.Bounds.X += deltaX
 		fragment.Image.Bounds.Y += deltaY
+	}
+}
+
+func translateTextFragment(fragment *TextFragment, deltaX, deltaY float64) {
+	if fragment == nil {
+		return
+	}
+	fragment.X += deltaX
+	fragment.BaselineY += deltaY
+	if fragment.paintOrientation != textPaintHorizontal {
+		fragment.paintBounds.X += deltaX
+		fragment.paintBounds.Y += deltaY
 	}
 }
 

@@ -400,7 +400,15 @@ row-start/column-start ordering so the physical left or right winner follows
 the mirrored table. The inherited `writing-mode` property now retains and
 serializes `horizontal-tb`, `vertical-rl`, and `vertical-lr` through the
 central registry, `all`, browser snapshots, and the live JS declaration
-surface; its vertical table-axis placement remains the next formatting step.
+surface. Vertical table roots now run the same bounded table algorithm once in
+logical coordinates before publishing physical geometry: rows advance along
+the block axis, columns and `direction` use the inline axis, `border-spacing`
+retains its column/row meaning, and captions map to block-start/block-end.
+Physical padding, borders, clips, structural backgrounds, collapsed segments
+and junctions, hit testing, stable CSSOM geometry, and retained live JS reads
+all use that transformed tree. Replaced content stays upright; the current
+bundled horizontal fonts paint bounded sideways Latin runs while complete
+vertical-script orientation and orthogonal descendants remain follow-ups.
 Table rows, row groups, columns, and
 column groups with `visibility: collapse` continue to participate in intrinsic
 and fixed sizing, then suppress their used track geometry and adjacent border
@@ -490,8 +498,8 @@ parent track model through explicit nesting and work budgets. A Subgrid without
 a compatible parent formatting context computes to the retained keyword but
 uses `none`, as exposed by live resolved CSSOM geometry.
 
-- Complete the remaining advanced table intrinsic edge cases and vertical
-  writing-mode placement.
+- Complete the remaining advanced table intrinsic edge cases, orthogonal flow
+  roots inside vertical tables, and complete vertical-script orientation.
 - Extend Grid Subgrid through orthogonal writing modes and the remaining
   advanced intrinsic/overflow interactions.
 - Add multicolumn and fragmentation only after their block/inline consumers

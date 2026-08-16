@@ -314,7 +314,10 @@ performance budgets; see
   observable through CSSOM; bounded collapsed-border conflict resolution,
   layered backgrounds, retained geometry, live CSSOM reads, mirrored RTL
   columns, row-start/column-start exact-tie ordering, and explicit bounded
-  junction geometry which preserves patterned gaps and transparent winners
+  junction geometry which preserves patterned gaps and transparent winners;
+  vertical table roots use logical axes for row/column placement, captions,
+  spacing, physical box edges, collapsed borders, hit testing, and live CSSOM
+  geometry, with bounded sideways Latin paint and upright replaced content
 - Inherited `visibility` plus normal, nowrap, pre, pre-wrap, pre-line, and
   break-spaces text whitespace behavior
 - Bundled Go sans and monospace families with regular, bold, italic, and
@@ -353,7 +356,8 @@ The following are intentionally still outside the current milestone:
   modes, SVG/MathML, and encoding sniffing
 - Flex wrapping and full intrinsic sizing, Grid orthogonal-flow behavior and
   remaining advanced intrinsic/overflow interactions, remaining advanced table
-  intrinsic sizing and vertical writing-mode behavior,
+  intrinsic sizing, orthogonal descendants inside vertical tables, and full
+  vertical-script text orientation,
   floats, sticky and full inline positioned layout, and retained inline boxes
 - The remaining CSS math grammar beyond the current bounded length
   `calc()`/`min()`/`max()`/`clamp()` slice, plus gradients, background images,

@@ -2,6 +2,7 @@ package render
 
 import (
 	"image/color"
+	"strings"
 	"testing"
 )
 
@@ -58,6 +59,65 @@ func TestRasterizeRejectsUnbalancedOpacityGroups(t *testing.T) {
 				t.Error("rasterize() error = nil, want opacity-group error")
 			}
 		})
+	}
+}
+
+func TestRasterizeSidewaysTextRotatesWithinPhysicalBounds(t *testing.T) {
+	t.Parallel()
+
+	fonts, err := newFontBook()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fonts.Close()
+	command := Command{
+		Kind: DrawTextCommand, Text: "Latin", Color: color.NRGBA{A: 0xff},
+		FontSize: 12, FontWeight: FontWeightNormal, FontStyle: FontStyleNormal, FontFamily: FontFamilyMonospace,
+		Rect:            Rect{X: 10, Y: 8, Width: 16, Height: 40},
+		textOrientation: textPaintSidewaysRight,
+		textBounds:      Rect{X: 10, Y: 8, Width: 16, Height: 40},
+		textWidth:       40,
+		textHeight:      16,
+		textBaseline:    13,
+	}
+	canvas, err := rasterize(DisplayList{Viewport: Viewport{Width: 60, Height: 60}, Commands: []Command{command}}, fonts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	minimumX, minimumY, maximumX, maximumY := 60, 60, -1, -1
+	for y := 0; y < 60; y++ {
+		for x := 0; x < 60; x++ {
+			if canvas.RGBAAt(x, y).A == 0 {
+				continue
+			}
+			minimumX, minimumY = min(minimumX, x), min(minimumY, y)
+			maximumX, maximumY = max(maximumX, x), max(maximumY, y)
+		}
+	}
+	if maximumX < minimumX || minimumX < 10 || maximumX >= 26 || minimumY < 8 || maximumY >= 48 {
+		t.Fatalf("sideways glyph bounds = (%d,%d)-(%d,%d), want inside (10,8)-(26,48)", minimumX, minimumY, maximumX, maximumY)
+	}
+	if maximumY-minimumY <= maximumX-minimumX {
+		t.Fatalf("sideways glyph extent = %dx%d, want a vertically advancing run", maximumX-minimumX+1, maximumY-minimumY+1)
+	}
+}
+
+func TestRasterizeSidewaysTextBudgetFailsBeforeAllocation(t *testing.T) {
+	t.Parallel()
+
+	fonts, err := newFontBook()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fonts.Close()
+	_, err = rasterize(DisplayList{
+		Viewport: Viewport{Width: 1, Height: 1},
+		Commands: []Command{{
+			Kind: DrawTextCommand, Text: "x", textOrientation: textPaintSidewaysRight,
+			textWidth: maxSidewaysTextPixels + 1, textHeight: 1,
+		}}}, fonts)
+	if err == nil || !strings.Contains(err.Error(), "sideways text exceeds") {
+		t.Fatalf("sideways text budget error = %v", err)
 	}
 }
 

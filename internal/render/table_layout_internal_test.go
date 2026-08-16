@@ -349,7 +349,7 @@ func TestCollapsedBorderSegmentBudgetFailsClosed(t *testing.T) {
 	if !ok {
 		t.Fatal("computed table style missing")
 	}
-	table := &styledNode{node: tableNode, style: computedStyle}
+	table := &styledNode{node: tableNode, style: physicalComputedStyle(computedStyle)}
 	model := tableModel{rows: make([]tableRowRecord, 1000), columnCount: 1000}
 	context := layoutContext{viewport: Viewport{Width: 800, Height: 600}}
 	if _, err := context.resolveCollapsedTableBorders(table, model); err == nil || !strings.Contains(err.Error(), "border segments") {
@@ -372,7 +372,7 @@ func TestCollapsedBorderPaintRectangleBudgetIncludesJunctions(t *testing.T) {
 	if !ok {
 		t.Fatal("computed table style missing")
 	}
-	table := &styledNode{node: tableNode, style: computedStyle}
+	table := &styledNode{node: tableNode, style: physicalComputedStyle(computedStyle)}
 	// Segment count is 499999, just below its independent 500000 cap, but
 	// retaining all possible junction patches would bring the paint plane to
 	// 750499 rectangles.
@@ -400,7 +400,7 @@ func TestTableStructuralBackgroundBudgetFailsClosed(t *testing.T) {
 	if !ok {
 		t.Fatal("computed row style missing")
 	}
-	row := &styledNode{node: rowNode, style: rowStyle}
+	row := &styledNode{node: rowNode, style: physicalComputedStyle(rowStyle)}
 	model := tableModel{rows: make([]tableRowRecord, 1000), columnCount: 1000}
 	for index := range model.rows {
 		model.rows[index].node = row

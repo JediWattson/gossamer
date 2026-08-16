@@ -769,18 +769,35 @@ func paintTextFragment(list *DisplayList, fragment TextFragment, styles map[*dom
 	if !fragment.Visible {
 		return
 	}
-	list.Commands = append(list.Commands, Command{
+	command := Command{
 		Kind: DrawTextCommand, Node: fragment.Node, Pseudo: fragment.Pseudo, Color: fragment.Color, Text: fragment.Text,
 		X: fragment.X, BaselineY: fragment.BaselineY,
 		FontSize: fragment.FontSize, FontFamily: fragment.FontFamily,
 		FontWeight: fragment.FontWeight, FontStyle: fragment.FontStyle,
-	})
+	}
+	if fragment.paintOrientation != textPaintHorizontal {
+		command.Rect = fragment.paintBounds
+		command.textOrientation = fragment.paintOrientation
+		command.textBounds = fragment.paintBounds
+		command.textWidth = fragment.logicalWidth
+		command.textHeight = fragment.logicalHeight
+		command.textBaseline = fragment.logicalBaseline
+	}
+	list.Commands = append(list.Commands, command)
 	if fragment.Underline {
+		thickness := math.Max(1, fragment.FontSize/16)
+		underline := Rect{X: fragment.X, Y: fragment.BaselineY + thickness, Width: fragment.Width, Height: thickness}
+		if fragment.paintOrientation != textPaintHorizontal {
+			underline = Rect{
+				X: fragment.paintBounds.X, Y: fragment.paintBounds.Y,
+				Width: thickness, Height: fragment.paintBounds.Height,
+			}
+		}
 		list.Commands = append(list.Commands, Command{
 			Kind:   FillRectCommand,
 			Node:   fragment.Node,
 			Pseudo: fragment.Pseudo,
-			Rect:   Rect{X: fragment.X, Y: fragment.BaselineY + math.Max(1, fragment.FontSize/16), Width: fragment.Width, Height: math.Max(1, fragment.FontSize/16)},
+			Rect:   underline,
 			Color:  fragment.Color,
 		})
 	}

@@ -29,6 +29,7 @@ func rasterize(displayList DisplayList, fonts *fontBook) (*image.RGBA, error) {
 
 	bounds := image.Rect(0, 0, displayList.Viewport.Width, displayList.Viewport.Height)
 	layers := []rasterLayer{{canvas: image.NewRGBA(bounds), opacity: 1}}
+	sidewaysTextPixels := 0
 	for _, command := range displayList.Commands {
 		canvas := layers[len(layers)-1].canvas
 		switch command.Kind {
@@ -63,17 +64,32 @@ func rasterize(displayList DisplayList, fonts *fontBook) (*image.RGBA, error) {
 			if command.HasClip {
 				target = image.NewRGBA(canvas.Bounds())
 			}
-			if err := fonts.draw(
-				target,
-				command.Text,
-				command.X,
-				command.BaselineY,
-				command.FontSize,
-				command.FontWeight,
-				command.FontStyle,
-				command.FontFamily,
-				command.Color,
-			); err != nil {
+			var err error
+			if command.textOrientation == textPaintSidewaysRight {
+				var width, height int
+				width, height, err = sidewaysTextDimensions(command)
+				if err == nil {
+					sidewaysTextPixels += width * height
+					if sidewaysTextPixels > maxSidewaysTextTotalPixels {
+						err = fmt.Errorf("render: sideways text exceeds %d total pixels", maxSidewaysTextTotalPixels)
+					} else {
+						err = drawSidewaysText(target, fonts, command, width, height)
+					}
+				}
+			} else {
+				err = fonts.draw(
+					target,
+					command.Text,
+					command.X,
+					command.BaselineY,
+					command.FontSize,
+					command.FontWeight,
+					command.FontStyle,
+					command.FontFamily,
+					command.Color,
+				)
+			}
+			if err != nil {
 				return nil, err
 			}
 			if command.HasClip {
@@ -143,6 +159,51 @@ func rasterize(displayList DisplayList, fonts *fontBook) (*image.RGBA, error) {
 	}
 
 	return layers[0].canvas, nil
+}
+
+const (
+	maxSidewaysTextPixels      = 4 * 1024 * 1024
+	maxSidewaysTextTotalPixels = 32 * 1024 * 1024
+)
+
+func sidewaysTextDimensions(command Command) (int, int, error) {
+	widthValue := math.Ceil(math.Max(1, command.textWidth))
+	heightValue := math.Ceil(math.Max(1, command.textHeight))
+	if !isFinite(widthValue) || !isFinite(heightValue) ||
+		widthValue > maxSidewaysTextPixels || heightValue > maxSidewaysTextPixels {
+		return 0, 0, fmt.Errorf("render: sideways text exceeds %d pixels", maxSidewaysTextPixels)
+	}
+	width, height := int(widthValue), int(heightValue)
+	if width*height > maxSidewaysTextPixels {
+		return 0, 0, fmt.Errorf("render: sideways text exceeds %d pixels", maxSidewaysTextPixels)
+	}
+	return width, height, nil
+}
+
+func drawSidewaysText(destination *image.RGBA, fonts *fontBook, command Command, width, height int) error {
+	source := image.NewRGBA(image.Rect(0, 0, width, height))
+	if err := fonts.draw(
+		source, command.Text, 0, command.textBaseline,
+		command.FontSize, command.FontWeight, command.FontStyle, command.FontFamily, command.Color,
+	); err != nil {
+		return err
+	}
+	rotated := image.NewRGBA(image.Rect(0, 0, height, width))
+	for y := 0; y < height; y++ {
+		for x := 0; x < width; x++ {
+			rotated.SetRGBA(height-1-y, x, source.RGBAAt(x, y))
+		}
+	}
+	destinationPoint := image.Point{
+		X: int(math.Floor(command.textBounds.X)),
+		Y: int(math.Floor(command.textBounds.Y)),
+	}
+	destinationRect := rotated.Bounds().Add(destinationPoint).Intersect(destination.Bounds())
+	if destinationRect.Empty() {
+		return nil
+	}
+	draw.Draw(destination, destinationRect, rotated, destinationRect.Min.Sub(destinationPoint), draw.Over)
+	return nil
 }
 
 func paintEllipse(target draw.Image, rectangle Rect, fill color.NRGBA) {

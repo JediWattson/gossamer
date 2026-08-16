@@ -16,6 +16,8 @@ func FuzzTableLayoutSpansStayFinite(f *testing.F) {
 	f.Add(byte(4), byte(5), byte(0x82), byte(0x81), byte(0))
 	f.Add(byte(0x82), byte(0x83), byte(0x42), byte(0x40), byte(0))
 	f.Add(byte(4), byte(0x44), byte(2), byte(1), byte(2))
+	f.Add(byte(0x08), byte(4), byte(2), byte(1), byte(0))
+	f.Add(byte(0x50), byte(4), byte(2), byte(1), byte(1))
 	f.Fuzz(func(t *testing.T, rawRows, rawColumns, rawColumnSpan, rawRowSpan, rawModes byte) {
 		rows := int(rawRows%8) + 1
 		columns := int(rawColumns%8) + 1
@@ -33,6 +35,13 @@ func FuzzTableLayoutSpansStayFinite(f *testing.F) {
 		if rawRows&0x40 != 0 {
 			direction = "rtl"
 		}
+		writingMode := "horizontal-tb"
+		if rawRows&0x08 != 0 {
+			writingMode = "vertical-rl"
+		}
+		if rawRows&0x10 != 0 {
+			writingMode = "vertical-lr"
+		}
 		tableLayout := "auto"
 		width := "auto"
 		if rawModes&2 != 0 {
@@ -49,8 +58,8 @@ func FuzzTableLayoutSpansStayFinite(f *testing.F) {
 			tableHeight = fmt.Sprintf("%g%%", float64(1+rawColumns%200))
 		}
 		table := dom.NewElement("table", dom.Attribute{Name: "style", Value: fmt.Sprintf(
-			"direction:%s;border-collapse:%s;border-spacing:%dpx %dpx;table-layout:%s;width:%s;height:%s;border:%dpx solid #123456;empty-cells:hide",
-			direction, borderCollapse, rawModes%7, (rawModes/7)%7, tableLayout, width, tableHeight, 1+rawModes%5,
+			"writing-mode:%s;direction:%s;border-collapse:%s;border-spacing:%dpx %dpx;table-layout:%s;width:%s;height:%s;border:%dpx solid #123456;empty-cells:hide",
+			writingMode, direction, borderCollapse, rawModes%7, (rawModes/7)%7, tableLayout, width, tableHeight, 1+rawModes%5,
 		)})
 		captionSide := "top"
 		if rawModes&4 != 0 {

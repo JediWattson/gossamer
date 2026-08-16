@@ -2388,8 +2388,7 @@ func translateBoxContents(box *Box, deltaX, deltaY float64) {
 		translateInlineFragment(&box.Fragments[index], deltaX, deltaY)
 	}
 	for index := range box.Text {
-		box.Text[index].X += deltaX
-		box.Text[index].BaselineY += deltaY
+		translateTextFragment(&box.Text[index], deltaX, deltaY)
 	}
 	for index := range box.flow {
 		if box.flow[index].box == nil {

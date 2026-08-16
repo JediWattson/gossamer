@@ -149,7 +149,249 @@ const (
 type length = computed.Length
 type computedLineHeight = computed.LineHeight
 type borderSide = computed.BorderSide
-type computedStyle = computed.ComputedStyle
+
+// computedStyle keeps the immutable computed value while allowing one layout
+// pass to interpret physical dimensions through a logical coordinate space.
+// The adapter is renderer-private: snapshots and CSSOM always retain the
+// original physical computed values.
+type computedStyle struct {
+	computed.ComputedStyle
+	layoutAxes writingMode
+}
+
+func physicalComputedStyle(value computed.ComputedStyle) computedStyle {
+	return computedStyle{ComputedStyle: value}
+}
+
+func (style computedStyle) withLayoutAxes(mode writingMode) computedStyle {
+	style.layoutAxes = mode
+	return style
+}
+
+func (style computedStyle) physical() computedStyle {
+	style.layoutAxes = writingModeHorizontalTB
+	return style
+}
+
+func (style computedStyle) verticalLayout() bool {
+	return style.layoutAxes == writingModeVerticalRL || style.layoutAxes == writingModeVerticalLR
+}
+
+func (style computedStyle) Width() length {
+	if style.verticalLayout() {
+		return style.ComputedStyle.Height()
+	}
+	return style.ComputedStyle.Width()
+}
+
+func (style computedStyle) MinWidth() length {
+	if style.verticalLayout() {
+		return style.ComputedStyle.MinHeight()
+	}
+	return style.ComputedStyle.MinWidth()
+}
+
+func (style computedStyle) MaxWidth() length {
+	if style.verticalLayout() {
+		return style.ComputedStyle.MaxHeight()
+	}
+	return style.ComputedStyle.MaxWidth()
+}
+
+func (style computedStyle) Height() length {
+	if style.verticalLayout() {
+		return style.ComputedStyle.Width()
+	}
+	return style.ComputedStyle.Height()
+}
+
+func (style computedStyle) MinHeight() length {
+	if style.verticalLayout() {
+		return style.ComputedStyle.MinWidth()
+	}
+	return style.ComputedStyle.MinHeight()
+}
+
+func (style computedStyle) MaxHeight() length {
+	if style.verticalLayout() {
+		return style.ComputedStyle.MaxWidth()
+	}
+	return style.ComputedStyle.MaxHeight()
+}
+
+func (style computedStyle) MarginLeft() length {
+	if style.verticalLayout() {
+		return style.ComputedStyle.MarginTop()
+	}
+	return style.ComputedStyle.MarginLeft()
+}
+
+func (style computedStyle) MarginRight() length {
+	if style.verticalLayout() {
+		return style.ComputedStyle.MarginBottom()
+	}
+	return style.ComputedStyle.MarginRight()
+}
+
+func (style computedStyle) MarginTop() length {
+	switch style.layoutAxes {
+	case writingModeVerticalRL:
+		return style.ComputedStyle.MarginRight()
+	case writingModeVerticalLR:
+		return style.ComputedStyle.MarginLeft()
+	default:
+		return style.ComputedStyle.MarginTop()
+	}
+}
+
+func (style computedStyle) MarginBottom() length {
+	switch style.layoutAxes {
+	case writingModeVerticalRL:
+		return style.ComputedStyle.MarginLeft()
+	case writingModeVerticalLR:
+		return style.ComputedStyle.MarginRight()
+	default:
+		return style.ComputedStyle.MarginBottom()
+	}
+}
+
+func (style computedStyle) PaddingLeft() length {
+	if style.verticalLayout() {
+		return style.ComputedStyle.PaddingTop()
+	}
+	return style.ComputedStyle.PaddingLeft()
+}
+
+func (style computedStyle) PaddingRight() length {
+	if style.verticalLayout() {
+		return style.ComputedStyle.PaddingBottom()
+	}
+	return style.ComputedStyle.PaddingRight()
+}
+
+func (style computedStyle) PaddingTop() length {
+	switch style.layoutAxes {
+	case writingModeVerticalRL:
+		return style.ComputedStyle.PaddingRight()
+	case writingModeVerticalLR:
+		return style.ComputedStyle.PaddingLeft()
+	default:
+		return style.ComputedStyle.PaddingTop()
+	}
+}
+
+func (style computedStyle) PaddingBottom() length {
+	switch style.layoutAxes {
+	case writingModeVerticalRL:
+		return style.ComputedStyle.PaddingLeft()
+	case writingModeVerticalLR:
+		return style.ComputedStyle.PaddingRight()
+	default:
+		return style.ComputedStyle.PaddingBottom()
+	}
+}
+
+func (style computedStyle) BorderLeft() borderSide {
+	if style.verticalLayout() {
+		return style.ComputedStyle.BorderTop()
+	}
+	return style.ComputedStyle.BorderLeft()
+}
+
+func (style computedStyle) BorderRight() borderSide {
+	if style.verticalLayout() {
+		return style.ComputedStyle.BorderBottom()
+	}
+	return style.ComputedStyle.BorderRight()
+}
+
+func (style computedStyle) BorderTop() borderSide {
+	switch style.layoutAxes {
+	case writingModeVerticalRL:
+		return style.ComputedStyle.BorderRight()
+	case writingModeVerticalLR:
+		return style.ComputedStyle.BorderLeft()
+	default:
+		return style.ComputedStyle.BorderTop()
+	}
+}
+
+func (style computedStyle) BorderBottom() borderSide {
+	switch style.layoutAxes {
+	case writingModeVerticalRL:
+		return style.ComputedStyle.BorderLeft()
+	case writingModeVerticalLR:
+		return style.ComputedStyle.BorderRight()
+	default:
+		return style.ComputedStyle.BorderBottom()
+	}
+}
+
+func (style computedStyle) Left() length {
+	if style.verticalLayout() {
+		return style.ComputedStyle.Top()
+	}
+	return style.ComputedStyle.Left()
+}
+
+func (style computedStyle) Right() length {
+	if style.verticalLayout() {
+		return style.ComputedStyle.Bottom()
+	}
+	return style.ComputedStyle.Right()
+}
+
+func (style computedStyle) Top() length {
+	switch style.layoutAxes {
+	case writingModeVerticalRL:
+		return style.ComputedStyle.Right()
+	case writingModeVerticalLR:
+		return style.ComputedStyle.Left()
+	default:
+		return style.ComputedStyle.Top()
+	}
+}
+
+func (style computedStyle) Bottom() length {
+	switch style.layoutAxes {
+	case writingModeVerticalRL:
+		return style.ComputedStyle.Left()
+	case writingModeVerticalLR:
+		return style.ComputedStyle.Right()
+	default:
+		return style.ComputedStyle.Bottom()
+	}
+}
+
+func (style computedStyle) OverflowX() computed.OverflowMode {
+	if style.verticalLayout() {
+		return style.ComputedStyle.OverflowY()
+	}
+	return style.ComputedStyle.OverflowX()
+}
+
+func (style computedStyle) OverflowY() computed.OverflowMode {
+	if style.verticalLayout() {
+		return style.ComputedStyle.OverflowX()
+	}
+	return style.ComputedStyle.OverflowY()
+}
+
+func (style computedStyle) WithAnonymousDisplay(display displayMode) computedStyle {
+	style.ComputedStyle = style.ComputedStyle.WithAnonymousDisplay(display)
+	return style
+}
+
+func (style computedStyle) WithAnonymousGridItem() computedStyle {
+	style.ComputedStyle = style.ComputedStyle.WithAnonymousGridItem()
+	return style
+}
+
+func (style computedStyle) WithBlockifiedDisplay() computedStyle {
+	style.ComputedStyle = style.ComputedStyle.WithBlockifiedDisplay()
+	return style
+}
+
 type whiteSpaceMode = computed.WhiteSpaceMode
 
 const (
@@ -182,9 +424,13 @@ func projectStyleTree(node *dom.Node, snapshot *computed.Snapshot) *styledNode {
 	if !ok {
 		return nil
 	}
-	projected := &styledNode{node: node, style: value}
+	projected := &styledNode{node: node, style: physicalComputedStyle(value)}
 	projected.children = make([]*styledNode, 0, len(node.Children)+2)
-	if before := projectPseudoStyle(node, css.PseudoElementBefore, snapshot.LookupPseudo); before != nil {
+	lookupPseudo := func(origin *dom.Node, pseudo css.PseudoElement) (computedStyle, bool) {
+		value, found := snapshot.LookupPseudo(origin, pseudo)
+		return physicalComputedStyle(value), found
+	}
+	if before := projectPseudoStyle(node, css.PseudoElementBefore, lookupPseudo); before != nil {
 		projected.children = append(projected.children, before)
 	}
 	for _, child := range node.Children {
@@ -192,7 +438,7 @@ func projectStyleTree(node *dom.Node, snapshot *computed.Snapshot) *styledNode {
 			projected.children = append(projected.children, projectedChild)
 		}
 	}
-	if after := projectPseudoStyle(node, css.PseudoElementAfter, snapshot.LookupPseudo); after != nil {
+	if after := projectPseudoStyle(node, css.PseudoElementAfter, lookupPseudo); after != nil {
 		projected.children = append(projected.children, after)
 	}
 	return projected
@@ -210,14 +456,15 @@ func projectReadAccessStyleTree(node *dom.Node, access *dom.ReadAccess, snapshot
 	if !ok {
 		return nil
 	}
-	projected := &styledNode{node: node, style: value}
+	projected := &styledNode{node: node, style: physicalComputedStyle(value)}
 	projected.children = make([]*styledNode, 0, len(node.Children)+2)
 	lookupPseudo := func(origin *dom.Node, pseudo css.PseudoElement) (computedStyle, bool) {
 		originID, found := access.ID(origin)
 		if !found {
 			return computedStyle{}, false
 		}
-		return snapshot.LookupPseudoID(originID, pseudo)
+		value, ok := snapshot.LookupPseudoID(originID, pseudo)
+		return physicalComputedStyle(value), ok
 	}
 	if before := projectPseudoStyle(node, css.PseudoElementBefore, lookupPseudo); before != nil {
 		projected.children = append(projected.children, before)

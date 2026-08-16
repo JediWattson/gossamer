@@ -190,9 +190,20 @@ type TextFragment struct {
 	Color          color.NRGBA
 	Visible        bool
 	Underline      bool
+	// Vertical table layout is performed once in logical coordinates. These
+	// private fields retain the original horizontal glyph run while exposing a
+	// transformed physical bounds rectangle to hit testing and painting.
+	paintOrientation textPaintOrientation
+	paintBounds      Rect
+	logicalWidth     float64
+	logicalHeight    float64
+	logicalBaseline  float64
 }
 
 func textFragmentBounds(fragment TextFragment) Rect {
+	if fragment.paintOrientation != textPaintHorizontal {
+		return fragment.paintBounds
+	}
 	baselineOffset := fragment.BaselineOffset
 	if baselineOffset <= 0 || baselineOffset > fragment.Height {
 		baselineOffset = fragment.Height
@@ -251,7 +262,20 @@ type Command struct {
 	Image      image.Image
 	HasClip    bool
 	Clip       Rect
+
+	textOrientation textPaintOrientation
+	textBounds      Rect
+	textWidth       float64
+	textHeight      float64
+	textBaseline    float64
 }
+
+type textPaintOrientation uint8
+
+const (
+	textPaintHorizontal textPaintOrientation = iota
+	textPaintSidewaysRight
+)
 
 // VisualTransform projects one node-owned command into viewport space.
 // Offsets are subtracted from document coordinates. Clip is already expressed
@@ -298,6 +322,12 @@ func ScrollDisplayList(frame *Frame, x, y float64) *Frame {
 		case DrawTextCommand:
 			command.X -= x
 			command.BaselineY -= y
+			if command.textOrientation != textPaintHorizontal {
+				command.Rect.X -= x
+				command.Rect.Y -= y
+				command.textBounds.X -= x
+				command.textBounds.Y -= y
+			}
 		}
 		if command.HasClip {
 			command.Clip.X -= x
@@ -330,6 +360,12 @@ func TransformDisplayList(frame *Frame, transforms map[*dom.Node]VisualTransform
 		case DrawTextCommand:
 			command.X -= transform.OffsetX
 			command.BaselineY -= transform.OffsetY
+			if command.textOrientation != textPaintHorizontal {
+				command.Rect.X -= transform.OffsetX
+				command.Rect.Y -= transform.OffsetY
+				command.textBounds.X -= transform.OffsetX
+				command.textBounds.Y -= transform.OffsetY
+			}
 		}
 		if command.HasClip {
 			command.Clip.X -= transform.OffsetX
