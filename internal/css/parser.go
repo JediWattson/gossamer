@@ -87,6 +87,7 @@ func (parser *stylesheetParser) parseRuleList() error {
 			continue
 		}
 
+		preludeStart := parser.pos
 		prelude, delimiter, err := parser.readRulePrelude()
 		if err != nil {
 			return err
@@ -102,7 +103,8 @@ func (parser *stylesheetParser) parseRuleList() error {
 		if err != nil {
 			return err
 		}
-		selectors, valid := parseSelectorList(prelude)
+		originalPrelude := parser.original[preludeStart : preludeStart+len(prelude)]
+		selectors, valid := parseSelectorList(originalPrelude)
 		if !valid {
 			continue
 		}

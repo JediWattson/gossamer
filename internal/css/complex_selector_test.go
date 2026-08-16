@@ -331,8 +331,10 @@ func TestComplexSelectorNthPseudoClasses(t *testing.T) {
 	}{
 		{name: "odd keyword", selector: "li:nth-child(odd)", node: a, want: true},
 		{name: "comments around odd keyword", selector: "li:nth-child(/**/odd/**/)", node: b, want: true},
+		{name: "escaped odd keyword", selector: `li:nth-child(o\64 d)`, node: a, want: true},
 		{name: "even keyword", selector: "li:nth-child(even)", node: c, want: true},
 		{name: "odd formula", selector: "li:nth-child(2n+1)", node: b, want: true},
+		{name: "escaped n formula", selector: `li:nth-child(2\6e+1)`, node: b, want: true},
 		{name: "comment before formula offset", selector: "li:nth-child(2n/**/+1)", node: b, want: true},
 		{name: "comment after formula offset sign", selector: "li:nth-child(2n+/**/1)", node: b, want: true},
 		{name: "comment after leading plus token", selector: "li:nth-child(+/**/n)", node: d, want: true},
@@ -350,6 +352,7 @@ func TestComplexSelectorNthPseudoClasses(t *testing.T) {
 		{name: "last of type", selector: "li:nth-last-of-type(1)", node: d, want: true},
 		{name: "filtered child", selector: "li:nth-child(3 of .item)", node: c, want: true},
 		{name: "comments around of keyword", selector: "li:nth-child(3/**/of/**/.item)", node: c, want: true},
+		{name: "escaped of selector", selector: `li:nth-child(3 /**/\6f f/**/.\69 tem)`, node: c, want: true},
 		{name: "filtered last child", selector: "li:nth-last-child(1 of .item)", node: d, want: true},
 		{name: "filtered selector list", selector: "span:nth-child(4 of .item, .featured)", node: y, want: true},
 		{name: "filtered list counts nonmatching type", selector: "li:nth-child(4 of .item)", node: d, want: true},
@@ -416,6 +419,35 @@ func TestComplexSelectorSpecificityAndRepeatedSimpleSelectors(t *testing.T) {
 	}
 }
 
+func TestComplexSelectorDecodesEscapedIdentifiers(t *testing.T) {
+	t.Parallel()
+
+	document := dom.NewDocument()
+	element := dom.NewElement("div",
+		dom.Attribute{Name: "id", Value: "123"},
+		dom.Attribute{Name: "class", Value: "foo"},
+		dom.Attribute{Name: "data-x", Value: "ab"},
+	)
+	document.AppendChild(element)
+
+	selectors := []string{
+		`\64 iv#\31 23.\66 oo[data-\78="a\62"]:\72 oot`,
+		`div:\69 s(.\66 oo, #never)`,
+		`[data-x="AB" \69]`,
+	}
+	for _, source := range selectors {
+		selector := parseComplexSelector(t, source)
+		if !selector.Matches(element) {
+			t.Errorf("escaped selector %q did not match", source)
+		}
+	}
+
+	stylesheet, err := css.Parse(`div.escaped\ name { color: red }`)
+	if err != nil || len(stylesheet.Rules) != 1 {
+		t.Fatalf("escaped-space class selector = %#v, error %v; want one valid rule", stylesheet.Rules, err)
+	}
+}
+
 func TestComplexSelectorRejectsMalformedGrammar(t *testing.T) {
 	t.Parallel()
 
@@ -435,6 +467,7 @@ func TestComplexSelectorRejectsMalformedGrammar(t *testing.T) {
 		":not(.ok, :future)",
 		":nth-child()",
 		":nth-child(2n+-1)",
+		":nth-child(2n-0+1)",
 		":nth-child(2n + -1)",
 		":nth-child(2.5n)",
 		":nth-child(+/**/2)",
@@ -450,7 +483,6 @@ func TestComplexSelectorRejectsMalformedGrammar(t *testing.T) {
 		":where/**/()",
 		":nth-child/**/(2)",
 		"svg|circle",
-		`div.escaped\ name`,
 		"-",
 		"-5",
 	}

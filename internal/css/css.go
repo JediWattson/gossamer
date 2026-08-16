@@ -1,9 +1,9 @@
 // Package css parses and matches the CSS subset used by Gossamer's rendering
 // pipeline. It supports complex selectors, attribute selectors, logical and
 // structural pseudo-classes, named top-level cascade layers, viewport media
-// queries, and tokenized declarations consumed by the renderer. Selector
-// namespaces, pseudo-elements, selector escapes, and the remaining at-rules
-// are outside the current subset.
+// queries, escaped selector identifiers, and tokenized declarations consumed
+// by the renderer. Selector namespaces, pseudo-elements, and the remaining
+// at-rules are outside the current subset.
 package css
 
 import (
@@ -70,11 +70,7 @@ type Selector struct {
 // query APIs. Unlike stylesheet parsing, one invalid member rejects the whole
 // list.
 func ParseSelectorList(source string) ([]Selector, error) {
-	cleaned, err := stripComments(source)
-	if err != nil {
-		return nil, err
-	}
-	selectors, ok := parseSelectorList(cleaned)
+	selectors, ok := parseSelectorList(source)
 	if !ok {
 		return nil, ErrInvalidSelector
 	}

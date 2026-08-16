@@ -353,10 +353,13 @@ func TestParseEscapedStructuralCodePointsDoNotChangeRuleBoundaries(t *testing.T)
 	if err != nil {
 		t.Fatalf("Parse() error = %v", err)
 	}
-	if got, want := len(stylesheet.Rules), 2; got != want {
+	if got, want := len(stylesheet.Rules), 3; got != want {
 		t.Fatalf("len(Rules) = %d, want %d", got, want)
 	}
-	if len(stylesheet.Rules[1].Selectors) != 1 || !stylesheet.Rules[1].Selectors[0].Matches(dom.NewElement("div")) {
+	if len(stylesheet.Rules[1].Selectors) != 1 || !stylesheet.Rules[1].Selectors[0].Matches(dom.NewElement("span", dom.Attribute{Name: "class", Value: "foo{bar"})) {
+		t.Fatal("escaped opening brace selector did not decode to a class name")
+	}
+	if len(stylesheet.Rules[2].Selectors) != 1 || !stylesheet.Rules[2].Selectors[0].Matches(dom.NewElement("div")) {
 		t.Fatal("escaped opening brace swallowed the following div rule")
 	}
 	want := []css.Declaration{
