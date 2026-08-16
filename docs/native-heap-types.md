@@ -19,6 +19,12 @@ The source graph remains task-private and dies in bulk; repeated writes of the
 same source root reuse the promoted root, and aliases inside the copied graph
 remain aliases.
 
+Long-lived owners expose an explicit tracing checkpoint through
+`RegionStore.Collect`. The collector marks from semantic roots and foreign
+claims, removes every edge in the unmarked set, and then reclaims those slots
+in deterministic region/slot order. This handles self-cycles and multi-object
+cycles without converting ordinary graph edges into reference counts.
+
 `runtime.Realm.Profile` snapshots these physical counters beside the ownership
 ledger and queue depths. The stock-V8 profiling command records that Go
 snapshot and V8's heap/wrapper counters at the same between-task checkpoints,

@@ -75,6 +75,9 @@ type Stats struct {
 	BulkRegionReleases  uint64 `json:"bulkRegionReleases"`
 	AutomaticPromotions uint64 `json:"automaticPromotions"`
 	PromotionCacheHits  uint64 `json:"promotionCacheHits"`
+	Collections         uint64 `json:"collections"`
+	CollectedSlots      uint64 `json:"collectedSlots"`
+	CollectedBytes      uint64 `json:"collectedBytes"`
 }
 
 type objectEdge struct {

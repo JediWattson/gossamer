@@ -102,6 +102,21 @@ func (realm *Realm) Ledger() *ownership.Ledger {
 	return realm.ledger
 }
 
+// CollectNative runs an owner-local native cycle collection at a between-task
+// Realm checkpoint. Roots are the Realm's current semantic native roots.
+func (realm *Realm) CollectNative(roots ...memory.Ref) (memory.Collection, error) {
+	if realm == nil {
+		return memory.Collection{}, fmt.Errorf("runtime: nil realm")
+	}
+	if realm.closed.Load() {
+		return memory.Collection{}, ErrRealmClosed
+	}
+	if realm.executing.Load() {
+		return memory.Collection{}, ErrRealmRunning
+	}
+	return realm.store.Collect(realm.owner, roots...)
+}
+
 // EnqueueTask adds externally initiated work that carries no shadow objects.
 func (realm *Realm) EnqueueTask(run TaskFunc) (TaskID, error) {
 	return realm.enqueue(realm.Tasks, run, ownership.OwnerID{}, nil)

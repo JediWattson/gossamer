@@ -118,6 +118,48 @@ func TestRealmProfileTracksQueuedNativeGraphLifetime(t *testing.T) {
 	}
 }
 
+func TestRealmNativeCollectionRunsOnlyBetweenTasks(t *testing.T) {
+	t.Parallel()
+
+	realm, err := browserruntime.NewRealm(901, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer realm.Close()
+	region, err := realm.Store().NewRegion(realm.Owner())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cycle, err := realm.Store().AllocCell(realm.Owner(), region)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := realm.Store().Set(realm.Owner(), cycle, 0, memory.RefValue(cycle)); err != nil {
+		t.Fatal(err)
+	}
+
+	var duringTask error
+	if _, err := realm.EnqueueTask(func(*browserruntime.TaskContext) error {
+		_, duringTask = realm.CollectNative()
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(duringTask, browserruntime.ErrRealmRunning) {
+		t.Fatalf("collection during task = %v, want ErrRealmRunning", duringTask)
+	}
+	result, err := realm.CollectNative()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ReclaimedSlots != 1 || realm.Profile().Memory.LiveSlots != 0 {
+		t.Fatalf("between-task collection = %#v, profile=%#v", result, realm.Profile())
+	}
+}
+
 func TestQueuedObjectTransfersBetweenTaskRegions(t *testing.T) {
 	t.Parallel()
 

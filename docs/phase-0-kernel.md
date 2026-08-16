@@ -67,6 +67,9 @@ claim(region, object) is either present or absent
 - `Store.CheckInvariants` independently derives slot, free-list, object-edge,
   region-edge, owner, ledger, and live-counter state from Cell contents. A
   deterministic state-machine test and Go fuzz target run it after every step.
+- Long-lived native owners can run an explicit between-task tracing checkpoint;
+  semantic roots and foreign claims survive while unreachable strong cycles
+  are unlinked and reclaimed in deterministic slot order.
 - Every owner has a logical region.
 - Task-local fake objects receive an initial task reference.
 - Enqueue publishes carried objects to the destination queue.
