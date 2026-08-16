@@ -64,6 +64,9 @@ func TestLoadStylesheetWithImportsFlattensOrderContextAndCycles(t *testing.T) {
 	if got := stylesheet.Rules[2].Layer; got != "theme.inner" {
 		t.Fatalf("theme imported layer = %q", got)
 	}
+	if got, want := stylesheet.LayerOrder, []string{"theme.inner", "theme"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("imported layer order = %q, want %q", got, want)
+	}
 	if got, want := stylesheet.Rules[2].Media, []string{"screen and (min-width: 700px)"}; len(got) != 1 || got[0] != want[0] {
 		t.Fatalf("theme media = %v, want %v", got, want)
 	}
@@ -78,6 +81,35 @@ func TestLoadStylesheetWithImportsFlattensOrderContextAndCycles(t *testing.T) {
 	}
 	if fetcher.calls["https://imports.test/unsupported.css"] != 0 {
 		t.Fatal("false @supports import was fetched")
+	}
+}
+
+func TestLoadStylesheetWithImportsRemapsAnonymousLayers(t *testing.T) {
+	t.Parallel()
+
+	fetcher := &importMapFetcher{
+		responses: map[string]string{
+			"https://anonymous.test/root.css": `@import "a.css"; @import "b.css";`,
+			"https://anonymous.test/a.css":    `@layer { .a { color: red !important } }`,
+			"https://anonymous.test/b.css":    `@layer { .b { color: blue !important } }`,
+		},
+		calls: make(map[string]int),
+	}
+	pipeline := resource.NewPipeline(fetcher, resource.PipelineOptions{})
+	rootURL, _ := url.Parse("https://anonymous.test/root.css")
+	asset, err := pipeline.Fetch(context.Background(), resource.Reference{Kind: resource.Stylesheet, URL: rootURL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stylesheet, err := loadStylesheetWithImports(context.Background(), pipeline, asset)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := len(stylesheet.LayerOrder), 2; got != want {
+		t.Fatalf("anonymous layer count = %d, want %d: %q", got, want, stylesheet.LayerOrder)
+	}
+	if stylesheet.LayerOrder[0] == stylesheet.LayerOrder[1] || stylesheet.Rules[0].Layer == stylesheet.Rules[1].Layer {
+		t.Fatalf("imported anonymous layers collided: order %q, rules %q / %q", stylesheet.LayerOrder, stylesheet.Rules[0].Layer, stylesheet.Rules[1].Layer)
 	}
 }
 

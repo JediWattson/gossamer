@@ -348,12 +348,13 @@ func TestRenderStylesheetOwnerMediaUsesViewport(t *testing.T) {
 	}
 }
 
-func TestRenderUnsupportedLayerBlocksDoNotBecomeUnlayered(t *testing.T) {
+func TestRenderLayerBlockSupportBoundaries(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name       string
 		stylesheet string
+		want       color.NRGBA
 	}{
 		{
 			name: "anonymous top-level layer",
@@ -361,6 +362,7 @@ func TestRenderUnsupportedLayerBlocksDoNotBecomeUnlayered(t *testing.T) {
 p { color: #111111; }
 @layer { #target { color: #ff0000 !important; } }
 `,
+			want: color.NRGBA{R: 0xff, A: 0xff},
 		},
 		{
 			name: "nested named layer",
@@ -370,6 +372,7 @@ p { color: #111111; }
 	  @layer inner { #target { color: #ff0000 !important; } }
 }
 `,
+			want: color.NRGBA{R: 0xff, A: 0xff},
 		},
 		{
 			name: "dotted layer name",
@@ -377,6 +380,7 @@ p { color: #111111; }
 p { color: #111111; }
 @layer outer.inner { #target { color: #ff0000 !important; } }
 `,
+			want: color.NRGBA{R: 0xff, A: 0xff},
 		},
 		{
 			name: "multi-name layer block",
@@ -384,6 +388,7 @@ p { color: #111111; }
 p { color: #111111; }
 @layer first, second { #target { color: #ff0000 !important; } }
 `,
+			want: color.NRGBA{R: 0x11, G: 0x11, B: 0x11, A: 0xff},
 		},
 		{
 			name: "layer nested inside media",
@@ -393,16 +398,16 @@ p { color: #111111; }
   @layer conditional { #target { color: #ff0000 !important; } }
 }
 `,
+			want: color.NRGBA{R: 0x11, G: 0x11, B: 0x11, A: 0xff},
 		},
 	}
 
-	want := color.NRGBA{R: 0x11, G: 0x11, B: 0x11, A: 0xff}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 			got := renderConditionalTextColor(t, test.stylesheet, "", render.Viewport{Width: 800, Height: 600})
-			if got != want {
-				t.Errorf("text color = %#v, want %#v; unsupported layer contents must be skipped", got, want)
+			if got != test.want {
+				t.Errorf("text color = %#v, want %#v", got, test.want)
 			}
 		})
 	}

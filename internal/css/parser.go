@@ -58,6 +58,8 @@ type stylesheetParser struct {
 	context        ruleContext
 	nesting        int
 	importsAllowed bool
+	seenImport     bool
+	anonymousLayer *int
 }
 
 type ruleContext struct {
@@ -70,6 +72,8 @@ func (parser *stylesheetParser) parse() (Stylesheet, error) {
 	stylesheet := Stylesheet{}
 	parser.stylesheet = &stylesheet
 	parser.importsAllowed = true
+	anonymousLayer := 0
+	parser.anonymousLayer = &anonymousLayer
 	if err := parser.parseRuleList(); err != nil {
 		return stylesheet, err
 	}
@@ -144,6 +148,9 @@ func (parser *stylesheetParser) parseAtRule() error {
 	}
 	prelude = strings.TrimSpace(normalizeCommentBoundaries(prelude))
 	canImport := parser.importsAllowed
+	if name == "layer" && delimiter == ';' && parser.seenImport {
+		parser.importsAllowed = false
+	}
 	if name != "import" && name != "charset" && !(name == "layer" && delimiter == ';') {
 		parser.importsAllowed = false
 	}
@@ -154,13 +161,14 @@ func (parser *stylesheetParser) parseAtRule() error {
 			if imported, ok := parseImportRule(prelude); ok {
 				imported.Order = len(parser.stylesheet.Imports)
 				parser.stylesheet.Imports = append(parser.stylesheet.Imports, imported)
+				parser.seenImport = true
 			}
 			return nil
 		}
-		if name == "layer" && delimiter == ';' && parser.context.layer == "" && len(parser.context.media) == 0 && len(parser.context.supports) == 0 {
+		if name == "layer" && delimiter == ';' && len(parser.context.media) == 0 && len(parser.context.supports) == 0 {
 			if layers, ok := parseLayerNameList(prelude); ok {
 				for _, layer := range layers {
-					parser.recordLayer(layer)
+					parser.recordLayer(qualifyLayerName(parser.context.layer, layer))
 				}
 			}
 		}
@@ -173,18 +181,23 @@ func (parser *stylesheetParser) parseAtRule() error {
 		}
 		switch name {
 		case "layer":
-			if parser.context.layer != "" || len(parser.context.media) != 0 || len(parser.context.supports) != 0 {
+			if len(parser.context.media) != 0 || len(parser.context.supports) != 0 {
 				return nil
 			}
-			layers, ok := parseLayerNameList(prelude)
-			if !ok || len(layers) != 1 {
-				// Anonymous, nested, dotted, and multi-name layer blocks are deferred
-				// until the layer identity model can represent their cascade ordering.
-				return nil
+			layer := ""
+			if strings.TrimSpace(prelude) == "" {
+				layer = parser.newAnonymousLayer()
+			} else {
+				layers, ok := parseLayerNameList(prelude)
+				if !ok || len(layers) != 1 {
+					return nil
+				}
+				layer = layers[0]
 			}
-			parser.recordLayer(layers[0])
+			layer = qualifyLayerName(parser.context.layer, layer)
+			parser.recordLayer(layer)
 			return parser.parseNestedRuleList(block, parser.original[blockStart:blockStart+len(block)], parser.baseOffset+blockStart, ruleContext{
-				layer:    layers[0],
+				layer:    layer,
 				media:    append([]string(nil), parser.context.media...),
 				supports: append([]string(nil), parser.context.supports...),
 			})
@@ -246,11 +259,12 @@ func parseImportRule(source string) (ImportRule, bool) {
 			remaining = trimComponentWhitespace(remaining[1:])
 		} else if remaining[0].Kind == ComponentFunction && equalASCIIFold(remaining[0].Token.Value, "layer") {
 			arguments := trimComponentWhitespace(remaining[0].Values)
-			if len(arguments) != 1 || arguments[0].Kind != ComponentToken || arguments[0].Token.Kind != TokenIdent {
+			name, ok := parseLayerName(arguments)
+			if !ok {
 				return ImportRule{}, false
 			}
 			imported.Layered = true
-			imported.Layer = arguments[0].Token.Value
+			imported.Layer = name
 			remaining = trimComponentWhitespace(remaining[1:])
 		}
 	}
@@ -283,34 +297,54 @@ func (parser *stylesheetParser) parseNestedRuleList(source, original string, bas
 		return nil
 	}
 	nested := stylesheetParser{
-		source:     source,
-		original:   original,
-		baseOffset: baseOffset,
-		stylesheet: parser.stylesheet,
-		context:    context,
-		nesting:    parser.nesting + 1,
+		source:         source,
+		original:       original,
+		baseOffset:     baseOffset,
+		stylesheet:     parser.stylesheet,
+		context:        context,
+		nesting:        parser.nesting + 1,
+		anonymousLayer: parser.anonymousLayer,
 	}
 	return nested.parseRuleList()
 }
 
 func (parser *stylesheetParser) recordLayer(name string) {
+	if name == "" {
+		return
+	}
 	for _, existing := range parser.stylesheet.LayerOrder {
 		if existing == name {
 			return
+		}
+	}
+	if separator := strings.LastIndexByte(name, '.'); separator >= 0 {
+		parent := name[:separator]
+		parser.recordLayer(parent)
+		for index, existing := range parser.stylesheet.LayerOrder {
+			if existing == parent {
+				parser.stylesheet.LayerOrder = append(parser.stylesheet.LayerOrder, "")
+				copy(parser.stylesheet.LayerOrder[index+1:], parser.stylesheet.LayerOrder[index:])
+				parser.stylesheet.LayerOrder[index] = name
+				return
+			}
 		}
 	}
 	parser.stylesheet.LayerOrder = append(parser.stylesheet.LayerOrder, name)
 }
 
 func parseLayerNameList(source string) ([]string, bool) {
-	parts := splitTopLevel(source, ',')
-	if len(parts) == 0 {
+	values, err := ParseComponentValues(source)
+	if err != nil {
 		return nil, false
 	}
-	layers := make([]string, 0, len(parts))
-	for _, part := range parts {
-		name := trimCSSIgnorable(part)
-		if name == "" || !validLayerName(name) {
+	groups := splitLayerNameGroups(values)
+	if len(groups) == 0 {
+		return nil, false
+	}
+	layers := make([]string, 0, len(groups))
+	for _, group := range groups {
+		name, ok := parseLayerName(group)
+		if !ok {
 			return nil, false
 		}
 		layers = append(layers, name)
@@ -318,15 +352,78 @@ func parseLayerNameList(source string) ([]string, bool) {
 	return layers, true
 }
 
-func validLayerName(source string) bool {
-	if strings.Contains(source, ".") || !validPropertyName(source) {
+func splitLayerNameGroups(values []ComponentValue) [][]ComponentValue {
+	groups := make([][]ComponentValue, 0, 1)
+	start := 0
+	for index, value := range values {
+		if value.Kind == ComponentToken && value.Token.Kind == TokenComma {
+			groups = append(groups, trimComponentWhitespace(values[start:index]))
+			start = index + 1
+		}
+	}
+	groups = append(groups, trimComponentWhitespace(values[start:]))
+	return groups
+}
+
+func parseLayerName(values []ComponentValue) (string, bool) {
+	values = trimComponentWhitespace(values)
+	if len(values) == 0 {
+		return "", false
+	}
+	parts := make([]string, 0, (len(values)+1)/2)
+	expectIdentifier := true
+	for _, value := range values {
+		if isWhitespaceComponent(value) {
+			return "", false
+		}
+		if expectIdentifier {
+			if value.Kind != ComponentToken || value.Token.Kind != TokenIdent || !validLayerIdentifier(value.Token.Value) {
+				return "", false
+			}
+			parts = append(parts, value.Token.Value)
+			expectIdentifier = false
+			continue
+		}
+		if value.Kind != ComponentToken || value.Token.Kind != TokenDelim || value.Token.Value != "." {
+			return "", false
+		}
+		expectIdentifier = true
+	}
+	if expectIdentifier {
+		return "", false
+	}
+	return strings.Join(parts, "."), true
+}
+
+func validLayerIdentifier(source string) bool {
+	if source == "" || strings.Contains(source, ".") {
+		// The flattened public layer identity uses dots as path separators.
+		// Escaped literal dots wait for a segment-preserving layer-path type.
 		return false
 	}
-	switch strings.ToLower(source) {
-	case "initial", "inherit", "unset", "revert", "revert-layer":
+	switch {
+	case equalASCIIFold(source, "initial"), equalASCIIFold(source, "inherit"),
+		equalASCIIFold(source, "unset"), equalASCIIFold(source, "revert"),
+		equalASCIIFold(source, "revert-layer"):
 		return false
 	}
 	return true
+}
+
+func qualifyLayerName(parent, child string) string {
+	if parent == "" {
+		return child
+	}
+	return parent + "." + child
+}
+
+func (parser *stylesheetParser) newAnonymousLayer() string {
+	if parser.anonymousLayer == nil {
+		counter := 0
+		parser.anonymousLayer = &counter
+	}
+	*parser.anonymousLayer = *parser.anonymousLayer + 1
+	return fmt.Sprintf("\x00layer-%d", *parser.anonymousLayer)
 }
 
 func (parser *stylesheetParser) skipIgnorable() {

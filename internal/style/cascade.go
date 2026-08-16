@@ -2,6 +2,7 @@ package style
 
 import (
 	"sort"
+	"strings"
 
 	"github.com/JediWattson/gossamer/internal/css"
 	"github.com/JediWattson/gossamer/internal/dom"
@@ -18,7 +19,12 @@ type stylesheetSource struct {
 
 type originStyleContext struct {
 	sheets     []stylesheetSource
-	layerRanks map[string]int
+	layerRanks map[layerIdentity]int
+}
+
+type layerIdentity struct {
+	name  string
+	sheet int
 }
 
 type cascadeStyleContext struct {
@@ -233,25 +239,53 @@ func survivesSameOriginRevertLayer(current, candidate winningDeclaration) bool {
 	return candidate.layerRank < current.layerRank
 }
 
-func originLayerRanks(sheets []stylesheetSource) map[string]int {
-	ranks := make(map[string]int)
+func originLayerRanks(sheets []stylesheetSource) map[layerIdentity]int {
+	order := make([]layerIdentity, 0)
 	for _, source := range sheets {
 		for _, name := range source.stylesheet.LayerOrder {
-			if name == "" {
-				continue
-			}
-			if _, exists := ranks[name]; !exists {
-				ranks[name] = len(ranks)
-			}
+			recordLayerIdentity(&order, layerIdentityFor(source.order, name))
 		}
 		for _, rule := range source.stylesheet.Rules {
-			if rule.Layer == "" {
-				continue
-			}
-			if _, exists := ranks[rule.Layer]; !exists {
-				ranks[rule.Layer] = len(ranks)
+			recordLayerIdentity(&order, layerIdentityFor(source.order, rule.Layer))
+		}
+	}
+	ranks := make(map[layerIdentity]int, len(order))
+	for rank, identity := range order {
+		ranks[identity] = rank
+	}
+	return ranks
+}
+
+func layerIdentityFor(sheet int, name string) layerIdentity {
+	if name == "" {
+		return layerIdentity{}
+	}
+	if !strings.ContainsRune(name, '\x00') {
+		sheet = 0
+	}
+	return layerIdentity{name: name, sheet: sheet}
+}
+
+func recordLayerIdentity(order *[]layerIdentity, candidate layerIdentity) {
+	if candidate.name == "" {
+		return
+	}
+	for _, existing := range *order {
+		if existing == candidate {
+			return
+		}
+	}
+	if separator := strings.LastIndexByte(candidate.name, '.'); separator >= 0 {
+		parent := layerIdentityFor(candidate.sheet, candidate.name[:separator])
+		recordLayerIdentity(order, parent)
+		for index, existing := range *order {
+			if existing == parent {
+				*order = append(*order, layerIdentity{})
+				copy((*order)[index+1:], (*order)[index:])
+				(*order)[index] = candidate
+				return
 			}
 		}
 	}
-	return ranks
+	*order = append(*order, candidate)
 }

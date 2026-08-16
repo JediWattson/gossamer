@@ -663,7 +663,7 @@ func mustParseBuiltInUserAgentStylesheet(source string) css.Stylesheet {
 func applyCascade(style *computedStyle, explanations map[string]PropertyExplanation, node *dom.Node, context cascadeStyleContext, viewport Viewport, parent *styledNode) {
 	candidatesByTarget := make(map[string][]winningDeclaration)
 	sourceOrders := make(map[CascadeOrigin]int)
-	layerRanks := func(origin CascadeOrigin) map[string]int {
+	layerRanks := func(origin CascadeOrigin) map[layerIdentity]int {
 		switch origin {
 		case CascadeOriginUserAgent:
 			return context.userAgent.layerRanks
@@ -696,7 +696,7 @@ func applyCascade(style *computedStyle, explanations map[string]PropertyExplanat
 				return
 			}
 		}
-		candidate.layerRank, candidate.layered = layerRanks(candidate.origin)[candidate.layer]
+		candidate.layerRank, candidate.layered = layerRanks(candidate.origin)[layerIdentityFor(candidate.stylesheetOrder, candidate.layer)]
 		candidate.layered = candidate.layered && !candidate.inline
 		for _, target := range targets {
 			expanded := candidate

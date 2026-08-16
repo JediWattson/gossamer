@@ -1,7 +1,7 @@
 // Package css parses and matches the CSS subset used by Gossamer's rendering
 // pipeline. It supports complex selectors, attribute selectors, logical and
-// structural pseudo-classes, named top-level cascade layers, viewport media
-// queries, escaped selector identifiers, and tokenized declarations consumed
+// structural pseudo-classes, nested cascade layers, viewport media queries,
+// escaped selector identifiers, and tokenized declarations consumed
 // by the renderer. Selector namespaces, pseudo-elements, and the remaining
 // at-rules are outside the current subset.
 package css
@@ -17,8 +17,9 @@ import (
 // a malformed selector as stylesheet parsing does.
 var ErrInvalidSelector = errors.New("css: invalid selector")
 
-// Stylesheet is an ordered collection of qualified CSS rules. LayerOrder lists
-// supported named top-level layers in first-declaration order.
+// Stylesheet is an ordered collection of qualified CSS rules. LayerOrder is a
+// flattened low-to-high ordering of nested layer identities; a parent layer's
+// implicit declarations follow its explicit child layers.
 type Stylesheet struct {
 	Rules      []Rule
 	LayerOrder []string

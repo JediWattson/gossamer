@@ -127,3 +127,81 @@ func TestParseRetainsNestedMediaStackInsideLayer(t *testing.T) {
 		t.Error("flattened nested rule did not retain its selector")
 	}
 }
+
+func TestParseFlattensNestedDottedAndAnonymousLayerOrder(t *testing.T) {
+	t.Parallel()
+
+	stylesheet, err := css.Parse(`
+		@layer framework, utilities;
+		@layer framework {
+			.direct { color: black }
+			@layer reset, theme;
+			@layer reset { .reset { color: red } }
+			@layer theme {
+				@layer components { .component { color: blue } }
+				.theme { color: green }
+			}
+			@layer { .anonymous { color: white } }
+		}
+		@layer framework.theme.components { .reopened { color: gray } }
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := len(stylesheet.LayerOrder), 6; got != want {
+		t.Fatalf("layer count = %d, want %d: %q", got, want, stylesheet.LayerOrder)
+	}
+	anonymous := stylesheet.LayerOrder[3]
+	if !strings.HasPrefix(anonymous, "framework.\x00layer-") {
+		t.Fatalf("anonymous layer identity = %q", anonymous)
+	}
+	wantOrder := []string{
+		"framework.reset",
+		"framework.theme.components",
+		"framework.theme",
+		anonymous,
+		"framework",
+		"utilities",
+	}
+	if !slices.Equal(stylesheet.LayerOrder, wantOrder) {
+		t.Fatalf("LayerOrder = %q, want %q", stylesheet.LayerOrder, wantOrder)
+	}
+	wantRuleLayers := []string{
+		"framework",
+		"framework.reset",
+		"framework.theme.components",
+		"framework.theme",
+		anonymous,
+		"framework.theme.components",
+	}
+	if got := len(stylesheet.Rules); got != len(wantRuleLayers) {
+		t.Fatalf("rule count = %d, want %d", got, len(wantRuleLayers))
+	}
+	for index, want := range wantRuleLayers {
+		if got := stylesheet.Rules[index].Layer; got != want {
+			t.Errorf("rule %d layer = %q, want %q", index, got, want)
+		}
+	}
+}
+
+func TestParseLayerNamesUseDecodedComponentsAndRejectWhitespacePaths(t *testing.T) {
+	t.Parallel()
+
+	stylesheet, err := css.Parse(`
+		@layer fr\61 me.th\65 me { .decoded { color: red } }
+		@layer invalid . path { .invalid { color: blue } }
+		@layer initial { .reserved { color: green } }
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := stylesheet.LayerOrder, []string{"frame.theme", "frame"}; !slices.Equal(got, want) {
+		t.Fatalf("LayerOrder = %q, want %q", got, want)
+	}
+	if got, want := len(stylesheet.Rules), 1; got != want {
+		t.Fatalf("rule count = %d, want %d", got, want)
+	}
+	if got := stylesheet.Rules[0].Layer; got != "frame.theme" {
+		t.Fatalf("decoded rule layer = %q", got)
+	}
+}

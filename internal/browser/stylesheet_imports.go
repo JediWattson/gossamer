@@ -114,6 +114,7 @@ func expandStylesheetImports(
 }
 
 func applyImportRuleContext(stylesheet css.Stylesheet, imported css.ImportRule, budget *stylesheetImportBudget) css.Stylesheet {
+	stylesheet = remapImportedAnonymousLayers(stylesheet, budget)
 	layer := imported.Layer
 	if imported.Layered && layer == "" {
 		budget.nextAnonymous++
@@ -122,10 +123,10 @@ func applyImportRuleContext(stylesheet css.Stylesheet, imported css.ImportRule, 
 	}
 	if imported.Layered {
 		layers := make([]string, 0, len(stylesheet.LayerOrder)+1)
-		layers = append(layers, layer)
 		for _, childLayer := range stylesheet.LayerOrder {
-			layers = appendUniqueString(layers, layer+"."+childLayer)
+			recordLayerOrder(&layers, layer+"."+childLayer)
 		}
+		recordLayerOrder(&layers, layer)
 		stylesheet.LayerOrder = layers
 	}
 	for index := range stylesheet.Rules {
@@ -144,9 +145,36 @@ func applyImportRuleContext(stylesheet css.Stylesheet, imported css.ImportRule, 
 	return stylesheet
 }
 
+func remapImportedAnonymousLayers(stylesheet css.Stylesheet, budget *stylesheetImportBudget) css.Stylesheet {
+	renames := make(map[string]string)
+	rename := func(name string) string {
+		parts := strings.Split(name, ".")
+		for index, part := range parts {
+			if !strings.HasPrefix(part, "\x00layer-") {
+				continue
+			}
+			replacement, ok := renames[part]
+			if !ok {
+				budget.nextAnonymous++
+				replacement = fmt.Sprintf("\x00import-%d", budget.nextAnonymous)
+				renames[part] = replacement
+			}
+			parts[index] = replacement
+		}
+		return strings.Join(parts, ".")
+	}
+	for index := range stylesheet.LayerOrder {
+		stylesheet.LayerOrder[index] = rename(stylesheet.LayerOrder[index])
+	}
+	for index := range stylesheet.Rules {
+		stylesheet.Rules[index].Layer = rename(stylesheet.Rules[index].Layer)
+	}
+	return stylesheet
+}
+
 func appendFlattenedStylesheet(destination *css.Stylesheet, source css.Stylesheet) {
 	for _, layer := range source.LayerOrder {
-		destination.LayerOrder = appendUniqueString(destination.LayerOrder, layer)
+		recordLayerOrder(&destination.LayerOrder, layer)
 	}
 	for _, rule := range source.Rules {
 		rule.Order = len(destination.Rules)
@@ -154,13 +182,28 @@ func appendFlattenedStylesheet(destination *css.Stylesheet, source css.Styleshee
 	}
 }
 
-func appendUniqueString(values []string, candidate string) []string {
-	for _, value := range values {
+func recordLayerOrder(order *[]string, candidate string) {
+	if candidate == "" {
+		return
+	}
+	for _, value := range *order {
 		if value == candidate {
-			return values
+			return
 		}
 	}
-	return append(values, candidate)
+	if separator := strings.LastIndexByte(candidate, '.'); separator >= 0 {
+		parent := candidate[:separator]
+		recordLayerOrder(order, parent)
+		for index, value := range *order {
+			if value == parent {
+				*order = append(*order, "")
+				copy((*order)[index+1:], (*order)[index:])
+				(*order)[index] = candidate
+				return
+			}
+		}
+	}
+	*order = append(*order, candidate)
 }
 
 func importSupportsMatches(source string) bool {

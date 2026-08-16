@@ -14,6 +14,7 @@ func TestParseImportRulesFromComponentValues(t *testing.T) {
 		@import "base.css";
 		@import url(theme.css) layer(theme) supports(display: block) screen and (min-width: 40em);
 		@import url("print.css") layer print;
+		@import "nested.css" layer(fr\61 me.theme);
 		body { color: red }
 	`)
 	if err != nil {
@@ -23,6 +24,7 @@ func TestParseImportRulesFromComponentValues(t *testing.T) {
 		{URL: "base.css", Order: 0},
 		{URL: "theme.css", Layer: "theme", Layered: true, Supports: "display: block", Media: "screen and (min-width: 40em)", Order: 1},
 		{URL: "print.css", Layered: true, Media: "print", Order: 2},
+		{URL: "nested.css", Layer: "frame.theme", Layered: true, Order: 3},
 	}
 	if !reflect.DeepEqual(stylesheet.Imports, want) {
 		t.Fatalf("imports = %#v, want %#v", stylesheet.Imports, want)
@@ -53,6 +55,8 @@ func TestParseImportIsRejectedAfterAnyGroupOrQualifiedRule(t *testing.T) {
 	stylesheet, err := css.Parse(`
 		@layer reset;
 		@import "allowed-after-layer-statement.css";
+		@layer theme;
+		@import "late-after-post-import-layer.css";
 		@supports (display: block) {}
 		@import "late-after-empty-group.css";
 		.invalid
