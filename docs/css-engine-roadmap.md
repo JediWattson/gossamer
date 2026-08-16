@@ -113,6 +113,10 @@ the current single horizontal viewport model, with `vmin`/`vmax` retained as
 typed terms. Color values now cover the SVG/CSS named set, all hex forms, and
 legacy/modern `rgb()`/`rgba()`, `hsl()`/`hsla()`, and `hwb()` syntax with
 token-correct comma, whitespace, slash, angle, clamping, and alpha behavior.
+The central property registry and layout now also carry `box-sizing`,
+`min-height`, and `max-height`; block and replaced content apply constraints to
+the selected content or border box, and layout-backed computed width/height
+reads preserve the corresponding resolved box semantics.
 
 - Extend CSS math beyond the current length-percentage subset as number,
   angle, time, resolution, transform, and color consumers arrive.

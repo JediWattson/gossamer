@@ -580,7 +580,7 @@ func (page *Page) ComputedStyleProperty(handle NodeHandle, property string) (str
 		if canonical != "width" && canonical != "height" {
 			return nil
 		}
-		if canonical == "height" && computedStyle.Height().Unit() == computed.LengthPercent {
+		if canonical == "height" && computedStyle.Height().DependsOnPercent() {
 			// Percentage height remains computed until layout propagates definite
 			// containing-block heights.
 			return nil
@@ -596,6 +596,13 @@ func (page *Page) ComputedStyleProperty(handle NodeHandle, property string) (str
 		used := geometry.ContentBounds.Width
 		if canonical == "height" {
 			used = geometry.ContentBounds.Height
+		}
+		if computedStyle.BoxSizing() == computed.BoxSizingBorderBox {
+			if canonical == "width" {
+				used = geometry.Bounds.Width
+			} else {
+				used = geometry.Bounds.Height
+			}
 		}
 		value = serializeUsedPixels(used)
 		return nil

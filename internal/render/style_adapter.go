@@ -73,6 +73,11 @@ type computedLineHeight = computed.LineHeight
 type borderSide = computed.BorderSide
 type computedStyle = computed.ComputedStyle
 
+const (
+	boxSizingContentBox = computed.BoxSizingContentBox
+	boxSizingBorderBox  = computed.BoxSizingBorderBox
+)
+
 type styledNode struct {
 	node     *dom.Node
 	style    computedStyle

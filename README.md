@@ -231,8 +231,8 @@ performance budgets; see
   typed length math
 - Block flow, inline text wrapping, inline and block images, and basic vertical
   margin collapsing
-- Content-box width and height, min/max width, margins, padding, solid borders,
-  backgrounds, opacity, and text alignment
+- Content- and border-box sizing, width/height and min/max constraints,
+  margins, padding, solid borders, backgrounds, opacity, and text alignment
 - Regular and bold bundled fonts, font sizing, line height, underline, and the
   size/line-height/weight portions of the `font` shorthand
 - Disc, circle, square, and decimal list markers

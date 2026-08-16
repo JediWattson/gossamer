@@ -328,6 +328,15 @@ type ZIndex struct {
 func (index ZIndex) Value() int   { return index.value }
 func (index ZIndex) IsAuto() bool { return index.auto }
 
+// BoxSizing selects whether specified sizes describe the content box or the
+// border box. Layout converts the computed value into used content geometry.
+type BoxSizing uint8
+
+const (
+	BoxSizingContentBox BoxSizing = iota
+	BoxSizingBorderBox
+)
+
 // ComputedStyle is the typed, layout-independent result of cascade,
 // inheritance, and computed-value resolution for one DOM node. Snapshot
 // lookups return it by value, so callers cannot mutate stored styles.
@@ -362,8 +371,11 @@ type ComputedStyle struct {
 	bottom            Length
 	left              Length
 	zIndex            ZIndex
+	boxSizing         BoxSizing
 	width             Length
 	height            Length
+	minHeight         Length
+	maxHeight         Length
 	minWidth          Length
 	maxWidth          Length
 	paddingTop        Length
@@ -421,8 +433,11 @@ func (computed ComputedStyle) Right() Length                          { return c
 func (computed ComputedStyle) Bottom() Length                         { return computed.bottom }
 func (computed ComputedStyle) Left() Length                           { return computed.left }
 func (computed ComputedStyle) ZIndex() ZIndex                         { return computed.zIndex }
+func (computed ComputedStyle) BoxSizing() BoxSizing                   { return computed.boxSizing }
 func (computed ComputedStyle) Width() Length                          { return computed.width }
 func (computed ComputedStyle) Height() Length                         { return computed.height }
+func (computed ComputedStyle) MinHeight() Length                      { return computed.minHeight }
+func (computed ComputedStyle) MaxHeight() Length                      { return computed.maxHeight }
 func (computed ComputedStyle) MinWidth() Length                       { return computed.minWidth }
 func (computed ComputedStyle) MaxWidth() Length                       { return computed.maxWidth }
 func (computed ComputedStyle) PaddingTop() Length                     { return computed.paddingTop }
@@ -762,6 +777,8 @@ func cssInitialStyle(viewport Viewport) computedStyle {
 		zIndex:          ZIndex{auto: true},
 		width:           length{unit: lengthAuto},
 		height:          length{unit: lengthAuto},
+		minHeight:       px(0),
+		maxHeight:       length{unit: lengthAuto},
 		minWidth:        px(0),
 		maxWidth:        length{unit: lengthAuto},
 		paddingTop:      px(0),

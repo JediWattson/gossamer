@@ -232,6 +232,9 @@ func TestLengthMathFlowsThroughPropertyValidation(t *testing.T) {
 		{Property: "margin", Value: "calc(1em - 20px) auto"},
 		{Property: "padding-left", Value: "max(0px, 2vw)"},
 		{Property: "border-width", Value: "clamp(1px, 0.5vw, 5px)"},
+		{Property: "box-sizing", Value: "border-box"},
+		{Property: "min-height", Value: "max(20px, 10vh)"},
+		{Property: "max-height", Value: "none"},
 	} {
 		if !validComputedDeclaration(declaration, viewport) {
 			t.Errorf("%s: %s was rejected", declaration.Property, declaration.Value)
@@ -239,6 +242,15 @@ func TestLengthMathFlowsThroughPropertyValidation(t *testing.T) {
 	}
 	if validComputedDeclaration(css.Declaration{Property: "border-width", Value: "calc(1px + 2%)"}, viewport) {
 		t.Fatal("percentage border width was accepted")
+	}
+	for _, declaration := range []css.Declaration{
+		{Property: "box-sizing", Value: "padding-box"},
+		{Property: "max-height", Value: "auto"},
+		{Property: "min-height", Value: "-1px"},
+	} {
+		if validComputedDeclaration(declaration, viewport) {
+			t.Errorf("invalid %s: %s was accepted", declaration.Property, declaration.Value)
+		}
 	}
 }
 

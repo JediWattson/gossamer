@@ -30,8 +30,11 @@ func TestComputedPropertyValueSerializesEverySupportedLonghand(t *testing.T) {
 		textAlign:       AlignRight,
 		listStyleType:   ListStyleSquare,
 		opacity:         0.5,
+		boxSizing:       BoxSizingBorderBox,
 		width:           Length{unit: LengthAuto},
 		height:          Length{value: 12, unit: LengthPX},
+		minHeight:       Length{value: 20, unit: LengthPX},
+		maxHeight:       Length{value: 80, unit: LengthVH},
 		minWidth:        Length{value: 25, unit: LengthPercent},
 		maxWidth:        Length{value: 75, unit: LengthVW},
 		paddingTop:      Length{value: 4, unit: LengthVH},
@@ -80,6 +83,7 @@ func TestComputedPropertyValueSerializesEverySupportedLonghand(t *testing.T) {
 		"border-top-style":     "solid",
 		"border-top-width":     "1px",
 		"bottom":               "auto",
+		"box-sizing":           "border-box",
 		"color":                "rgb(18, 52, 86)",
 		"column-gap":           "7px",
 		"display":              "block",
@@ -98,7 +102,9 @@ func TestComputedPropertyValueSerializesEverySupportedLonghand(t *testing.T) {
 		"margin-left":          "auto",
 		"margin-right":         "10%",
 		"margin-top":           "-1.5px",
+		"max-height":           "80vh",
 		"max-width":            "75vw",
+		"min-height":           "20px",
 		"min-width":            "25%",
 		"opacity":              "0.5",
 		"order":                "-1",
@@ -164,6 +170,8 @@ func TestComputedPropertyValueSerializesInitialAndAlternateEnums(t *testing.T) {
 		{name: "disc list", property: "list-style-type", want: "disc"},
 		{name: "no decoration", property: "text-decoration-line", want: "none"},
 		{name: "auto max width", computed: ComputedStyle{maxWidth: Length{unit: LengthAuto}}, property: "max-width", want: "none"},
+		{name: "auto max height", computed: ComputedStyle{maxHeight: Length{unit: LengthAuto}}, property: "max-height", want: "none"},
+		{name: "content box sizing", property: "box-sizing", want: "content-box"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

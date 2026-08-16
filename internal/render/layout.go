@@ -115,9 +115,11 @@ func (context *layoutContext) layoutBlockSized(node *styledNode, containingX, co
 	right := resolveLength(style.MarginRight(), availableWidth, context.viewport, 0)
 	padding := context.resolvePadding(style, availableWidth)
 	border := context.resolveBorder(style, availableWidth)
+	horizontalInsets := padding.Left + padding.Right + border.Left + border.Right
+	verticalInsets := padding.Top + padding.Bottom + border.Top + border.Bottom
 	if node.node.Type == dom.ElementNode && node.node.Data == "img" {
 		decoded := context.images[node.node]
-		imageWidth, imageHeight, ok := context.replacedDimensions(style, decoded, availableWidth)
+		imageWidth, imageHeight, ok := context.replacedDimensions(style, decoded, availableWidth, horizontalInsets, verticalInsets)
 		if !ok {
 			box := &Box{
 				Node:          node.node,
@@ -159,8 +161,11 @@ func (context *layoutContext) layoutBlockSized(node *styledNode, containingX, co
 		width = *forcedContentWidth
 	} else if style.Width().Unit() != lengthAuto {
 		width = resolveLength(style.Width(), availableWidth, context.viewport, availableWidth)
+		if style.BoxSizing() == boxSizingBorderBox {
+			width -= horizontalInsets
+		}
 	}
-	width = context.constrainWidth(style, math.Max(0, width), availableWidth)
+	width = context.constrainWidth(style, math.Max(0, width), availableWidth, horizontalInsets)
 	outerWidth := width + padding.Left + padding.Right + border.Left + border.Right
 	remaining := availableWidth - outerWidth - left - right
 	switch {
@@ -273,7 +278,11 @@ func (context *layoutContext) layoutBlockSized(node *styledNode, containingX, co
 	// definite. This layout slice does not yet pass definite heights downward.
 	if style.Height().Unit() != lengthAuto && !style.Height().DependsOnPercent() {
 		contentHeight = math.Max(0, resolveLength(style.Height(), 0, context.viewport, contentHeight))
+		if style.BoxSizing() == boxSizingBorderBox {
+			contentHeight = math.Max(0, contentHeight-verticalInsets)
+		}
 	}
+	contentHeight = context.constrainHeight(style, contentHeight, verticalInsets)
 	box.ContentBounds.Height = contentHeight
 	box.Bounds.Height = border.Top + padding.Top + box.ContentBounds.Height + padding.Bottom + border.Bottom
 	return context.finalizeBlock(node, box, availableWidth)
@@ -880,7 +889,7 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 		imageHeight := 0.0
 		if token.replaced {
 			var ok bool
-			imageWidth, imageHeight, ok = context.replacedDimensions(token.style, token.image, width)
+			imageWidth, imageHeight, ok = context.replacedDimensions(token.style, token.image, width, 0, 0)
 			if !ok {
 				continue
 			}
@@ -934,7 +943,7 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 	return fragments, cursorY - y, nil
 }
 
-func (context *layoutContext) replacedDimensions(style computedStyle, decoded image.Image, availableWidth float64) (float64, float64, bool) {
+func (context *layoutContext) replacedDimensions(style computedStyle, decoded image.Image, availableWidth, horizontalInsets, verticalInsets float64) (float64, float64, bool) {
 	naturalWidth := 0.0
 	naturalHeight := 0.0
 	hasNaturalSize := false
@@ -956,9 +965,15 @@ func (context *layoutContext) replacedDimensions(style computedStyle, decoded im
 	height := naturalHeight
 	if widthSpecified {
 		width = resolveLength(style.Width(), availableWidth, context.viewport, naturalWidth)
+		if style.BoxSizing() == boxSizingBorderBox {
+			width = math.Max(0, width-horizontalInsets)
+		}
 	}
 	if heightSpecified {
 		height = resolveLength(style.Height(), naturalHeight, context.viewport, naturalHeight)
+		if style.BoxSizing() == boxSizingBorderBox {
+			height = math.Max(0, height-verticalInsets)
+		}
 	}
 	switch {
 	case widthSpecified && !heightSpecified:
@@ -966,11 +981,12 @@ func (context *layoutContext) replacedDimensions(style computedStyle, decoded im
 	case heightSpecified && !widthSpecified:
 		width = naturalWidth * height / naturalHeight
 	}
-	constrainedWidth := context.constrainWidth(style, width, availableWidth)
+	constrainedWidth := context.constrainWidth(style, width, availableWidth, horizontalInsets)
 	if constrainedWidth != width && !heightSpecified && width > 0 {
 		height *= constrainedWidth / width
 	}
 	width = constrainedWidth
+	height = context.constrainHeight(style, height, verticalInsets)
 	if width < 0 || height < 0 || !isFinite(width) || !isFinite(height) {
 		return 0, 0, false
 	}
@@ -1002,16 +1018,40 @@ func (context *layoutContext) resolveBorderWidth(side borderSide, availableWidth
 	return math.Max(0, resolveLength(side.Width(), availableWidth, context.viewport, 0))
 }
 
-func (context *layoutContext) constrainWidth(style computedStyle, width, availableWidth float64) float64 {
+func (context *layoutContext) constrainWidth(style computedStyle, width, availableWidth, horizontalInsets float64) float64 {
 	maximum := math.Inf(1)
 	if style.MaxWidth().Unit() != lengthAuto {
 		maximum = math.Max(0, resolveLength(style.MaxWidth(), availableWidth, context.viewport, width))
+		if style.BoxSizing() == boxSizingBorderBox {
+			maximum = math.Max(0, maximum-horizontalInsets)
+		}
 	}
 	minimum := 0.0
 	if style.MinWidth().Unit() != lengthAuto {
 		minimum = math.Max(0, resolveLength(style.MinWidth(), availableWidth, context.viewport, 0))
+		if style.BoxSizing() == boxSizingBorderBox {
+			minimum = math.Max(0, minimum-horizontalInsets)
+		}
 	}
 	return math.Max(minimum, math.Min(width, maximum))
+}
+
+func (context *layoutContext) constrainHeight(style computedStyle, height, verticalInsets float64) float64 {
+	maximum := math.Inf(1)
+	if style.MaxHeight().Unit() != lengthAuto && !style.MaxHeight().DependsOnPercent() {
+		maximum = math.Max(0, resolveLength(style.MaxHeight(), 0, context.viewport, height))
+		if style.BoxSizing() == boxSizingBorderBox {
+			maximum = math.Max(0, maximum-verticalInsets)
+		}
+	}
+	minimum := 0.0
+	if style.MinHeight().Unit() != lengthAuto && !style.MinHeight().DependsOnPercent() {
+		minimum = math.Max(0, resolveLength(style.MinHeight(), 0, context.viewport, 0))
+		if style.BoxSizing() == boxSizingBorderBox {
+			minimum = math.Max(0, minimum-verticalInsets)
+		}
+	}
+	return math.Max(minimum, math.Min(height, maximum))
 }
 
 type inlineTokenBuilder struct {

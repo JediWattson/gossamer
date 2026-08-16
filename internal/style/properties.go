@@ -28,6 +28,7 @@ const (
 	propertyBorderColor
 	propertyBorderStyle
 	propertyBorderWidth
+	propertyBoxSizing
 	propertyColor
 	propertyDisplay
 	propertyFlexBasis
@@ -42,7 +43,9 @@ const (
 	propertyLineHeight
 	propertyListStyleType
 	propertyMargin
+	propertyMaxHeight
 	propertyMaxWidth
+	propertyMinHeight
 	propertyMinWidth
 	propertyOpacity
 	propertyOrder
@@ -102,6 +105,7 @@ var propertyDefinitions = [...]propertyDefinition{
 	{name: "border-top-style", kind: propertyBorderStyle, edge: propertyTop, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "border-top-width", kind: propertyBorderWidth, edge: propertyTop, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "bottom", kind: propertyInset, edge: propertyBottom, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
+	{name: "box-sizing", kind: propertyBoxSizing, invalidation: propertyInvalidatesLayout},
 	{name: "color", kind: propertyColor, inherited: true, invalidation: propertyInvalidatesPaint},
 	{name: "column-gap", kind: propertyGap, edge: propertyRight, invalidation: propertyInvalidatesLayout},
 	{name: "display", kind: propertyDisplay, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
@@ -120,7 +124,9 @@ var propertyDefinitions = [...]propertyDefinition{
 	{name: "margin-left", kind: propertyMargin, edge: propertyLeft, invalidation: propertyInvalidatesLayout},
 	{name: "margin-right", kind: propertyMargin, edge: propertyRight, invalidation: propertyInvalidatesLayout},
 	{name: "margin-top", kind: propertyMargin, edge: propertyTop, invalidation: propertyInvalidatesLayout},
+	{name: "max-height", kind: propertyMaxHeight, invalidation: propertyInvalidatesLayout},
 	{name: "max-width", kind: propertyMaxWidth, invalidation: propertyInvalidatesLayout},
+	{name: "min-height", kind: propertyMinHeight, invalidation: propertyInvalidatesLayout},
 	{name: "min-width", kind: propertyMinWidth, invalidation: propertyInvalidatesLayout},
 	{name: "opacity", kind: propertyOpacity, invalidation: propertyInvalidatesPaint},
 	{name: "order", kind: propertyOrder, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
@@ -230,6 +236,8 @@ func (definition propertyDefinition) copy(destination *computedStyle, source com
 		definition.borderSide(destination).style = definition.borderSide(&source).style
 	case propertyBorderWidth:
 		definition.borderSide(destination).width = definition.borderSide(&source).width
+	case propertyBoxSizing:
+		destination.boxSizing = source.boxSizing
 	case propertyColor:
 		destination.color = source.color
 	case propertyDisplay:
@@ -258,8 +266,12 @@ func (definition propertyDefinition) copy(destination *computedStyle, source com
 		destination.listStyleType = source.listStyleType
 	case propertyMargin:
 		*definition.boxLength(destination) = *definition.boxLength(&source)
+	case propertyMaxHeight:
+		destination.maxHeight = source.maxHeight
 	case propertyMaxWidth:
 		destination.maxWidth = source.maxWidth
+	case propertyMinHeight:
+		destination.minHeight = source.minHeight
 	case propertyMinWidth:
 		destination.minWidth = source.minWidth
 	case propertyOpacity:
@@ -309,6 +321,9 @@ func (definition propertyDefinition) valid(source string, viewport Viewport) boo
 	case propertyBorderWidth:
 		_, ok := parseBorderWidth(source, 1, viewport)
 		return ok
+	case propertyBoxSizing:
+		keyword, ok := singleCSSKeyword(source)
+		return ok && (keyword == "content-box" || keyword == "border-box")
 	case propertyColor:
 		_, ok := parseColor(source)
 		return ok
@@ -345,7 +360,7 @@ func (definition propertyDefinition) valid(source string, viewport Viewport) boo
 		}
 		token, ok := singleCSSNumber(source)
 		return ok && token.Integer && token.Number >= 1 && token.Number <= 1000
-	case propertyHeight, propertyMinWidth, propertyWidth:
+	case propertyHeight, propertyMinHeight, propertyMinWidth, propertyWidth:
 		parsed, ok := parseLength(source, 1, 1, viewport)
 		return ok && nonNegativeLength(parsed)
 	case propertyInset:
@@ -373,12 +388,12 @@ func (definition propertyDefinition) valid(source string, viewport Viewport) boo
 	case propertyMargin:
 		_, ok := parseLength(source, 1, 1, viewport)
 		return ok
-	case propertyMaxWidth:
+	case propertyMaxHeight, propertyMaxWidth:
 		if keyword, ok := singleCSSKeyword(source); ok && keyword == "none" {
 			return true
 		}
 		parsed, ok := parseLength(source, 1, 1, viewport)
-		return ok && nonNegativeLength(parsed)
+		return ok && parsed.unit != lengthAuto && nonNegativeLength(parsed)
 	case propertyOpacity:
 		_, ok := singleCSSNumber(source)
 		return ok
@@ -454,6 +469,12 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 	case propertyBorderWidth:
 		if parsed, ok := parseBorderWidth(source, style.fontSize, context.viewport); ok {
 			definition.borderSide(style).width = parsed
+		}
+	case propertyBoxSizing:
+		if keyword, ok := singleCSSKeyword(source); ok && keyword == "border-box" {
+			style.boxSizing = BoxSizingBorderBox
+		} else {
+			style.boxSizing = BoxSizingContentBox
 		}
 	case propertyColor:
 		if parsed, ok := parseColor(source); ok {
@@ -567,10 +588,16 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 		if parsed, ok := parseLength(source, style.fontSize, style.fontSize, context.viewport); ok {
 			*definition.boxLength(style) = parsed
 		}
+	case propertyMaxHeight:
+		if keyword, ok := singleCSSKeyword(source); ok && keyword == "none" {
+			style.maxHeight = length{unit: lengthAuto}
+		} else if parsed, ok := parseLength(source, style.fontSize, style.fontSize, context.viewport); ok && parsed.unit != lengthAuto && nonNegativeLength(parsed) {
+			style.maxHeight = parsed
+		}
 	case propertyMaxWidth:
 		if keyword, ok := singleCSSKeyword(source); ok && keyword == "none" {
 			style.maxWidth = length{unit: lengthAuto}
-		} else if parsed, ok := parseLength(source, style.fontSize, style.fontSize, context.viewport); ok && nonNegativeLength(parsed) {
+		} else if parsed, ok := parseLength(source, style.fontSize, style.fontSize, context.viewport); ok && parsed.unit != lengthAuto && nonNegativeLength(parsed) {
 			style.maxWidth = parsed
 		}
 	case propertyMinWidth:
@@ -578,6 +605,12 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 			style.minWidth = px(0)
 		} else if parsed, ok := parseLength(source, style.fontSize, style.fontSize, context.viewport); ok && nonNegativeLength(parsed) {
 			style.minWidth = parsed
+		}
+	case propertyMinHeight:
+		if keyword, ok := singleCSSKeyword(source); ok && keyword == "auto" {
+			style.minHeight = px(0)
+		} else if parsed, ok := parseLength(source, style.fontSize, style.fontSize, context.viewport); ok && nonNegativeLength(parsed) {
+			style.minHeight = parsed
 		}
 	case propertyOpacity:
 		if token, ok := singleCSSNumber(source); ok {
@@ -673,6 +706,11 @@ func (definition propertyDefinition) serialize(computed ComputedStyle) string {
 		return serializeComputedBorderStyle(definition.borderSide(&computed).style)
 	case propertyBorderWidth:
 		return serializeComputedBorderWidth(*definition.borderSide(&computed))
+	case propertyBoxSizing:
+		if computed.boxSizing == BoxSizingBorderBox {
+			return "border-box"
+		}
+		return "content-box"
 	case propertyColor:
 		return serializeComputedColor(computed.color)
 	case propertyDisplay:
@@ -730,6 +768,11 @@ func (definition propertyDefinition) serialize(computed ComputedStyle) string {
 		return serializeComputedListStyle(computed.listStyleType)
 	case propertyMargin, propertyPadding:
 		return serializeComputedLength(*definition.boxLength(&computed))
+	case propertyMaxHeight:
+		if computed.maxHeight.unit == LengthAuto {
+			return "none"
+		}
+		return serializeComputedLength(computed.maxHeight)
 	case propertyMaxWidth:
 		if computed.maxWidth.unit == LengthAuto {
 			return "none"
@@ -737,6 +780,8 @@ func (definition propertyDefinition) serialize(computed ComputedStyle) string {
 		return serializeComputedLength(computed.maxWidth)
 	case propertyMinWidth:
 		return serializeComputedLength(computed.minWidth)
+	case propertyMinHeight:
+		return serializeComputedLength(computed.minHeight)
 	case propertyOpacity:
 		return serializeComputedNumber(computed.opacity)
 	case propertyOrder:
