@@ -75,7 +75,16 @@ func (compiler *imageCompiler) reserveFunction() (uint32, error) {
 type binding struct {
 	mutable bool
 	span    lexer.Span
+	kind    bindingKind
 }
+
+type bindingKind uint8
+
+const (
+	bindingLexical bindingKind = iota + 1
+	bindingParameter
+	bindingHoisted
+)
 
 type loopTarget struct {
 	breakLabel       browserruntime.Label
@@ -113,6 +122,9 @@ func newFunctionCompiler(owner *imageCompiler, parent *functionCompiler, inFunct
 }
 
 func (compiler *functionCompiler) compileScript(script *ast.Script) error {
+	if err := compiler.instantiateFunctionScope(script.Body); err != nil {
+		return err
+	}
 	lastValue := -1
 	for index := len(script.Body) - 1; index >= 0; index-- {
 		if _, empty := script.Body[index].(*ast.EmptyStatement); !empty {
@@ -227,7 +239,16 @@ func (compiler *functionCompiler) declare(name string, mutable bool, span lexer.
 	if previous, exists := scope[name]; exists {
 		return compiler.problem(span, fmt.Sprintf("binding %q already declared at %d:%d", name, previous.span.Start.Line, previous.span.Start.Column))
 	}
-	scope[name] = binding{mutable: mutable, span: span}
+	scope[name] = binding{mutable: mutable, span: span, kind: bindingLexical}
+	return nil
+}
+
+func (compiler *functionCompiler) declareParameter(name string, span lexer.Span) error {
+	scope := compiler.scopes[len(compiler.scopes)-1]
+	if previous, exists := scope[name]; exists {
+		return compiler.problem(span, fmt.Sprintf("binding %q already declared at %d:%d", name, previous.span.Start.Line, previous.span.Start.Column))
+	}
+	scope[name] = binding{mutable: true, span: span, kind: bindingParameter}
 	return nil
 }
 

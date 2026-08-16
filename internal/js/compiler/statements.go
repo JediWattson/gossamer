@@ -14,12 +14,7 @@ func (compiler *functionCompiler) compileStatement(statement ast.Statement) erro
 	case *ast.EmptyStatement:
 		return nil
 	case *ast.BlockStatement:
-		for _, child := range statement.Body {
-			if err := compiler.compileStatement(child); err != nil {
-				return err
-			}
-		}
-		return nil
+		return compiler.compileBlock(statement)
 	case *ast.ExpressionStatement:
 		if err := compiler.compileExpression(statement.Expression); err != nil {
 			return err
@@ -44,7 +39,9 @@ func (compiler *functionCompiler) compileStatement(statement ast.Statement) erro
 		target := compiler.loops[len(compiler.loops)-1]
 		return compiler.emitCompletion(browserruntime.OpContinue, target.continueLabel, target.environmentDepth, target.handlerDepth, statement.Span())
 	case *ast.FunctionDeclaration:
-		return compiler.compileFunctionDeclaration(statement)
+		// Function declarations are instantiated in the containing Function
+		// scope before any statement executes.
+		return nil
 	case *ast.ReturnStatement:
 		if !compiler.inFunction {
 			return compiler.problem(statement.Span(), "return is only valid inside a Function")
@@ -70,21 +67,28 @@ func (compiler *functionCompiler) compileStatement(statement ast.Statement) erro
 }
 
 func (compiler *functionCompiler) compileVariableDeclaration(declaration *ast.VariableDeclaration) error {
-	mutable := declaration.Kind != ast.VariableConst
 	for _, declarator := range declaration.Declarations {
-		if err := compiler.declare(declarator.Name.Name, mutable, declarator.Name.Span()); err != nil {
-			return err
-		}
 		name, err := compiler.stringConstant(declarator.Name.Name)
 		if err != nil {
 			return err
 		}
-		flag := uint32(0)
-		if mutable {
-			flag = 1
+		if declaration.Kind == ast.VariableVar {
+			if declarator.Init == nil {
+				continue
+			}
+			if err := compiler.compileExpression(declarator.Init); err != nil {
+				return err
+			}
+			if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpStoreBinding, A: name}, declarator.Span()); err != nil {
+				return err
+			}
+			if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpPop}, declarator.Span()); err != nil {
+				return err
+			}
+			continue
 		}
-		if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpDeclareBinding, A: name, B: flag}, declarator.Name.Span()); err != nil {
-			return err
+		if declaration.Kind == ast.VariableConst && declarator.Init == nil {
+			return compiler.problem(declarator.Span(), "const declaration requires an initializer")
 		}
 		if declarator.Init == nil {
 			if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpUndefined}, declarator.Span()); err != nil {
@@ -100,6 +104,28 @@ func (compiler *functionCompiler) compileVariableDeclaration(declaration *ast.Va
 			return err
 		}
 	}
+	return nil
+}
+
+func (compiler *functionCompiler) compileBlock(block *ast.BlockStatement) error {
+	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpEnterScope}, block.Span()); err != nil {
+		return err
+	}
+	compiler.environmentDepth++
+	compiler.pushScope()
+	if err := compiler.instantiateLexicalScope(block.Body); err != nil {
+		return err
+	}
+	for _, child := range block.Body {
+		if err := compiler.compileStatement(child); err != nil {
+			return err
+		}
+	}
+	compiler.popScope()
+	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpLeaveScope}, block.Span()); err != nil {
+		return err
+	}
+	compiler.environmentDepth--
 	return nil
 }
 
@@ -168,15 +194,9 @@ func (compiler *functionCompiler) compileWhile(statement *ast.WhileStatement) er
 	return nil
 }
 
-func (compiler *functionCompiler) compileFunctionDeclaration(declaration *ast.FunctionDeclaration) error {
-	if err := compiler.declare(declaration.Name.Name, true, declaration.Name.Span()); err != nil {
-		return err
-	}
+func (compiler *functionCompiler) compileHoistedFunction(declaration *ast.FunctionDeclaration, initialize bool) error {
 	name, err := compiler.stringConstant(declaration.Name.Name)
 	if err != nil {
-		return err
-	}
-	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpDeclareBinding, A: name, B: 1}, declaration.Name.Span()); err != nil {
 		return err
 	}
 	function, err := compiler.compileNestedFunction(declaration.Name.Name, declaration.Parameters, declaration.Body, declaration.Span())
@@ -190,7 +210,11 @@ func (compiler *functionCompiler) compileFunctionDeclaration(declaration *ast.Fu
 	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpCreateClosure, A: constant}, declaration.Span()); err != nil {
 		return err
 	}
-	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpInitializeBinding, A: name}, declaration.Span()); err != nil {
+	opcode := browserruntime.OpStoreBinding
+	if initialize {
+		opcode = browserruntime.OpInitializeBinding
+	}
+	if err := compiler.emit(browserruntime.Instruction{Op: opcode, A: name}, declaration.Span()); err != nil {
 		return err
 	}
 	return compiler.emit(browserruntime.Instruction{Op: browserruntime.OpPop}, declaration.Span())
@@ -207,7 +231,7 @@ func (compiler *functionCompiler) compileNestedFunction(name string, parameters 
 	}
 	child.environmentDepth++
 	for parameterIndex, parameter := range parameters {
-		if err := child.declare(parameter.Name, true, parameter.Span()); err != nil {
+		if err := child.declareParameter(parameter.Name, parameter.Span()); err != nil {
 			return 0, err
 		}
 		constant, err := child.stringConstant(parameter.Name)
@@ -226,6 +250,9 @@ func (compiler *functionCompiler) compileNestedFunction(name string, parameters 
 		if err := child.emit(browserruntime.Instruction{Op: browserruntime.OpPop}, parameter.Span()); err != nil {
 			return 0, err
 		}
+	}
+	if err := child.instantiateFunctionScope(body.Body); err != nil {
+		return 0, err
 	}
 	for _, statement := range body.Body {
 		if err := child.compileStatement(statement); err != nil {

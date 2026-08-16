@@ -290,6 +290,57 @@ breakFinally() + continueFinally() + nestedFinally() + overridingFinally() + dis
 	}
 }
 
+func TestCompileInstantiatesHoistedAndBlockBindings(t *testing.T) {
+	t.Parallel()
+
+	image, err := compiler.Compile(`
+let outer = 1;
+let captured;
+{
+  let outer = 40;
+  captured = function() { return outer + 2; };
+}
+function callBeforeDeclaration() {
+  return answer();
+  function answer() { return 41; }
+}
+function functionScopedVar() {
+  if (true) { var value = 8; }
+  return value;
+}
+captured() + outer + callBeforeDeclaration() + functionScopedVar();
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := execute(t, 818, image)
+	if result.Kind() != memory.ValueNumber || result.Number() != 92 {
+		t.Fatalf("scope result = %#v, want 92", result)
+	}
+}
+
+func TestCompileLexicalBindingsHaveTemporalDeadZones(t *testing.T) {
+	t.Parallel()
+
+	image, err := compiler.Compile(`
+let value = 1;
+{
+  value;
+  let value = 2;
+}
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := executeError(t, 819, image); !errors.Is(err, memory.ErrBindingUninitialized) {
+		t.Fatalf("TDZ error = %v, want ErrBindingUninitialized", err)
+	}
+
+	if _, err := compiler.Compile("const missing;"); err == nil {
+		t.Fatalf("const without initializer error = %v", err)
+	}
+}
+
 func TestCompileRejectsInvalidFunctionControlFlow(t *testing.T) {
 	t.Parallel()
 
@@ -338,4 +389,30 @@ func execute(t *testing.T, realmID browserruntime.RealmID, image program.Program
 		t.Fatal(err)
 	}
 	return result
+}
+
+func executeError(t *testing.T, realmID browserruntime.RealmID, image program.Program) error {
+	t.Helper()
+	realm, err := browserruntime.NewRealm(realmID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer realm.Close()
+	interpreter := browserruntime.NewInterpreter(browserruntime.InterpreterConfig{})
+	_, err = realm.EnqueueTask(func(task *browserruntime.TaskContext) error {
+		environment, err := task.NewContext(memory.NullValue())
+		if err != nil {
+			return err
+		}
+		loaded, err := program.Load(task, image, memory.RefValue(environment))
+		if err != nil {
+			return err
+		}
+		_, err = interpreter.Execute(task, loaded.Entry)
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return realm.RunOne(context.Background())
 }

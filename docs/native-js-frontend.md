@@ -22,7 +22,8 @@ and ordinary task release invalidates every unpromoted loaded Ref.
 
 ## Implemented source subset
 
-- `let`, `const`, and first-pass `var` declarations;
+- block-scoped `let` and `const` with temporal dead zones, plus
+  Function-scoped `var`;
 - numbers, Strings, booleans, null, objects, sparse arrays, and `this`;
 - own named properties and numeric array elements;
 - assignment, deletion, prefix/postfix identifier updates;
@@ -35,19 +36,22 @@ and ordinary task release invalidates every unpromoted loaded Ref.
   completions routing return, throw, break, and continue through nested
   finally blocks.
 
-Every compiled Function invocation enters a fresh native Context whose parent
-is its captured Context. Catch bindings enter their own Context. Exception and
-return routing restore operand-stack and lexical-scope depth before entering a
-handler, so a returned closure can retain a parameter or catch binding without
-keeping an interpreter frame alive.
+Every compiled Function invocation and ordinary block enters a fresh native
+Context whose parent is its captured or enclosing Context. Catch bindings enter
+their own Context. Function and `var` bindings are instantiated before body
+execution; lexical bindings are declared before their block executes and stay
+uninitialized until their declaration. Exception and completion routing
+restore operand-stack and lexical-scope depth before entering a handler or loop
+target, so a returned closure can retain a parameter, block, or catch binding
+without keeping an interpreter frame alive.
 
 ## Deliberate boundaries
 
 This is not yet an ECMAScript-compatible engine. In particular:
 
-- declarations are source ordered rather than fully hoisted;
-- ordinary blocks do not yet create lexical Contexts;
-- `var` currently follows the same declaration timing as `let`;
+- Annex B block-Function compatibility and the full global-environment split
+  are not implemented; Function declarations use the containing Function or
+  script scope;
 - property access is own-property access, and computed access is a numeric
   Array index;
 - method calls do not yet preserve a receiver as `this`;
