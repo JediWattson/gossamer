@@ -282,10 +282,11 @@ performance budgets; see
   testing
 - Block and inline Grid containers with bounded explicit and implicit tracks,
   fixed/percentage/`auto`/`fr`/`min-content`/`max-content` breadths, bounded
-  `minmax()` ranges, clamped `fit-content()`, and integer `repeat()`, numbered
-  and negative line placement, spans, row/column dense auto-flow, gaps,
-  anonymous text items, order-modified placement and paint, retained track
-  geometry, and live resolved `grid-template-*` CSSOM reads
+  `minmax()` ranges, clamped `fit-content()`, multi-size implicit-track
+  patterns, and integer `repeat()`, numbered and negative line placement,
+  spans, row/column dense auto-flow, gaps, anonymous text items,
+  order-modified placement and paint, retained track geometry, and live
+  resolved `grid-template-*` CSSOM reads
 - HTML and CSS table display roles with anonymous wrapper fixup, bounded
   intrinsic column sizing, captions, column and row groups, `colspan`/
   `rowspan`, inline-table participation, separated border spacing, fixed

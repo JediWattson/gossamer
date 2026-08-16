@@ -66,7 +66,7 @@ func TestComputedGridTemplateIncludesImplicitTracksAndEmptyGridKeepsNone(t *test
 	t.Parallel()
 
 	engine, page, gridID := computedStyleTestPage(t, `<!doctype html><html><body style="margin:0">
-		<section id=target style="display:grid;width:150px;grid-template-columns:40px 40px;grid-auto-columns:30px;column-gap:5px"><div style="grid-column:4"></div></section>
+		<section id=target style="display:grid;width:150px;grid-template-columns:40px 40px;grid-auto-columns:20px 30px;column-gap:5px"><div style="grid-column:-5"></div><div style="grid-column:4"></div></section>
 		<section id=empty style="display:grid;width:100px"></section>
 	</body></html>`)
 	defer engine.Close()
@@ -74,7 +74,8 @@ func TestComputedGridTemplateIncludesImplicitTracksAndEmptyGridKeepsNone(t *test
 	grid := NodeHandle{Document: generation, Node: gridID}
 	empty := NodeHandle{Document: generation, Node: mustPageElementID(t, page, "empty")}
 
-	assertResolvedProperty(t, page, grid, "grid-template-columns", "40px 40px 30px 30px")
+	assertResolvedProperty(t, page, grid, "grid-template-columns", "20px 30px 40px 40px 20px 30px")
+	assertResolvedProperty(t, page, grid, "grid-auto-columns", "20px 30px")
 	assertResolvedProperty(t, page, empty, "grid-template-columns", "none")
 	assertResolvedProperty(t, page, empty, "grid-template-rows", "none")
 	if page.Frame() != nil || !page.Dirty() {

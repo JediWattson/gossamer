@@ -54,9 +54,9 @@ func TestStockV8GridComputedStyleAndGeometryStayLive(t *testing.T) {
 					throw new Error("live grid mutation: " + [retained.gridTemplateColumns, retained.columnGap, second.getBoundingClientRect().left]);
 				}
 				grid.style.gridTemplateColumns = "minmax(160px, 1fr) 1fr";
-				grid.style.gridAutoColumns = "fit-content(25%)";
+				grid.style.gridAutoColumns = "fit-content(25%) 20px";
 				grid.style.columnGap = "0";
-				if (retained.gridTemplateColumns !== "160px 140px" || retained.gridAutoColumns !== "fit-content(25%)") {
+				if (retained.gridTemplateColumns !== "160px 140px" || retained.gridAutoColumns !== "fit-content(25%) 20px") {
 					throw new Error("live minmax tracks: " + [retained.gridTemplateColumns, retained.gridAutoColumns]);
 				}
 			})();

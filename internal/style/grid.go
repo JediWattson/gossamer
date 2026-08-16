@@ -132,16 +132,24 @@ func parseGridTrackList(source string, fontSize float64, viewport Viewport) (Gri
 	return GridTrackList{tracks: tracks, serialization: serialization}, true
 }
 
-func parseGridAutoTrack(source string, fontSize float64, viewport Viewport) (GridTrackSize, bool) {
+func defaultGridAutoTrackList() GridTrackList {
+	return GridTrackList{tracks: []GridTrackSize{{}}, serialization: "auto"}
+}
+
+func parseGridAutoTrackList(source string, fontSize float64, viewport Viewport) (GridTrackList, bool) {
 	value, ok := parsePropertyValue(source)
-	if !ok || len(value.terms) != 1 {
-		return GridTrackSize{}, false
+	if !ok || len(value.terms) == 0 || len(value.terms) > maxGridTrackListEntries {
+		return GridTrackList{}, false
 	}
-	tracks := make([]GridTrackSize, 0, 1)
-	if !appendGridTrackComponent(&tracks, value.terms[0], value.source, fontSize, viewport, false) || len(tracks) != 1 {
-		return GridTrackSize{}, false
+	tracks := make([]GridTrackSize, 0, len(value.terms))
+	parts := make([]string, 0, len(value.terms))
+	for _, term := range value.terms {
+		if !appendGridTrackComponent(&tracks, term, value.source, fontSize, viewport, false) || len(tracks) != len(parts)+1 {
+			return GridTrackList{}, false
+		}
+		parts = append(parts, serializeGridTrackSize(tracks[len(tracks)-1]))
 	}
-	return tracks[0], true
+	return GridTrackList{tracks: tracks, serialization: strings.Join(parts, " ")}, true
 }
 
 func appendGridTrackComponent(tracks *[]GridTrackSize, component css.ComponentValue, source string, fontSize float64, viewport Viewport, allowRepeat bool) bool {

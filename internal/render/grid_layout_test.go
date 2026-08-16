@@ -2,6 +2,7 @@ package render_test
 
 import (
 	"image/color"
+	"math"
 	"strings"
 	"testing"
 
@@ -365,6 +366,50 @@ func TestGridFitContentClampsMaxContentWithoutCrossingMinimum(t *testing.T) {
 	assertNear(t, "fixed fit-content limit", tracks[0], 50)
 	assertNear(t, "fit-content floor at min-content", tracks[1], 36)
 	assertNear(t, "percentage fit-content limit", tracks[2], 100)
+}
+
+func TestGridAutomaticTrackPatternsCycleForwardAndBackward(t *testing.T) {
+	t.Parallel()
+
+	document, err := htmlparser.Parse(strings.NewReader(`<!doctype html><html><body style="margin:0">
+		<section id=grid style="display:grid;width:300px;grid-template-columns:50px;grid-auto-columns:10px 20px 30px;grid-template-rows:15px;grid-auto-rows:5px 10px">
+			<div style="grid-column:-4;grid-row:-4"></div>
+			<div style="grid-column:-3;grid-row:-3"></div>
+			<div style="grid-column:1;grid-row:1"></div>
+			<div style="grid-column:2;grid-row:2"></div>
+			<div style="grid-column:3;grid-row:3"></div>
+			<div style="grid-column:4;grid-row:4"></div>
+			<div style="grid-column:5;grid-row:5"></div>
+		</section>
+	</body></html>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame, err := render.Render(document, render.Viewport{Width: 340, Height: 180})
+	if err != nil {
+		t.Fatal(err)
+	}
+	grid, _ := frame.Layout.Geometry(findStaticPageElementByID(document, "grid"))
+	wantColumns := []float64{20, 30, 50, 10, 20, 30, 10}
+	wantRows := []float64{5, 10, 15, 5, 10, 5, 10}
+	if got := grid.GridColumnSizes(); !nearSlice(got, wantColumns) {
+		t.Fatalf("automatic column pattern = %v, want %v", got, wantColumns)
+	}
+	if got := grid.GridRowSizes(); !nearSlice(got, wantRows) {
+		t.Fatalf("automatic row pattern = %v, want %v", got, wantRows)
+	}
+}
+
+func nearSlice(got, want []float64) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for index := range got {
+		if math.Abs(got[index]-want[index]) > 0.001 {
+			return false
+		}
+	}
+	return true
 }
 
 func TestGridAlignmentOverlapPaintAndHitOrderFollowOrderModifiedItems(t *testing.T) {

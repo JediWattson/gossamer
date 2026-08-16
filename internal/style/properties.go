@@ -471,7 +471,7 @@ func (definition propertyDefinition) valid(source string, viewport Viewport) boo
 		token, ok := singleCSSNumber(source)
 		return ok && token.Integer && token.Number >= 1 && token.Number <= 1000
 	case propertyGridAutoColumns, propertyGridAutoRows:
-		_, ok := parseGridAutoTrack(source, 1, viewport)
+		_, ok := parseGridAutoTrackList(source, 1, viewport)
 		return ok
 	case propertyGridAutoFlow:
 		_, ok := parseGridAutoFlow(source)
@@ -758,7 +758,7 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 			}
 		}
 	case propertyGridAutoColumns:
-		if parsed, ok := parseGridAutoTrack(source, style.fontSize, context.viewport); ok {
+		if parsed, ok := parseGridAutoTrackList(source, style.fontSize, context.viewport); ok {
 			style.gridAutoColumns = parsed
 		}
 	case propertyGridAutoFlow:
@@ -766,7 +766,7 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 			style.gridAutoFlow = parsed
 		}
 	case propertyGridAutoRows:
-		if parsed, ok := parseGridAutoTrack(source, style.fontSize, context.viewport); ok {
+		if parsed, ok := parseGridAutoTrackList(source, style.fontSize, context.viewport); ok {
 			style.gridAutoRows = parsed
 		}
 	case propertyGridColumnEnd:
@@ -1075,11 +1075,11 @@ func (definition propertyDefinition) serialize(computed ComputedStyle) string {
 	case propertyFontWeight:
 		return strconv.Itoa(computed.fontWeightValue)
 	case propertyGridAutoColumns:
-		return serializeGridTrackSize(computed.gridAutoColumns)
+		return serializeGridTrackList(computed.gridAutoColumns)
 	case propertyGridAutoFlow:
 		return serializeGridAutoFlow(computed.gridAutoFlow)
 	case propertyGridAutoRows:
-		return serializeGridTrackSize(computed.gridAutoRows)
+		return serializeGridTrackList(computed.gridAutoRows)
 	case propertyGridColumnEnd:
 		return serializeGridLine(computed.gridColumnEnd)
 	case propertyGridColumnStart:

@@ -446,13 +446,28 @@ func (model *gridLayoutModel) findColumnFlowPosition(item gridLayoutItem, cursor
 	return 0, 0, fmt.Errorf("render: grid column auto-placement exhausted")
 }
 
-func gridTrackSizes(template computed.GridTrackList, automatic computed.GridTrackSize, count, offset int) []computed.GridTrackSize {
+func gridTrackSizes(template, automatic computed.GridTrackList, count, offset int) []computed.GridTrackSize {
 	tracks := make([]computed.GridTrackSize, count)
+	explicitCount := template.Len()
+	automaticCount := automatic.Len()
 	for index := range tracks {
 		if explicit, ok := template.At(index - offset); ok {
 			tracks[index] = explicit
+			continue
+		}
+		if automaticCount == 0 {
+			continue
+		}
+		patternIndex := 0
+		if index < offset {
+			distance := offset - 1 - index
+			patternIndex = automaticCount - 1 - distance%automaticCount
 		} else {
-			tracks[index] = automatic
+			distance := index - offset - explicitCount
+			patternIndex = distance % automaticCount
+		}
+		if implicit, ok := automatic.At(patternIndex); ok {
+			tracks[index] = implicit
 		}
 	}
 	return tracks

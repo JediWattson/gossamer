@@ -582,9 +582,9 @@ type ComputedStyle struct {
 	flexShrink        float64
 	flexBasis         Length
 	order             int
-	gridAutoColumns   GridTrackSize
+	gridAutoColumns   GridTrackList
 	gridAutoFlow      GridAutoFlow
-	gridAutoRows      GridTrackSize
+	gridAutoRows      GridTrackList
 	gridColumnEnd     GridLine
 	gridColumnStart   GridLine
 	gridRowEnd        GridLine
@@ -681,9 +681,9 @@ func (computed ComputedStyle) FlexGrow() float64              { return computed.
 func (computed ComputedStyle) FlexShrink() float64            { return computed.flexShrink }
 func (computed ComputedStyle) FlexBasis() Length              { return computed.flexBasis }
 func (computed ComputedStyle) Order() int                     { return computed.order }
-func (computed ComputedStyle) GridAutoColumns() GridTrackSize { return computed.gridAutoColumns }
+func (computed ComputedStyle) GridAutoColumns() GridTrackList { return computed.gridAutoColumns }
 func (computed ComputedStyle) GridAutoFlow() GridAutoFlow     { return computed.gridAutoFlow }
-func (computed ComputedStyle) GridAutoRows() GridTrackSize    { return computed.gridAutoRows }
+func (computed ComputedStyle) GridAutoRows() GridTrackList    { return computed.gridAutoRows }
 func (computed ComputedStyle) GridColumnEnd() GridLine        { return computed.gridColumnEnd }
 func (computed ComputedStyle) GridColumnStart() GridLine      { return computed.gridColumnStart }
 func (computed ComputedStyle) GridRowEnd() GridLine           { return computed.gridRowEnd }
@@ -1258,9 +1258,9 @@ func cssInitialStyle(viewport Viewport) computedStyle {
 		content:         ContentValue{kind: contentNormal},
 		flexShrink:      1,
 		flexBasis:       length{unit: lengthAuto},
-		gridAutoColumns: GridTrackSize{},
+		gridAutoColumns: defaultGridAutoTrackList(),
 		gridAutoFlow:    GridAutoFlow{axis: GridAutoFlowRow},
-		gridAutoRows:    GridTrackSize{},
+		gridAutoRows:    defaultGridAutoTrackList(),
 		gridColumnEnd:   GridLine{kind: GridLineAuto},
 		gridColumnStart: GridLine{kind: GridLineAuto},
 		gridRowEnd:      GridLine{kind: GridLineAuto},

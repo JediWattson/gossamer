@@ -48,7 +48,7 @@ func FuzzGridLayoutPlacementStaysFinite(f *testing.F) {
 		html := dom.NewElement("html")
 		body := dom.NewElement("body", dom.Attribute{Name: "style", Value: "margin:0"})
 		grid := dom.NewElement("section", dom.Attribute{Name: "style", Value: fmt.Sprintf(
-			"display:grid;width:%dpx;height:%dpx;grid-template-columns:repeat(%d,%s);grid-template-rows:repeat(%d,auto);grid-auto-columns:%s;grid-auto-rows:%dpx;grid-auto-flow:%s;gap:%dpx",
+			"display:grid;width:%dpx;height:%dpx;grid-template-columns:repeat(%d,%s);grid-template-rows:repeat(%d,auto);grid-auto-columns:%s auto;grid-auto-rows:%dpx auto;grid-auto-flow:%s;gap:%dpx",
 			100+int(rawColumns)*2, 80+int(rawRows)*2, columns, track, rows, track, 8+rawModes%12, flow, rawModes%7,
 		)})
 		for index := range itemCount {
