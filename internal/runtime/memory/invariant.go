@@ -49,6 +49,7 @@ func (store *Store) CheckInvariants() error {
 	liveWeakSets := uint64(0)
 	liveBytes := uint64(0)
 	liveRegions := uint64(0)
+	reservedSlotCapacity := uint64(0)
 	for owner, claim := range store.ownerClaims {
 		if claim == 0 {
 			return invariantError("%s has claim 0", owner)
@@ -75,6 +76,9 @@ func (store *Store) CheckInvariants() error {
 			return invariantError("R%d has unknown state %d", id, region.State)
 		}
 		if region.State == RegionDestroyed {
+			if cap(region.Slots) != 0 {
+				return invariantError("destroyed R%d retains slot capacity %d", id, cap(region.Slots))
+			}
 			for index, slot := range region.Slots {
 				if slot.Occupied || slot.object != 0 || !slotStorageEmpty(&slot) {
 					return invariantError("destroyed R%d slot %d still owns storage", id, index)
@@ -85,6 +89,7 @@ func (store *Store) CheckInvariants() error {
 			}
 			continue
 		}
+		reservedSlotCapacity += uint64(cap(region.Slots))
 
 		liveRegions++
 		if region.Owner.Value == 0 {
@@ -462,6 +467,19 @@ func (store *Store) CheckInvariants() error {
 			}
 		}
 	}
+	pooledSlotCapacity := uint64(0)
+	for bufferIndex, buffer := range store.slotBuffers {
+		if len(buffer) != 0 || cap(buffer) == 0 || cap(buffer) > maxPooledSlotCapacity {
+			return invariantError("pooled slot buffer %d has len/cap %d/%d", bufferIndex, len(buffer), cap(buffer))
+		}
+		pooledSlotCapacity += uint64(cap(buffer))
+		for slotIndex, slot := range buffer[:cap(buffer)] {
+			if slot.Occupied || slot.object != 0 || !slotStorageEmpty(&slot) || slot.Generation != 0 {
+				return invariantError("pooled slot buffer %d slot %d retains state", bufferIndex, slotIndex)
+			}
+		}
+	}
+	reservedSlotCapacity += pooledSlotCapacity
 
 	expectedObjectEdges := make(map[objectEdge]uint32)
 	expectedRegionEdges := make(map[edgeKey]uint32)
@@ -532,6 +550,12 @@ func (store *Store) CheckInvariants() error {
 	}
 	if store.stats.LiveWeakMaps != liveWeakMaps || store.stats.LiveWeakSets != liveWeakSets {
 		return invariantError("stats weak maps/sets = %d/%d, derived %d/%d", store.stats.LiveWeakMaps, store.stats.LiveWeakSets, liveWeakMaps, liveWeakSets)
+	}
+	if store.stats.PooledSlotBuffers != uint64(len(store.slotBuffers)) || store.stats.PooledSlotCapacity != pooledSlotCapacity || store.stats.ReservedSlotCapacity != reservedSlotCapacity {
+		return invariantError("stats pooled buffers/capacity/reserved = %d/%d/%d, derived %d/%d/%d", store.stats.PooledSlotBuffers, store.stats.PooledSlotCapacity, store.stats.ReservedSlotCapacity, len(store.slotBuffers), pooledSlotCapacity, reservedSlotCapacity)
+	}
+	if store.stats.PeakReservedSlotCapacity < store.stats.ReservedSlotCapacity {
+		return invariantError("peak reserved slot capacity %d is below current %d", store.stats.PeakReservedSlotCapacity, store.stats.ReservedSlotCapacity)
 	}
 	if store.closed && (liveSlots != 0 || liveRegions != 0) {
 		return invariantError("closed store retains %d slots in %d regions", liveSlots, liveRegions)

@@ -202,6 +202,13 @@ tools/v8/profile.sh -iterations 5 -sampling-interval 4096
 tools/v8/profile.sh -script ./workload.js
 ```
 
+The five-iteration native workload establishes the first allocator baseline:
+each live checkpoint has seven native slots. Region buffer recycling performs
+one eight-slot buffer allocation and four reuses with no growth; the final
+checkpoint reports 35 semantic allocations, 35 frees, zero live slots, and one
+pooled eight-slot buffer. These counters make later slab or payload-pool work a
+measured change rather than an ownership-model change.
+
 ## Proven sequence
 
 The tagged tests prove both the isolated adapter and the browser path:

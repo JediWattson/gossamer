@@ -51,36 +51,43 @@ var (
 
 // Stats describes physical heap activity, independently from ledger telemetry.
 type Stats struct {
-	Allocations         uint64 `json:"allocations"`
-	Frees               uint64 `json:"frees"`
-	LiveSlots           uint64 `json:"liveSlots"`
-	LiveCells           uint64 `json:"liveCells"`
-	LiveStrings         uint64 `json:"liveStrings"`
-	LiveObjects         uint64 `json:"liveObjects"`
-	LiveArrays          uint64 `json:"liveArrays"`
-	LiveContexts        uint64 `json:"liveContexts"`
-	LiveFunctions       uint64 `json:"liveFunctions"`
-	LivePromises        uint64 `json:"livePromises"`
-	LiveBigInts         uint64 `json:"liveBigInts"`
-	LiveSymbols         uint64 `json:"liveSymbols"`
-	LiveArrayBuffers    uint64 `json:"liveArrayBuffers"`
-	LiveTypedArrays     uint64 `json:"liveTypedArrays"`
-	LiveMaps            uint64 `json:"liveMaps"`
-	LiveSets            uint64 `json:"liveSets"`
-	LiveDates           uint64 `json:"liveDates"`
-	LiveRegExps         uint64 `json:"liveRegExps"`
-	LiveErrors          uint64 `json:"liveErrors"`
-	LiveWeakMaps        uint64 `json:"liveWeakMaps"`
-	LiveWeakSets        uint64 `json:"liveWeakSets"`
-	LiveBytes           uint64 `json:"liveBytes"`
-	LiveRegions         uint64 `json:"liveRegions"`
-	BulkRegionReleases  uint64 `json:"bulkRegionReleases"`
-	AutomaticPromotions uint64 `json:"automaticPromotions"`
-	PromotionCacheHits  uint64 `json:"promotionCacheHits"`
-	Collections         uint64 `json:"collections"`
-	CollectedSlots      uint64 `json:"collectedSlots"`
-	CollectedBytes      uint64 `json:"collectedBytes"`
-	WeakEntriesCleared  uint64 `json:"weakEntriesCleared"`
+	Allocations              uint64 `json:"allocations"`
+	Frees                    uint64 `json:"frees"`
+	LiveSlots                uint64 `json:"liveSlots"`
+	LiveCells                uint64 `json:"liveCells"`
+	LiveStrings              uint64 `json:"liveStrings"`
+	LiveObjects              uint64 `json:"liveObjects"`
+	LiveArrays               uint64 `json:"liveArrays"`
+	LiveContexts             uint64 `json:"liveContexts"`
+	LiveFunctions            uint64 `json:"liveFunctions"`
+	LivePromises             uint64 `json:"livePromises"`
+	LiveBigInts              uint64 `json:"liveBigInts"`
+	LiveSymbols              uint64 `json:"liveSymbols"`
+	LiveArrayBuffers         uint64 `json:"liveArrayBuffers"`
+	LiveTypedArrays          uint64 `json:"liveTypedArrays"`
+	LiveMaps                 uint64 `json:"liveMaps"`
+	LiveSets                 uint64 `json:"liveSets"`
+	LiveDates                uint64 `json:"liveDates"`
+	LiveRegExps              uint64 `json:"liveRegExps"`
+	LiveErrors               uint64 `json:"liveErrors"`
+	LiveWeakMaps             uint64 `json:"liveWeakMaps"`
+	LiveWeakSets             uint64 `json:"liveWeakSets"`
+	LiveBytes                uint64 `json:"liveBytes"`
+	LiveRegions              uint64 `json:"liveRegions"`
+	BulkRegionReleases       uint64 `json:"bulkRegionReleases"`
+	AutomaticPromotions      uint64 `json:"automaticPromotions"`
+	PromotionCacheHits       uint64 `json:"promotionCacheHits"`
+	Collections              uint64 `json:"collections"`
+	CollectedSlots           uint64 `json:"collectedSlots"`
+	CollectedBytes           uint64 `json:"collectedBytes"`
+	WeakEntriesCleared       uint64 `json:"weakEntriesCleared"`
+	SlotBufferAllocations    uint64 `json:"slotBufferAllocations"`
+	SlotBufferGrows          uint64 `json:"slotBufferGrows"`
+	SlotBufferReuses         uint64 `json:"slotBufferReuses"`
+	PooledSlotBuffers        uint64 `json:"pooledSlotBuffers"`
+	PooledSlotCapacity       uint64 `json:"pooledSlotCapacity"`
+	ReservedSlotCapacity     uint64 `json:"reservedSlotCapacity"`
+	PeakReservedSlotCapacity uint64 `json:"peakReservedSlotCapacity"`
 }
 
 type objectEdge struct {
@@ -155,6 +162,7 @@ type Store struct {
 	barrier      *Barrier
 	objectEdges  map[objectEdge]uint32
 	promotions   map[promotionKey]Ref
+	slotBuffers  [][]Slot
 	stats        Stats
 
 	sharedOwner ownership.OwnerID
@@ -291,6 +299,7 @@ func (store *Store) allocKindLocked(owner ownership.OwnerID, regionID RegionID, 
 			return Ref{}, fmt.Errorf("memory: region R%d exhausted slots", regionID)
 		}
 		index = uint32(len(region.Slots))
+		store.ensureRegionSlotCapacityLocked(region, len(region.Slots)+1)
 		region.Slots = append(region.Slots, Slot{Generation: 1, Kind: kind, Occupied: true, object: object})
 		initializeSlotPayload(&region.Slots[index], kind)
 	}
@@ -856,6 +865,7 @@ func (store *Store) Close() error {
 	if err := store.destroyRegionsLocked(ids); err != nil {
 		return err
 	}
+	store.releaseAllSlotBuffersLocked()
 	owners := make([]ownership.OwnerID, 0, len(store.ownerClaims))
 	for owner := range store.ownerClaims {
 		owners = append(owners, owner)
@@ -1109,8 +1119,11 @@ func (store *Store) destroyRegionsLocked(ids map[RegionID]struct{}) error {
 				slot.Generation++
 			}
 			store.stats.LiveSlots--
+			store.stats.Frees++
 		}
 		region.free = nil
+		store.releaseSlotBufferLocked(region.Slots)
+		region.Slots = nil
 		region.State = RegionDestroyed
 		store.stats.LiveRegions--
 		store.stats.BulkRegionReleases++

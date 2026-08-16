@@ -31,6 +31,13 @@ snapshot and V8's heap/wrapper counters at the same between-task checkpoints,
 so later allocator changes can be compared without changing lifetime
 semantics.
 
+The profiled task graph occupies seven slots, so new region buffers reserve an
+eight-slot page and grow geometrically only when needed. Destroyed regions
+return cleared pages to a small bounded Store-local pool; Region IDs are never
+reused, so physical buffer reuse cannot revive a stale Ref. Telemetry separates
+semantic slot allocations/frees from buffer allocations, growth, reuse, pooled
+capacity, and peak reserved capacity.
+
 ## Implemented types
 
 ### String

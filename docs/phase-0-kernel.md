@@ -119,9 +119,11 @@ weak-wrapper sweep can reclaim a detached Go subgraph without reusing its
 stable IDs. See
 [`stock-v8-integration.md`](stock-v8-integration.md).
 
-Physical allocation optimizations such as typed slabs or object pools should
-be evaluated later against the semantic telemetry. They are implementation
-details, not the Phase 0 ownership model.
+The first profile-driven physical optimization is implemented without changing
+the ownership model: short-lived regions use eight-slot buffers sized to the
+measured seven-slot task graph, grow geometrically, and return cleared buffers
+to a bounded Store-local pool. Allocation, growth, reuse, pooled capacity, and
+peak reserved-capacity counters remain separate from semantic slot telemetry.
 
 The RegionStore intentionally does not implement JavaScript semantics, packed
 refs, or V8 heap integration. It does implement deterministic owner-local
