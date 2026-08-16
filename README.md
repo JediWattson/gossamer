@@ -133,9 +133,15 @@ A synchronous native interpreter can now execute hand-assembled Function
 bytecode over those payloads. Its borrowed frames expose Ref roots, all heap
 mutation stays behind TaskContext barriers, and returned private values still
 require explicit promotion or queue semantics before task release. Stock V8
-remains the browser's JavaScript engine. See
+remains the browser's complete JavaScript engine. An optional native engine
+adapter now runs the supported source subset through the same Page `JSRealm`
+socket: its global graph is copied explicitly between Realm-owned retention and
+task-owned execution, and its Promise jobs drain at the existing browser
+microtask checkpoint. See
 [`docs/native-interpreter.md`](docs/native-interpreter.md) for the instruction
-and lifetime contract.
+and lifetime contract and
+[`docs/native-js-frontend.md`](docs/native-js-frontend.md) for the native source
+and adapter boundary.
 
 The DOM now also has additive stable `NodeID` identity over its existing
 pointer-backed storage. A minimal `Browser`/`Page` boundary ties an indexed

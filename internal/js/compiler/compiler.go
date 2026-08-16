@@ -30,19 +30,35 @@ func (problem *Error) Error() string {
 
 func (problem *Error) Unwrap() error { return ErrCompile }
 
+type Options struct {
+	// AllowUnresolvedGlobals emits runtime binding lookups for names not known
+	// to this individual source unit. Browser Realms use it because earlier
+	// classic scripts may have established bindings in the persistent global
+	// Context. The default Compile path retains its closed-world diagnostics.
+	AllowUnresolvedGlobals bool
+}
+
 func Compile(source string) (program.Program, error) {
+	return CompileWithOptions(source, Options{})
+}
+
+func CompileWithOptions(source string, options Options) (program.Program, error) {
 	script, err := parser.Parse(source)
 	if err != nil {
 		return program.Program{}, err
 	}
-	return CompileAST(script)
+	return CompileASTWithOptions(script, options)
 }
 
 func CompileAST(script *ast.Script) (program.Program, error) {
+	return CompileASTWithOptions(script, Options{})
+}
+
+func CompileASTWithOptions(script *ast.Script, options Options) (program.Program, error) {
 	if script == nil {
 		return program.Program{}, &Error{Message: "nil Script", Span: lexer.Span{Start: lexer.Position{Line: 1, Column: 1}}}
 	}
-	owner := &imageCompiler{functions: []program.FunctionTemplate{{}}}
+	owner := &imageCompiler{functions: []program.FunctionTemplate{{}}, options: options}
 	function := newFunctionCompiler(owner, nil, false)
 	if err := function.compileScript(script); err != nil {
 		return program.Program{}, err
@@ -61,6 +77,7 @@ func CompileAST(script *ast.Script) (program.Program, error) {
 
 type imageCompiler struct {
 	functions []program.FunctionTemplate
+	options   Options
 }
 
 func (compiler *imageCompiler) reserveFunction() (uint32, error) {
@@ -281,6 +298,9 @@ func (compiler *functionCompiler) resolve(name string) (binding, bool) {
 	}
 	if mutable, exists := nativeGlobalBindings[name]; exists {
 		return binding{mutable: mutable, kind: bindingGlobal}, true
+	}
+	if compiler.owner.options.AllowUnresolvedGlobals {
+		return binding{mutable: true, kind: bindingGlobal}, true
 	}
 	return binding{}, false
 }

@@ -131,6 +131,15 @@ const (
 )
 
 func (interpreter *Interpreter) Execute(context *TaskContext, function memory.Ref, arguments ...memory.Value) (memory.Value, error) {
+	result, callErr := interpreter.ExecuteWithoutCheckpoint(context, function, arguments...)
+	jobErr := interpreter.DrainJobs(context)
+	return result, errors.Join(callErr, jobErr)
+}
+
+// ExecuteWithoutCheckpoint invokes one Function but leaves native Promise and
+// queueMicrotask jobs pending. Browser embedders use this form so the existing
+// JSRealm.DrainMicrotasks boundary remains the one observable checkpoint.
+func (interpreter *Interpreter) ExecuteWithoutCheckpoint(context *TaskContext, function memory.Ref, arguments ...memory.Value) (memory.Value, error) {
 	if interpreter == nil {
 		return memory.Value{}, fmt.Errorf("runtime: nil interpreter")
 	}
@@ -138,9 +147,7 @@ func (interpreter *Interpreter) Execute(context *TaskContext, function memory.Re
 		return memory.Value{}, fmt.Errorf("runtime: nil task context")
 	}
 	execution := &execution{interpreter: interpreter, context: context}
-	result, callErr := execution.call(function, memory.UndefinedValue(), arguments, callAny)
-	jobErr := execution.drainJobs()
-	return result, errors.Join(callErr, jobErr)
+	return execution.call(function, memory.UndefinedValue(), arguments, callAny)
 }
 
 // DrainJobs runs the current task's queued native microtasks in FIFO order.
@@ -152,6 +159,17 @@ func (interpreter *Interpreter) DrainJobs(context *TaskContext) error {
 	}
 	execution := &execution{interpreter: interpreter, context: context}
 	return execution.drainJobs()
+}
+
+// DiscardJobs forgets pending borrowed callbacks for a task that is being
+// abandoned before its normal checkpoint. It never changes Ref ownership.
+func (interpreter *Interpreter) DiscardJobs(task TaskID) {
+	if interpreter == nil || task == 0 {
+		return
+	}
+	interpreter.jobMutex.Lock()
+	delete(interpreter.jobs, task)
+	interpreter.jobMutex.Unlock()
 }
 
 func (execution *execution) call(function memory.Ref, this memory.Value, arguments []memory.Value, mode callMode) (memory.Value, error) {

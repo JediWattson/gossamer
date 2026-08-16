@@ -114,6 +114,84 @@ type Intrinsics struct {
 	ReferenceErrorConstructor memory.Ref
 }
 
+const intrinsicRootCount = 25
+
+// Roots returns every Ref needed to carry one intrinsic environment across an
+// explicit ownership boundary. The ordering is private to this package and is
+// consumed only by RestoreIntrinsics.
+func (intrinsics *Intrinsics) Roots() []memory.Ref {
+	if intrinsics == nil {
+		return nil
+	}
+	return []memory.Ref{
+		intrinsics.Global,
+		intrinsics.ObjectPrototype,
+		intrinsics.FunctionPrototype,
+		intrinsics.ArrayPrototype,
+		intrinsics.StringPrototype,
+		intrinsics.IteratorPrototype,
+		intrinsics.ErrorPrototype,
+		intrinsics.TypeErrorPrototype,
+		intrinsics.RangeErrorPrototype,
+		intrinsics.ReferenceErrorPrototype,
+		intrinsics.MapPrototype,
+		intrinsics.SetPrototype,
+		intrinsics.PromisePrototype,
+		intrinsics.ObjectConstructor,
+		intrinsics.FunctionConstructor,
+		intrinsics.ArrayConstructor,
+		intrinsics.StringConstructor,
+		intrinsics.MapConstructor,
+		intrinsics.SetConstructor,
+		intrinsics.PromiseConstructor,
+		intrinsics.QueueMicrotask,
+		intrinsics.ErrorConstructor,
+		intrinsics.TypeErrorConstructor,
+		intrinsics.RangeErrorConstructor,
+		intrinsics.ReferenceErrorConstructor,
+	}
+}
+
+// RestoreIntrinsics rebuilds the Go index over a graph copied from Roots.
+// Copying remains a RegionStore operation; this helper only restores names.
+func RestoreIntrinsics(roots []memory.Ref) (*Intrinsics, error) {
+	if len(roots) != intrinsicRootCount {
+		return nil, fmt.Errorf("runtime: intrinsic root count %d, want %d", len(roots), intrinsicRootCount)
+	}
+	for index, ref := range roots {
+		if ref == (memory.Ref{}) {
+			return nil, fmt.Errorf("runtime: intrinsic root %d is empty", index)
+		}
+	}
+	return &Intrinsics{
+		Global:                    roots[0],
+		ObjectPrototype:           roots[1],
+		FunctionPrototype:         roots[2],
+		ArrayPrototype:            roots[3],
+		StringPrototype:           roots[4],
+		IteratorPrototype:         roots[5],
+		ErrorPrototype:            roots[6],
+		TypeErrorPrototype:        roots[7],
+		RangeErrorPrototype:       roots[8],
+		ReferenceErrorPrototype:   roots[9],
+		MapPrototype:              roots[10],
+		SetPrototype:              roots[11],
+		PromisePrototype:          roots[12],
+		ObjectConstructor:         roots[13],
+		FunctionConstructor:       roots[14],
+		ArrayConstructor:          roots[15],
+		StringConstructor:         roots[16],
+		MapConstructor:            roots[17],
+		SetConstructor:            roots[18],
+		PromiseConstructor:        roots[19],
+		QueueMicrotask:            roots[20],
+		ErrorConstructor:          roots[21],
+		TypeErrorConstructor:      roots[22],
+		RangeErrorConstructor:     roots[23],
+		ReferenceErrorConstructor: roots[24],
+	}, nil
+}
+
 // Bootstrap installs canonical prototypes, constructors, and global bindings
 // in the current task region. It must run before loading a source Program so
 // loaded Functions receive Function.prototype and constructor metadata.
