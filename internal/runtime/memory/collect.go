@@ -10,10 +10,11 @@ import (
 
 // Collection reports one deterministic owner-local tracing checkpoint.
 type Collection struct {
-	Roots          uint64 `json:"roots"`
-	MarkedSlots    uint64 `json:"markedSlots"`
-	ReclaimedSlots uint64 `json:"reclaimedSlots"`
-	ReclaimedBytes uint64 `json:"reclaimedBytes"`
+	Roots              uint64 `json:"roots"`
+	MarkedSlots        uint64 `json:"markedSlots"`
+	ReclaimedSlots     uint64 `json:"reclaimedSlots"`
+	ReclaimedBytes     uint64 `json:"reclaimedBytes"`
+	ClearedWeakEntries uint64 `json:"clearedWeakEntries"`
 }
 
 // Collect reclaims private slots owned by owner that are unreachable from the
@@ -101,24 +102,90 @@ func (store *Store) Collect(owner ownership.OwnerID, roots ...Ref) (Collection, 
 
 	marked := make(map[Ref]struct{})
 	seen := make(map[Ref]struct{})
-	for len(queue) != 0 {
-		ref := queue[0]
-		queue = queue[1:]
-		if _, exists := seen[ref]; exists {
-			continue
+	drainStrongReferences := func() error {
+		for len(queue) != 0 {
+			ref := queue[0]
+			queue = queue[1:]
+			if _, exists := seen[ref]; exists {
+				continue
+			}
+			seen[ref] = struct{}{}
+			_, slot, err := store.slotLocked(ref)
+			if err != nil {
+				return err
+			}
+			if _, isOwned := owned[ref]; isOwned {
+				marked[ref] = struct{}{}
+			}
+			for _, value := range slotReferences(slot) {
+				if value.IsRef() {
+					queue = append(queue, value.Ref())
+				}
+			}
 		}
-		seen[ref] = struct{}{}
-		_, slot, err := store.slotLocked(ref)
-		if err != nil {
+		return nil
+	}
+	if err := drainStrongReferences(); err != nil {
+		return Collection{}, err
+	}
+
+	// Ephemeron values are traced only after both their table and key have
+	// become live through ordinary strong reachability. Repeat to a fixed point
+	// because one ephemeron value may reveal the key of another entry.
+	for {
+		added := false
+		for ref := range marked {
+			_, slot, _ := store.slotLocked(ref)
+			if slot.Kind != HeapWeakMap {
+				continue
+			}
+			for _, entry := range slot.WeakMap.Entries {
+				if !store.weakKeyLiveLocked(entry.Key, owned, marked) || !store.weakValueValidLocked(entry.Value) {
+					continue
+				}
+				if entry.Value.IsRef() {
+					valueRef := entry.Value.Ref()
+					if _, alreadySeen := seen[valueRef]; !alreadySeen {
+						queue = append(queue, valueRef)
+						added = true
+					}
+				}
+			}
+		}
+		if !added {
+			break
+		}
+		if err := drainStrongReferences(); err != nil {
 			return Collection{}, err
 		}
-		if _, isOwned := owned[ref]; isOwned {
-			marked[ref] = struct{}{}
-		}
-		for _, value := range slotReferences(slot) {
-			if value.IsRef() {
-				queue = append(queue, value.Ref())
+	}
+
+	result := Collection{Roots: uint64(len(rootSet)), MarkedSlots: uint64(len(marked))}
+	for ref := range marked {
+		_, slot, _ := store.slotLocked(ref)
+		switch slot.Kind {
+		case HeapWeakMap:
+			kept := slot.WeakMap.Entries[:0]
+			for _, entry := range slot.WeakMap.Entries {
+				if store.weakKeyLiveLocked(entry.Key, owned, marked) && store.weakValueValidLocked(entry.Value) {
+					kept = append(kept, entry)
+					continue
+				}
+				result.ClearedWeakEntries++
 			}
+			clear(slot.WeakMap.Entries[len(kept):])
+			slot.WeakMap.Entries = kept
+		case HeapWeakSet:
+			kept := slot.WeakSet.Keys[:0]
+			for _, key := range slot.WeakSet.Keys {
+				if store.weakKeyLiveLocked(key, owned, marked) {
+					kept = append(kept, key)
+					continue
+				}
+				result.ClearedWeakEntries++
+			}
+			clear(slot.WeakSet.Keys[len(kept):])
+			slot.WeakSet.Keys = kept
 		}
 	}
 
@@ -150,7 +217,6 @@ func (store *Store) Collect(owner ownership.OwnerID, roots ...Ref) (Collection, 
 		}
 	}
 
-	result := Collection{Roots: uint64(len(rootSet)), MarkedSlots: uint64(len(marked))}
 	for _, ref := range candidates {
 		region, slot, _ := store.slotLocked(ref)
 		if err := store.unlinkSlotLocked(region, slot); err != nil {
@@ -179,7 +245,25 @@ func (store *Store) Collect(owner ownership.OwnerID, roots ...Ref) (Collection, 
 	store.stats.Collections++
 	store.stats.CollectedSlots += result.ReclaimedSlots
 	store.stats.CollectedBytes += result.ReclaimedBytes
+	store.stats.WeakEntriesCleared += result.ClearedWeakEntries
 	return result, nil
+}
+
+func (store *Store) weakKeyLiveLocked(key Ref, owned, marked map[Ref]struct{}) bool {
+	if _, isOwned := owned[key]; isOwned {
+		_, live := marked[key]
+		return live
+	}
+	_, _, err := store.slotLocked(key)
+	return err == nil
+}
+
+func (store *Store) weakValueValidLocked(value Value) bool {
+	if !value.IsRef() {
+		return true
+	}
+	_, _, err := store.slotLocked(value.Ref())
+	return err == nil
 }
 
 func slotLiveBytes(slot *Slot) uint64 {

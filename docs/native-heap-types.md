@@ -193,8 +193,25 @@ and aliases across all retained values. Stack capture and formatting, throwing
 and catching, host frames, and language-level constructors remain interpreter
 and host-runtime responsibilities.
 
+### WeakMap and WeakSet
+
+Native WeakMaps store identity-keyed Ref/value ephemerons, and WeakSets store
+identity-keyed Refs. Weak keys never enter the counted object-edge or
+region-edge graphs. A weak table therefore cannot keep its key alive.
+
+At an owner collection checkpoint, a reachable WeakMap value becomes strong
+only when its key was reached independently. Ephemerons are traced to a fixed
+point, so one value can reveal a key that activates another entry. Dead-key
+entries and entries with stale values are swept deterministically; WeakSets
+use the same dead-key sweep without values.
+
+A mutable table rejects a key from a shorter-lived private owner rather than
+silently promoting it and changing weak identity. Values still pass through
+the copy-on-escape barrier. Copy and Promote preserve weak edges, remapping
+keys and values that are otherwise part of the copied strong graph.
+
 ## Deliberate boundaries
 
 These native payloads are not yet ECMAScript implementations. String
-interning, ropes, UTF-16 indexing, coercion, property descriptors, tracing GC,
-packed refs, and V8 heap integration are outside this layer.
+interning, ropes, UTF-16 indexing, coercion, property descriptors, packed refs,
+and V8 heap integration are outside this layer.

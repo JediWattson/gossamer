@@ -45,6 +45,8 @@ func (store *Store) CheckInvariants() error {
 	liveDates := uint64(0)
 	liveRegExps := uint64(0)
 	liveErrors := uint64(0)
+	liveWeakMaps := uint64(0)
+	liveWeakSets := uint64(0)
 	liveBytes := uint64(0)
 	liveRegions := uint64(0)
 	for owner, claim := range store.ownerClaims {
@@ -425,6 +427,36 @@ func (store *Store) CheckInvariants() error {
 				if slot.Error.Kind != ErrorAggregate && len(slot.Error.Errors) != 0 {
 					return invariantError("%s %s retains %d aggregate members", slot.Error.Kind.Name(), Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, len(slot.Error.Errors))
 				}
+			case HeapWeakMap:
+				liveWeakMaps++
+				if slotHasOtherPayload(slot, HeapWeakMap) {
+					return invariantError("WeakMap %s retains another typed payload", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
+				}
+				keys := make(map[Ref]int, len(slot.WeakMap.Entries))
+				for entryIndex, entry := range slot.WeakMap.Entries {
+					if entry.Key == (Ref{}) {
+						return invariantError("WeakMap %s entry %d has a zero key", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, entryIndex)
+					}
+					if previous, duplicate := keys[entry.Key]; duplicate {
+						return invariantError("WeakMap %s has duplicate key at entries %d and %d", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, previous, entryIndex)
+					}
+					keys[entry.Key] = entryIndex
+				}
+			case HeapWeakSet:
+				liveWeakSets++
+				if slotHasOtherPayload(slot, HeapWeakSet) {
+					return invariantError("WeakSet %s retains another typed payload", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
+				}
+				keys := make(map[Ref]int, len(slot.WeakSet.Keys))
+				for keyIndex, key := range slot.WeakSet.Keys {
+					if key == (Ref{}) {
+						return invariantError("WeakSet %s key %d is zero", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, keyIndex)
+					}
+					if previous, duplicate := keys[key]; duplicate {
+						return invariantError("WeakSet %s has duplicate key at entries %d and %d", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, previous, keyIndex)
+					}
+					keys[key] = keyIndex
+				}
 			default:
 				return invariantError("R%d occupied slot %d has unknown heap kind %d", id, index, slot.Kind)
 			}
@@ -497,6 +529,9 @@ func (store *Store) CheckInvariants() error {
 	}
 	if store.stats.LiveSlots != liveSlots || store.stats.LiveCells != liveCells || store.stats.LiveStrings != liveStrings || store.stats.LiveObjects != liveObjects || store.stats.LiveArrays != liveArrays || store.stats.LiveContexts != liveContexts || store.stats.LiveFunctions != liveFunctions || store.stats.LivePromises != livePromises || store.stats.LiveBigInts != liveBigInts || store.stats.LiveSymbols != liveSymbols || store.stats.LiveArrayBuffers != liveArrayBuffers || store.stats.LiveTypedArrays != liveTypedArrays || store.stats.LiveMaps != liveMaps || store.stats.LiveSets != liveSets || store.stats.LiveDates != liveDates || store.stats.LiveRegExps != liveRegExps || store.stats.LiveErrors != liveErrors || store.stats.LiveBytes != liveBytes || store.stats.LiveRegions != liveRegions {
 		return invariantError("stats slots/cells/strings/objects/arrays/contexts/functions/promises/bigints/symbols/buffers/views/maps/sets/dates/regexps/errors/bytes/regions = %d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d, derived %d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d/%d", store.stats.LiveSlots, store.stats.LiveCells, store.stats.LiveStrings, store.stats.LiveObjects, store.stats.LiveArrays, store.stats.LiveContexts, store.stats.LiveFunctions, store.stats.LivePromises, store.stats.LiveBigInts, store.stats.LiveSymbols, store.stats.LiveArrayBuffers, store.stats.LiveTypedArrays, store.stats.LiveMaps, store.stats.LiveSets, store.stats.LiveDates, store.stats.LiveRegExps, store.stats.LiveErrors, store.stats.LiveBytes, store.stats.LiveRegions, liveSlots, liveCells, liveStrings, liveObjects, liveArrays, liveContexts, liveFunctions, livePromises, liveBigInts, liveSymbols, liveArrayBuffers, liveTypedArrays, liveMaps, liveSets, liveDates, liveRegExps, liveErrors, liveBytes, liveRegions)
+	}
+	if store.stats.LiveWeakMaps != liveWeakMaps || store.stats.LiveWeakSets != liveWeakSets {
+		return invariantError("stats weak maps/sets = %d/%d, derived %d/%d", store.stats.LiveWeakMaps, store.stats.LiveWeakSets, liveWeakMaps, liveWeakSets)
 	}
 	if store.closed && (liveSlots != 0 || liveRegions != 0) {
 		return invariantError("closed store retains %d slots in %d regions", liveSlots, liveRegions)
@@ -607,6 +642,12 @@ func slotHasOtherPayload(slot *Slot, kind HeapKind) bool {
 		return true
 	}
 	if kind != HeapError && (slot.Error.Kind != 0 || slot.Error.Message != (Value{}) || slot.Error.Stack != (Value{}) || slot.Error.Cause != (Value{}) || slot.Error.HasCause || len(slot.Error.Errors) != 0) {
+		return true
+	}
+	if kind != HeapWeakMap && len(slot.WeakMap.Entries) != 0 {
+		return true
+	}
+	if kind != HeapWeakSet && len(slot.WeakSet.Keys) != 0 {
 		return true
 	}
 	return false

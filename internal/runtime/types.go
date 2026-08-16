@@ -456,6 +456,90 @@ func (context *TaskContext) SetClear(ref memory.Ref) error {
 	return context.Realm.store.SetClear(context.Owner, ref)
 }
 
+func (context *TaskContext) NewWeakMap() (memory.Ref, error) {
+	if context == nil || context.Realm == nil {
+		return memory.Ref{}, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.AllocWeakMap(context.Owner, context.MemoryRegion)
+}
+
+func (context *TaskContext) DerefWeakMap(ref memory.Ref) (memory.WeakMap, error) {
+	if context == nil || context.Realm == nil {
+		return memory.WeakMap{}, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.DerefWeakMap(context.Owner, ref)
+}
+
+func (context *TaskContext) WeakMapSet(ref, key memory.Ref, value memory.Value) error {
+	if context == nil || context.Realm == nil {
+		return fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.WeakMapSet(context.Owner, ref, key, value)
+}
+
+func (context *TaskContext) WeakMapGet(ref, key memory.Ref) (memory.Value, bool, error) {
+	if context == nil || context.Realm == nil {
+		return memory.Value{}, false, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.WeakMapGet(context.Owner, ref, key)
+}
+
+func (context *TaskContext) WeakMapDelete(ref, key memory.Ref) (bool, error) {
+	if context == nil || context.Realm == nil {
+		return false, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.WeakMapDelete(context.Owner, ref, key)
+}
+
+func (context *TaskContext) WeakMapClear(ref memory.Ref) error {
+	if context == nil || context.Realm == nil {
+		return fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.WeakMapClear(context.Owner, ref)
+}
+
+func (context *TaskContext) NewWeakSet() (memory.Ref, error) {
+	if context == nil || context.Realm == nil {
+		return memory.Ref{}, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.AllocWeakSet(context.Owner, context.MemoryRegion)
+}
+
+func (context *TaskContext) DerefWeakSet(ref memory.Ref) (memory.WeakSet, error) {
+	if context == nil || context.Realm == nil {
+		return memory.WeakSet{}, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.DerefWeakSet(context.Owner, ref)
+}
+
+func (context *TaskContext) WeakSetAdd(ref, key memory.Ref) error {
+	if context == nil || context.Realm == nil {
+		return fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.WeakSetAdd(context.Owner, ref, key)
+}
+
+func (context *TaskContext) WeakSetHas(ref, key memory.Ref) (bool, error) {
+	if context == nil || context.Realm == nil {
+		return false, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.WeakSetHas(context.Owner, ref, key)
+}
+
+func (context *TaskContext) WeakSetDelete(ref, key memory.Ref) (bool, error) {
+	if context == nil || context.Realm == nil {
+		return false, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.WeakSetDelete(context.Owner, ref, key)
+}
+
+func (context *TaskContext) WeakSetClear(ref memory.Ref) error {
+	if context == nil || context.Realm == nil {
+		return fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.WeakSetClear(context.Owner, ref)
+}
+
 func (context *TaskContext) NewDate(milliseconds float64) (memory.Ref, error) {
 	if context == nil || context.Realm == nil {
 		return memory.Ref{}, fmt.Errorf("runtime: nil task context")

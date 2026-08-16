@@ -66,6 +66,14 @@ func TestEveryHeapKindSurvivesCopyPromotionAndBulkRelease(t *testing.T) {
 	if err := store.SetAggregateErrors(owner, aggregate, []memory.Value{memory.RefValue(date), memory.RefValue(expression), memory.RefValue(cause)}); err != nil {
 		t.Fatal(err)
 	}
+	weakMap := must(store.AllocWeakMap(owner, region))
+	if err := store.WeakMapSet(owner, weakMap, object, memory.RefValue(aggregate)); err != nil {
+		t.Fatal(err)
+	}
+	weakSet := must(store.AllocWeakSet(owner, region))
+	if err := store.WeakSetAdd(owner, weakSet, object); err != nil {
+		t.Fatal(err)
+	}
 	promise := must(store.AllocPromise(owner, region))
 	if err := store.AddPromiseReaction(owner, promise, memory.PromiseReaction{OnFulfilled: memory.RefValue(function), OnRejected: memory.NullValue(), Downstream: memory.NullValue()}); err != nil {
 		t.Fatal(err)
@@ -77,7 +85,7 @@ func TestEveryHeapKindSurvivesCopyPromotionAndBulkRelease(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	refs := []memory.Ref{name, pattern, stack, cause, object, array, context, function, promise, bigint, symbol, buffer, view, nativeMap, nativeSet, date, expression, aggregate}
+	refs := []memory.Ref{name, pattern, stack, cause, object, array, context, function, promise, bigint, symbol, buffer, view, nativeMap, nativeSet, date, expression, aggregate, weakMap, weakSet}
 	for field, ref := range refs {
 		if err := store.Set(owner, root, field, memory.RefValue(ref)); err != nil {
 			t.Fatal(err)
@@ -96,6 +104,14 @@ func TestEveryHeapKindSurvivesCopyPromotionAndBulkRelease(t *testing.T) {
 	copyRoot, err := store.Deref(copyOwner, copied[0])
 	if err != nil || len(copyRoot.Fields) != len(refs) {
 		t.Fatalf("copied root = %#v, %v", copyRoot, err)
+	}
+	copiedWeakMap, err := store.DerefWeakMap(copyOwner, copyRoot.Fields[18].Ref())
+	if err != nil || len(copiedWeakMap.Entries) != 1 || copiedWeakMap.Entries[0].Key != copyRoot.Fields[4].Ref() || copiedWeakMap.Entries[0].Value.Ref() != copyRoot.Fields[17].Ref() {
+		t.Fatalf("copied weak map = %#v, %v", copiedWeakMap, err)
+	}
+	copiedWeakSet, err := store.DerefWeakSet(copyOwner, copyRoot.Fields[19].Ref())
+	if err != nil || len(copiedWeakSet.Keys) != 1 || copiedWeakSet.Keys[0] != copyRoot.Fields[4].Ref() {
+		t.Fatalf("copied weak set = %#v, %v", copiedWeakSet, err)
 	}
 
 	promoted, err := store.Promote(owner, root)
@@ -211,7 +227,7 @@ func TestTypedWriteBarriersReuseOneEscapedGraph(t *testing.T) {
 
 func assertEveryHeapKindCount(t *testing.T, stats memory.Stats, multiplier uint64) {
 	t.Helper()
-	if stats.LiveSlots != 19*multiplier || stats.LiveCells != 2*multiplier || stats.LiveStrings != 3*multiplier || stats.LiveObjects != multiplier || stats.LiveArrays != multiplier || stats.LiveContexts != multiplier || stats.LiveFunctions != multiplier || stats.LivePromises != multiplier || stats.LiveBigInts != multiplier || stats.LiveSymbols != multiplier || stats.LiveArrayBuffers != multiplier || stats.LiveTypedArrays != multiplier || stats.LiveMaps != multiplier || stats.LiveSets != multiplier || stats.LiveDates != multiplier || stats.LiveRegExps != multiplier || stats.LiveErrors != multiplier || stats.LiveRegions != multiplier || stats.LiveBytes != 34*multiplier {
+	if stats.LiveSlots != 21*multiplier || stats.LiveCells != 2*multiplier || stats.LiveStrings != 3*multiplier || stats.LiveObjects != multiplier || stats.LiveArrays != multiplier || stats.LiveContexts != multiplier || stats.LiveFunctions != multiplier || stats.LivePromises != multiplier || stats.LiveBigInts != multiplier || stats.LiveSymbols != multiplier || stats.LiveArrayBuffers != multiplier || stats.LiveTypedArrays != multiplier || stats.LiveMaps != multiplier || stats.LiveSets != multiplier || stats.LiveDates != multiplier || stats.LiveRegExps != multiplier || stats.LiveErrors != multiplier || stats.LiveWeakMaps != multiplier || stats.LiveWeakSets != multiplier || stats.LiveRegions != multiplier || stats.LiveBytes != 34*multiplier {
 		t.Fatalf("typed stats at multiplier %d = %#v", multiplier, stats)
 	}
 }

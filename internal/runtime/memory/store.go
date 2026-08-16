@@ -70,6 +70,8 @@ type Stats struct {
 	LiveDates           uint64 `json:"liveDates"`
 	LiveRegExps         uint64 `json:"liveRegExps"`
 	LiveErrors          uint64 `json:"liveErrors"`
+	LiveWeakMaps        uint64 `json:"liveWeakMaps"`
+	LiveWeakSets        uint64 `json:"liveWeakSets"`
 	LiveBytes           uint64 `json:"liveBytes"`
 	LiveRegions         uint64 `json:"liveRegions"`
 	BulkRegionReleases  uint64 `json:"bulkRegionReleases"`
@@ -78,6 +80,7 @@ type Stats struct {
 	Collections         uint64 `json:"collections"`
 	CollectedSlots      uint64 `json:"collectedSlots"`
 	CollectedBytes      uint64 `json:"collectedBytes"`
+	WeakEntriesCleared  uint64 `json:"weakEntriesCleared"`
 }
 
 type objectEdge struct {
@@ -128,6 +131,10 @@ func (kind HeapKind) String() string {
 		return "RegExp"
 	case HeapError:
 		return "Error"
+	case HeapWeakMap:
+		return "WeakMap"
+	case HeapWeakSet:
+		return "WeakSet"
 	default:
 		return fmt.Sprintf("HeapKind(%d)", kind)
 	}
@@ -259,7 +266,7 @@ func (store *Store) allocLocked(owner ownership.OwnerID, regionID RegionID, inte
 }
 
 func (store *Store) allocKindLocked(owner ownership.OwnerID, regionID RegionID, kind HeapKind, internal bool) (Ref, error) {
-	if kind < HeapCell || kind > HeapError {
+	if kind < HeapCell || kind > HeapWeakSet {
 		return Ref{}, fmt.Errorf("%w: heap kind %d", ErrTypeMismatch, kind)
 	}
 	region, err := store.mutableRegionLocked(owner, regionID, internal)
@@ -760,6 +767,10 @@ func (store *Store) recordKindAllocationLocked(kind HeapKind, bytes uint64) {
 		store.stats.LiveRegExps++
 	case HeapError:
 		store.stats.LiveErrors++
+	case HeapWeakMap:
+		store.stats.LiveWeakMaps++
+	case HeapWeakSet:
+		store.stats.LiveWeakSets++
 	}
 	store.stats.LiveBytes += bytes
 }
@@ -805,6 +816,10 @@ func (store *Store) recordKindFreeLocked(slot *Slot) {
 		store.stats.LiveRegExps--
 	case HeapError:
 		store.stats.LiveErrors--
+	case HeapWeakMap:
+		store.stats.LiveWeakMaps--
+	case HeapWeakSet:
+		store.stats.LiveWeakSets--
 	}
 }
 
@@ -1436,6 +1451,19 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 				_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
 				return nil, err
 			}
+		case HeapWeakMap:
+			_, copySlot, _ := store.slotLocked(copyRef)
+			for _, entry := range sourceSlot.WeakMap.Entries {
+				copySlot.WeakMap.Entries = append(copySlot.WeakMap.Entries, WeakMapEntry{
+					Key:   remapWeakRef(entry.Key, mapping),
+					Value: remapWeakValue(entry.Value, mapping),
+				})
+			}
+		case HeapWeakSet:
+			_, copySlot, _ := store.slotLocked(copyRef)
+			for _, key := range sourceSlot.WeakSet.Keys {
+				copySlot.WeakSet.Keys = append(copySlot.WeakSet.Keys, remapWeakRef(key, mapping))
+			}
 		default:
 			_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
 			return nil, fmt.Errorf("%w: cannot copy heap kind %d", ErrTypeMismatch, sourceSlot.Kind)
@@ -1451,6 +1479,20 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 func remapValue(value Value, mapping map[Ref]Ref) Value {
 	if value.IsRef() {
 		return RefValue(mapping[value.Ref()])
+	}
+	return value
+}
+
+func remapWeakRef(ref Ref, mapping map[Ref]Ref) Ref {
+	if mapped, exists := mapping[ref]; exists {
+		return mapped
+	}
+	return ref
+}
+
+func remapWeakValue(value Value, mapping map[Ref]Ref) Value {
+	if value.IsRef() {
+		return RefValue(remapWeakRef(value.Ref(), mapping))
 	}
 	return value
 }

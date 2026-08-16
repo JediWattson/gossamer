@@ -49,6 +49,8 @@ claim(region, object) is either present or absent
   and Sets provide insertion-ordered SameValueZero storage; Dates store clipped
   mutable epoch milliseconds; RegExps retain checked pattern descriptors; and
   Errors retain typed diagnostic graphs including causes and aggregate members.
+  WeakMaps and WeakSets add identity-keyed weak ownership, with fixed-point
+  ephemeron tracing at deterministic collection checkpoints.
 - Freed slots advance their generation and exhausted generations are retired,
   so a stale Ref cannot become valid again.
 - Every mutable physical region has exactly one owner. Published regions are
@@ -69,7 +71,9 @@ claim(region, object) is either present or absent
   deterministic state-machine test and Go fuzz target run it after every step.
 - Long-lived native owners can run an explicit between-task tracing checkpoint;
   semantic roots and foreign claims survive while unreachable strong cycles
-  are unlinked and reclaimed in deterministic slot order.
+  are unlinked and reclaimed in deterministic slot order. Reachable weak tables
+  do not retain keys; live-key ephemeron values are traced to a fixed point and
+  dead entries are swept at the same checkpoint.
 - Every owner has a logical region.
 - Task-local fake objects receive an initial task reference.
 - Enqueue publishes carried objects to the destination queue.
@@ -114,11 +118,11 @@ Physical allocation optimizations such as typed slabs or object pools should
 be evaluated later against the semantic telemetry. They are implementation
 details, not the Phase 0 ownership model.
 
-The RegionStore intentionally does not implement JavaScript semantics, tracing
-garbage collection, packed refs, or V8 heap integration. It does implement the
-native copy-on-escape barrier: a longer-lived native object cannot retain a
-direct Ref into shorter-lived private storage. Those remaining capabilities
-stay later milestones.
+The RegionStore intentionally does not implement JavaScript semantics, packed
+refs, or V8 heap integration. It does implement deterministic owner-local
+tracing checkpoints and the native copy-on-escape barrier: a longer-lived
+native object cannot retain a direct Ref into shorter-lived private storage.
+Those remaining capabilities stay later milestones.
 
 See [`native-heap-types.md`](native-heap-types.md) for the typed-slot contract
 and the payloads currently implemented behind it.
