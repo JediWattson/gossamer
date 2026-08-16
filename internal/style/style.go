@@ -942,6 +942,8 @@ type Snapshot struct {
 	byPseudoID           map[stablePseudoKey]ComputedStyle
 	provenance           provenanceStore
 	mutationDependencies snapshotMutationDependencies
+	damageBaseVersion    uint64
+	damage               SnapshotStyleDamage
 }
 
 // Compute performs a complete style pass over an unindexed DOM tree. Browser

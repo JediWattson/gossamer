@@ -1452,6 +1452,7 @@ func (context *layoutContext) addListMarker(node *styledNode, box *Box) error {
 		Color:               node.style.Color(),
 		Visible:             node.style.Visibility() == visibilityVisible,
 		Underline:           node.style.Underline(),
+		paintOpacity:        1,
 		verticalOrientation: markerOrientation,
 	}
 	fragment := InlineFragment{Kind: TextFragmentKind, Text: marker}
@@ -1731,6 +1732,7 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 				Color:               textColor,
 				Visible:             piece.style.Visibility() == visibilityVisible,
 				Underline:           piece.style.Underline(),
+				paintOpacity:        clamp(piece.opacity, 0, 1),
 				verticalOrientation: piece.orientation,
 			}
 			appendFragment(InlineFragment{Kind: TextFragmentKind, Text: text})

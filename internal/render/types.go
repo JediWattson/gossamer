@@ -190,6 +190,9 @@ type TextFragment struct {
 	Color          color.NRGBA
 	Visible        bool
 	Underline      bool
+	// paintOpacity retains the cumulative inline opacity separately from Color
+	// so paint-only color changes can reuse glyph geometry exactly.
+	paintOpacity float64
 	// Vertical table layout is performed once in logical coordinates. These
 	// private fields retain the original horizontal glyph run while exposing a
 	// transformed physical bounds rectangle to hit testing and painting.

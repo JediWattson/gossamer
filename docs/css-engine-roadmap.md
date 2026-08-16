@@ -574,15 +574,23 @@ without retaining superseded declaration strings. Relational/global selector
 dependencies, stylesheet-owner changes, journal gaps, and connected tree
 changes fail closed to the full pass. Deterministic cases, repeated-snapshot
 immutability checks, a randomized full-pass dump oracle, and a targeted-versus-
-full benchmark guard the browser integration. Layout and paint still rebuild
-globally after connected mutations.
+full benchmark guard the browser integration. The property registry now
+produces a version-keyed stable-ID damage summary for targeted snapshots. Paint-only
+computed changes clone paint-bearing boxes/fragments while retaining used
+geometry, and style/layout-neutral attribute or native-state changes advance
+only an immutable layout header. Layout snapshots expose conservative document-
+space damage bounds; text/tree edits, direct table/list/replaced-content
+attributes, generated `attr()` inputs, collapsed-border color changes, resource
+revisions, and every geometry-affecting property still fail closed to full
+layout. A display-list/full-layout oracle, fuzz target, and benchmark verify the
+retained geometry and paint output.
 
 - Extend parsed-rule caches with script-visible stylesheet identities and
   generation-aware rule handles.
 - Extend selector and property indexes into precise mutation-to-property
   damage summaries without weakening the current conservative fallback.
-- Add incremental layout and paint damage only after style invalidation is
-  proven equivalent.
+- Feed retained damage bounds into backend-specific partial raster invalidation
+  and command-range splicing only where profiles justify the added complexity.
 - Introduce parallel work solely where profiles show independent, bounded
   tasks with a measurable gain.
 

@@ -137,6 +137,8 @@ func (snapshot *Snapshot) RebindReadViewAfterMutations(view dom.ReadView, record
 	}
 	rebound := *snapshot
 	rebound.version = access.Version()
+	rebound.damageBaseVersion = snapshot.version
+	rebound.damage = SnapshotStyleDamage{}
 	return &rebound, true, nil
 }
 
@@ -171,6 +173,8 @@ func (snapshot *Snapshot) RestyleReadViewAfterMutations(
 	if len(dirtyRoots) == 0 {
 		rebound := *snapshot
 		rebound.version = access.Version()
+		rebound.damageBaseVersion = snapshot.version
+		rebound.damage = SnapshotStyleDamage{}
 		return &rebound, true, nil
 	}
 
@@ -206,7 +210,34 @@ func (snapshot *Snapshot) RestyleReadViewAfterMutations(
 	}
 	updated.provenance = restyleStableProvenance(snapshot.provenance, styledRoots, styledParents, access)
 	updated.mutationDependencies = compileSnapshotMutationDependencies(input)
+	updated.damageBaseVersion = snapshot.version
+	updated.damage = damageForStableIDs(&updated, snapshot, stableStyledNodeIDs(styledRoots, access))
 	return &updated, true, nil
+}
+
+func stableStyledNodeIDs(roots []*styledNode, access *dom.ReadAccess) []dom.NodeID {
+	set := make(map[dom.NodeID]struct{})
+	var visit func(*styledNode)
+	visit = func(node *styledNode) {
+		if node == nil {
+			return
+		}
+		if id, ok := access.ID(node.node); ok {
+			set[id] = struct{}{}
+		}
+		for _, child := range node.children {
+			visit(child)
+		}
+	}
+	for _, root := range roots {
+		visit(root)
+	}
+	ids := make([]dom.NodeID, 0, len(set))
+	for id := range set {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(left, right int) bool { return ids[left] < ids[right] })
+	return ids
 }
 
 func (snapshot *Snapshot) validateStableReadAccess(access *dom.ReadAccess) error {

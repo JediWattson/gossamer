@@ -97,6 +97,8 @@ type LayoutSnapshot struct {
 	byID           map[dom.NodeID]LayoutGeometry
 	byPseudoNode   map[pointerPseudoGeometryKey]LayoutGeometry
 	byPseudoID     map[stablePseudoGeometryKey]LayoutGeometry
+	damage         []Rect
+	reusedLayout   bool
 }
 
 type pointerPseudoGeometryKey struct {
@@ -141,6 +143,21 @@ func (snapshot *LayoutSnapshot) Version() uint64 {
 		return 0
 	}
 	return snapshot.version
+}
+
+// DamageRects returns the document-space bounds that must be repainted after
+// an incremental layout reuse. Full layout snapshots return nil.
+func (snapshot *LayoutSnapshot) DamageRects() []Rect {
+	if snapshot == nil {
+		return nil
+	}
+	return append([]Rect(nil), snapshot.damage...)
+}
+
+// ReusedLayout reports that this snapshot retained prior used geometry rather
+// than running layout again for its current DOM/style version.
+func (snapshot *LayoutSnapshot) ReusedLayout() bool {
+	return snapshot != nil && snapshot.reusedLayout
 }
 
 // Geometry returns used geometry for a node in a pointer-based snapshot.

@@ -145,7 +145,7 @@ var propertyDefinitions = [...]propertyDefinition{
 	{name: "content", kind: propertyContent, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "direction", kind: propertyDirection, inherited: true, excludedFromAll: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "display", kind: propertyDisplay, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
-	{name: "empty-cells", kind: propertyEmptyCells, inherited: true, invalidation: propertyInvalidatesPaint},
+	{name: "empty-cells", kind: propertyEmptyCells, inherited: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "flex-basis", kind: propertyFlexBasis, invalidation: propertyInvalidatesLayout},
 	{name: "flex-direction", kind: propertyFlexDirection, invalidation: propertyInvalidatesLayout},
 	{name: "flex-grow", kind: propertyFlexGrow, invalidation: propertyInvalidatesLayout},
@@ -179,10 +179,10 @@ var propertyDefinitions = [...]propertyDefinition{
 	{name: "max-width", kind: propertyMaxWidth, invalidation: propertyInvalidatesLayout},
 	{name: "min-height", kind: propertyMinHeight, invalidation: propertyInvalidatesLayout},
 	{name: "min-width", kind: propertyMinWidth, invalidation: propertyInvalidatesLayout},
-	{name: "opacity", kind: propertyOpacity, invalidation: propertyInvalidatesPaint},
+	{name: "opacity", kind: propertyOpacity, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "order", kind: propertyOrder, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
-	{name: "overflow-x", kind: propertyOverflowX, invalidation: propertyInvalidatesPaint},
-	{name: "overflow-y", kind: propertyOverflowY, invalidation: propertyInvalidatesPaint},
+	{name: "overflow-x", kind: propertyOverflowX, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
+	{name: "overflow-y", kind: propertyOverflowY, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "padding-bottom", kind: propertyPadding, edge: propertyBottom, invalidation: propertyInvalidatesLayout},
 	{name: "padding-left", kind: propertyPadding, edge: propertyLeft, invalidation: propertyInvalidatesLayout},
 	{name: "padding-right", kind: propertyPadding, edge: propertyRight, invalidation: propertyInvalidatesLayout},
@@ -202,7 +202,7 @@ var propertyDefinitions = [...]propertyDefinition{
 	{name: "white-space", kind: propertyWhiteSpace, inherited: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "width", kind: propertyWidth, invalidation: propertyInvalidatesLayout},
 	{name: "writing-mode", kind: propertyWritingMode, inherited: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
-	{name: "z-index", kind: propertyZIndex, invalidation: propertyInvalidatesPaint},
+	{name: "z-index", kind: propertyZIndex, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 }
 
 var computedPropertyNames = func() []string {
