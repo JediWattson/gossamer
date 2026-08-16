@@ -289,6 +289,21 @@ extern int goGossamerV8HostSetTimeout(uint64_t execution_id, uint64_t callback,
                                       uint64_t *timer_out, char **error_out);
 extern int goGossamerV8HostClearTimeout(uint64_t execution_id, uint64_t timer,
                                         char **error_out);
+extern int goGossamerV8HostElementGeometry(
+    uint64_t execution_id, uint64_t document, uint32_t node,
+    gossamer_v8_element_geometry *geometry_out, char **error_out);
+extern int goGossamerV8HostViewportGeometry(
+    uint64_t execution_id, gossamer_v8_viewport_geometry *geometry_out,
+    char **error_out);
+extern int goGossamerV8HostScrollElement(
+    uint64_t execution_id, uint64_t document, uint32_t node, double x,
+    double y, int *changed_out, char **error_out);
+extern int goGossamerV8HostScrollViewport(uint64_t execution_id, double x,
+                                          double y, int *changed_out,
+                                          char **error_out);
+extern int goGossamerV8HostScrollIntoView(
+    uint64_t execution_id, uint64_t document, uint32_t node,
+    int *changed_out, char **error_out);
 
 static gossamer_v8_host gossamer_v8_go_host(uint64_t execution_id) {
   gossamer_v8_host host = {
@@ -368,6 +383,11 @@ static gossamer_v8_host gossamer_v8_go_host(uint64_t execution_id) {
       .form_validity = goGossamerV8HostFormValidity,
       .form_data_json = goGossamerV8HostFormDataJSON,
       .submit_form = goGossamerV8HostSubmitForm,
+      .element_geometry = goGossamerV8HostElementGeometry,
+      .viewport_geometry = goGossamerV8HostViewportGeometry,
+      .scroll_element = goGossamerV8HostScrollElement,
+      .scroll_viewport = goGossamerV8HostScrollViewport,
+      .scroll_into_view = goGossamerV8HostScrollIntoView,
   };
   return host;
 }

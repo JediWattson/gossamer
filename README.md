@@ -149,6 +149,10 @@ without passing Go pointers into V8. It also exposes live, read-only
 `getComputedStyle()` declarations for the longhands represented by the current
 style engine; every read crosses the browser host boundary to the current Go
 computed-style snapshot rather than caching values in V8.
+The first CSSOM View slice adds fresh `DOMRect` values, live element and
+viewport dimensions, root scrolling, `scrollIntoView()`, translated paint and
+hit testing, and coalesced asynchronous scroll events while reusing the same
+immutable Go layout snapshot.
 Browser input currently covers click, pointer, keyboard, input, focus, and
 change event families. Profiling covers heap totals, sampled allocations,
 GC callbacks, weak-wrapper collection, wrapper-root region sweeps, callback
@@ -235,8 +239,9 @@ performance budgets; see
 
 The following are intentionally still outside the current milestone:
 
-- General JavaScript/DOM APIs beyond the initial V8 wrapper slice, navigation
-  history, forms, text input, selection, scrolling, and a windowed UI
+- General Web APIs beyond the current V8 DOM slice, history traversal and
+  navigation globals, per-element overflow scrolling, animation frames, and a
+  windowed UI
 - Full HTML error recovery, including table foster parenting, formatting
   element reconstruction, templates, SVG/MathML, and encoding sniffing
 - Flexbox, Grid, table layout, floats, positioned layout, and retained inline

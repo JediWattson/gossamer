@@ -13,6 +13,15 @@ func HitTest(frame *Frame, x, y float64) *dom.Node {
 	return hitTestBox(frame.Root, x, y)
 }
 
+// HitTestDocument resolves a point already translated into document
+// coordinates. Page performs the viewport clip before applying root scroll.
+func HitTestDocument(frame *Frame, x, y float64) *dom.Node {
+	if frame == nil || frame.Root == nil {
+		return nil
+	}
+	return hitTestBox(frame.Root, x, y)
+}
+
 func hitTestBox(box *Box, x, y float64) *dom.Node {
 	if box == nil {
 		return nil

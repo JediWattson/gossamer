@@ -31,7 +31,12 @@ func (page *Page) hitTestLocked(x, y float64) (NodeHandle, bool) {
 	if page.closed || page.frame == nil || page.frameGeneration != page.documentGeneration {
 		return NodeHandle{}, false
 	}
-	node := render.HitTest(page.frame, x, y)
+	if x < 0 || y < 0 || x >= float64(page.frame.Viewport.Width) || y >= float64(page.frame.Viewport.Height) {
+		return NodeHandle{}, false
+	}
+	// Retained layout stays in document coordinates. External input arrives in
+	// viewport coordinates, so root scrolling is applied exactly once here.
+	node := render.HitTestDocument(page.frame, x+page.scrollX, y+page.scrollY)
 	if node == nil {
 		return NodeHandle{}, false
 	}
@@ -286,11 +291,13 @@ type taskHost struct {
 	task       *browserruntime.TaskContext
 	generation DocumentGeneration
 	mutated    bool
+	scrolled   bool
 	autoRender bool
 }
 
 var _ DOMComputedStyleHost = (*taskHost)(nil)
 var _ DOMMutationObserverHost = (*taskHost)(nil)
+var _ DOMGeometryHost = (*taskHost)(nil)
 
 func (host *taskHost) GetElementByID(value string) (NodeHandle, bool, error) {
 	host.page.mutex.RLock()
@@ -1257,6 +1264,38 @@ func (host *taskHost) ComputedStylePropertyNames(handle NodeHandle, pseudo strin
 	return computed.ComputedPropertyNames(computedStyle), nil
 }
 
+func (host *taskHost) ElementGeometry(handle NodeHandle) (DOMElementGeometry, error) {
+	return host.page.ElementGeometry(handle)
+}
+
+func (host *taskHost) ViewportGeometry() (DOMViewportGeometry, error) {
+	return host.page.ViewportGeometry()
+}
+
+func (host *taskHost) ScrollElement(handle NodeHandle, x, y float64) (bool, error) {
+	changed, err := host.page.ScrollElement(handle, x, y)
+	if changed {
+		host.scrolled = true
+	}
+	return changed, err
+}
+
+func (host *taskHost) ScrollViewport(x, y float64) (bool, error) {
+	changed, err := host.page.ScrollViewport(x, y)
+	if changed {
+		host.scrolled = true
+	}
+	return changed, err
+}
+
+func (host *taskHost) ScrollIntoView(handle NodeHandle) (bool, error) {
+	changed, err := host.page.ScrollIntoView(handle)
+	if changed {
+		host.scrolled = true
+	}
+	return changed, err
+}
+
 func (host *taskHost) setInlineStyleLocked(node dom.NodeID, declarations []css.Declaration) error {
 	serialized := css.SerializeDeclarationList(declarations)
 	if serialized == "" {
@@ -1432,11 +1471,56 @@ func (host *taskHost) ReleaseNodeEventTarget(handle NodeHandle) error {
 	return host.page.ReleaseNodeEventTarget(handle)
 }
 
-func (host *taskHost) finish() error {
-	if !host.mutated || !host.autoRender {
+func (page *Page) queueScrollEventFromTask(context *browserruntime.TaskContext) error {
+	page.mutex.RLock()
+	generation := page.documentGeneration
+	root, found, rootErr := page.document.RelatedNode(page.document.RootID(), dom.DocumentElement)
+	page.mutex.RUnlock()
+	if rootErr != nil {
+		return rootErr
+	}
+	if !found {
 		return nil
 	}
-	return errors.Join(host.page.syncAndLoadStylesheets(), host.page.queueRenderFromTask(host.task))
+	invalidation, err := context.NewObject()
+	if err != nil {
+		return err
+	}
+	_, err = context.QueueTask(func(next *browserruntime.TaskContext) error {
+		page.mutex.RLock()
+		if page.closed || page.documentGeneration != generation {
+			page.mutex.RUnlock()
+			return nil
+		}
+		script := page.script
+		page.mutex.RUnlock()
+		if script == nil {
+			return nil
+		}
+		target := NodeHandle{Document: generation, Node: root}
+		eventHost := &taskHost{page: page, task: next, generation: generation, autoRender: true}
+		_, dispatchErr := script.DispatchEvent(eventHost, InputEvent{Type: InputScroll, Target: target})
+		microtaskErr := script.DrainMicrotasks(eventHost)
+		return errors.Join(dispatchErr, microtaskErr, eventHost.finish())
+	}, invalidation)
+	return err
+}
+
+func (host *taskHost) finish() error {
+	if !host.autoRender {
+		return nil
+	}
+	var err error
+	if host.scrolled {
+		err = host.page.queueScrollEventFromTask(host.task)
+	}
+	if host.mutated {
+		err = errors.Join(err, host.page.syncAndLoadStylesheets())
+	}
+	if host.mutated || host.scrolled {
+		err = errors.Join(err, host.page.queueRenderFromTask(host.task))
+	}
+	return err
 }
 
 func (host *taskHost) validateHandleLocked(handle NodeHandle) error {

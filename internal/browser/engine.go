@@ -37,6 +37,7 @@ const (
 	InputCompositionEnd
 	InputSubmit
 	InputInvalid
+	InputScroll
 )
 
 // InputEvent contains browser-normalized input and a generation-safe target.
@@ -111,6 +112,8 @@ func (eventType InputEventType) String() string {
 		return "submit"
 	case InputInvalid:
 		return "invalid"
+	case InputScroll:
+		return "scroll"
 	default:
 		return ""
 	}
@@ -304,6 +307,51 @@ type DOMElementHost interface {
 type DOMComputedStyleHost interface {
 	ComputedStyleProperty(handle NodeHandle, pseudo, property string) (string, bool, error)
 	ComputedStylePropertyNames(handle NodeHandle, pseudo string) ([]string, error)
+}
+
+// DOMRect is one immutable CSS-pixel rectangle returned across the engine
+// boundary. Browser geometry stays in Go; JavaScript engines materialize only
+// value facades from these scalars.
+type DOMRect struct {
+	X      float64
+	Y      float64
+	Width  float64
+	Height float64
+}
+
+// DOMElementGeometry is the current CSSOM View projection for one Element.
+// Rect is viewport-relative while all dimensions and scroll offsets are CSS
+// pixels owned by the Page.
+type DOMElementGeometry struct {
+	Rect         DOMRect
+	ClientWidth  float64
+	ClientHeight float64
+	OffsetWidth  float64
+	OffsetHeight float64
+	ScrollWidth  float64
+	ScrollHeight float64
+	ScrollLeft   float64
+	ScrollTop    float64
+}
+
+// DOMViewportGeometry is the window viewport and root scrolling state.
+type DOMViewportGeometry struct {
+	InnerWidth   float64
+	InnerHeight  float64
+	ScrollX      float64
+	ScrollY      float64
+	ScrollWidth  float64
+	ScrollHeight float64
+}
+
+// DOMGeometryHost exposes synchronous layout reads and root scrolling without
+// allowing an engine to retain a Page pointer or a layout snapshot.
+type DOMGeometryHost interface {
+	ElementGeometry(NodeHandle) (DOMElementGeometry, error)
+	ViewportGeometry() (DOMViewportGeometry, error)
+	ScrollElement(NodeHandle, float64, float64) (bool, error)
+	ScrollViewport(float64, float64) (bool, error)
+	ScrollIntoView(NodeHandle) (bool, error)
 }
 
 // DOMMutationObserverHost exposes the document-owned mutation journal to a

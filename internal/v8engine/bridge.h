@@ -35,6 +35,34 @@ typedef struct gossamer_v8_mutation_record {
   int old_value_present;
 } gossamer_v8_mutation_record;
 
+typedef struct gossamer_v8_rect {
+  double x;
+  double y;
+  double width;
+  double height;
+} gossamer_v8_rect;
+
+typedef struct gossamer_v8_element_geometry {
+  gossamer_v8_rect rect;
+  double client_width;
+  double client_height;
+  double offset_width;
+  double offset_height;
+  double scroll_width;
+  double scroll_height;
+  double scroll_left;
+  double scroll_top;
+} gossamer_v8_element_geometry;
+
+typedef struct gossamer_v8_viewport_geometry {
+  double inner_width;
+  double inner_height;
+  double scroll_x;
+  double scroll_y;
+  double scroll_width;
+  double scroll_height;
+} gossamer_v8_viewport_geometry;
+
 // gossamer_v8_host is valid only for one engine entry. It contains numeric
 // execution identity and C callbacks; no Go pointer is stored in V8.
 typedef struct gossamer_v8_host {
@@ -285,6 +313,20 @@ typedef struct gossamer_v8_host {
   int (*submit_form)(uint64_t execution_id, uint64_t document, uint32_t node,
                      uint64_t submitter_document, uint32_t submitter_node,
                      char **error_out);
+  int (*element_geometry)(uint64_t execution_id, uint64_t document,
+                          uint32_t node,
+                          gossamer_v8_element_geometry *geometry_out,
+                          char **error_out);
+  int (*viewport_geometry)(uint64_t execution_id,
+                           gossamer_v8_viewport_geometry *geometry_out,
+                           char **error_out);
+  int (*scroll_element)(uint64_t execution_id, uint64_t document,
+                        uint32_t node, double x, double y, int *changed_out,
+                        char **error_out);
+  int (*scroll_viewport)(uint64_t execution_id, double x, double y,
+                         int *changed_out, char **error_out);
+  int (*scroll_into_view)(uint64_t execution_id, uint64_t document,
+                          uint32_t node, int *changed_out, char **error_out);
 } gossamer_v8_host;
 
 typedef struct gossamer_v8_node_handle {

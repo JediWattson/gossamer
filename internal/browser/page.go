@@ -41,6 +41,8 @@ type Page struct {
 	documentContext    context.Context
 	documentCancel     context.CancelFunc
 	viewport           render.Viewport
+	scrollX            float64
+	scrollY            float64
 	frame              *render.Frame
 	frameGeneration    DocumentGeneration
 	computedStyle      computedStyleState
@@ -391,6 +393,8 @@ func (page *Page) Close() error {
 	page.documentCancel = nil
 	page.documentContext = nil
 	page.frame = nil
+	page.scrollX = 0
+	page.scrollY = 0
 	page.computedStyle = computedStyleState{}
 	page.layout = layoutState{}
 	timers := page.takeTimersLocked()
@@ -461,6 +465,9 @@ func (page *Page) renderLocked(onlyIfDirty bool) error {
 		return err
 	}
 	page.frame = frame
+	if page.scrollX != 0 || page.scrollY != 0 {
+		page.frame = render.ScrollDisplayList(frame, page.scrollX, page.scrollY)
+	}
 	page.frameGeneration = page.documentGeneration
 	page.renderedVersion = renderedVersion
 	page.dirty = false

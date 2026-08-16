@@ -421,6 +421,7 @@ struct gossamer_v8_realm {
   v8::Global<v8::FunctionTemplate> tree_walker_template;
   v8::Global<v8::FunctionTemplate> node_iterator_template;
   v8::Global<v8::FunctionTemplate> selection_template;
+  v8::Global<v8::FunctionTemplate> dom_rect_template;
   v8::Global<v8::FunctionTemplate> node_list_template;
   v8::Global<v8::FunctionTemplate> html_collection_template;
   v8::Global<v8::FunctionTemplate> token_list_template;
@@ -2026,7 +2027,7 @@ bool RelationFromProperty(const std::string &name, uint8_t *relation) {
     *relation = 9;
   else if (name == "nextElementSibling")
     *relation = 10;
-  else if (name == "documentElement")
+  else if (name == "documentElement" || name == "scrollingElement")
     *relation = 11;
   else if (name == "head")
     *relation = 12;
@@ -8747,6 +8748,393 @@ void ClearTimeoutCallback(const v8::FunctionCallbackInfo<v8::Value> &info) {
     RemoveCallback(realm, callback->second);
 }
 
+bool ReadElementGeometry(gossamer_v8_realm *realm, const WrapperKey &key,
+                         gossamer_v8_element_geometry *geometry,
+                         std::string *error) {
+  if (!RequireHost(realm, error))
+    return false;
+  char *host_error = nullptr;
+  if (realm->active_host->element_geometry(
+          realm->active_host->execution_id, key.document, key.node, geometry,
+          &host_error) == 0) {
+    *error = TakeCString(host_error);
+    if (error->empty())
+      *error = "reading element geometry failed";
+    return false;
+  }
+  std::free(host_error);
+  return true;
+}
+
+bool ReadViewportGeometry(gossamer_v8_realm *realm,
+                          gossamer_v8_viewport_geometry *geometry,
+                          std::string *error) {
+  if (!RequireHost(realm, error))
+    return false;
+  char *host_error = nullptr;
+  if (realm->active_host->viewport_geometry(
+          realm->active_host->execution_id, geometry, &host_error) == 0) {
+    *error = TakeCString(host_error);
+    if (error->empty())
+      *error = "reading viewport geometry failed";
+    return false;
+  }
+  std::free(host_error);
+  return true;
+}
+
+bool DefineNumber(v8::Local<v8::Context> context,
+                  v8::Local<v8::Object> object, const char *name,
+                  double value, bool read_only = true) {
+  v8::Isolate *isolate = v8::Isolate::GetCurrent();
+  v8::PropertyAttribute attributes = v8::DontEnum;
+  if (read_only)
+    attributes = static_cast<v8::PropertyAttribute>(attributes | v8::ReadOnly);
+  return object
+      ->DefineOwnProperty(
+          context,
+          v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
+          v8::Number::New(isolate, value), attributes)
+      .FromMaybe(false);
+}
+
+bool InitializeDOMRect(v8::Local<v8::Context> context,
+                       v8::Local<v8::Object> object, double x, double y,
+                       double width, double height) {
+  double left = std::min(x, x + width);
+  double right = std::max(x, x + width);
+  double top = std::min(y, y + height);
+  double bottom = std::max(y, y + height);
+  return DefineNumber(context, object, "x", x) &&
+         DefineNumber(context, object, "y", y) &&
+         DefineNumber(context, object, "width", width) &&
+         DefineNumber(context, object, "height", height) &&
+         DefineNumber(context, object, "top", top) &&
+         DefineNumber(context, object, "right", right) &&
+         DefineNumber(context, object, "bottom", bottom) &&
+         DefineNumber(context, object, "left", left);
+}
+
+void DOMRectConstructor(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  if (!info.IsConstructCall()) {
+    ThrowTypeError(isolate, "DOMRect constructor requires new");
+    return;
+  }
+  v8::Local<v8::Context> context = isolate->GetCurrentContext();
+  double values[4] = {0, 0, 0, 0};
+  for (int index = 0; index < info.Length() && index < 4; ++index) {
+    if (!info[index]->NumberValue(context).To(&values[index]))
+      return;
+  }
+  if (!InitializeDOMRect(context, info.This(), values[0], values[1], values[2],
+                         values[3])) {
+    ThrowError(isolate, "V8 failed to initialize DOMRect");
+  }
+}
+
+void DOMRectToJSON(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  v8::Local<v8::Context> context = isolate->GetCurrentContext();
+  v8::Local<v8::Object> result = v8::Object::New(isolate);
+  for (const char *name : {"x", "y", "width", "height", "top", "right",
+                           "bottom", "left"}) {
+    v8::Local<v8::String> property =
+        v8::String::NewFromUtf8(isolate, name).ToLocalChecked();
+    v8::Local<v8::Value> value;
+    if (!info.This()->Get(context, property).ToLocal(&value) ||
+        !result->Set(context, property, value).FromMaybe(false))
+      return;
+  }
+  info.GetReturnValue().Set(result);
+}
+
+v8::MaybeLocal<v8::Object> CreateDOMRect(gossamer_v8_realm *realm,
+                                         v8::Local<v8::Context> context,
+                                         const gossamer_v8_rect &rect) {
+  v8::Local<v8::Object> object;
+  if (!realm->dom_rect_template.Get(realm->isolate)
+           ->InstanceTemplate()
+           ->NewInstance(context)
+           .ToLocal(&object) ||
+      !InitializeDOMRect(context, object, rect.x, rect.y, rect.width,
+                         rect.height)) {
+    return {};
+  }
+  return object;
+}
+
+void ElementGetBoundingClientRect(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.This(), &key))
+    return;
+  gossamer_v8_element_geometry geometry{};
+  std::string error;
+  if (!ReadElementGeometry(realm, key, &geometry, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  v8::Local<v8::Object> rect;
+  if (!CreateDOMRect(realm, isolate->GetCurrentContext(), geometry.rect)
+           .ToLocal(&rect)) {
+    ThrowError(isolate, "V8 failed to allocate DOMRect");
+    return;
+  }
+  info.GetReturnValue().Set(rect);
+}
+
+void ElementGetClientRects(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.This(), &key))
+    return;
+  gossamer_v8_element_geometry geometry{};
+  std::string error;
+  if (!ReadElementGeometry(realm, key, &geometry, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  v8::Local<v8::Array> rects = v8::Array::New(isolate);
+  if (geometry.rect.width > 0 && geometry.rect.height > 0) {
+    v8::Local<v8::Object> rect;
+    if (!CreateDOMRect(realm, isolate->GetCurrentContext(), geometry.rect)
+             .ToLocal(&rect) ||
+        !rects->Set(isolate->GetCurrentContext(), 0, rect).FromMaybe(false)) {
+      ThrowError(isolate, "V8 failed to allocate client rect list");
+      return;
+    }
+  }
+  info.GetReturnValue().Set(rects);
+}
+
+void ElementGeometryGetter(
+    v8::Local<v8::Name> property,
+    const v8::PropertyCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.Holder(), &key))
+    return;
+  gossamer_v8_element_geometry geometry{};
+  std::string error;
+  if (!ReadElementGeometry(realm, key, &geometry, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  std::string name = UTF8Value(isolate, property.As<v8::Value>());
+  double value = 0;
+  bool integer = true;
+  if (name == "clientWidth")
+    value = geometry.client_width;
+  else if (name == "clientHeight")
+    value = geometry.client_height;
+  else if (name == "offsetWidth")
+    value = geometry.offset_width;
+  else if (name == "offsetHeight")
+    value = geometry.offset_height;
+  else if (name == "scrollWidth")
+    value = geometry.scroll_width;
+  else if (name == "scrollHeight")
+    value = geometry.scroll_height;
+  else if (name == "scrollLeft") {
+    value = geometry.scroll_left;
+    integer = false;
+  } else if (name == "scrollTop") {
+    value = geometry.scroll_top;
+    integer = false;
+  }
+  if (integer)
+    value = std::round(value);
+  info.GetReturnValue().Set(v8::Number::New(isolate, value));
+}
+
+bool ScrollElementHost(gossamer_v8_realm *realm, const WrapperKey &key,
+                       double x, double y, std::string *error) {
+  if (!RequireHost(realm, error))
+    return false;
+  int changed = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->scroll_element(
+          realm->active_host->execution_id, key.document, key.node, x, y,
+          &changed, &host_error) == 0) {
+    *error = TakeCString(host_error);
+    if (error->empty())
+      *error = "scrolling element failed";
+    return false;
+  }
+  std::free(host_error);
+  return true;
+}
+
+void ElementScrollSetter(
+    v8::Local<v8::Name> property, v8::Local<v8::Value> input,
+    const v8::PropertyCallbackInfo<v8::Boolean> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.Holder(), &key)) {
+    info.GetReturnValue().Set(false);
+    return;
+  }
+  gossamer_v8_element_geometry geometry{};
+  std::string error;
+  if (!ReadElementGeometry(realm, key, &geometry, &error)) {
+    ThrowError(isolate, error);
+    info.GetReturnValue().Set(false);
+    return;
+  }
+  double value = 0;
+  if (!input->NumberValue(isolate->GetCurrentContext()).To(&value)) {
+    info.GetReturnValue().Set(false);
+    return;
+  }
+  std::string name = UTF8Value(isolate, property.As<v8::Value>());
+  double x = name == "scrollLeft" ? value : geometry.scroll_left;
+  double y = name == "scrollTop" ? value : geometry.scroll_top;
+  if (!ScrollElementHost(realm, key, x, y, &error)) {
+    ThrowError(isolate, error);
+    info.GetReturnValue().Set(false);
+    return;
+  }
+  info.GetReturnValue().Set(true);
+}
+
+bool ReadScrollCoordinates(const v8::FunctionCallbackInfo<v8::Value> &info,
+                           double fallback_x, double fallback_y, double *x,
+                           double *y) {
+  v8::Local<v8::Context> context = info.GetIsolate()->GetCurrentContext();
+  *x = 0;
+  *y = 0;
+  if (info.Length() == 0)
+    return true;
+  if (info[0]->IsObject() && !info[0]->IsNull()) {
+    v8::Local<v8::Object> options = info[0].As<v8::Object>();
+    return ReadNumberOption(context, options, "left", fallback_x, x) &&
+           ReadNumberOption(context, options, "top", fallback_y, y);
+  }
+  if (!info[0]->NumberValue(context).To(x))
+    return false;
+  if (info.Length() > 1 && !info[1]->NumberValue(context).To(y))
+    return false;
+  return true;
+}
+
+void ElementScroll(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.This(), &key))
+    return;
+  gossamer_v8_element_geometry geometry{};
+  std::string error;
+  if (!ReadElementGeometry(realm, key, &geometry, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  double x = 0;
+  double y = 0;
+  if (!ReadScrollCoordinates(info, geometry.scroll_left, geometry.scroll_top,
+                             &x, &y))
+    return;
+  bool relative = info.Data()->IsBoolean() && info.Data()->BooleanValue(isolate);
+  if (relative) {
+    x += geometry.scroll_left;
+    y += geometry.scroll_top;
+  }
+  if (!ScrollElementHost(realm, key, x, y, &error))
+    ThrowError(isolate, error);
+}
+
+void ElementScrollIntoView(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.This(), &key))
+    return;
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  int changed = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->scroll_into_view(
+          realm->active_host->execution_id, key.document, key.node, &changed,
+          &host_error) == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate, error.empty() ? "scrollIntoView failed" : error);
+    return;
+  }
+  std::free(host_error);
+}
+
+void GlobalViewportGetter(
+    v8::Local<v8::Name> property,
+    const v8::PropertyCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_viewport_geometry geometry{};
+  std::string error;
+  if (!ReadViewportGeometry(CurrentRealm(isolate), &geometry, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  std::string name = UTF8Value(isolate, property.As<v8::Value>());
+  double value = 0;
+  if (name == "innerWidth")
+    value = geometry.inner_width;
+  else if (name == "innerHeight")
+    value = geometry.inner_height;
+  else if (name == "scrollX" || name == "pageXOffset")
+    value = geometry.scroll_x;
+  else if (name == "scrollY" || name == "pageYOffset")
+    value = geometry.scroll_y;
+  info.GetReturnValue().Set(v8::Number::New(isolate, value));
+}
+
+bool ScrollViewportHost(gossamer_v8_realm *realm, double x, double y,
+                        std::string *error) {
+  if (!RequireHost(realm, error))
+    return false;
+  int changed = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->scroll_viewport(realm->active_host->execution_id, x,
+                                           y, &changed, &host_error) == 0) {
+    *error = TakeCString(host_error);
+    if (error->empty())
+      *error = "scrolling viewport failed";
+    return false;
+  }
+  std::free(host_error);
+  return true;
+}
+
+void WindowScroll(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  gossamer_v8_viewport_geometry geometry{};
+  std::string error;
+  if (!ReadViewportGeometry(realm, &geometry, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  double x = 0;
+  double y = 0;
+  if (!ReadScrollCoordinates(info, geometry.scroll_x, geometry.scroll_y, &x,
+                             &y))
+    return;
+  bool relative = info.Data()->IsBoolean() && info.Data()->BooleanValue(isolate);
+  if (relative) {
+    x += geometry.scroll_x;
+    y += geometry.scroll_y;
+  }
+  if (!ScrollViewportHost(realm, x, y, &error))
+    ThrowError(isolate, error);
+}
+
 void IllegalDOMConstructor(
     const v8::FunctionCallbackInfo<v8::Value> &info) {
   ThrowError(info.GetIsolate(), "Illegal constructor");
@@ -8808,6 +9196,8 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
       v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
   v8::Local<v8::FunctionTemplate> style_template =
       v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
+  v8::Local<v8::FunctionTemplate> dom_rect_template =
+      v8::FunctionTemplate::New(isolate, DOMRectConstructor);
   v8::Local<v8::FunctionTemplate> form_data_template =
       v8::FunctionTemplate::New(isolate, FormDataConstructor);
   auto new_event_template =
@@ -8910,6 +9300,10 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
       v8::String::NewFromUtf8Literal(isolate, "DOMStringMap"));
   style_template->SetClassName(
       v8::String::NewFromUtf8Literal(isolate, "CSSStyleDeclaration"));
+  dom_rect_template->SetClassName(
+      v8::String::NewFromUtf8Literal(isolate, "DOMRect"));
+  dom_rect_template->PrototypeTemplate()->Set(
+      isolate, "toJSON", v8::FunctionTemplate::New(isolate, DOMRectToJSON));
   form_data_template->SetClassName(
       v8::String::NewFromUtf8Literal(isolate, "FormData"));
   form_data_template->InstanceTemplate()->SetInternalFieldCount(1);
@@ -9516,6 +9910,35 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   element_prototype->Set(
       isolate, "insertAdjacentHTML",
       v8::FunctionTemplate::New(isolate, ElementInsertAdjacentHTML));
+  element_prototype->Set(
+      isolate, "getBoundingClientRect",
+      v8::FunctionTemplate::New(isolate, ElementGetBoundingClientRect));
+  element_prototype->Set(
+      isolate, "getClientRects",
+      v8::FunctionTemplate::New(isolate, ElementGetClientRects));
+  element_prototype->Set(
+      isolate, "scroll",
+      v8::FunctionTemplate::New(isolate, ElementScroll, v8::False(isolate)));
+  element_prototype->Set(
+      isolate, "scrollTo",
+      v8::FunctionTemplate::New(isolate, ElementScroll, v8::False(isolate)));
+  element_prototype->Set(
+      isolate, "scrollBy",
+      v8::FunctionTemplate::New(isolate, ElementScroll, v8::True(isolate)));
+  element_prototype->Set(
+      isolate, "scrollIntoView",
+      v8::FunctionTemplate::New(isolate, ElementScrollIntoView));
+  for (const char *name : {"clientWidth", "clientHeight", "offsetWidth",
+                           "offsetHeight", "scrollWidth", "scrollHeight"}) {
+    element_prototype->SetNativeDataProperty(
+        v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
+        ElementGeometryGetter);
+  }
+  for (const char *name : {"scrollLeft", "scrollTop"}) {
+    element_prototype->SetNativeDataProperty(
+        v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
+        ElementGeometryGetter, ElementScrollSetter);
+  }
 
   v8::Local<v8::ObjectTemplate> html_element_prototype =
       html_element_template->PrototypeTemplate();
@@ -9664,7 +10087,7 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   v8::Local<v8::ObjectTemplate> document_prototype =
       document_template->PrototypeTemplate();
   install_parent_node_surface(document_prototype);
-  for (const char *name : {"documentElement", "head", "body"}) {
+  for (const char *name : {"documentElement", "scrollingElement", "head", "body"}) {
     document_prototype->SetNativeDataProperty(
         v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
         NodeRelationGetter);
@@ -9810,6 +10233,18 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
         instance->SetNativeDataProperty(
             v8::String::NewFromUtf8Literal(isolate, "innerHTML"),
             ElementInnerHTMLGetter, ElementInnerHTMLSetter);
+        for (const char *name : {"clientWidth", "clientHeight", "offsetWidth",
+                                 "offsetHeight", "scrollWidth",
+                                 "scrollHeight"}) {
+          instance->SetNativeDataProperty(
+              v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
+              ElementGeometryGetter);
+        }
+        for (const char *name : {"scrollLeft", "scrollTop"}) {
+          instance->SetNativeDataProperty(
+              v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
+              ElementGeometryGetter, ElementScrollSetter);
+        }
       };
   for (v8::Local<v8::FunctionTemplate> interface_template :
        {node_template, element_template, html_element_template, text_template,
@@ -9929,7 +10364,7 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   install_parent_instance_surface(document_template->InstanceTemplate());
   install_parent_instance_surface(
       document_fragment_template->InstanceTemplate());
-  for (const char *name : {"documentElement", "head", "body"}) {
+  for (const char *name : {"documentElement", "scrollingElement", "head", "body"}) {
     document_template->InstanceTemplate()->SetNativeDataProperty(
         v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
         NodeRelationGetter);
@@ -9980,6 +10415,7 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   realm->tree_walker_template.Reset(isolate, tree_walker_template);
   realm->node_iterator_template.Reset(isolate, node_iterator_template);
   realm->selection_template.Reset(isolate, selection_template);
+  realm->dom_rect_template.Reset(isolate, dom_rect_template);
 
   v8::Local<v8::ObjectTemplate> style_prototype =
       style_template->PrototypeTemplate();
@@ -10043,6 +10479,8 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   v8::Local<v8::Function> clear_timeout;
   v8::Local<v8::Function> get_computed_style;
   v8::Local<v8::Function> get_selection;
+  v8::Local<v8::Function> window_scroll;
+  v8::Local<v8::Function> window_scroll_by;
   if (!v8::Function::New(context, QueueMicrotaskCallback)
            .ToLocal(&queue_microtask) ||
       !v8::Function::New(context, SetTimeoutCallback).ToLocal(&set_timeout) ||
@@ -10053,7 +10491,25 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
       !v8::Function::New(context, GetSelection).ToLocal(&get_selection)) {
     return false;
   }
+  if (!v8::Function::New(context, WindowScroll, v8::False(isolate))
+           .ToLocal(&window_scroll) ||
+      !v8::Function::New(context, WindowScroll, v8::True(isolate))
+           .ToLocal(&window_scroll_by)) {
+    return false;
+  }
   v8::Local<v8::Object> global = context->Global();
+  for (const char *name : {"innerWidth", "innerHeight", "scrollX", "scrollY",
+                           "pageXOffset", "pageYOffset"}) {
+    if (!global
+             ->SetNativeDataProperty(
+                 context,
+                 v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
+                 GlobalViewportGetter, nullptr, v8::Local<v8::Value>(),
+                 v8::DontEnum)
+             .FromMaybe(false)) {
+      return false;
+    }
+  }
   v8::Local<v8::Object> node_filter = v8::Object::New(isolate);
   for (const auto &constant :
        {std::pair<const char *, uint32_t>{"FILTER_ACCEPT", 1},
@@ -10133,6 +10589,7 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
          expose_interface("DOMTokenList", token_list_template) &&
          expose_interface("DOMStringMap", dataset_template) &&
          expose_interface("CSSStyleDeclaration", style_template) &&
+         expose_interface("DOMRect", dom_rect_template) &&
          global
              ->Set(context,
                    v8::String::NewFromUtf8Literal(isolate, "NodeFilter"),
@@ -10171,6 +10628,21 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
              ->Set(context,
                    v8::String::NewFromUtf8Literal(isolate, "getSelection"),
                    get_selection)
+             .FromMaybe(false) &&
+         global
+             ->Set(context,
+                   v8::String::NewFromUtf8Literal(isolate, "scroll"),
+                   window_scroll)
+             .FromMaybe(false) &&
+         global
+             ->Set(context,
+                   v8::String::NewFromUtf8Literal(isolate, "scrollTo"),
+                   window_scroll)
+             .FromMaybe(false) &&
+         global
+             ->Set(context,
+                   v8::String::NewFromUtf8Literal(isolate, "scrollBy"),
+                   window_scroll_by)
              .FromMaybe(false);
 }
 
@@ -10299,6 +10771,10 @@ bool ConfigureNativeEvent(const gossamer_v8_input_event *input,
     state->interface = EventInterface::Event;
     state->cancelable = true;
     break;
+  case 24:
+    state->type = "scroll";
+    state->interface = EventInterface::Event;
+    break;
   default:
     *error = "V8 received an unsupported browser event type";
     return false;
@@ -10420,6 +10896,7 @@ void ClearRealmHandles(gossamer_v8_realm *realm) {
   realm->tree_walker_template.Reset();
   realm->node_iterator_template.Reset();
   realm->selection_template.Reset();
+  realm->dom_rect_template.Reset();
   realm->node_list_template.Reset();
   realm->html_collection_template.Reset();
   realm->token_list_template.Reset();

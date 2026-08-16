@@ -153,3 +153,27 @@ type Frame struct {
 	ComputedStyles *computed.Snapshot
 	DisplayList    DisplayList
 }
+
+// ScrollDisplayList returns a shallow frame copy whose paint commands are
+// translated from document coordinates into viewport coordinates. Layout and
+// stable node geometry remain immutable document-space snapshots.
+func ScrollDisplayList(frame *Frame, x, y float64) *Frame {
+	if frame == nil || (x == 0 && y == 0) {
+		return frame
+	}
+	result := *frame
+	result.DisplayList = frame.DisplayList
+	result.DisplayList.Commands = append([]Command(nil), frame.DisplayList.Commands...)
+	for index := range result.DisplayList.Commands {
+		command := &result.DisplayList.Commands[index]
+		switch command.Kind {
+		case FillRectCommand, DrawImageCommand:
+			command.Rect.X -= x
+			command.Rect.Y -= y
+		case DrawTextCommand:
+			command.X -= x
+			command.BaselineY -= y
+		}
+	}
+	return &result
+}

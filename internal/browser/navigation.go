@@ -390,6 +390,8 @@ func (page *Page) commitNavigationDocument(
 	page.document = prepared.document
 	page.documentGeneration = generation
 	page.activeElement = dom.InvalidNodeID
+	page.scrollX = 0
+	page.scrollY = 0
 	page.computedStyle = computedStyleState{}
 	page.layout = layoutState{}
 	page.styleRevision++

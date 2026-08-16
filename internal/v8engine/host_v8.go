@@ -139,6 +139,14 @@ func domComputedStyleHost(host browser.Host) (browser.DOMComputedStyleHost, erro
 	return domHost, nil
 }
 
+func domGeometryHost(host browser.Host) (browser.DOMGeometryHost, error) {
+	domHost, ok := host.(browser.DOMGeometryHost)
+	if !ok {
+		return nil, fmt.Errorf("V8 host does not support DOM geometry bindings")
+	}
+	return domHost, nil
+}
+
 //export goGossamerV8HostDocumentMetadata
 func goGossamerV8HostDocumentMetadata(
 	executionID C.uint64_t,
@@ -2036,6 +2044,147 @@ func goGossamerV8HostComputedStylePropertyName(
 			return writeHostString("", nameOut, nameLengthOut)
 		}
 		return writeHostString(names[int(index)], nameOut, nameLengthOut)
+	}, executionID)
+}
+
+//export goGossamerV8HostElementGeometry
+func goGossamerV8HostElementGeometry(
+	executionID C.uint64_t,
+	document C.uint64_t,
+	node C.uint32_t,
+	geometryOut *C.gossamer_v8_element_geometry,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domGeometryHost(host)
+		if err != nil {
+			return err
+		}
+		geometry, err := domHost.ElementGeometry(browserNodeHandle(document, node))
+		if err != nil {
+			return err
+		}
+		if geometryOut != nil {
+			geometryOut.rect.x = C.double(geometry.Rect.X)
+			geometryOut.rect.y = C.double(geometry.Rect.Y)
+			geometryOut.rect.width = C.double(geometry.Rect.Width)
+			geometryOut.rect.height = C.double(geometry.Rect.Height)
+			geometryOut.client_width = C.double(geometry.ClientWidth)
+			geometryOut.client_height = C.double(geometry.ClientHeight)
+			geometryOut.offset_width = C.double(geometry.OffsetWidth)
+			geometryOut.offset_height = C.double(geometry.OffsetHeight)
+			geometryOut.scroll_width = C.double(geometry.ScrollWidth)
+			geometryOut.scroll_height = C.double(geometry.ScrollHeight)
+			geometryOut.scroll_left = C.double(geometry.ScrollLeft)
+			geometryOut.scroll_top = C.double(geometry.ScrollTop)
+		}
+		return nil
+	}, executionID)
+}
+
+//export goGossamerV8HostViewportGeometry
+func goGossamerV8HostViewportGeometry(
+	executionID C.uint64_t,
+	geometryOut *C.gossamer_v8_viewport_geometry,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domGeometryHost(host)
+		if err != nil {
+			return err
+		}
+		geometry, err := domHost.ViewportGeometry()
+		if err != nil {
+			return err
+		}
+		if geometryOut != nil {
+			geometryOut.inner_width = C.double(geometry.InnerWidth)
+			geometryOut.inner_height = C.double(geometry.InnerHeight)
+			geometryOut.scroll_x = C.double(geometry.ScrollX)
+			geometryOut.scroll_y = C.double(geometry.ScrollY)
+			geometryOut.scroll_width = C.double(geometry.ScrollWidth)
+			geometryOut.scroll_height = C.double(geometry.ScrollHeight)
+		}
+		return nil
+	}, executionID)
+}
+
+func writeChanged(changed bool, changedOut *C.int) {
+	if changedOut == nil {
+		return
+	}
+	if changed {
+		*changedOut = 1
+	} else {
+		*changedOut = 0
+	}
+}
+
+//export goGossamerV8HostScrollElement
+func goGossamerV8HostScrollElement(
+	executionID C.uint64_t,
+	document C.uint64_t,
+	node C.uint32_t,
+	x C.double,
+	y C.double,
+	changedOut *C.int,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domGeometryHost(host)
+		if err != nil {
+			return err
+		}
+		changed, err := domHost.ScrollElement(browserNodeHandle(document, node), float64(x), float64(y))
+		if err != nil {
+			return err
+		}
+		writeChanged(changed, changedOut)
+		return nil
+	}, executionID)
+}
+
+//export goGossamerV8HostScrollViewport
+func goGossamerV8HostScrollViewport(
+	executionID C.uint64_t,
+	x C.double,
+	y C.double,
+	changedOut *C.int,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domGeometryHost(host)
+		if err != nil {
+			return err
+		}
+		changed, err := domHost.ScrollViewport(float64(x), float64(y))
+		if err != nil {
+			return err
+		}
+		writeChanged(changed, changedOut)
+		return nil
+	}, executionID)
+}
+
+//export goGossamerV8HostScrollIntoView
+func goGossamerV8HostScrollIntoView(
+	executionID C.uint64_t,
+	document C.uint64_t,
+	node C.uint32_t,
+	changedOut *C.int,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domGeometryHost(host)
+		if err != nil {
+			return err
+		}
+		changed, err := domHost.ScrollIntoView(browserNodeHandle(document, node))
+		if err != nil {
+			return err
+		}
+		writeChanged(changed, changedOut)
+		return nil
 	}, executionID)
 }
 

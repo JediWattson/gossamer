@@ -7,12 +7,17 @@ import (
 	computed "github.com/JediWattson/gossamer/internal/style"
 )
 
-// LayoutGeometry is the used box geometry retained for CSSOM reads. Bounds is
-// the border box; ContentBounds is the content box used by resolved width and
-// height serialization.
+// LayoutGeometry is the used box geometry retained for CSSOM View reads.
+// Bounds is the border box, ClientBounds is the padding box, and
+// ContentBounds is the content box used by resolved width and height
+// serialization. ScrollWidth and ScrollHeight include visible descendant
+// overflow in the current formatting-context slice.
 type LayoutGeometry struct {
 	Bounds        Rect
+	ClientBounds  Rect
 	ContentBounds Rect
+	ScrollWidth   float64
+	ScrollHeight  float64
 }
 
 // LayoutSnapshot is an immutable layout result that can be queried before it
@@ -128,12 +133,84 @@ func newStableLayoutSnapshot(
 	return snapshot, nil
 }
 
-func indexPointerGeometry(box *Box, index map[*dom.Node]LayoutGeometry) {
+type layoutExtent struct {
+	right  float64
+	bottom float64
+}
+
+func boxClientBounds(box *Box) Rect {
 	if box == nil {
-		return
+		return Rect{}
+	}
+	width := box.Bounds.Width - box.Border.Left - box.Border.Right
+	height := box.Bounds.Height - box.Border.Top - box.Border.Bottom
+	if width < 0 {
+		width = 0
+	}
+	if height < 0 {
+		height = 0
+	}
+	return Rect{
+		X:      box.Bounds.X + box.Border.Left,
+		Y:      box.Bounds.Y + box.Border.Top,
+		Width:  width,
+		Height: height,
+	}
+}
+
+func boxGeometry(box *Box, extent layoutExtent) LayoutGeometry {
+	client := boxClientBounds(box)
+	scrollWidth := client.Width
+	scrollHeight := client.Height
+	if overflow := extent.right - client.X; overflow > scrollWidth {
+		scrollWidth = overflow
+	}
+	if overflow := extent.bottom - client.Y; overflow > scrollHeight {
+		scrollHeight = overflow
+	}
+	return LayoutGeometry{
+		Bounds:        box.Bounds,
+		ClientBounds:  client,
+		ContentBounds: box.ContentBounds,
+		ScrollWidth:   scrollWidth,
+		ScrollHeight:  scrollHeight,
+	}
+}
+
+func indexPointerGeometry(box *Box, index map[*dom.Node]LayoutGeometry) layoutExtent {
+	if box == nil {
+		return layoutExtent{}
+	}
+	extent := layoutExtent{
+		right:  box.Bounds.X + box.Bounds.Width,
+		bottom: box.Bounds.Y + box.Bounds.Height,
+	}
+	for _, fragment := range box.Fragments {
+		bounds := Rect{}
+		switch fragment.Kind {
+		case ImageFragmentKind:
+			bounds = fragment.Image.Bounds
+		case TextFragmentKind:
+			bounds = Rect{X: fragment.Text.X, Y: fragment.Text.BaselineY - fragment.Text.Height, Width: fragment.Text.Width, Height: fragment.Text.Height}
+		}
+		if right := bounds.X + bounds.Width; right > extent.right {
+			extent.right = right
+		}
+		if bottom := bounds.Y + bounds.Height; bottom > extent.bottom {
+			extent.bottom = bottom
+		}
+	}
+	for _, child := range box.Children {
+		childExtent := indexPointerGeometry(child, index)
+		if childExtent.right > extent.right {
+			extent.right = childExtent.right
+		}
+		if childExtent.bottom > extent.bottom {
+			extent.bottom = childExtent.bottom
+		}
 	}
 	if box.Node != nil && box.Node.Type == dom.ElementNode {
-		index[box.Node] = LayoutGeometry{Bounds: box.Bounds, ContentBounds: box.ContentBounds}
+		index[box.Node] = boxGeometry(box, extent)
 	}
 	for _, fragment := range box.Fragments {
 		if fragment.Kind != ImageFragmentKind || fragment.Image.Node == nil {
@@ -142,22 +219,51 @@ func indexPointerGeometry(box *Box, index map[*dom.Node]LayoutGeometry) {
 		if _, exists := index[fragment.Image.Node]; !exists {
 			index[fragment.Image.Node] = LayoutGeometry{
 				Bounds:        fragment.Image.Bounds,
+				ClientBounds:  fragment.Image.Bounds,
 				ContentBounds: fragment.Image.Bounds,
+				ScrollWidth:   fragment.Image.Bounds.Width,
+				ScrollHeight:  fragment.Image.Bounds.Height,
 			}
 		}
 	}
-	for _, child := range box.Children {
-		indexPointerGeometry(child, index)
-	}
+	return extent
 }
 
-func indexStableGeometry(box *Box, access *dom.ReadAccess, index map[dom.NodeID]LayoutGeometry) {
+func indexStableGeometry(box *Box, access *dom.ReadAccess, index map[dom.NodeID]LayoutGeometry) layoutExtent {
 	if box == nil {
-		return
+		return layoutExtent{}
+	}
+	extent := layoutExtent{
+		right:  box.Bounds.X + box.Bounds.Width,
+		bottom: box.Bounds.Y + box.Bounds.Height,
+	}
+	for _, fragment := range box.Fragments {
+		bounds := Rect{}
+		switch fragment.Kind {
+		case ImageFragmentKind:
+			bounds = fragment.Image.Bounds
+		case TextFragmentKind:
+			bounds = Rect{X: fragment.Text.X, Y: fragment.Text.BaselineY - fragment.Text.Height, Width: fragment.Text.Width, Height: fragment.Text.Height}
+		}
+		if right := bounds.X + bounds.Width; right > extent.right {
+			extent.right = right
+		}
+		if bottom := bounds.Y + bounds.Height; bottom > extent.bottom {
+			extent.bottom = bottom
+		}
+	}
+	for _, child := range box.Children {
+		childExtent := indexStableGeometry(child, access, index)
+		if childExtent.right > extent.right {
+			extent.right = childExtent.right
+		}
+		if childExtent.bottom > extent.bottom {
+			extent.bottom = childExtent.bottom
+		}
 	}
 	if box.Node != nil && box.Node.Type == dom.ElementNode {
 		if id, ok := access.ID(box.Node); ok {
-			index[id] = LayoutGeometry{Bounds: box.Bounds, ContentBounds: box.ContentBounds}
+			index[id] = boxGeometry(box, extent)
 		}
 	}
 	for _, fragment := range box.Fragments {
@@ -168,12 +274,13 @@ func indexStableGeometry(box *Box, access *dom.ReadAccess, index map[dom.NodeID]
 			if _, exists := index[id]; !exists {
 				index[id] = LayoutGeometry{
 					Bounds:        fragment.Image.Bounds,
+					ClientBounds:  fragment.Image.Bounds,
 					ContentBounds: fragment.Image.Bounds,
+					ScrollWidth:   fragment.Image.Bounds.Width,
+					ScrollHeight:  fragment.Image.Bounds.Height,
 				}
 			}
 		}
 	}
-	for _, child := range box.Children {
-		indexStableGeometry(child, access, index)
-	}
+	return extent
 }

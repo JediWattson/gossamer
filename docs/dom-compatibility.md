@@ -5,7 +5,7 @@ DOM compatibility gate verifies that this split remains observable as one DOM:
 canonical V8 wrappers carry numeric `NodeHandle` values, while Go owns node
 identity, mutation, form state, construction regions, and queue ARC.
 
-## Selected completed milestones 8-26
+## Selected completed milestones 8-27
 
 | Milestone | Native surface | Regression boundary |
 | --- | --- | --- |
@@ -20,6 +20,7 @@ identity, mutation, form state, construction regions, and queue ARC.
 | 24. Cross-Realm transfer | Child Page/Realm ownership, pointer-free import/adopt, structured clone, transferable ArrayBuffers, native `postMessage` | No Go pointer crosses a Realm; parent replacement closes children and transferred buffers detach atomically |
 | 25. Form navigation | Constraint validation, `requestSubmit`, `submit`, `FormData`, cancelable events, GET/POST encoding, history/location, Realm replacement, final paint | Invalid or canceled submissions do not navigate; success invalidates the old generation and tears its Realm down in bulk |
 | 26. Release gate | Focused WPT-aligned behavior, pinned React, forced GC, cross-Realm messaging, 25 submissions, 200 replacements | Bounded runtime/wrapper churn and zero native ownership after teardown |
+| 27. CSSOM View and root scrolling | Fresh `DOMRect`, `getBoundingClientRect`, `getClientRects`, client/offset/scroll dimensions, viewport metrics, root scrolling, `scrollIntoView`, translated paint/hit testing, queued scroll events | Geometry reads reuse one immutable Go layout snapshot; React layout effects measure synchronously; scroll delivery is coalesced after the task; value-only rectangles survive forced GC; Realm teardown returns ownership to zero |
 
 Run the gate against the locally built stock V8:
 
@@ -55,8 +56,11 @@ and ownership barriers before a separate render task publishes a frame.
   passed directly between iframe globals; cross-Realm data uses the native
   structured-clone/`postMessage` seam and fresh target wrappers.
 - This gate does not claim Shadow DOM, custom elements, multipart/file form
-  submission, every validation constraint, navigation globals, geometry,
-  accessibility, or the complete Web Platform test surface.
+  submission, every validation constraint, history traversal, per-element
+  overflow formatting contexts, accessibility, or the complete Web Platform
+  test surface. The current CSSOM View slice scrolls the root viewport;
+  non-root elements remain non-scrollable until overflow layout and clipping
+  land.
 
 These limits are intentional compatibility boundaries. New DOM work should
 add a focused Go test, a stock-V8 behavior test, a forced-GC lifetime check
