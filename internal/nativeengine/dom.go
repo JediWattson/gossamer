@@ -1,0 +1,906 @@
+package nativeengine
+
+import (
+	"fmt"
+	"strconv"
+
+	"github.com/JediWattson/gossamer/internal/browser"
+	"github.com/JediWattson/gossamer/internal/dom"
+	browserruntime "github.com/JediWattson/gossamer/internal/runtime"
+	"github.com/JediWattson/gossamer/internal/runtime/memory"
+)
+
+const (
+	nativeDocumentGetElementByID uint64 = 10_000 + iota
+	nativeDocumentCreateElement
+	nativeDocumentCreateTextNode
+	nativeDocumentElement
+	nativeDocumentHead
+	nativeDocumentBody
+	nativeNodeType
+	nativeNodeName
+	nativeNodeParent
+	nativeNodeFirstChild
+	nativeNodeLastChild
+	nativeNodePreviousSibling
+	nativeNodeNextSibling
+	nativeNodeTextContentGet
+	nativeNodeTextContentSet
+	nativeNodeChildNodes
+	nativeNodeAppendChild
+	nativeNodeInsertBefore
+	nativeNodeRemoveChild
+	nativeNodeContains
+	nativeNodeCloneNode
+	nativeElementLocalName
+	nativeElementChildren
+	nativeElementGetAttribute
+	nativeElementSetAttribute
+	nativeElementRemoveAttribute
+	nativeElementHasAttribute
+	nativeElementIDGet
+	nativeElementIDSet
+	nativeElementQuerySelector
+	nativeElementQuerySelectorAll
+	nativeElementMatches
+	nativeElementClosest
+)
+
+const (
+	hostClassWindow memory.HostClass = iota + 1
+	hostClassNode
+)
+
+const (
+	bindingWindowPrototype   = "\x00gossamer.window.prototype"
+	bindingDocumentPrototype = "\x00gossamer.document.prototype"
+	bindingNodePrototype     = "\x00gossamer.node.prototype"
+	bindingElementPrototype  = "\x00gossamer.element.prototype"
+	bindingTextPrototype     = "\x00gossamer.text.prototype"
+	bindingWrapperCache      = "\x00gossamer.wrapper.cache"
+	bindingWindow            = "window"
+	bindingSelf              = "self"
+	bindingDocument          = "document"
+	hostRecordProperty       = "\x00gossamer.host.record"
+)
+
+type browserBindings struct {
+	windowPrototype   memory.Ref
+	documentPrototype memory.Ref
+	nodePrototype     memory.Ref
+	elementPrototype  memory.Ref
+	textPrototype     memory.Ref
+	wrapperCache      memory.Ref
+	window            memory.Ref
+	document          memory.Ref
+}
+
+type nativeRegistration struct {
+	id       uint64
+	callback browserruntime.NativeFunction
+}
+
+func (realm *Realm) installBrowserNatives() error {
+	registrations := []nativeRegistration{
+		{nativeDocumentGetElementByID, realm.documentGetElementByID},
+		{nativeDocumentCreateElement, realm.documentCreateElement},
+		{nativeDocumentCreateTextNode, realm.documentCreateTextNode},
+		{nativeDocumentElement, realm.documentRelation(browser.RelationDocumentElement)},
+		{nativeDocumentHead, realm.documentRelation(browser.RelationDocumentHead)},
+		{nativeDocumentBody, realm.documentRelation(browser.RelationDocumentBody)},
+		{nativeNodeType, realm.nodeType},
+		{nativeNodeName, realm.nodeName},
+		{nativeNodeParent, realm.nodeRelation(browser.RelationParentNode)},
+		{nativeNodeFirstChild, realm.nodeRelation(browser.RelationFirstChild)},
+		{nativeNodeLastChild, realm.nodeRelation(browser.RelationLastChild)},
+		{nativeNodePreviousSibling, realm.nodeRelation(browser.RelationPreviousSibling)},
+		{nativeNodeNextSibling, realm.nodeRelation(browser.RelationNextSibling)},
+		{nativeNodeTextContentGet, realm.nodeTextContentGet},
+		{nativeNodeTextContentSet, realm.nodeTextContentSet},
+		{nativeNodeChildNodes, realm.nodeChildren(false)},
+		{nativeNodeAppendChild, realm.nodeAppendChild},
+		{nativeNodeInsertBefore, realm.nodeInsertBefore},
+		{nativeNodeRemoveChild, realm.nodeRemoveChild},
+		{nativeNodeContains, realm.nodeContains},
+		{nativeNodeCloneNode, realm.nodeCloneNode},
+		{nativeElementLocalName, realm.elementLocalName},
+		{nativeElementChildren, realm.nodeChildren(true)},
+		{nativeElementGetAttribute, realm.elementGetAttribute},
+		{nativeElementSetAttribute, realm.elementSetAttribute},
+		{nativeElementRemoveAttribute, realm.elementRemoveAttribute},
+		{nativeElementHasAttribute, realm.elementHasAttribute},
+		{nativeElementIDGet, realm.elementIDGet},
+		{nativeElementIDSet, realm.elementIDSet},
+		{nativeElementQuerySelector, realm.elementQuerySelector(false)},
+		{nativeElementQuerySelectorAll, realm.elementQuerySelector(true)},
+		{nativeElementMatches, realm.elementMatches},
+		{nativeElementClosest, realm.elementClosest},
+	}
+	for _, registration := range registrations {
+		if err := realm.interpreter.RegisterNative(registration.id, registration.callback); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (realm *Realm) prepareBrowserBindingsLocked(context *browserruntime.TaskContext) error {
+	window, found, err := globalRef(context, realm.active.Global, bindingWindow)
+	if err != nil {
+		return err
+	}
+	if found {
+		bindings := &browserBindings{window: window}
+		for _, item := range []struct {
+			name        string
+			destination *memory.Ref
+		}{
+			{bindingDocument, &bindings.document},
+			{bindingWindowPrototype, &bindings.windowPrototype},
+			{bindingDocumentPrototype, &bindings.documentPrototype},
+			{bindingNodePrototype, &bindings.nodePrototype},
+			{bindingElementPrototype, &bindings.elementPrototype},
+			{bindingTextPrototype, &bindings.textPrototype},
+			{bindingWrapperCache, &bindings.wrapperCache},
+		} {
+			ref, exists, lookupErr := globalRef(context, realm.active.Global, item.name)
+			if lookupErr != nil {
+				return lookupErr
+			}
+			if !exists {
+				return fmt.Errorf("nativeengine: missing retained browser binding %q", item.name)
+			}
+			*item.destination = ref
+		}
+		realm.bindings = bindings
+		return nil
+	}
+	return realm.installBrowserBindingsLocked(context)
+}
+
+func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskContext) error {
+	documentHost, ok := realm.host.(browser.DOMDocumentHost)
+	if !ok {
+		return fmt.Errorf("nativeengine: browser host does not expose document metadata")
+	}
+	metadata, err := documentHost.DocumentMetadata()
+	if err != nil {
+		return err
+	}
+	bindings := &browserBindings{}
+	for _, destination := range []*memory.Ref{
+		&bindings.windowPrototype,
+		&bindings.nodePrototype,
+		&bindings.documentPrototype,
+		&bindings.elementPrototype,
+		&bindings.textPrototype,
+	} {
+		*destination, err = context.NewHeapObject()
+		if err != nil {
+			return err
+		}
+	}
+	if err := context.SetPrototype(bindings.documentPrototype, memory.RefValue(bindings.nodePrototype)); err != nil {
+		return err
+	}
+	if err := context.SetPrototype(bindings.elementPrototype, memory.RefValue(bindings.nodePrototype)); err != nil {
+		return err
+	}
+	if err := context.SetPrototype(bindings.textPrototype, memory.RefValue(bindings.nodePrototype)); err != nil {
+		return err
+	}
+	bindings.wrapperCache, err = context.NewMap()
+	if err != nil {
+		return err
+	}
+	realm.bindings = bindings
+	if err := realm.installDOMPrototypeProperties(context); err != nil {
+		return err
+	}
+
+	bindings.document, err = realm.wrapNodeLocked(context, metadata.Root)
+	if err != nil {
+		return err
+	}
+	bindings.window, err = realm.newHostWrapperLocked(
+		context,
+		memory.HostObject{Class: hostClassWindow, Scope: uint64(metadata.Root.Document), Identity: 1},
+		bindings.windowPrototype,
+	)
+	if err != nil {
+		return err
+	}
+	for _, property := range []struct {
+		name  string
+		value memory.Value
+	}{
+		{"window", memory.RefValue(bindings.window)},
+		{"self", memory.RefValue(bindings.window)},
+		{"document", memory.RefValue(bindings.document)},
+		{"queueMicrotask", memory.RefValue(realm.active.QueueMicrotask)},
+	} {
+		if err := defineData(context, bindings.window, property.name, property.value, true, false, true); err != nil {
+			return err
+		}
+	}
+	for _, binding := range []struct {
+		name    string
+		value   memory.Ref
+		mutable bool
+	}{
+		{bindingWindowPrototype, bindings.windowPrototype, false},
+		{bindingDocumentPrototype, bindings.documentPrototype, false},
+		{bindingNodePrototype, bindings.nodePrototype, false},
+		{bindingElementPrototype, bindings.elementPrototype, false},
+		{bindingTextPrototype, bindings.textPrototype, false},
+		{bindingWrapperCache, bindings.wrapperCache, false},
+		{bindingWindow, bindings.window, false},
+		{bindingSelf, bindings.window, false},
+		{bindingDocument, bindings.document, false},
+	} {
+		if err := declareGlobal(context, realm.active.Global, binding.name, memory.RefValue(binding.value), binding.mutable); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (realm *Realm) installDOMPrototypeProperties(context *browserruntime.TaskContext) error {
+	methods := []struct {
+		target memory.Ref
+		name   string
+		arity  uint32
+		id     uint64
+	}{
+		{realm.bindings.documentPrototype, "getElementById", 1, nativeDocumentGetElementByID},
+		{realm.bindings.documentPrototype, "createElement", 1, nativeDocumentCreateElement},
+		{realm.bindings.documentPrototype, "createTextNode", 1, nativeDocumentCreateTextNode},
+		{realm.bindings.documentPrototype, "querySelector", 1, nativeElementQuerySelector},
+		{realm.bindings.documentPrototype, "querySelectorAll", 1, nativeElementQuerySelectorAll},
+		{realm.bindings.nodePrototype, "appendChild", 1, nativeNodeAppendChild},
+		{realm.bindings.nodePrototype, "insertBefore", 2, nativeNodeInsertBefore},
+		{realm.bindings.nodePrototype, "removeChild", 1, nativeNodeRemoveChild},
+		{realm.bindings.nodePrototype, "contains", 1, nativeNodeContains},
+		{realm.bindings.nodePrototype, "cloneNode", 1, nativeNodeCloneNode},
+		{realm.bindings.elementPrototype, "getAttribute", 1, nativeElementGetAttribute},
+		{realm.bindings.elementPrototype, "setAttribute", 2, nativeElementSetAttribute},
+		{realm.bindings.elementPrototype, "removeAttribute", 1, nativeElementRemoveAttribute},
+		{realm.bindings.elementPrototype, "hasAttribute", 1, nativeElementHasAttribute},
+		{realm.bindings.elementPrototype, "querySelector", 1, nativeElementQuerySelector},
+		{realm.bindings.elementPrototype, "querySelectorAll", 1, nativeElementQuerySelectorAll},
+		{realm.bindings.elementPrototype, "matches", 1, nativeElementMatches},
+		{realm.bindings.elementPrototype, "closest", 1, nativeElementClosest},
+	}
+	for _, method := range methods {
+		name, err := newString(context, method.name)
+		if err != nil {
+			return err
+		}
+		function, err := context.NewNativeFunction(
+			name, memory.RefValue(realm.active.Global), method.arity, method.id,
+		)
+		if err != nil {
+			return err
+		}
+		if err := defineData(context, method.target, method.name, memory.RefValue(function), true, false, true); err != nil {
+			return err
+		}
+	}
+	accessors := []struct {
+		target memory.Ref
+		name   string
+		getter uint64
+		setter uint64
+	}{
+		{realm.bindings.documentPrototype, "documentElement", nativeDocumentElement, 0},
+		{realm.bindings.documentPrototype, "head", nativeDocumentHead, 0},
+		{realm.bindings.documentPrototype, "body", nativeDocumentBody, 0},
+		{realm.bindings.nodePrototype, "nodeType", nativeNodeType, 0},
+		{realm.bindings.nodePrototype, "nodeName", nativeNodeName, 0},
+		{realm.bindings.nodePrototype, "parentNode", nativeNodeParent, 0},
+		{realm.bindings.nodePrototype, "firstChild", nativeNodeFirstChild, 0},
+		{realm.bindings.nodePrototype, "lastChild", nativeNodeLastChild, 0},
+		{realm.bindings.nodePrototype, "previousSibling", nativeNodePreviousSibling, 0},
+		{realm.bindings.nodePrototype, "nextSibling", nativeNodeNextSibling, 0},
+		{realm.bindings.nodePrototype, "textContent", nativeNodeTextContentGet, nativeNodeTextContentSet},
+		{realm.bindings.nodePrototype, "childNodes", nativeNodeChildNodes, 0},
+		{realm.bindings.elementPrototype, "localName", nativeElementLocalName, 0},
+		{realm.bindings.elementPrototype, "children", nativeElementChildren, 0},
+		{realm.bindings.elementPrototype, "id", nativeElementIDGet, nativeElementIDSet},
+	}
+	for _, accessor := range accessors {
+		getter, err := realm.newAccessorFunction(context, "get "+accessor.name, accessor.getter, 0)
+		if err != nil {
+			return err
+		}
+		setter := memory.UndefinedValue()
+		if accessor.setter != 0 {
+			ref, setterErr := realm.newAccessorFunction(context, "set "+accessor.name, accessor.setter, 1)
+			if setterErr != nil {
+				return setterErr
+			}
+			setter = memory.RefValue(ref)
+		}
+		if err := defineAccessor(context, accessor.target, accessor.name, memory.RefValue(getter), setter); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (realm *Realm) newAccessorFunction(context *browserruntime.TaskContext, name string, id uint64, arity uint32) (memory.Ref, error) {
+	nameValue, err := newString(context, name)
+	if err != nil {
+		return memory.Ref{}, err
+	}
+	return context.NewNativeFunction(nameValue, memory.RefValue(realm.active.Global), arity, id)
+}
+
+func (realm *Realm) newHostWrapperLocked(context *browserruntime.TaskContext, record memory.HostObject, prototype memory.Ref) (memory.Ref, error) {
+	wrapper, err := context.NewHeapObject()
+	if err != nil {
+		return memory.Ref{}, err
+	}
+	if err := context.SetPrototype(wrapper, memory.RefValue(prototype)); err != nil {
+		return memory.Ref{}, err
+	}
+	hostRecord, err := context.NewHostObject(record)
+	if err != nil {
+		return memory.Ref{}, err
+	}
+	if err := defineData(context, wrapper, hostRecordProperty, memory.RefValue(hostRecord), false, false, false); err != nil {
+		return memory.Ref{}, err
+	}
+	return wrapper, nil
+}
+
+func (realm *Realm) wrapNodeLocked(context *browserruntime.TaskContext, handle browser.NodeHandle) (memory.Ref, error) {
+	if realm.bindings == nil || realm.bindings.wrapperCache == (memory.Ref{}) {
+		return memory.Ref{}, fmt.Errorf("nativeengine: wrapper cache is unavailable")
+	}
+	key, err := newString(context, nodeCacheKey(handle))
+	if err != nil {
+		return memory.Ref{}, err
+	}
+	if cached, found, err := context.MapGet(realm.bindings.wrapperCache, key); err != nil {
+		return memory.Ref{}, err
+	} else if found && cached.IsRef() {
+		return cached.Ref(), nil
+	}
+	elementHost, ok := realm.host.(browser.DOMElementHost)
+	if !ok {
+		return memory.Ref{}, fmt.Errorf("nativeengine: browser host does not expose node metadata")
+	}
+	metadata, err := elementHost.NodeMetadata(handle)
+	if err != nil {
+		return memory.Ref{}, err
+	}
+	prototype := realm.bindings.nodePrototype
+	switch metadata.Type {
+	case browser.DOMDocumentNode:
+		prototype = realm.bindings.documentPrototype
+	case browser.DOMElementNode:
+		prototype = realm.bindings.elementPrototype
+	case browser.DOMTextNode:
+		prototype = realm.bindings.textPrototype
+	}
+	wrapper, err := realm.newHostWrapperLocked(context, memory.HostObject{
+		Class: hostClassNode, Scope: uint64(handle.Document), Identity: uint64(handle.Node),
+	}, prototype)
+	if err != nil {
+		return memory.Ref{}, err
+	}
+	if lifetime, ok := realm.host.(browser.NodeWrapperLifetimeHost); ok {
+		if err := lifetime.RetainNodeWrapper(handle); err != nil {
+			return memory.Ref{}, err
+		}
+	}
+	if err := context.MapSet(realm.bindings.wrapperCache, key, memory.RefValue(wrapper)); err != nil {
+		if lifetime, ok := realm.host.(browser.NodeWrapperLifetimeHost); ok {
+			_ = lifetime.ReleaseNodeWrappers([]browser.NodeHandle{handle})
+		}
+		return memory.Ref{}, err
+	}
+	return wrapper, nil
+}
+
+func (realm *Realm) unwrapNode(context *browserruntime.TaskContext, value memory.Value) (browser.NodeHandle, error) {
+	if !value.IsRef() {
+		return browser.NodeHandle{}, fmt.Errorf("%w: DOM receiver is not an object", browserruntime.ErrOperandType)
+	}
+	name, err := context.NewString(hostRecordProperty)
+	if err != nil {
+		return browser.NodeHandle{}, err
+	}
+	recordValue, found, err := context.GetOwnProperty(value.Ref(), name)
+	if err != nil || !found || !recordValue.IsRef() {
+		return browser.NodeHandle{}, fmt.Errorf("%w: value is not a DOM wrapper", browserruntime.ErrOperandType)
+	}
+	record, err := context.DerefHostObject(recordValue.Ref())
+	if err != nil {
+		return browser.NodeHandle{}, err
+	}
+	if record.Class != hostClassNode {
+		return browser.NodeHandle{}, fmt.Errorf("%w: value is not a Node wrapper", browserruntime.ErrOperandType)
+	}
+	return browser.NodeHandle{Document: browser.DocumentGeneration(record.Scope), Node: dom.NodeID(record.Identity)}, nil
+}
+
+func (realm *Realm) documentGetElementByID(context *browserruntime.TaskContext, _ memory.Value, arguments []memory.Value) (memory.Value, error) {
+	id, err := stringArgument(context, arguments, 0)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	handle, found, err := realm.host.GetElementByID(id)
+	if err != nil || !found {
+		return memory.NullValue(), err
+	}
+	return realm.wrappedNodeValue(context, handle)
+}
+
+func (realm *Realm) documentCreateElement(context *browserruntime.TaskContext, _ memory.Value, arguments []memory.Value) (memory.Value, error) {
+	name, err := stringArgument(context, arguments, 0)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	handle, err := realm.host.CreateElement(name)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	return realm.wrappedNodeValue(context, handle)
+}
+
+func (realm *Realm) documentCreateTextNode(context *browserruntime.TaskContext, _ memory.Value, arguments []memory.Value) (memory.Value, error) {
+	data, err := stringArgument(context, arguments, 0)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	handle, err := realm.host.CreateTextNode(data)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	return realm.wrappedNodeValue(context, handle)
+}
+
+func (realm *Realm) documentRelation(relation browser.NodeRelation) browserruntime.NativeFunction {
+	return func(context *browserruntime.TaskContext, this memory.Value, _ []memory.Value) (memory.Value, error) {
+		return realm.relatedNodeValue(context, this, relation)
+	}
+}
+
+func (realm *Realm) nodeRelation(relation browser.NodeRelation) browserruntime.NativeFunction {
+	return func(context *browserruntime.TaskContext, this memory.Value, _ []memory.Value) (memory.Value, error) {
+		return realm.relatedNodeValue(context, this, relation)
+	}
+}
+
+func (realm *Realm) relatedNodeValue(context *browserruntime.TaskContext, receiver memory.Value, relation browser.NodeRelation) (memory.Value, error) {
+	handle, err := realm.unwrapNode(context, receiver)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	host, ok := realm.host.(browser.DOMElementHost)
+	if !ok {
+		return memory.Value{}, fmt.Errorf("nativeengine: browser host does not expose node traversal")
+	}
+	related, found, err := host.RelatedNode(handle, relation)
+	if err != nil || !found {
+		return memory.NullValue(), err
+	}
+	return realm.wrappedNodeValue(context, related)
+}
+
+func (realm *Realm) nodeType(context *browserruntime.TaskContext, this memory.Value, _ []memory.Value) (memory.Value, error) {
+	metadata, err := realm.nodeMetadata(context, this)
+	return memory.NumberValue(float64(metadata.Type)), err
+}
+
+func (realm *Realm) nodeName(context *browserruntime.TaskContext, this memory.Value, _ []memory.Value) (memory.Value, error) {
+	metadata, err := realm.nodeMetadata(context, this)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	return newString(context, metadata.NodeName)
+}
+
+func (realm *Realm) elementLocalName(context *browserruntime.TaskContext, this memory.Value, _ []memory.Value) (memory.Value, error) {
+	metadata, err := realm.nodeMetadata(context, this)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	return newString(context, metadata.LocalName)
+}
+
+func (realm *Realm) nodeMetadata(context *browserruntime.TaskContext, receiver memory.Value) (browser.NodeMetadata, error) {
+	handle, err := realm.unwrapNode(context, receiver)
+	if err != nil {
+		return browser.NodeMetadata{}, err
+	}
+	host, ok := realm.host.(browser.DOMElementHost)
+	if !ok {
+		return browser.NodeMetadata{}, fmt.Errorf("nativeengine: browser host does not expose node metadata")
+	}
+	return host.NodeMetadata(handle)
+}
+
+func (realm *Realm) nodeTextContentGet(context *browserruntime.TaskContext, this memory.Value, _ []memory.Value) (memory.Value, error) {
+	handle, err := realm.unwrapNode(context, this)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	text, err := realm.host.TextContent(handle)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	return newString(context, text)
+}
+
+func (realm *Realm) nodeTextContentSet(context *browserruntime.TaskContext, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+	handle, err := realm.unwrapNode(context, this)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	text, err := stringArgument(context, arguments, 0)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	return memory.UndefinedValue(), realm.host.SetTextContent(handle, text)
+}
+
+func (realm *Realm) nodeChildren(elementsOnly bool) browserruntime.NativeFunction {
+	return func(context *browserruntime.TaskContext, this memory.Value, _ []memory.Value) (memory.Value, error) {
+		handle, err := realm.unwrapNode(context, this)
+		if err != nil {
+			return memory.Value{}, err
+		}
+		host, ok := realm.host.(browser.DOMElementHost)
+		if !ok {
+			return memory.Value{}, fmt.Errorf("nativeengine: browser host does not expose child traversal")
+		}
+		handles, err := host.ChildNodes(handle, elementsOnly)
+		if err != nil {
+			return memory.Value{}, err
+		}
+		return realm.nodeArray(context, handles)
+	}
+}
+
+func (realm *Realm) nodeAppendChild(context *browserruntime.TaskContext, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+	parent, err := realm.unwrapNode(context, this)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	childValue := argument(arguments, 0)
+	child, err := realm.unwrapNode(context, childValue)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	return childValue, realm.host.AppendChild(parent, child)
+}
+
+func (realm *Realm) nodeInsertBefore(context *browserruntime.TaskContext, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+	parent, err := realm.unwrapNode(context, this)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	childValue := argument(arguments, 0)
+	child, err := realm.unwrapNode(context, childValue)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	reference := browser.NodeHandle{}
+	if value := argument(arguments, 1); value.Kind() != memory.ValueNull && value.Kind() != memory.ValueUndefined {
+		reference, err = realm.unwrapNode(context, value)
+		if err != nil {
+			return memory.Value{}, err
+		}
+	}
+	return childValue, realm.host.InsertBefore(parent, child, reference)
+}
+
+func (realm *Realm) nodeRemoveChild(context *browserruntime.TaskContext, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+	parent, err := realm.unwrapNode(context, this)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	childValue := argument(arguments, 0)
+	child, err := realm.unwrapNode(context, childValue)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	return childValue, realm.host.RemoveChild(parent, child)
+}
+
+func (realm *Realm) nodeContains(context *browserruntime.TaskContext, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+	handle, err := realm.unwrapNode(context, this)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	other, err := realm.unwrapNode(context, argument(arguments, 0))
+	if err != nil {
+		return memory.Value{}, err
+	}
+	host, ok := realm.host.(browser.DOMElementHost)
+	if !ok {
+		return memory.Value{}, fmt.Errorf("nativeengine: browser host does not expose containment")
+	}
+	contains, err := host.Contains(handle, other)
+	return memory.BoolValue(contains), err
+}
+
+func (realm *Realm) nodeCloneNode(context *browserruntime.TaskContext, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+	handle, err := realm.unwrapNode(context, this)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	host, ok := realm.host.(browser.DOMElementHost)
+	if !ok {
+		return memory.Value{}, fmt.Errorf("nativeengine: browser host does not expose cloning")
+	}
+	clone, err := host.CloneNode(handle, truthy(argument(arguments, 0)))
+	if err != nil {
+		return memory.Value{}, err
+	}
+	return realm.wrappedNodeValue(context, clone)
+}
+
+func (realm *Realm) elementGetAttribute(context *browserruntime.TaskContext, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+	handle, name, err := realm.attributeOperands(context, this, arguments)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	value, found, err := realm.host.GetAttribute(handle, name)
+	if err != nil || !found {
+		return memory.NullValue(), err
+	}
+	return newString(context, value)
+}
+
+func (realm *Realm) elementSetAttribute(context *browserruntime.TaskContext, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+	handle, name, err := realm.attributeOperands(context, this, arguments)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	value, err := stringArgument(context, arguments, 1)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	return memory.UndefinedValue(), realm.host.SetAttribute(handle, name, value)
+}
+
+func (realm *Realm) elementRemoveAttribute(context *browserruntime.TaskContext, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+	handle, name, err := realm.attributeOperands(context, this, arguments)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	return memory.UndefinedValue(), realm.host.RemoveAttribute(handle, name)
+}
+
+func (realm *Realm) elementHasAttribute(context *browserruntime.TaskContext, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+	handle, name, err := realm.attributeOperands(context, this, arguments)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	host, ok := realm.host.(browser.DOMElementHost)
+	if !ok {
+		_, found, lookupErr := realm.host.GetAttribute(handle, name)
+		return memory.BoolValue(found), lookupErr
+	}
+	found, err := host.HasAttribute(handle, name)
+	return memory.BoolValue(found), err
+}
+
+func (realm *Realm) elementIDGet(context *browserruntime.TaskContext, this memory.Value, _ []memory.Value) (memory.Value, error) {
+	handle, err := realm.unwrapNode(context, this)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	value, _, err := realm.host.GetAttribute(handle, "id")
+	if err != nil {
+		return memory.Value{}, err
+	}
+	return newString(context, value)
+}
+
+func (realm *Realm) elementIDSet(context *browserruntime.TaskContext, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+	handle, err := realm.unwrapNode(context, this)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	value, err := stringArgument(context, arguments, 0)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	return memory.UndefinedValue(), realm.host.SetAttribute(handle, "id", value)
+}
+
+func (realm *Realm) elementQuerySelector(all bool) browserruntime.NativeFunction {
+	return func(context *browserruntime.TaskContext, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+		handle, err := realm.unwrapNode(context, this)
+		if err != nil {
+			return memory.Value{}, err
+		}
+		selector, err := stringArgument(context, arguments, 0)
+		if err != nil {
+			return memory.Value{}, err
+		}
+		host, ok := realm.host.(browser.DOMElementHost)
+		if !ok {
+			return memory.Value{}, fmt.Errorf("nativeengine: browser host does not expose selectors")
+		}
+		handles, err := host.QuerySelector(handle, selector, all)
+		if err != nil {
+			return memory.Value{}, err
+		}
+		if all {
+			return realm.nodeArray(context, handles)
+		}
+		if len(handles) == 0 {
+			return memory.NullValue(), nil
+		}
+		return realm.wrappedNodeValue(context, handles[0])
+	}
+}
+
+func (realm *Realm) elementMatches(context *browserruntime.TaskContext, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+	handle, err := realm.unwrapNode(context, this)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	selector, err := stringArgument(context, arguments, 0)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	host, ok := realm.host.(browser.DOMElementHost)
+	if !ok {
+		return memory.Value{}, fmt.Errorf("nativeengine: browser host does not expose selectors")
+	}
+	matches, err := host.MatchesSelector(handle, selector)
+	return memory.BoolValue(matches), err
+}
+
+func (realm *Realm) elementClosest(context *browserruntime.TaskContext, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+	handle, err := realm.unwrapNode(context, this)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	selector, err := stringArgument(context, arguments, 0)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	host, ok := realm.host.(browser.DOMElementHost)
+	if !ok {
+		return memory.Value{}, fmt.Errorf("nativeengine: browser host does not expose selectors")
+	}
+	closest, found, err := host.ClosestSelector(handle, selector)
+	if err != nil || !found {
+		return memory.NullValue(), err
+	}
+	return realm.wrappedNodeValue(context, closest)
+}
+
+func (realm *Realm) attributeOperands(context *browserruntime.TaskContext, receiver memory.Value, arguments []memory.Value) (browser.NodeHandle, string, error) {
+	handle, err := realm.unwrapNode(context, receiver)
+	if err != nil {
+		return browser.NodeHandle{}, "", err
+	}
+	name, err := stringArgument(context, arguments, 0)
+	return handle, name, err
+}
+
+func (realm *Realm) nodeArray(context *browserruntime.TaskContext, handles []browser.NodeHandle) (memory.Value, error) {
+	array, err := context.NewArray(uint32(len(handles)))
+	if err != nil {
+		return memory.Value{}, err
+	}
+	for index, handle := range handles {
+		value, err := realm.wrappedNodeValue(context, handle)
+		if err != nil {
+			return memory.Value{}, err
+		}
+		if err := context.SetArrayElement(array, uint32(index), value); err != nil {
+			return memory.Value{}, err
+		}
+	}
+	return memory.RefValue(array), nil
+}
+
+func (realm *Realm) wrappedNodeValue(context *browserruntime.TaskContext, handle browser.NodeHandle) (memory.Value, error) {
+	wrapper, err := realm.wrapNodeLocked(context, handle)
+	return memory.RefValue(wrapper), err
+}
+
+func globalRef(context *browserruntime.TaskContext, global memory.Ref, name string) (memory.Ref, bool, error) {
+	nameRef, err := context.NewString(name)
+	if err != nil {
+		return memory.Ref{}, false, err
+	}
+	value, found, err := context.ResolveBinding(global, nameRef)
+	if err != nil || !found {
+		return memory.Ref{}, found, err
+	}
+	if !value.IsRef() {
+		return memory.Ref{}, false, fmt.Errorf("nativeengine: browser binding %q is not a Ref", name)
+	}
+	return value.Ref(), true, nil
+}
+
+func declareGlobal(context *browserruntime.TaskContext, global memory.Ref, name string, value memory.Value, mutable bool) error {
+	nameRef, err := context.NewString(name)
+	if err != nil {
+		return err
+	}
+	if err := context.DeclareBinding(global, nameRef, mutable); err != nil {
+		return err
+	}
+	return context.InitializeBinding(global, nameRef, value)
+}
+
+func defineData(context *browserruntime.TaskContext, object memory.Ref, name string, value memory.Value, writable, enumerable, configurable bool) error {
+	nameRef, err := context.NewString(name)
+	if err != nil {
+		return err
+	}
+	return context.DefineProperty(object, nameRef, memory.DataProperty(value, writable, enumerable, configurable))
+}
+
+func defineAccessor(context *browserruntime.TaskContext, object memory.Ref, name string, getter, setter memory.Value) error {
+	nameRef, err := context.NewString(name)
+	if err != nil {
+		return err
+	}
+	return context.DefineProperty(object, nameRef, memory.AccessorProperty(getter, setter, false, true))
+}
+
+func newString(context *browserruntime.TaskContext, text string) (memory.Value, error) {
+	ref, err := context.NewString(text)
+	return memory.RefValue(ref), err
+}
+
+func stringArgument(context *browserruntime.TaskContext, arguments []memory.Value, index int) (string, error) {
+	return valueString(context, argument(arguments, index))
+}
+
+func valueString(context *browserruntime.TaskContext, value memory.Value) (string, error) {
+	switch value.Kind() {
+	case memory.ValueUndefined:
+		return "undefined", nil
+	case memory.ValueNull:
+		return "null", nil
+	case memory.ValueBool:
+		return strconv.FormatBool(value.Bool()), nil
+	case memory.ValueNumber:
+		return strconv.FormatFloat(value.Number(), 'g', -1, 64), nil
+	case memory.ValueReference:
+		if kind, err := context.HeapKind(value.Ref()); err != nil {
+			return "", err
+		} else if kind == memory.HeapString {
+			return context.DerefString(value.Ref())
+		}
+	}
+	return "", fmt.Errorf("%w: value cannot be converted to a DOMString", browserruntime.ErrOperandType)
+}
+
+func argument(arguments []memory.Value, index int) memory.Value {
+	if index < 0 || index >= len(arguments) {
+		return memory.UndefinedValue()
+	}
+	return arguments[index]
+}
+
+func truthy(value memory.Value) bool {
+	switch value.Kind() {
+	case memory.ValueUndefined, memory.ValueNull:
+		return false
+	case memory.ValueBool:
+		return value.Bool()
+	case memory.ValueNumber:
+		return value.Number() != 0
+	default:
+		return true
+	}
+}
+
+func nodeCacheKey(handle browser.NodeHandle) string {
+	return fmt.Sprintf("%d:%d", handle.Document, handle.Node)
+}

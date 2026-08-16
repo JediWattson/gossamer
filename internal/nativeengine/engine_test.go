@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/JediWattson/gossamer/internal/browser"
 	"github.com/JediWattson/gossamer/internal/dom"
+	htmlparser "github.com/JediWattson/gossamer/internal/html"
 	"github.com/JediWattson/gossamer/internal/nativeengine"
 	"github.com/JediWattson/gossamer/internal/runtime/memory"
 )
@@ -115,5 +117,84 @@ func TestNativeRealmRejectsCallsWithoutRuntimeTaskHost(t *testing.T) {
 	err = realm.Evaluate(nil, browser.ScriptSource{URL: "missing-host.js", Source: "1 + 1;"})
 	if !errors.Is(err, nativeengine.ErrNativeTaskHost) {
 		t.Fatalf("Evaluate error = %v, want ErrNativeTaskHost", err)
+	}
+}
+
+func TestNativeRealmBindsCanonicalGoDOMWrappersAcrossTasks(t *testing.T) {
+	t.Parallel()
+
+	root, err := htmlparser.Parse(strings.NewReader(`<!doctype html><html><head></head><body></body></html>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	scriptEngine := nativeengine.New(nativeengine.Config{})
+	browserRuntime, err := browser.NewWithEngine(scriptEngine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer browserRuntime.Close()
+	location, _ := url.Parse("https://gossamer.test/native-dom/")
+	page, err := browserRuntime.NewPage(root, location)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer page.Close()
+
+	run := func(label, source string) {
+		t.Helper()
+		if _, err := page.QueueScript(browser.ScriptSource{URL: label + ".js", Source: source}); err != nil {
+			t.Fatalf("QueueScript(%s): %v", label, err)
+		}
+		if err := page.Realm.RunOne(context.Background()); err != nil {
+			t.Fatalf("RunOne(%s): %v", label, err)
+		}
+	}
+
+	run("create", `
+if (window !== self || window.document !== document) {
+  throw new Error("window identity was not canonical");
+}
+let body = document.body;
+if (body.nodeName !== "BODY" || body.parentNode !== document.documentElement) {
+  throw new Error("document traversal failed");
+}
+let element = document.createElement("div");
+element.id = "native";
+element.setAttribute("data-state", "ready");
+element.textContent = "hello";
+body.appendChild(element);
+if (document.getElementById("native") !== element || body.lastChild !== element) {
+  throw new Error("wrapper identity was not canonical");
+}
+let suffix = document.createTextNode("!");
+element.appendChild(suffix);
+queueMicrotask(function () { element.textContent = element.textContent + " world"; });
+`)
+
+	run("reuse", `
+let element = document.querySelector("#native");
+if (element !== document.getElementById("native")) {
+  throw new Error("wrapper identity was lost across tasks");
+}
+if (element.textContent !== "hello! world" || element.getAttribute("data-state") !== "ready") {
+  throw new Error("Go DOM state was not retained");
+}
+if (!document.body.contains(element) || !element.matches("#native") || element.closest("body") !== document.body) {
+  throw new Error("DOM queries failed");
+}
+let clone = element.cloneNode(true);
+clone.id = "clone";
+document.body.insertBefore(clone, element);
+if (document.querySelectorAll("div").length !== 2 || clone.nextSibling !== element) {
+  throw new Error("DOM clone or insertion failed");
+}
+document.body.removeChild(clone);
+if (document.getElementById("clone") !== null) {
+  throw new Error("DOM removal failed");
+}
+`)
+
+	if err := page.Realm.Store().CheckInvariants(); err != nil {
+		t.Fatal(err)
 	}
 }
