@@ -111,3 +111,84 @@ func TestStockV8GraphiteShellRoutesNativeInputAndTeardown(t *testing.T) {
 		t.Fatalf("interactive window teardown ownership = %#v", ledger)
 	}
 }
+
+func TestStockV8HistoryTraversalReplacesRealmsAndInvalidatesWrappers(t *testing.T) {
+	engine := newTestEngine(t)
+	browserRuntime, err := browser.NewWithEngine(engine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer browserRuntime.Close()
+	client := staticDocumentLoader{document: `<!doctype html><html><body><p id="current">history document</p></body></html>`}
+	page, err := browserRuntime.LoadPage(context.Background(), "https://gossamer.test/a", client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	navigate := func(rawURL string) {
+		t.Helper()
+		navigation, navigateErr := page.Navigate(context.Background(), rawURL, client)
+		if navigateErr != nil {
+			t.Fatal(navigateErr)
+		}
+		if waitErr := page.WaitNavigation(context.Background(), navigation); waitErr != nil {
+			t.Fatal(waitErr)
+		}
+	}
+	navigate("https://gossamer.test/b")
+	navigate("https://gossamer.test/c")
+	cGeneration := page.DocumentGeneration()
+	cID, found := page.Document().ElementByID("current")
+	if !found {
+		t.Fatal("V8 history document has no stable current element")
+	}
+	cHandle := browser.NodeHandle{Document: cGeneration, Node: cID}
+
+	back, err := page.Back(context.Background(), client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := page.WaitNavigation(context.Background(), back); err != nil {
+		t.Fatal(err)
+	}
+	if got := page.URL().String(); got != "https://gossamer.test/b" {
+		t.Fatalf("V8 back URL = %q", got)
+	}
+	if page.DocumentGeneration() == cGeneration {
+		t.Fatal("V8 back traversal retained the C document generation")
+	}
+	if _, ok := page.Resolve(cHandle); ok {
+		t.Fatal("V8 back traversal resolved a C wrapper handle")
+	}
+	forward, err := page.Forward(context.Background(), client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := page.WaitNavigation(context.Background(), forward); err != nil {
+		t.Fatal(err)
+	}
+	reload, err := page.Reload(context.Background(), client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := page.WaitNavigation(context.Background(), reload); err != nil {
+		t.Fatal(err)
+	}
+	if realm, ok := engine.LatestRealm(); ok {
+		if err := realm.CollectGarbage(page); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := page.Close(); err != nil {
+		t.Fatal(err)
+	}
+	profile := engine.Profile()
+	if profile.RealmsCreated < 7 || profile.RealmsCreated != profile.RealmsClosed {
+		t.Fatalf("V8 history Realm lifecycle = %#v", profile)
+	}
+	if _, live := engine.LatestRealm(); live {
+		t.Fatal("V8 history traversal retained a live Realm after Page close")
+	}
+	if ledger := browserRuntime.Ledger().Stats(); ledger.LiveObjects != 0 || ledger.PersistentObjects != 0 {
+		t.Fatalf("V8 history teardown ownership = %#v", ledger)
+	}
+}

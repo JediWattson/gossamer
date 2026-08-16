@@ -55,13 +55,16 @@ surfaces.
 - Enter normalizes a bare host to HTTPS and calls `Page.Navigate` with the
   shell's document loader.
 - Escape restores the current Page URL.
-- The reload control and Command-R start a new navigation to the current URL.
+- The reload control and Command-R rebuild the current history entry without
+  appending a duplicate.
+- Back/forward controls and Command-[ / Command-] traverse the Page's session
+  history. Option-Left / Option-Right provide the same native shortcuts.
 - The tab close control ends the current window session.
 - The collapsed right-rail disclosure opens an overlay with navigation state,
   live regions, native host objects, ownership claims, and task plus microtask
   queue depth.
-- Back and forward controls are intentionally visible but disabled until Page
-  exposes history traversal rather than only history snapshots.
+- Back and forward controls dim automatically when the current history index
+  has no entry in that direction.
 
 The panel overlays content instead of changing the Page viewport. This keeps
 opening diagnostics from causing layout or framework resize work.
@@ -82,8 +85,8 @@ tools/v8/gate.sh
 
 ## Deliberate next boundaries
 
-Graphite does not yet claim a multiple-tab model, working history traversal,
-page security-state derivation, downloads, bookmarks, scrollbar widgets,
+Graphite does not yet claim a multiple-tab model, back-forward document
+caching, page security-state derivation, downloads, bookmarks, scrollbar widgets,
 clipboard, IME/composition, drag-and-drop, touch, accessibility, GPU
 compositing, or a non-macOS backend. Those features should extend the shell and
 backend-neutral event contracts without moving browser object ownership into

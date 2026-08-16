@@ -74,6 +74,8 @@ type navigationRecord struct {
 	err                error
 	context            context.Context
 	cancel             context.CancelFunc
+	historySource      int
+	historyTarget      int
 }
 
 type preparedNavigation struct {
@@ -88,6 +90,81 @@ type preparedNavigation struct {
 // Navigate begins document I/O outside the Realm. Parsed document state is
 // committed only by the browser-owned completion task published afterward.
 func (page *Page) Navigate(ctx context.Context, rawURL string, client DocumentLoader) (NavigationID, error) {
+	return page.beginNavigation(ctx, rawURL, client, -1, -1)
+}
+
+// Back begins a document-rebuilding traversal to the preceding session
+// history entry. The history index advances only when the replacement document
+// commits successfully.
+func (page *Page) Back(ctx context.Context, client DocumentLoader) (NavigationID, error) {
+	return page.Go(ctx, -1, client)
+}
+
+// Forward begins a document-rebuilding traversal to the following session
+// history entry.
+func (page *Page) Forward(ctx context.Context, client DocumentLoader) (NavigationID, error) {
+	return page.Go(ctx, 1, client)
+}
+
+// Reload rebuilds the current session history entry without appending a new
+// entry.
+func (page *Page) Reload(ctx context.Context, client DocumentLoader) (NavigationID, error) {
+	return page.Go(ctx, 0, client)
+}
+
+// Go begins a document-rebuilding traversal relative to the current session
+// history index. Gossamer intentionally does not retain a back-forward cache
+// yet: every successful traversal gets a fresh document generation and script
+// Realm through the ordinary navigation replacement path.
+func (page *Page) Go(ctx context.Context, delta int, client DocumentLoader) (NavigationID, error) {
+	if page == nil {
+		return 0, fmt.Errorf("browser: nil page")
+	}
+	if ctx == nil {
+		return 0, fmt.Errorf("browser: nil navigation context")
+	}
+	page.mutex.RLock()
+	if page.closed {
+		page.mutex.RUnlock()
+		return 0, ErrPageClosed
+	}
+	source := page.historyIndex
+	target := source + delta
+	if source < 0 || target < 0 || target >= len(page.history) || page.history[target].URL == nil {
+		page.mutex.RUnlock()
+		return 0, ErrHistoryTraversalOutOfRange
+	}
+	rawURL := page.history[target].URL.String()
+	page.mutex.RUnlock()
+	return page.beginNavigation(ctx, rawURL, client, source, target)
+}
+
+func (page *Page) CanGoBack() bool {
+	return page.canTraverseHistory(-1)
+}
+
+func (page *Page) CanGoForward() bool {
+	return page.canTraverseHistory(1)
+}
+
+func (page *Page) canTraverseHistory(delta int) bool {
+	if page == nil {
+		return false
+	}
+	page.mutex.RLock()
+	target := page.historyIndex + delta
+	ok := !page.closed && page.historyIndex >= 0 && target >= 0 && target < len(page.history)
+	page.mutex.RUnlock()
+	return ok
+}
+
+func (page *Page) beginNavigation(
+	ctx context.Context,
+	rawURL string,
+	client DocumentLoader,
+	historySource int,
+	historyTarget int,
+) (NavigationID, error) {
 	if page == nil {
 		return 0, fmt.Errorf("browser: nil page")
 	}
@@ -109,17 +186,27 @@ func (page *Page) Navigate(ctx context.Context, rawURL string, client DocumentLo
 		cancel()
 		return 0, ErrPageClosed
 	}
+	if historyTarget >= 0 {
+		if page.historyIndex != historySource || historyTarget >= len(page.history) ||
+			page.history[historyTarget].URL == nil || page.history[historyTarget].URL.String() != requestedURL.String() {
+			page.mutex.Unlock()
+			cancel()
+			return 0, ErrHistoryChanged
+		}
+	}
 	if page.navigation.cancel != nil {
 		page.navigation.cancel()
 	}
 	page.nextNavigation++
 	id := page.nextNavigation
 	page.navigation = navigationRecord{
-		id:           id,
-		requestedURL: cloneURL(requestedURL),
-		state:        NavigationLoadingDocument,
-		context:      navigationContext,
-		cancel:       cancel,
+		id:            id,
+		requestedURL:  cloneURL(requestedURL),
+		state:         NavigationLoadingDocument,
+		context:       navigationContext,
+		cancel:        cancel,
+		historySource: historySource,
+		historyTarget: historyTarget,
 	}
 	page.mutex.Unlock()
 
@@ -429,7 +516,11 @@ func (page *Page) commitNavigationDocument(
 	page.layoutRevision++
 	page.location = cloneURL(prepared.location)
 	page.readyState = "loading"
-	page.pushHistoryLocked(prepared.location, id)
+	if page.navigation.historyTarget >= 0 {
+		page.replaceHistoryEntryLocked(page.navigation.historyTarget, prepared.location, id)
+	} else {
+		page.pushHistoryLocked(prepared.location, id)
+	}
 	page.resources = replacementResources
 	page.resources.stylesheets.markRequested(prepared.requests)
 	page.resourceFetcher = prepared.fetcher
@@ -618,7 +709,9 @@ func (page *Page) matchesNavigationLocked(id NavigationID, generation DocumentGe
 }
 
 var (
-	ErrNoNavigation              = errors.New("browser: page has no navigation")
-	ErrNavigationSuperseded      = errors.New("browser: navigation superseded")
-	ErrResourceLoaderUnavailable = errors.New("browser: document loader cannot load subresources")
+	ErrNoNavigation               = errors.New("browser: page has no navigation")
+	ErrNavigationSuperseded       = errors.New("browser: navigation superseded")
+	ErrHistoryChanged             = errors.New("browser: session history changed before traversal")
+	ErrHistoryTraversalOutOfRange = errors.New("browser: session history traversal is out of range")
+	ErrResourceLoaderUnavailable  = errors.New("browser: document loader cannot load subresources")
 )

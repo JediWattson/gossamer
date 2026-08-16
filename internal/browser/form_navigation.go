@@ -65,6 +65,15 @@ func (page *Page) pushHistoryLocked(location *url.URL, navigation NavigationID) 
 	page.invalidateStyleLocked()
 }
 
+func (page *Page) replaceHistoryEntryLocked(index int, location *url.URL, navigation NavigationID) {
+	if location == nil || index < 0 || index >= len(page.history) {
+		return
+	}
+	page.history[index] = HistoryEntry{URL: cloneURL(location), Navigation: navigation}
+	page.historyIndex = index
+	page.invalidateStyleLocked()
+}
+
 // QueueRequestSubmit runs validation, invalid/submit event dispatch, and the
 // navigation scheduling decision inside one Page task.
 func (page *Page) QueueRequestSubmit(form, submitter NodeHandle) (browserruntime.TaskID, error) {

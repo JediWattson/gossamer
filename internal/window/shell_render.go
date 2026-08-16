@@ -172,8 +172,16 @@ func (shell *graphiteShell) drawTab(canvas *image.RGBA, layout shellLayout, page
 }
 
 func (shell *graphiteShell) drawToolbar(canvas *image.RGBA, layout shellLayout) error {
-	drawChevron(canvas, center(layout.back), false, graphitePalette.dim)
-	drawChevron(canvas, center(layout.forward), true, graphitePalette.dim)
+	backColor := graphitePalette.dim
+	if shell.canGoBack {
+		backColor = graphitePalette.muted
+	}
+	forwardColor := graphitePalette.dim
+	if shell.canGoForward {
+		forwardColor = graphitePalette.muted
+	}
+	drawChevron(canvas, center(layout.back), false, backColor)
+	drawChevron(canvas, center(layout.forward), true, forwardColor)
 	drawReload(canvas, center(layout.reload), graphitePalette.muted)
 
 	addressFill := graphitePalette.ink

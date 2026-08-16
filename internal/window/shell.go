@@ -58,6 +58,8 @@ type graphiteShell struct {
 	selectAll      bool
 	inspectorOpen  bool
 	loading        bool
+	canGoBack      bool
+	canGoForward   bool
 	navigation     browser.NavigationID
 	navigationView string
 	navigationErr  string
@@ -79,6 +81,8 @@ func newGraphiteShell(page *browser.Page, config ShellConfig) (*graphiteShell, e
 		fonts:          fonts,
 		address:        location,
 		lastPageURL:    location,
+		canGoBack:      page.CanGoBack(),
+		canGoForward:   page.CanGoForward(),
 		navigationView: shellNavigationLabel(page.Navigation()),
 		suppressedKeys: make(map[string]bool),
 		revision:       1,
@@ -164,6 +168,13 @@ func (shell *graphiteShell) syncPage(page *browser.Page) {
 	loading := snapshot.ID != 0 && !navigationTerminal(snapshot.State)
 	changed := shell.loading != loading
 	shell.loading = loading
+	canGoBack := page.CanGoBack()
+	canGoForward := page.CanGoForward()
+	if shell.canGoBack != canGoBack || shell.canGoForward != canGoForward {
+		shell.canGoBack = canGoBack
+		shell.canGoForward = canGoForward
+		changed = true
+	}
 	navigationView := shellNavigationLabel(snapshot)
 	if navigationView != shell.navigationView {
 		shell.navigationView = navigationView
@@ -230,6 +241,14 @@ func (shell *graphiteShell) handleEvent(
 		return true, translated, false, nil
 	}
 	if event.Kind == EventKeyDown {
+		if (event.Modifiers.Meta && event.Key == "[") || (event.Modifiers.Alt && event.Key == "ArrowLeft") {
+			shell.suppress(event)
+			return true, translated, false, shell.navigateHistory(ctx, page, -1)
+		}
+		if (event.Modifiers.Meta && event.Key == "]") || (event.Modifiers.Alt && event.Key == "ArrowRight") {
+			shell.suppress(event)
+			return true, translated, false, shell.navigateHistory(ctx, page, 1)
+		}
 		if event.Modifiers.Meta && strings.EqualFold(event.Key, "l") {
 			shell.focusAddress()
 			shell.suppress(event)
@@ -237,7 +256,7 @@ func (shell *graphiteShell) handleEvent(
 		}
 		if event.Modifiers.Meta && strings.EqualFold(event.Key, "r") {
 			shell.suppress(event)
-			return true, translated, false, shell.navigate(ctx, page, shell.lastPageURL)
+			return true, translated, false, shell.reload(ctx, page)
 		}
 		if shell.addressFocused {
 			shell.suppress(event)
@@ -270,8 +289,14 @@ func (shell *graphiteShell) handleEvent(
 				shell.focusAddress()
 				return true, translated, false, nil
 			}
+			if point.In(layout.back) {
+				return true, translated, false, shell.navigateHistory(ctx, page, -1)
+			}
+			if point.In(layout.forward) {
+				return true, translated, false, shell.navigateHistory(ctx, page, 1)
+			}
 			if point.In(layout.reload) {
-				return true, translated, false, shell.navigate(ctx, page, shell.lastPageURL)
+				return true, translated, false, shell.reload(ctx, page)
 			}
 			if point.In(layout.railDisclosure) {
 				shell.inspectorOpen = !shell.inspectorOpen
@@ -360,6 +385,35 @@ func (shell *graphiteShell) navigate(ctx context.Context, page *browser.Page, ra
 		return nil
 	}
 	shell.address = raw
+	shell.navigation = navigation
+	shell.navigationErr = ""
+	shell.loading = true
+	shell.revision++
+	return nil
+}
+
+func (shell *graphiteShell) navigateHistory(ctx context.Context, page *browser.Page, delta int) error {
+	if delta < 0 && !shell.canGoBack || delta > 0 && !shell.canGoForward {
+		return nil
+	}
+	navigation, err := page.Go(ctx, delta, shell.loader)
+	return shell.trackNavigation(navigation, err, false)
+}
+
+func (shell *graphiteShell) reload(ctx context.Context, page *browser.Page) error {
+	navigation, err := page.Reload(ctx, shell.loader)
+	return shell.trackNavigation(navigation, err, false)
+}
+
+func (shell *graphiteShell) trackNavigation(navigation browser.NavigationID, navigationErr error, focusAddress bool) error {
+	if navigationErr != nil {
+		shell.navigationErr = navigationErr.Error()
+		if focusAddress {
+			shell.addressFocused = true
+		}
+		shell.revision++
+		return nil
+	}
 	shell.navigation = navigation
 	shell.navigationErr = ""
 	shell.loading = true

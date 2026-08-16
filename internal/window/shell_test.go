@@ -157,6 +157,57 @@ func TestGraphiteAddressBarNormalizesAndNavigates(t *testing.T) {
 	if shell.address != "https://next.gossamer.test/path" || shell.addressFocused || shell.navigationErr != "" {
 		t.Fatalf("address state = address %q focused=%t err=%q", shell.address, shell.addressFocused, shell.navigationErr)
 	}
+	if !shell.canGoBack || shell.canGoForward {
+		t.Fatalf("history controls after address navigation = back %t forward %t", shell.canGoBack, shell.canGoForward)
+	}
+
+	if _, _, _, err := shell.handleEvent(context.Background(), page, Event{
+		Kind: EventKeyDown, Key: "[", Code: "BracketLeft", Modifiers: Modifiers{Meta: true},
+	}, &state); err != nil {
+		t.Fatal(err)
+	}
+	back := shell.navigation
+	if back == 0 {
+		t.Fatal("Command-[ did not start backward traversal")
+	}
+	if err := page.WaitNavigation(ctx, back); err != nil {
+		t.Fatal(err)
+	}
+	shell.syncPage(page)
+	if got := page.URL().String(); got != "https://start.gossamer.test/" {
+		t.Fatalf("back URL = %q", got)
+	}
+	if shell.canGoBack || !shell.canGoForward {
+		t.Fatalf("history controls after back = back %t forward %t", shell.canGoBack, shell.canGoForward)
+	}
+
+	if _, _, _, err := shell.handleEvent(context.Background(), page, Event{
+		Kind: EventKeyDown, Key: "]", Code: "BracketRight", Modifiers: Modifiers{Meta: true},
+	}, &state); err != nil {
+		t.Fatal(err)
+	}
+	forward := shell.navigation
+	if forward == 0 {
+		t.Fatal("Command-] did not start forward traversal")
+	}
+	if err := page.WaitNavigation(ctx, forward); err != nil {
+		t.Fatal(err)
+	}
+	shell.syncPage(page)
+	if got := page.URL().String(); got != "https://next.gossamer.test/path" {
+		t.Fatalf("forward URL = %q", got)
+	}
+	entriesBeforeReload, indexBeforeReload := page.History()
+	if err := shell.reload(context.Background(), page); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.WaitNavigation(ctx, shell.navigation); err != nil {
+		t.Fatal(err)
+	}
+	entriesAfterReload, indexAfterReload := page.History()
+	if len(entriesAfterReload) != len(entriesBeforeReload) || indexAfterReload != indexBeforeReload {
+		t.Fatalf("Graphite reload changed history length/index from %d/%d to %d/%d", len(entriesBeforeReload), indexBeforeReload, len(entriesAfterReload), indexAfterReload)
+	}
 }
 
 type shellTestLoader struct {

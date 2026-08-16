@@ -165,11 +165,10 @@ func (browser *Browser) unregisterPage(page *Page, generation DocumentGeneration
 // LoadPage creates a Page, begins task-driven navigation, and drives its Realm
 // until the final resource-aware frame is ready.
 func (browser *Browser) LoadPage(ctx context.Context, rawURL string, client DocumentLoader) (*Page, error) {
-	requestedURL, err := loader.ParseHTTPURL(rawURL)
-	if err != nil {
+	if _, err := loader.ParseHTTPURL(rawURL); err != nil {
 		return nil, err
 	}
-	page, err := browser.NewPage(dom.NewDocument(), requestedURL)
+	page, err := browser.NewPage(dom.NewDocument(), nil)
 	if err != nil {
 		return nil, err
 	}

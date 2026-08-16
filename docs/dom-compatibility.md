@@ -5,7 +5,7 @@ DOM compatibility gate verifies that this split remains observable as one DOM:
 canonical V8 wrappers carry numeric `NodeHandle` values, while Go owns node
 identity, mutation, form state, construction regions, and queue ARC.
 
-## Selected completed milestones 8-35
+## Selected completed milestones 8-36
 
 | Milestone | Native surface | Regression boundary |
 | --- | --- | --- |
@@ -29,6 +29,7 @@ identity, mutation, form state, construction regions, and queue ARC.
 | 33. Interactive window and native input | Backend-neutral window loop, AppKit presentation, resize, pointer, wheel, keyboard, focus, blur, text editing, stock-V8 launcher | The backend owns only copied RGBA pixels and value-only events; every DOM/script mutation crosses the Page queue; deterministic and stock-V8 tests assert event order, final state, frame publication, forced GC, and zero ownership after teardown |
 | 34. Production page boot | Live `document.readyState`, blocking/defer/async scheduling, `DOMContentLoaded` and `load`, browser-fetched stock-V8 ES modules, per-Realm module identity | An HTTP-served Vite-shaped module graph boots pinned production React, commits and updates the Go DOM, evaluates a duplicated module once, unmounts, forces GC, and closes with zero native ownership |
 | 35. Graphite browser shell | Single-tab Graphite chrome, editable address navigation, reload, content viewport, collapsed telemetry rail, engine/kernel inspector | Chrome remains in Go, page coordinates are translated before hit testing, native dimensions subtract to the exact DOM viewport, and deterministic plus stock-V8 tests retain ordered input and teardown behavior |
+| 36. Session history traversal | `Page.Back`, `Forward`, `Go`, and `Reload`; Graphite controls and keyboard commands; live direction availability | Traversal commits the index only after a successful document rebuild, creates a fresh document generation and V8 Realm, invalidates departed wrappers, preserves the current entry after failure, and leaves zero ownership after teardown |
 
 Run the gate against the locally built stock V8:
 
@@ -65,7 +66,7 @@ and ownership barriers before a separate render task publishes a frame.
 - The AppKit backend is an Apple Silicon macOS milestone surface. Graphite
   currently supports one window and one functional tab with address/reload
   chrome plus mouse, wheel, basic keyboard text, focus, blur, and resize events.
-  Multiple tabs, working back/forward traversal, scrollbar widgets, clipboard,
+  Multiple tabs, a back-forward cache, scrollbar widgets, clipboard,
   IME/composition, touch, drag-and-drop, accessibility, and non-macOS backends
   remain future work.
 - Initial scripts run after the document and represented render resources are
@@ -90,7 +91,8 @@ and ownership barriers before a separate render task publishes a frame.
   passed directly between iframe globals; cross-Realm data uses the native
   structured-clone/`postMessage` seam and fresh target wrappers.
 - This gate does not claim Shadow DOM, custom elements, multipart/file form
-  submission, every validation constraint, history traversal, scrollbar UI,
+  submission, every validation constraint, script-visible History APIs or a
+  back-forward cache, scrollbar UI,
   accessibility, or the complete Web Platform test surface. Overflow now
   clips and scrolls block boxes, but inline overflow fragmentation, scroll
   anchoring, snap points, overscroll behavior, and scrollbar layout remain.
