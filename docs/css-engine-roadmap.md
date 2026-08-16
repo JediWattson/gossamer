@@ -190,10 +190,15 @@ focus-within use the Page's stable focused node and modality bit, URL fragments
 drive `:target`, and a history hook distinguishes `:link` from `:visited`.
 Pointer and focus transitions advance the Page style revision, invalidate the
 cached snapshot, and coalesce a render at the existing task boundary even when
-scripting is disabled.
+scripting is disabled. HTML `:checked` consumes live dirty input checkedness
+and option selectedness rather than stale content attributes. `:enabled` and
+`:disabled` implement select/optgroup/option propagation and disabled fieldset
+first-legend exceptions, while `:required` and `:optional` respect input-type
+applicability. Form mutations advance the document version, so style reads,
+selector queries, and task-boundary rendering share one coherent state.
 
-- Add `:has()`, language/direction, form-state pseudo-classes, and browser
-  history plumbing for the matcher-level visited-link hook.
+- Add `:has()`, language/direction, the remaining form-state pseudo-classes,
+  and browser history plumbing for the matcher-level visited-link hook.
 - Finish pseudo-elements and the remaining stateful selector grammar.
 - Add bounded matching and memoization for selectors with combinator
   backtracking.

@@ -192,6 +192,20 @@ func matchesPseudoClass(pseudo pseudoClassSelector, node *dom.Node, context Matc
 		return inclusiveAncestor(node, context.Focused)
 	case "target":
 		return node == context.Target
+	case "checked":
+		return isHTMLChecked(node)
+	case "disabled":
+		eligible, disabled := htmlDisabledState(node)
+		return eligible && disabled
+	case "enabled":
+		eligible, disabled := htmlDisabledState(node)
+		return eligible && !disabled
+	case "required":
+		eligible, required := htmlRequiredState(node)
+		return eligible && required
+	case "optional":
+		eligible, required := htmlRequiredState(node)
+		return eligible && !required
 	case "is", "where":
 		return selectorListMatches(pseudo.selectors, node, context)
 	case "not":
@@ -215,7 +229,8 @@ func supportedSimplePseudoClass(name string) bool {
 		"first-child", "last-child", "only-child",
 		"first-of-type", "last-of-type", "only-of-type",
 		"link", "any-link", "visited",
-		"hover", "active", "focus", "focus-visible", "focus-within", "target":
+		"hover", "active", "focus", "focus-visible", "focus-within", "target",
+		"checked", "disabled", "enabled", "required", "optional":
 		return true
 	default:
 		return false
@@ -294,6 +309,206 @@ func inclusiveAncestor(candidate, descendant *dom.Node) bool {
 
 func isVisitedLink(node *dom.Node, context MatchContext) bool {
 	return context.Visited != nil && context.Visited(node)
+}
+
+// isHTMLChecked implements HTML's live checkedness/selectedness rules. Dirty
+// control state wins over the content attribute, just as the corresponding
+// DOM properties do.
+func isHTMLChecked(node *dom.Node) bool {
+	switch {
+	case isHTMLElementNamed(node, "input"):
+		typeName := lowerASCII(attributeOrDefault(node, "type", "text"))
+		if typeName != "checkbox" && typeName != "radio" {
+			return false
+		}
+		if node.Control != nil && node.Control.CheckedDirty {
+			return node.Control.Checked
+		}
+		return hasAttribute(node, "checked")
+	case isHTMLElementNamed(node, "option"):
+		return htmlOptionSelected(node)
+	default:
+		return false
+	}
+}
+
+func htmlOptionSelected(option *dom.Node) bool {
+	if option.Control != nil && option.Control.SelectedDirty {
+		return option.Control.Selected
+	}
+	selectNode := nearestHTMLElementAncestor(option, "select")
+	if selectNode == nil || hasAttribute(selectNode, "multiple") {
+		return hasAttribute(option, "selected")
+	}
+	options := descendantHTMLOptions(selectNode)
+	hasDirtyState := false
+	for _, candidate := range options {
+		if candidate.Control == nil || !candidate.Control.SelectedDirty {
+			continue
+		}
+		hasDirtyState = true
+		if candidate.Control.Selected {
+			return candidate == option
+		}
+	}
+	if hasDirtyState {
+		return false
+	}
+	lastExplicit := -1
+	for index, candidate := range options {
+		if hasAttribute(candidate, "selected") {
+			lastExplicit = index
+		}
+	}
+	if lastExplicit >= 0 {
+		return options[lastExplicit] == option
+	}
+	for _, candidate := range options {
+		if !hasAttribute(candidate, "disabled") {
+			return candidate == option
+		}
+	}
+	return false
+}
+
+// htmlDisabledState returns whether node participates in HTML's enabled and
+// disabled states and, when it does, whether it is actually disabled.
+func htmlDisabledState(node *dom.Node) (bool, bool) {
+	if node == nil || node.Type != dom.ElementNode || node.NamespaceURI != dom.HTMLNamespace {
+		return false, false
+	}
+	switch lowerASCII(node.Data) {
+	case "button", "input", "select", "textarea":
+		return true, hasAttribute(node, "disabled") || disabledByFieldset(node)
+	case "fieldset":
+		return true, hasAttribute(node, "disabled") || disabledByFieldset(node)
+	case "optgroup":
+		selectNode := nearestHTMLElementAncestor(node, "select")
+		return true, hasAttribute(node, "disabled") || htmlSelectDisabled(selectNode)
+	case "option":
+		if hasAttribute(node, "disabled") {
+			return true, true
+		}
+		if group := nearestHTMLElementAncestorBefore(node, "optgroup", "select"); group != nil {
+			if _, disabled := htmlDisabledState(group); disabled {
+				return true, true
+			}
+		}
+		return true, htmlSelectDisabled(nearestHTMLElementAncestor(node, "select"))
+	default:
+		return false, false
+	}
+}
+
+func htmlSelectDisabled(node *dom.Node) bool {
+	return isHTMLElementNamed(node, "select") && (hasAttribute(node, "disabled") || disabledByFieldset(node))
+}
+
+func disabledByFieldset(node *dom.Node) bool {
+	for fieldset := node.Parent; fieldset != nil; fieldset = fieldset.Parent {
+		if !isHTMLElementNamed(fieldset, "fieldset") || !hasAttribute(fieldset, "disabled") {
+			continue
+		}
+		legend := firstLegendElementChild(fieldset)
+		if legend != nil && inclusiveAncestor(legend, node) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func firstLegendElementChild(fieldset *dom.Node) *dom.Node {
+	for _, child := range fieldset.Children {
+		if child != nil && child.Type == dom.ElementNode && isHTMLElementNamed(child, "legend") {
+			return child
+		}
+	}
+	return nil
+}
+
+func htmlRequiredState(node *dom.Node) (bool, bool) {
+	if node == nil || node.Type != dom.ElementNode || node.NamespaceURI != dom.HTMLNamespace {
+		return false, false
+	}
+	switch lowerASCII(node.Data) {
+	case "select", "textarea":
+		return true, hasAttribute(node, "required")
+	case "input":
+		if !inputSupportsRequired(attributeOrDefault(node, "type", "text")) {
+			return false, false
+		}
+		return true, hasAttribute(node, "required")
+	default:
+		return false, false
+	}
+}
+
+func inputSupportsRequired(typeName string) bool {
+	switch lowerASCII(typeName) {
+	case "hidden", "range", "color", "submit", "image", "reset", "button":
+		return false
+	default:
+		return true
+	}
+}
+
+func isHTMLElementNamed(node *dom.Node, name string) bool {
+	return node != nil && node.Type == dom.ElementNode && node.NamespaceURI == dom.HTMLNamespace && equalASCIIFold(node.Data, name)
+}
+
+func nearestHTMLElementAncestor(node *dom.Node, name string) *dom.Node {
+	for ancestor := node.Parent; ancestor != nil; ancestor = ancestor.Parent {
+		if isHTMLElementNamed(ancestor, name) {
+			return ancestor
+		}
+	}
+	return nil
+}
+
+func nearestHTMLElementAncestorBefore(node *dom.Node, name, boundary string) *dom.Node {
+	for ancestor := node.Parent; ancestor != nil; ancestor = ancestor.Parent {
+		if isHTMLElementNamed(ancestor, boundary) {
+			return nil
+		}
+		if isHTMLElementNamed(ancestor, name) {
+			return ancestor
+		}
+	}
+	return nil
+}
+
+func descendantHTMLOptions(root *dom.Node) []*dom.Node {
+	options := make([]*dom.Node, 0)
+	stack := make([]*dom.Node, 0, len(root.Children))
+	for index := len(root.Children) - 1; index >= 0; index-- {
+		stack = append(stack, root.Children[index])
+	}
+	for len(stack) != 0 {
+		last := len(stack) - 1
+		node := stack[last]
+		stack = stack[:last]
+		if isHTMLElementNamed(node, "option") {
+			options = append(options, node)
+		}
+		for index := len(node.Children) - 1; index >= 0; index-- {
+			stack = append(stack, node.Children[index])
+		}
+	}
+	return options
+}
+
+func hasAttribute(node *dom.Node, name string) bool {
+	_, found := attributeValue(node, name)
+	return found
+}
+
+func attributeOrDefault(node *dom.Node, name, fallback string) string {
+	value, found := attributeValue(node, name)
+	if !found || value == "" {
+		return fallback
+	}
+	return value
 }
 
 func isDocumentElement(node *dom.Node) bool {

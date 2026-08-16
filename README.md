@@ -239,7 +239,8 @@ performance budgets; see
 ### CSS, layout, and paint
 
 - Type, ID, class, attribute, and combinator selectors with structural,
-  logical, link, target, hover, active, focus, focus-visible, and focus-within
+  logical, link, target, hover, active, focus, focus-visible, focus-within,
+  checked, enabled/disabled, and required/optional states
   pseudo-classes driven by explicit browser state
 - Cascade ordering across `!important`, specificity, source order, inline
   styles, and named top-level `@layer` rules
