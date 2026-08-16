@@ -22,6 +22,21 @@ var ErrInvalidSelector = errors.New("css: invalid selector")
 type Stylesheet struct {
 	Rules      []Rule
 	LayerOrder []string
+	Imports    []ImportRule
+}
+
+// ImportRule is one valid top-level @import that precedes qualified rules.
+// URL is the decoded string or url-token value. Layered distinguishes an
+// anonymous layer from no layer; Layer names the supported single named layer.
+// Supports and Media retain their authored component-value source for the
+// browser-owned stylesheet graph to evaluate in the importing context.
+type ImportRule struct {
+	URL      string
+	Layer    string
+	Layered  bool
+	Supports string
+	Media    string
+	Order    int
 }
 
 // Rule associates one or more selectors with an ordered declaration block.
@@ -35,6 +50,7 @@ type Rule struct {
 	Order              int
 	Layer              string
 	Media              []string
+	Supports           []string
 }
 
 // DeclarationSource identifies the original source ranges for one parsed

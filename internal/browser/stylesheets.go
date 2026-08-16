@@ -2,6 +2,7 @@ package browser
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"net/url"
 	"slices"
@@ -26,6 +27,7 @@ type stylesheetGraphEntry struct {
 	generation uint64
 	signature  string
 	resolved   *url.URL
+	source     string
 	stylesheet css.Stylesheet
 	ready      bool
 	requested  bool
@@ -87,7 +89,7 @@ func (graph stylesheetGraph) resolvedStylesheets(document *dom.Document) map[*do
 func (graph *stylesheetGraph) apply(result navigationResourceResult) bool {
 	graph.ensure()
 	entry, ok := graph.entries[result.target.Node]
-	if !ok || entry.kind != stylesheetOwnerExternal || entry.generation != result.stylesheetGeneration {
+	if !ok || entry.generation != result.stylesheetGeneration {
 		return false
 	}
 	entry.stylesheet = result.stylesheet
@@ -130,7 +132,7 @@ func (graph *stylesheetGraph) sync(
 							source := styleElementText(node)
 							descriptors = append(descriptors, stylesheetDescriptor{
 								owner: owner, kind: stylesheetOwnerEmbedded,
-								signature: "style\x00" + source, source: source,
+								signature: embeddedStylesheetSignature(source, base), resolved: cloneURL(base), source: source,
 							})
 						}
 					case "link":
@@ -168,6 +170,8 @@ func (graph *stylesheetGraph) sync(
 			entry.kind = descriptor.kind
 			entry.signature = descriptor.signature
 			entry.resolved = cloneURL(descriptor.resolved)
+			entry.source = descriptor.source
+			entry.requested = true
 			entry.manual = false
 			graph.entries[descriptor.owner] = entry
 			continue
@@ -178,6 +182,12 @@ func (graph *stylesheetGraph) sync(
 					kind: resource.Stylesheet, url: cloneURL(entry.resolved), node: entry.owner,
 					stylesheetGeneration: entry.generation,
 				})
+			} else if entry.kind == stylesheetOwnerEmbedded && len(entry.stylesheet.Imports) > 0 && !entry.requested && entry.resolved != nil {
+				requests = append(requests, navigationResourceRequest{
+					kind: resource.Stylesheet, node: entry.owner,
+					stylesheetGeneration: entry.generation,
+					stylesheetSource:     entry.source, stylesheetBase: cloneURL(entry.resolved),
+				})
 			}
 			continue
 		}
@@ -186,11 +196,18 @@ func (graph *stylesheetGraph) sync(
 		entry = stylesheetGraphEntry{
 			owner: descriptor.owner, kind: descriptor.kind,
 			generation: graph.nextGeneration, signature: descriptor.signature,
-			resolved: cloneURL(descriptor.resolved),
+			resolved: cloneURL(descriptor.resolved), source: descriptor.source,
 		}
 		if descriptor.kind == stylesheetOwnerEmbedded {
 			entry.stylesheet, _ = css.Parse(descriptor.source)
 			entry.ready = true
+			if len(entry.stylesheet.Imports) > 0 && entry.resolved != nil {
+				requests = append(requests, navigationResourceRequest{
+					kind: resource.Stylesheet, node: entry.owner,
+					stylesheetGeneration: entry.generation,
+					stylesheetSource:     entry.source, stylesheetBase: cloneURL(entry.resolved),
+				})
+			}
 		} else {
 			requests = append(requests, navigationResourceRequest{
 				kind: resource.Stylesheet, url: cloneURL(descriptor.resolved), node: descriptor.owner,
@@ -211,6 +228,15 @@ func (graph *stylesheetGraph) sync(
 		changed = true
 	}
 	return requests, changed, nil
+}
+
+func embeddedStylesheetSignature(source string, base *url.URL) string {
+	baseURL := ""
+	if base != nil {
+		baseURL = base.String()
+	}
+	digest := sha256.Sum256([]byte(baseURL + "\x00" + source))
+	return "style\x00" + string(digest[:])
 }
 
 func (graph *stylesheetGraph) markRequested(requests []navigationResourceRequest) {

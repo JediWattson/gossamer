@@ -120,16 +120,21 @@ generation; dynamic link insertion and `href`/`rel`/`type`/`disabled` changes
 start document-scoped fetches, and stale async results cannot overwrite a
 newer owner generation. Render continues receiving an immutable compatibility
 view while fetch, URL, and lifetime policy remain in `internal/browser`.
+Bounded recursive `@import` loading now preserves import order, resolves URLs,
+rejects cycles, and carries layer, media, and supports context for external and
+embedded sheets. Tokenized `@supports` declaration, logical, nested, and
+`selector()` conditions share the style engine's actual capability boundary.
 
-- Load recursive `@import` rules in specified order with URL, layer, supports,
-  and media context.
-- Add `@supports`, nested and anonymous layers, `@font-face`, keyframes, and
-  CSS nesting.
+- Add fully nested and anonymous layers, `@font-face`, keyframes, and CSS
+  nesting.
+- Retain imported-sheet identities and source spans instead of only the current
+  flattened immutable renderer view.
 - Track stylesheet identity and generations so dynamic `<style>` and `<link>`
   changes cannot reuse stale resources.
 
 Acceptance: the browser owns an ordered stylesheet graph and can replace one
-sheet without losing source provenance.
+sheet without losing source provenance. The ownership and loading half is now
+in place; imported-sheet identity and rule-object exposure remain.
 
 ### 6. Selectors and state
 

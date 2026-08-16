@@ -701,6 +701,7 @@ func applyCascade(style *computedStyle, explanations map[string]PropertyExplanat
 			for ruleIndex, rule := range source.stylesheet.Rules {
 				specificity, matches := rule.Match(node)
 				matches = matches && rule.MatchesMedia(context.mediaEnvironment)
+				matches = matches && rule.MatchesSupports(SupportsDeclaration)
 				for declarationIndex, declaration := range rule.Declarations {
 					order := reserveSourceOrder(origin)
 					if !matches {

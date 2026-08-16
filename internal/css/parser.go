@@ -50,23 +50,26 @@ func ParseRawDeclarationListWithSources(source string) ([]SourcedDeclaration, er
 }
 
 type stylesheetParser struct {
-	source     string
-	original   string
-	baseOffset int
-	pos        int
-	stylesheet *Stylesheet
-	context    ruleContext
-	nesting    int
+	source         string
+	original       string
+	baseOffset     int
+	pos            int
+	stylesheet     *Stylesheet
+	context        ruleContext
+	nesting        int
+	importsAllowed bool
 }
 
 type ruleContext struct {
-	layer string
-	media []string
+	layer    string
+	media    []string
+	supports []string
 }
 
 func (parser *stylesheetParser) parse() (Stylesheet, error) {
 	stylesheet := Stylesheet{}
 	parser.stylesheet = &stylesheet
+	parser.importsAllowed = true
 	if err := parser.parseRuleList(); err != nil {
 		return stylesheet, err
 	}
@@ -86,6 +89,7 @@ func (parser *stylesheetParser) parseRuleList() error {
 			}
 			continue
 		}
+		parser.importsAllowed = false
 
 		preludeStart := parser.pos
 		prelude, delimiter, err := parser.readRulePrelude()
@@ -119,6 +123,7 @@ func (parser *stylesheetParser) parseRuleList() error {
 			Order:              len(parser.stylesheet.Rules),
 			Layer:              parser.context.layer,
 			Media:              append([]string(nil), parser.context.media...),
+			Supports:           append([]string(nil), parser.context.supports...),
 		})
 	}
 
@@ -138,10 +143,21 @@ func (parser *stylesheetParser) parseAtRule() error {
 		return err
 	}
 	prelude = strings.TrimSpace(normalizeCommentBoundaries(prelude))
+	canImport := parser.importsAllowed
+	if name != "import" && name != "charset" && !(name == "layer" && delimiter == ';') {
+		parser.importsAllowed = false
+	}
 
 	switch delimiter {
 	case ';', 0, '}':
-		if name == "layer" && delimiter == ';' && parser.context.layer == "" && len(parser.context.media) == 0 {
+		if name == "import" && delimiter == ';' && canImport && parser.context.layer == "" && len(parser.context.media) == 0 && len(parser.context.supports) == 0 {
+			if imported, ok := parseImportRule(prelude); ok {
+				imported.Order = len(parser.stylesheet.Imports)
+				parser.stylesheet.Imports = append(parser.stylesheet.Imports, imported)
+			}
+			return nil
+		}
+		if name == "layer" && delimiter == ';' && parser.context.layer == "" && len(parser.context.media) == 0 && len(parser.context.supports) == 0 {
 			if layers, ok := parseLayerNameList(prelude); ok {
 				for _, layer := range layers {
 					parser.recordLayer(layer)
@@ -157,7 +173,7 @@ func (parser *stylesheetParser) parseAtRule() error {
 		}
 		switch name {
 		case "layer":
-			if parser.context.layer != "" || len(parser.context.media) != 0 {
+			if parser.context.layer != "" || len(parser.context.media) != 0 || len(parser.context.supports) != 0 {
 				return nil
 			}
 			layers, ok := parseLayerNameList(prelude)
@@ -168,15 +184,25 @@ func (parser *stylesheetParser) parseAtRule() error {
 			}
 			parser.recordLayer(layers[0])
 			return parser.parseNestedRuleList(block, parser.original[blockStart:blockStart+len(block)], parser.baseOffset+blockStart, ruleContext{
-				layer: layers[0],
-				media: append([]string(nil), parser.context.media...),
+				layer:    layers[0],
+				media:    append([]string(nil), parser.context.media...),
+				supports: append([]string(nil), parser.context.supports...),
 			})
 		case "media":
 			media := append([]string(nil), parser.context.media...)
 			media = append(media, prelude)
 			return parser.parseNestedRuleList(block, parser.original[blockStart:blockStart+len(block)], parser.baseOffset+blockStart, ruleContext{
-				layer: parser.context.layer,
-				media: media,
+				layer:    parser.context.layer,
+				media:    media,
+				supports: append([]string(nil), parser.context.supports...),
+			})
+		case "supports":
+			supports := append([]string(nil), parser.context.supports...)
+			supports = append(supports, prelude)
+			return parser.parseNestedRuleList(block, parser.original[blockStart:blockStart+len(block)], parser.baseOffset+blockStart, ruleContext{
+				layer:    parser.context.layer,
+				media:    append([]string(nil), parser.context.media...),
+				supports: supports,
 			})
 		default:
 			return nil
@@ -184,6 +210,72 @@ func (parser *stylesheetParser) parseAtRule() error {
 	default:
 		return nil
 	}
+}
+
+func parseImportRule(source string) (ImportRule, bool) {
+	values, err := ParseComponentValues(source)
+	if err != nil {
+		return ImportRule{}, false
+	}
+	values = trimComponentWhitespace(values)
+	if len(values) == 0 {
+		return ImportRule{}, false
+	}
+	imported := ImportRule{}
+	first := values[0]
+	switch {
+	case first.Kind == ComponentToken && (first.Token.Kind == TokenString || first.Token.Kind == TokenURL):
+		imported.URL = first.Token.Value
+	case first.Kind == ComponentFunction && equalASCIIFold(first.Token.Value, "url"):
+		arguments := trimComponentWhitespace(first.Values)
+		if len(arguments) != 1 || arguments[0].Kind != ComponentToken || arguments[0].Token.Kind != TokenString {
+			return ImportRule{}, false
+		}
+		imported.URL = arguments[0].Token.Value
+	default:
+		return ImportRule{}, false
+	}
+	if imported.URL == "" {
+		return ImportRule{}, false
+	}
+
+	remaining := trimComponentWhitespace(values[1:])
+	if len(remaining) > 0 {
+		if remaining[0].Kind == ComponentToken && remaining[0].Token.Kind == TokenIdent && equalASCIIFold(remaining[0].Token.Value, "layer") {
+			imported.Layered = true
+			remaining = trimComponentWhitespace(remaining[1:])
+		} else if remaining[0].Kind == ComponentFunction && equalASCIIFold(remaining[0].Token.Value, "layer") {
+			arguments := trimComponentWhitespace(remaining[0].Values)
+			if len(arguments) != 1 || arguments[0].Kind != ComponentToken || arguments[0].Token.Kind != TokenIdent {
+				return ImportRule{}, false
+			}
+			imported.Layered = true
+			imported.Layer = arguments[0].Token.Value
+			remaining = trimComponentWhitespace(remaining[1:])
+		}
+	}
+	if len(remaining) > 0 && remaining[0].Kind == ComponentFunction && equalASCIIFold(remaining[0].Token.Value, "supports") {
+		arguments := trimComponentWhitespace(remaining[0].Values)
+		if len(arguments) == 0 {
+			return ImportRule{}, false
+		}
+		start := arguments[0].Span.Start
+		end := arguments[len(arguments)-1].Span.End
+		if start < 0 || end < start || end > len(source) {
+			return ImportRule{}, false
+		}
+		imported.Supports = strings.TrimSpace(source[start:end])
+		remaining = trimComponentWhitespace(remaining[1:])
+	}
+	if len(remaining) > 0 {
+		start := remaining[0].Span.Start
+		end := remaining[len(remaining)-1].Span.End
+		if start < 0 || end < start || end > len(source) {
+			return ImportRule{}, false
+		}
+		imported.Media = strings.TrimSpace(source[start:end])
+	}
+	return imported, true
 }
 
 func (parser *stylesheetParser) parseNestedRuleList(source, original string, baseOffset int, context ruleContext) error {

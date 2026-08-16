@@ -224,7 +224,7 @@ performance budgets; see
 | `internal/loader` | Document and subresource HTTP loading |
 | `internal/html` | HTML tokenization and tree construction |
 | `internal/dom` | DOM nodes, tree ownership, and deterministic dumps |
-| `internal/css` | Stylesheet parsing, selectors, layers, and media queries |
+| `internal/css` | Stylesheet parsing, selectors, imports, supports, layers, and media queries |
 | `internal/resource` | Resource discovery, caching, limits, and image decoding |
 | `internal/style` | Cascade, inheritance, typed computed values, and immutable style snapshots |
 | `internal/render` | Used-value resolution, layout, display lists, and PNG painting |
@@ -243,8 +243,9 @@ The following are intentionally still outside the current milestone:
   boxes
 - `calc()` and related functions, gradients, background images, border radii,
   shadows, transforms, and generated content
-- `@import`, `@supports`, anonymous, nested, or dotted cascade layers, and the
-  remaining media-query syntax and features
+- Anonymous, fully nested, or authored dotted cascade layers, `@font-face`,
+  keyframes, CSS nesting, and the remaining media-query and `@supports` syntax
+  beyond the current declaration/logical/`selector()` subset
 - SVG, AVIF, video, canvas, browser controls, and accessibility trees
 
 Only `inline`, `block`, `list-item`, and `none` have dedicated display

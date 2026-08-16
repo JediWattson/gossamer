@@ -154,6 +154,53 @@ func TestStylesheetGraphPreservesManualResourceUntilOwnerChanges(t *testing.T) {
 	}
 }
 
+func TestStylesheetGraphRegeneratesEmbeddedImportsWhenBaseChanges(t *testing.T) {
+	t.Parallel()
+
+	documentNode := dom.NewDocument()
+	html := dom.NewElement("html")
+	head := dom.NewElement("head")
+	base := dom.NewElement("base", dom.Attribute{Name: "href", Value: "/one/"})
+	embedded := dom.NewElement("style")
+	embedded.AppendChild(dom.NewText(`@import "theme.css"; body { color: black }`))
+	head.AppendChild(base)
+	head.AppendChild(embedded)
+	html.AppendChild(head)
+	documentNode.AppendChild(html)
+	document, err := dom.IndexDocument(documentNode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseID, _ := document.ID(base)
+	location, _ := url.Parse("https://example.test/page")
+	graph := newStylesheetGraph()
+
+	requests, _, err := graph.sync(document, location)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(requests) != 1 || requests[0].stylesheetBase.String() != "https://example.test/one/" {
+		t.Fatalf("initial embedded request = %#v", requests)
+	}
+	firstGeneration := requests[0].stylesheetGeneration
+	if err := document.SetAttribute(baseID, "href", "/two/"); err != nil {
+		t.Fatal(err)
+	}
+	requests, changed, err := graph.sync(document, location)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed || len(requests) != 1 {
+		t.Fatalf("base replacement = %d requests, changed %t", len(requests), changed)
+	}
+	if requests[0].stylesheetGeneration == firstGeneration {
+		t.Fatal("base replacement reused the embedded stylesheet generation")
+	}
+	if got := requests[0].stylesheetBase.String(); got != "https://example.test/two/" {
+		t.Fatalf("replacement base = %q", got)
+	}
+}
+
 func TestDynamicLinkStylesheetLoadsAndInvalidatesCurrentPage(t *testing.T) {
 	t.Parallel()
 
@@ -221,6 +268,77 @@ func TestDynamicLinkStylesheetLoadsAndInvalidatesCurrentPage(t *testing.T) {
 	}
 	if got := computed.Color(); got.R != 0x12 || got.G != 0x34 || got.B != 0x56 || got.A != 0xff {
 		t.Fatalf("dynamic stylesheet color = %#v", got)
+	}
+}
+
+func TestDynamicEmbeddedImportLoadsThroughStylesheetGraph(t *testing.T) {
+	t.Parallel()
+
+	engine, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close()
+	location, _ := url.Parse("https://graph.test/initial")
+	page, err := engine.NewPage(dom.NewDocument(), location)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaderStub := &stylesheetGraphLoader{fetched: make(chan string, 1)}
+	navigation, err := page.Navigate(context.Background(), "https://graph.test/page", loaderStub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := page.WaitNavigation(ctx, navigation); err != nil {
+		t.Fatal(err)
+	}
+
+	head := computedStyleTestElement(page.document.Root(), "head")
+	if head == nil {
+		t.Fatal("navigated document has no head")
+	}
+	headID, _ := page.document.ID(head)
+	styleID, err := page.document.CreateElement("style")
+	if err != nil {
+		t.Fatal(err)
+	}
+	textID, err := page.document.CreateTextNode(`@import "dynamic.css";`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := page.document.AppendNode(styleID, textID); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.document.AppendNode(headID, styleID); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.syncAndLoadStylesheets(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case got := <-loaderStub.fetched:
+		if got != "https://graph.test/dynamic.css" {
+			t.Fatalf("embedded import URL = %q", got)
+		}
+	case <-ctx.Done():
+		t.Fatal("embedded import fetch did not start")
+	}
+	if err := page.Realm.RunOne(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	targetID, ok := page.document.ElementByID("target")
+	if !ok {
+		t.Fatal("navigated target was not indexed")
+	}
+	computed, err := page.ComputedStyle(NodeHandle{Document: page.DocumentGeneration(), Node: targetID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := computed.Color(); got.R != 0x12 || got.G != 0x34 || got.B != 0x56 || got.A != 0xff {
+		t.Fatalf("embedded imported color = %#v", got)
 	}
 }
 

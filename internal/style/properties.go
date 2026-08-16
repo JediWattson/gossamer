@@ -566,6 +566,23 @@ func validCascadedDeclaration(declaration css.Declaration, viewport Viewport) bo
 	return validComputedDeclaration(declaration, viewport)
 }
 
+// SupportsDeclaration reports whether the current style engine recognizes a
+// parsed declaration's property and value grammar. It is the browser-owned
+// stylesheet graph's capability boundary for @supports import conditions;
+// it performs no cascade or DOM-dependent computation.
+func SupportsDeclaration(declaration css.Declaration) bool {
+	if strings.HasPrefix(declaration.Property, "--") {
+		return css.ValidCustomPropertyValue(declaration.Value)
+	}
+	if len(declarationTargets(declaration.Property)) == 0 {
+		return false
+	}
+	if css.ContainsVarFunction(declaration.Value) {
+		return css.ValidVariableFunctions(declaration.Value)
+	}
+	return validComputedDeclaration(declaration, Viewport{Width: 800, Height: 600, InitialFontSize: 16})
+}
+
 func validComputedDeclaration(declaration css.Declaration, viewport Viewport) bool {
 	if definition, ok := lookupPropertyDefinition(declaration.Property); ok {
 		return definition.valid(declaration.Value, viewport)

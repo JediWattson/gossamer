@@ -201,13 +201,16 @@ a { text-decoration: none
 	if err != nil {
 		t.Fatalf("Parse() error = %v", err)
 	}
-	if got, want := len(stylesheet.Rules), 4; got != want {
+	if got, want := len(stylesheet.Rules), 5; got != want {
 		t.Fatalf("len(Rules) = %d, want %d: %#v", got, want, stylesheet.Rules)
 	}
 	for index, rule := range stylesheet.Rules {
 		if rule.Order != index {
 			t.Errorf("Rules[%d].Order = %d, want %d", index, rule.Order, index)
 		}
+	}
+	if got, want := stylesheet.Rules[2].Supports, []string{"(display: grid)"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("supports context = %q, want %q", got, want)
 	}
 
 	first := stylesheet.Rules[0]
@@ -240,10 +243,13 @@ a { text-decoration: none
 	if !stylesheet.Rules[1].Selectors[0].Matches(directParagraph) {
 		t.Error("section > p selector did not match a direct paragraph child")
 	}
-	if !stylesheet.Rules[2].Selectors[0].Matches(dom.NewElement("p")) {
-		t.Error("third parsed selector did not match p")
+	if !stylesheet.Rules[2].Selectors[0].Matches(dom.NewElement("span", dom.Attribute{Name: "class", Value: "inside"})) {
+		t.Error("@supports selector did not match .inside")
 	}
-	if !stylesheet.Rules[3].Selectors[0].Matches(dom.NewElement("a")) {
+	if !stylesheet.Rules[3].Selectors[0].Matches(dom.NewElement("p")) {
+		t.Error("fourth parsed selector did not match p")
+	}
+	if !stylesheet.Rules[4].Selectors[0].Matches(dom.NewElement("a")) {
 		t.Error("unclosed final rule selector did not match a")
 	}
 }

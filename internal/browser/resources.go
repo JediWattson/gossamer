@@ -29,6 +29,8 @@ type navigationResourceRequest struct {
 	url                  *url.URL
 	node                 dom.NodeID
 	stylesheetGeneration uint64
+	stylesheetSource     string
+	stylesheetBase       *url.URL
 }
 
 type navigationResourceResult struct {
@@ -171,6 +173,15 @@ func loadNavigationResourceSequence(
 			kind:                 request.kind,
 			stylesheetGeneration: request.stylesheetGeneration,
 		}
+		if request.kind == resource.Stylesheet && request.stylesheetSource != "" {
+			result.stylesheet, result.err = loadStylesheetSourceWithImports(
+				ctx, pipeline, request.stylesheetBase, request.stylesheetSource,
+			)
+			if err := deliver(result); err != nil {
+				return err
+			}
+			continue
+		}
 		imageKey := ""
 		if request.kind == resource.Image {
 			imageKey = request.url.String()
@@ -228,7 +239,7 @@ func loadNavigationResourceSequence(
 			if !isCSSAsset(asset) {
 				result.err = fmt.Errorf("browser: stylesheet response is not text/css")
 			} else {
-				result.stylesheet, _ = css.Parse(string(asset.Bytes()))
+				result.stylesheet, result.err = loadStylesheetWithImports(ctx, pipeline, asset)
 			}
 
 		case resource.Image:
