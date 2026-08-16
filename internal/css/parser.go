@@ -78,10 +78,9 @@ func (parser *stylesheetParser) parse() (Stylesheet, error) {
 	parser.anonymousLayer = &anonymousLayer
 	appearance := 0
 	parser.appearance = &appearance
-	if err := parser.parseRuleList(); err != nil {
-		return stylesheet, err
-	}
-	return stylesheet, nil
+	err := parser.parseRuleList()
+	stylesheet = stylesheet.WithSelectorIndex()
+	return stylesheet, err
 }
 
 func (parser *stylesheetParser) parseRuleList() error {

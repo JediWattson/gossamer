@@ -26,6 +26,7 @@ type Stylesheet struct {
 	LayerOrder        []string
 	LayerDeclarations []LayerDeclaration
 	Imports           []ImportRule
+	selectorIndex     *stylesheetSelectorIndex
 }
 
 // LayerDeclaration is one appearance of a layer identity in source order.
@@ -96,6 +97,27 @@ type Selector struct {
 	combinators []selectorCombinator
 	leading     selectorCombinator
 	pseudo      PseudoElement
+}
+
+// SelectorCandidateKind identifies the required rightmost simple selector
+// used by the style engine's conservative rule index. A candidate key can
+// produce false positives, which the full selector matcher rejects, but never
+// false negatives.
+type SelectorCandidateKind uint8
+
+const (
+	SelectorCandidateUniversal SelectorCandidateKind = iota
+	SelectorCandidateType
+	SelectorCandidateClass
+	SelectorCandidateID
+)
+
+// SelectorCandidateKey is one conservative lookup key for a selector's
+// subject compound. Value is decoded selector text; type values are normalized
+// with CSS's ASCII case folding while class and ID values remain case-sensitive.
+type SelectorCandidateKey struct {
+	Kind  SelectorCandidateKind
+	Value string
 }
 
 // PseudoElement identifies the generated subject selected after the final
@@ -169,6 +191,26 @@ func (selector Selector) Specificity() Specificity {
 // selects an ordinary element.
 func (selector Selector) PseudoElement() PseudoElement {
 	return selector.pseudo
+}
+
+// CandidateKey returns the most selective directly required key on the
+// selector's rightmost compound. Logical pseudo-class arguments are not
+// promoted because their branches may require different keys.
+func (selector Selector) CandidateKey() SelectorCandidateKey {
+	if len(selector.compounds) == 0 {
+		return SelectorCandidateKey{Kind: SelectorCandidateUniversal}
+	}
+	compound := selector.compounds[len(selector.compounds)-1]
+	if len(compound.ids) != 0 {
+		return SelectorCandidateKey{Kind: SelectorCandidateID, Value: compound.ids[0]}
+	}
+	if len(compound.classes) != 0 {
+		return SelectorCandidateKey{Kind: SelectorCandidateClass, Value: compound.classes[0]}
+	}
+	if compound.typeName != "" && compound.typeName != "*" {
+		return SelectorCandidateKey{Kind: SelectorCandidateType, Value: lowerASCII(compound.typeName)}
+	}
+	return SelectorCandidateKey{Kind: SelectorCandidateUniversal}
 }
 
 type compoundSelector struct {

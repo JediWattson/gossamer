@@ -554,12 +554,16 @@ Current foundation: parsed embedded/external stylesheets and inline declaration
 lists are cached by browser-owned stable identities and content generations.
 The inline cache is bounded by the currently connected styled elements, drops
 detached entries, preserves raw duplicates and source spans, and uses the
-uncached style path as an executable equivalence oracle. Style, layout, and
-paint still rebuild globally after connected mutations.
+uncached style path as an executable equivalence oracle. Parsed stylesheets
+also retain immutable, conservative rightmost-compound indexes for ID, class,
+and type candidates. Full selector matching remains authoritative, and an
+indexed-versus-full-scan cascade oracle, fuzz target, and benchmark protect
+both source-order equivalence and the measured reduction in selector work.
+Style, layout, and paint still rebuild globally after connected mutations.
 
 - Extend parsed-rule caches with script-visible stylesheet identities and
   generation-aware rule handles.
-- Add selector candidate indexes and property/state dependency tracking.
+- Extend selector candidate indexes with property/state dependency tracking.
 - Classify connected mutations, then introduce subtree restyle against the
   full-document rebuild as an executable correctness oracle.
 - Add incremental layout and paint damage only after style invalidation is

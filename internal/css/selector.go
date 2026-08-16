@@ -998,14 +998,21 @@ func equalASCIIFold(left, right string) bool {
 }
 
 func lowerASCII(value string) string {
-	var lowered strings.Builder
-	lowered.Grow(len(value))
+	firstUpper := -1
 	for index := range len(value) {
-		character := value[index]
-		if character >= 'A' && character <= 'Z' {
-			character += 'a' - 'A'
+		if value[index] >= 'A' && value[index] <= 'Z' {
+			firstUpper = index
+			break
 		}
-		lowered.WriteByte(character)
 	}
-	return lowered.String()
+	if firstUpper < 0 {
+		return value
+	}
+	lowered := []byte(value)
+	for index := firstUpper; index < len(lowered); index++ {
+		if lowered[index] >= 'A' && lowered[index] <= 'Z' {
+			lowered[index] += 'a' - 'A'
+		}
+	}
+	return string(lowered)
 }

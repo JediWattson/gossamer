@@ -132,7 +132,7 @@ func expandStylesheetImports(
 	}
 	parsed.Imports = nil
 	appendFlattenedStylesheet(&flattened, parsed)
-	return flattened, nil
+	return flattened.RebuildSelectorIndex(), nil
 }
 
 func applyImportRuleContext(stylesheet css.Stylesheet, imported css.ImportRule, budget *stylesheetImportBudget) css.Stylesheet {

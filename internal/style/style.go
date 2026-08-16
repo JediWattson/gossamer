@@ -44,6 +44,8 @@ type Input struct {
 	UserAgentStylesheets []css.Stylesheet
 	SelectorState        SelectorState
 	selectorContext      css.MatchContext
+	// disableRuleIndex retains the full rule scan as an executable test oracle.
+	disableRuleIndex bool
 }
 
 // SelectorState identifies browser-controlled pseudo-class subjects by
@@ -1228,12 +1230,13 @@ func buildStyleTree(document *dom.Node, input Input) *styledNode {
 	}}, inputStylesheets(input.UserAgentStylesheets, SourceUserAgentRule)...)
 	mediaEnvironment := screenMediaEnvironment(input.Environment)
 	context := cascadeStyleContext{
-		userAgent:          originStyleContext{sheets: userAgentSheets, layerRanks: originLayerRanks(userAgentSheets, mediaEnvironment)},
-		user:               originStyleContext{sheets: userSheets, layerRanks: originLayerRanks(userSheets, mediaEnvironment)},
-		author:             originStyleContext{sheets: authorSheets, layerRanks: originLayerRanks(authorSheets, mediaEnvironment)},
+		userAgent:          buildOriginStyleContext(userAgentSheets, mediaEnvironment),
+		user:               buildOriginStyleContext(userSheets, mediaEnvironment),
+		author:             buildOriginStyleContext(authorSheets, mediaEnvironment),
 		mediaEnvironment:   mediaEnvironment,
 		selectorContext:    input.selectorContext,
 		inlineDeclarations: input.InlineDeclarations,
+		disableRuleIndex:   input.disableRuleIndex,
 	}
 	for _, origin := range []originStyleContext{context.userAgent, context.user, context.author} {
 		for _, source := range origin.sheets {
@@ -1247,7 +1250,7 @@ func buildStyleTree(document *dom.Node, input Input) *styledNode {
 			}
 		}
 	}
-	return styleNode(document, nil, context, input.Environment)
+	return styleNode(document, nil, &context, input.Environment)
 }
 
 func inputStylesheets(stylesheets []css.Stylesheet, kind SourceKind) []stylesheetSource {
@@ -1314,7 +1317,7 @@ func collectAuthorStyles(root *dom.Node, external map[*dom.Node]css.Stylesheet, 
 	return stylesheets
 }
 
-func styleNode(node *dom.Node, parent *styledNode, context cascadeStyleContext, viewport Viewport) *styledNode {
+func styleNode(node *dom.Node, parent *styledNode, context *cascadeStyleContext, viewport Viewport) *styledNode {
 	style, explanations := initialStyle(node, parent, viewport)
 	if node != nil && node.Type == dom.ElementNode {
 		applyCascade(&style, explanations, node, css.PseudoElementNone, context, viewport, parent)
@@ -1505,7 +1508,7 @@ func mustParseBuiltInUserAgentStylesheet(source string) css.Stylesheet {
 	return stylesheet
 }
 
-func applyCascade(style *computedStyle, explanations map[string]PropertyExplanation, node *dom.Node, pseudo css.PseudoElement, context cascadeStyleContext, viewport Viewport, parent *styledNode) bool {
+func applyCascade(style *computedStyle, explanations map[string]PropertyExplanation, node *dom.Node, pseudo css.PseudoElement, context *cascadeStyleContext, viewport Viewport, parent *styledNode) bool {
 	candidatesByTarget := make(map[string][]winningDeclaration)
 	recorded := false
 	sourceOrders := make(map[CascadeOrigin]int)
@@ -1562,7 +1565,9 @@ func applyCascade(style *computedStyle, explanations map[string]PropertyExplanat
 	}
 	recordSheets := func(origin CascadeOrigin, originContext originStyleContext) {
 		for _, source := range originContext.sheets {
-			for ruleIndex, rule := range source.stylesheet.Rules {
+			candidateRules := source.ruleIndex.candidates(source.stylesheet, node, context.disableRuleIndex, context.ruleScratch[:0])
+			for _, ruleIndex := range candidateRules {
+				rule := source.stylesheet.Rules[ruleIndex]
 				var specificity css.Specificity
 				var matches bool
 				if pseudo == css.PseudoElementNone {
@@ -1573,7 +1578,6 @@ func applyCascade(style *computedStyle, explanations map[string]PropertyExplanat
 				matches = matches && rule.MatchesMedia(context.mediaEnvironment)
 				matches = matches && rule.MatchesSupports(SupportsDeclaration)
 				for declarationIndex, declaration := range rule.Declarations {
-					order := reserveSourceOrder(origin)
 					if !matches {
 						continue
 					}
@@ -1585,11 +1589,14 @@ func applyCascade(style *computedStyle, explanations map[string]PropertyExplanat
 						declaration: declaration, origin: origin, kind: source.kind, owner: source.owner,
 						declarationSource: declarationSource,
 						specificity:       specificity, layer: rule.Layer, stylesheetOrder: source.order,
-						ruleOrder: ruleIndex, declarationOrder: declarationIndex, order: order,
+						ruleOrder: ruleIndex, declarationOrder: declarationIndex,
+						order: source.ruleIndex.sourceOrder[ruleIndex] + declarationIndex,
 					})
 				}
 			}
+			context.ruleScratch = candidateRules[:0]
 		}
+		sourceOrders[origin] = originContext.declarationCount
 	}
 
 	recordSheets(CascadeOriginUserAgent, context.userAgent)

@@ -15,11 +15,13 @@ type stylesheetSource struct {
 	owner      *dom.Node
 	kind       SourceKind
 	order      int
+	ruleIndex  selectorRuleIndex
 }
 
 type originStyleContext struct {
-	sheets     []stylesheetSource
-	layerRanks map[layerIdentity]int
+	sheets           []stylesheetSource
+	layerRanks       map[layerIdentity]int
+	declarationCount int
 }
 
 type layerIdentity struct {
@@ -35,6 +37,8 @@ type cascadeStyleContext struct {
 	selectorContext    css.MatchContext
 	inlineDeclarations map[*dom.Node][]css.SourcedDeclaration
 	pseudoElements     [3]bool
+	disableRuleIndex   bool
+	ruleScratch        []int
 }
 
 // winningDeclaration is one validated declaration expanded to a longhand (or
