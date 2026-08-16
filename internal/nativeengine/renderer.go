@@ -2,6 +2,7 @@ package nativeengine
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -116,7 +117,7 @@ func (realm *Realm) facadeRecord(context *browserruntime.TaskContext, object mem
 		return memory.HostObject{}, false, err
 	}
 	switch record.Class {
-	case hostClassClassList, hostClassDataset, hostClassStyle:
+	case hostClassClassList, hostClassDataset, hostClassStyle, hostClassComputedStyle:
 		return record, true, nil
 	default:
 		return memory.HostObject{}, false, nil
@@ -142,12 +143,45 @@ func (realm *Realm) facadePropertyGet(context *browserruntime.TaskContext, objec
 		if err != nil {
 			return memory.Value{}, false, true, err
 		}
+		if index, indexErr := strconv.ParseUint(name, 10, 32); indexErr == nil {
+			names, namesErr := host.StylePropertyNames(handle)
+			if namesErr != nil {
+				return memory.Value{}, false, true, namesErr
+			}
+			if index >= uint64(len(names)) {
+				return memory.Value{}, false, true, nil
+			}
+			valueRef, valueErr := newString(context, names[index])
+			return valueRef, true, true, valueErr
+		}
 		value, _, _, err := host.StyleProperty(handle, cssPropertyName(name))
 		if err != nil {
 			return memory.Value{}, false, true, err
 		}
 		valueRef, err := newString(context, value)
 		return valueRef, true, true, err
+	case hostClassComputedStyle:
+		host, ok := realm.host.(browser.DOMComputedStyleHost)
+		if !ok {
+			return memory.Value{}, false, true, fmt.Errorf("nativeengine: browser host does not expose computed style")
+		}
+		if index, indexErr := strconv.ParseUint(name, 10, 32); indexErr == nil {
+			names, namesErr := host.ComputedStylePropertyNames(handle, "")
+			if namesErr != nil {
+				return memory.Value{}, false, true, namesErr
+			}
+			if index >= uint64(len(names)) {
+				return memory.Value{}, false, true, nil
+			}
+			valueRef, valueErr := newString(context, names[index])
+			return valueRef, true, true, valueErr
+		}
+		value, _, valueErr := host.ComputedStyleProperty(handle, "", cssPropertyName(name))
+		if valueErr != nil {
+			return memory.Value{}, false, true, valueErr
+		}
+		valueRef, valueErr := newString(context, value)
+		return valueRef, true, true, valueErr
 	default:
 		return memory.Value{}, false, false, nil
 	}
@@ -172,6 +206,8 @@ func (realm *Realm) facadePropertySet(context *browserruntime.TaskContext, objec
 			return true, err
 		}
 		return true, host.SetStyleProperty(handle, cssPropertyName(name), text, "")
+	case hostClassComputedStyle:
+		return true, memory.ErrReadOnlyProperty
 	default:
 		return false, nil
 	}
@@ -193,6 +229,8 @@ func (realm *Realm) facadePropertyDelete(context *browserruntime.TaskContext, ob
 		}
 		_, err = host.RemoveStyleProperty(handle, cssPropertyName(name))
 		return true, true, err
+	case hostClassComputedStyle:
+		return false, true, memory.ErrReadOnlyProperty
 	default:
 		return false, false, nil
 	}
