@@ -10,27 +10,41 @@ import (
 
 const maxGridTrackListEntries = 1024
 
-// GridTrackKind identifies the supported computed track-breadth forms. This
-// first Grid slice retains auto, typed length-percentage, and flexible tracks;
-// minmax and intrinsic sizing keywords remain future track functions.
+// GridTrackKind identifies one computed track-breadth form.
 type GridTrackKind uint8
 
 const (
 	GridTrackAuto GridTrackKind = iota
 	GridTrackLength
 	GridTrackFraction
+	GridTrackMinContent
+	GridTrackMaxContent
 )
 
-// GridTrackSize is one immutable computed grid track breadth.
+// GridTrackSize is one immutable computed grid track sizing function. A bare
+// breadth has the corresponding minimum and maximum, except a flexible breadth
+// whose automatic minimum is retained explicitly. minmax() preserves both
+// breadths and its authored range syntax for computed-value serialization.
 type GridTrackSize struct {
-	kind     GridTrackKind
-	length   Length
-	fraction float64
+	minKind      GridTrackKind
+	minLength    Length
+	maxKind      GridTrackKind
+	maxLength    Length
+	maxFraction  float64
+	minmaxSyntax bool
 }
 
-func (track GridTrackSize) Kind() GridTrackKind { return track.kind }
-func (track GridTrackSize) Length() Length      { return track.length }
-func (track GridTrackSize) Fraction() float64   { return track.fraction }
+// Kind, Length, and Fraction expose the maximum breadth for compatibility with
+// the first Grid slice. MinKind/MinLength expose the range minimum.
+func (track GridTrackSize) Kind() GridTrackKind    { return track.maxKind }
+func (track GridTrackSize) Length() Length         { return track.maxLength }
+func (track GridTrackSize) Fraction() float64      { return track.maxFraction }
+func (track GridTrackSize) MinKind() GridTrackKind { return track.minKind }
+func (track GridTrackSize) MinLength() Length      { return track.minLength }
+func (track GridTrackSize) IsMinMax() bool         { return track.minmaxSyntax }
+func (track GridTrackSize) MaxKind() GridTrackKind { return track.maxKind }
+func (track GridTrackSize) MaxLength() Length      { return track.maxLength }
+func (track GridTrackSize) MaxFraction() float64   { return track.maxFraction }
 
 // GridTrackList is an immutable explicit track list. Tracks returns a copy so
 // style snapshots cannot be mutated through CSSOM or renderer callers.
@@ -150,26 +164,103 @@ func appendGridTrackComponent(tracks *[]GridTrackSize, component css.ComponentVa
 		}
 		return true
 	}
-	if keyword, ok := componentKeyword(component); ok {
-		if keyword == "auto" {
-			*tracks = append(*tracks, GridTrackSize{kind: GridTrackAuto})
-			return true
-		}
+	parsed, ok := parseGridTrackSizeComponent(component, source, fontSize, viewport)
+	if !ok {
 		return false
 	}
-	if token, ok := componentToken(component); ok && token.Kind == css.TokenDimension && lowerASCIIValue(token.Value) == "fr" {
-		if !isFinite(token.Number) || token.Number < 0 {
-			return false
+	*tracks = append(*tracks, parsed)
+	return true
+}
+
+type gridTrackBreadth struct {
+	kind     GridTrackKind
+	length   Length
+	fraction float64
+}
+
+func parseGridTrackSizeComponent(component css.ComponentValue, source string, fontSize float64, viewport Viewport) (GridTrackSize, bool) {
+	if component.Kind == css.ComponentFunction && lowerASCIIValue(component.Token.Value) == "minmax" {
+		minimumComponent, maximumComponent, ok := gridMinMaxParts(component)
+		if !ok {
+			return GridTrackSize{}, false
 		}
-		*tracks = append(*tracks, GridTrackSize{kind: GridTrackFraction, fraction: token.Number})
-		return true
+		minimum, minimumOK := parseGridTrackBreadth(minimumComponent, source, fontSize, viewport, false)
+		maximum, maximumOK := parseGridTrackBreadth(maximumComponent, source, fontSize, viewport, true)
+		if !minimumOK || !maximumOK {
+			return GridTrackSize{}, false
+		}
+		return gridTrackRange(minimum, maximum, true), true
+	}
+	breadth, ok := parseGridTrackBreadth(component, source, fontSize, viewport, true)
+	if !ok {
+		return GridTrackSize{}, false
+	}
+	minimum := breadth
+	if breadth.kind == GridTrackFraction {
+		minimum = gridTrackBreadth{kind: GridTrackAuto}
+	}
+	return gridTrackRange(minimum, breadth, false), true
+}
+
+func parseGridTrackBreadth(component css.ComponentValue, source string, fontSize float64, viewport Viewport, allowFlex bool) (gridTrackBreadth, bool) {
+	if keyword, ok := componentKeyword(component); ok {
+		switch keyword {
+		case "auto":
+			return gridTrackBreadth{kind: GridTrackAuto}, true
+		case "min-content":
+			return gridTrackBreadth{kind: GridTrackMinContent}, true
+		case "max-content":
+			return gridTrackBreadth{kind: GridTrackMaxContent}, true
+		default:
+			return gridTrackBreadth{}, false
+		}
+	}
+	if token, ok := componentToken(component); ok && token.Kind == css.TokenDimension && lowerASCIIValue(token.Value) == "fr" {
+		if !allowFlex || !isFinite(token.Number) || token.Number < 0 {
+			return gridTrackBreadth{}, false
+		}
+		return gridTrackBreadth{kind: GridTrackFraction, fraction: token.Number}, true
 	}
 	parsed, ok := parseLengthComponent(component, source, fontSize, viewport)
 	if !ok || parsed.unit == lengthAuto || !nonNegativeLength(parsed) {
-		return false
+		return gridTrackBreadth{}, false
 	}
-	*tracks = append(*tracks, GridTrackSize{kind: GridTrackLength, length: parsed})
-	return true
+	return gridTrackBreadth{kind: GridTrackLength, length: parsed}, true
+}
+
+func gridTrackRange(minimum, maximum gridTrackBreadth, minmaxSyntax bool) GridTrackSize {
+	return GridTrackSize{
+		minKind:      minimum.kind,
+		minLength:    minimum.length,
+		maxKind:      maximum.kind,
+		maxLength:    maximum.length,
+		maxFraction:  maximum.fraction,
+		minmaxSyntax: minmaxSyntax,
+	}
+}
+
+func gridMinMaxParts(component css.ComponentValue) (css.ComponentValue, css.ComponentValue, bool) {
+	values := trimValueWhitespace(component.Values)
+	comma := -1
+	for index, candidate := range values {
+		token, ok := componentToken(candidate)
+		if !ok || token.Kind != css.TokenComma {
+			continue
+		}
+		if comma >= 0 {
+			return css.ComponentValue{}, css.ComponentValue{}, false
+		}
+		comma = index
+	}
+	if comma < 0 {
+		return css.ComponentValue{}, css.ComponentValue{}, false
+	}
+	minimum := nonWhitespaceComponents(values[:comma])
+	maximum := nonWhitespaceComponents(values[comma+1:])
+	if len(minimum) != 1 || len(maximum) != 1 {
+		return css.ComponentValue{}, css.ComponentValue{}, false
+	}
+	return minimum[0], maximum[0], true
 }
 
 func gridRepeatParts(component css.ComponentValue) (int, []css.ComponentValue, bool) {
@@ -345,11 +436,23 @@ func parseGridLineShorthand(source string) (GridLine, GridLine, bool) {
 }
 
 func serializeGridTrackSize(track GridTrackSize) string {
-	switch track.kind {
+	if track.minmaxSyntax {
+		return "minmax(" + serializeGridTrackBreadth(track.minKind, track.minLength, 0) + ", " +
+			serializeGridTrackBreadth(track.maxKind, track.maxLength, track.maxFraction) + ")"
+	}
+	return serializeGridTrackBreadth(track.maxKind, track.maxLength, track.maxFraction)
+}
+
+func serializeGridTrackBreadth(kind GridTrackKind, length Length, fraction float64) string {
+	switch kind {
 	case GridTrackLength:
-		return serializeComputedLength(track.length)
+		return serializeComputedLength(length)
 	case GridTrackFraction:
-		return serializeComputedNumber(track.fraction) + "fr"
+		return serializeComputedNumber(fraction) + "fr"
+	case GridTrackMinContent:
+		return "min-content"
+	case GridTrackMaxContent:
+		return "max-content"
 	default:
 		return "auto"
 	}

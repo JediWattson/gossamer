@@ -81,3 +81,21 @@ func TestComputedGridTemplateIncludesImplicitTracksAndEmptyGridKeepsNone(t *test
 		t.Fatal("grid resolved-style reads published a frame or cleared dirtiness")
 	}
 }
+
+func TestComputedGridMinMaxTracksResolveAndStayLive(t *testing.T) {
+	t.Parallel()
+
+	engine, page, gridID := computedStyleTestPage(t, `<!doctype html><html><body style="margin:0"><section id=target style="display:grid;width:200px;grid-template-columns:minmax(80px,1fr) 1fr"><div></div><div></div></section></body></html>`)
+	defer engine.Close()
+	handle := NodeHandle{Document: page.DocumentGeneration(), Node: gridID}
+
+	assertResolvedProperty(t, page, handle, "grid-template-columns", "100px 100px")
+	if err := page.document.SetAttribute(gridID, "style", "display:grid;width:200px;grid-template-columns:minmax(160px,1fr) 1fr;grid-auto-columns:minmax(min-content,max-content)"); err != nil {
+		t.Fatal(err)
+	}
+	assertResolvedProperty(t, page, handle, "grid-template-columns", "160px 40px")
+	assertResolvedProperty(t, page, handle, "grid-auto-columns", "minmax(min-content, max-content)")
+	if page.Frame() != nil || !page.Dirty() {
+		t.Fatal("minmax computed-style reads published a frame or cleared dirtiness")
+	}
+}

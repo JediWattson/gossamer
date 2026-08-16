@@ -53,6 +53,12 @@ func TestStockV8GridComputedStyleAndGeometryStayLive(t *testing.T) {
 				if (retained.gridTemplateColumns !== "100px 80px 80px" || retained.columnGap !== "20px" || second.getBoundingClientRect().left !== 220) {
 					throw new Error("live grid mutation: " + [retained.gridTemplateColumns, retained.columnGap, second.getBoundingClientRect().left]);
 				}
+				grid.style.gridTemplateColumns = "minmax(160px, 1fr) 1fr";
+				grid.style.gridAutoColumns = "minmax(min-content, max-content)";
+				grid.style.columnGap = "0";
+				if (retained.gridTemplateColumns !== "160px 140px" || retained.gridAutoColumns !== "minmax(min-content, max-content)") {
+					throw new Error("live minmax tracks: " + [retained.gridTemplateColumns, retained.gridAutoColumns]);
+				}
 			})();
 		`,
 	}); err != nil {

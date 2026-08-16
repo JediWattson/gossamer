@@ -459,59 +459,190 @@ func gridTrackSizes(template computed.GridTrackList, automatic computed.GridTrac
 }
 
 func (context *layoutContext) sizeGridColumns(items []gridLayoutItem, tracks []computed.GridTrackSize, availableWidth, gap float64) ([]float64, error) {
-	sizes := resolveDefiniteGridTracks(tracks, availableWidth, context.viewport)
+	contributions := make([]gridTrackContribution, 0, len(items))
 	for index := range items {
 		item := &items[index]
 		intrinsic, err := context.gridItemIntrinsicWidths(item.node, availableWidth)
 		if err != nil {
 			return nil, err
 		}
-		distributeGridContribution(sizes, tracks, item.column.start, item.column.span, intrinsic.preferred, gap)
+		contributions = append(contributions, gridTrackContribution{
+			start:     item.column.start,
+			span:      item.column.span,
+			minimum:   intrinsic.minimum,
+			preferred: intrinsic.preferred,
+		})
 	}
-	distributeGridFreeSpace(sizes, tracks, availableWidth, gap)
-	return sizes, nil
+	height := availableWidth
+	return sizeGridTrackAxis(tracks, contributions, &height, gap, context.viewport), nil
 }
 
-func resolveDefiniteGridTracks(tracks []computed.GridTrackSize, percentageBase float64, viewport Viewport) []float64 {
-	sizes := make([]float64, len(tracks))
-	for index, track := range tracks {
-		if track.Kind() == computed.GridTrackLength {
-			sizes[index] = math.Max(0, resolveLength(track.Length(), percentageBase, viewport, 0))
-		}
+type gridTrackContribution struct {
+	start     int
+	span      int
+	minimum   float64
+	preferred float64
+}
+
+type gridTrackState struct {
+	minKind       computed.GridTrackKind
+	maxKind       computed.GridTrackKind
+	base          float64
+	limit         float64
+	flexIntrinsic float64
+	fraction      float64
+}
+
+func sizeGridTrackAxis(tracks []computed.GridTrackSize, contributions []gridTrackContribution, available *float64, gap float64, viewport Viewport) []float64 {
+	states := initializeGridTrackStates(tracks, available, viewport)
+	applyGridTrackContributions(states, contributions, gap)
+	sizes := make([]float64, len(states))
+	for index := range states {
+		sizes[index] = states[index].base
 	}
+	if available == nil {
+		return indefiniteGridTrackSizes(states)
+	}
+	maximizeGridTracks(sizes, states, *available, gap)
+	distributeGridFlexibleSpace(sizes, states, *available, gap)
+	stretchGridAutoTracks(sizes, states, *available, gap)
 	return sizes
 }
 
-func distributeGridContribution(sizes []float64, tracks []computed.GridTrackSize, start, span int, contribution, gap float64) {
-	if start < 0 || span < 1 || start+span > len(sizes) {
+func initializeGridTrackStates(tracks []computed.GridTrackSize, available *float64, viewport Viewport) []gridTrackState {
+	states := make([]gridTrackState, len(tracks))
+	percentageBase := 0.0
+	if available != nil {
+		percentageBase = *available
+	}
+	for index, track := range tracks {
+		minKind := effectiveGridBreadthKind(track.MinKind(), track.MinLength(), available != nil)
+		maxKind := effectiveGridBreadthKind(track.MaxKind(), track.MaxLength(), available != nil)
+		state := gridTrackState{minKind: minKind, maxKind: maxKind, fraction: track.MaxFraction()}
+		if minKind == computed.GridTrackLength {
+			state.base = math.Max(0, resolveLength(track.MinLength(), percentageBase, viewport, 0))
+		}
+		if maxKind == computed.GridTrackLength {
+			state.limit = math.Max(0, resolveLength(track.MaxLength(), percentageBase, viewport, 0))
+		}
+		state.limit = math.Max(state.limit, state.base)
+		state.flexIntrinsic = state.base
+		states[index] = state
+	}
+	return states
+}
+
+func effectiveGridBreadthKind(kind computed.GridTrackKind, length computed.Length, percentageDefinite bool) computed.GridTrackKind {
+	if kind == computed.GridTrackLength && length.DependsOnPercent() && !percentageDefinite {
+		return computed.GridTrackAuto
+	}
+	return kind
+}
+
+func applyGridTrackContributions(states []gridTrackState, contributions []gridTrackContribution, gap float64) {
+	base := make([]float64, len(states))
+	for index := range states {
+		base[index] = states[index].base
+	}
+	for _, contribution := range contributions {
+		distributeGridValue(base, states, contribution.start, contribution.span, contribution.minimum, gap, func(state gridTrackState) bool {
+			return state.minKind == computed.GridTrackAuto || state.minKind == computed.GridTrackMinContent || state.minKind == computed.GridTrackMaxContent
+		})
+		distributeGridValue(base, states, contribution.start, contribution.span, contribution.preferred, gap, func(state gridTrackState) bool {
+			return state.minKind == computed.GridTrackMaxContent
+		})
+	}
+	for index := range states {
+		states[index].base = base[index]
+		states[index].limit = math.Max(states[index].limit, base[index])
+		states[index].flexIntrinsic = math.Max(states[index].flexIntrinsic, base[index])
+	}
+	limits := make([]float64, len(states))
+	flexIntrinsic := make([]float64, len(states))
+	for index := range states {
+		limits[index] = states[index].limit
+		flexIntrinsic[index] = states[index].flexIntrinsic
+	}
+	for _, contribution := range contributions {
+		distributeGridValue(limits, states, contribution.start, contribution.span, contribution.minimum, gap, func(state gridTrackState) bool {
+			return state.maxKind == computed.GridTrackMinContent
+		})
+		distributeGridValue(limits, states, contribution.start, contribution.span, contribution.preferred, gap, func(state gridTrackState) bool {
+			return state.maxKind == computed.GridTrackAuto || state.maxKind == computed.GridTrackMaxContent
+		})
+		distributeGridValue(flexIntrinsic, states, contribution.start, contribution.span, contribution.preferred, gap, func(state gridTrackState) bool {
+			return state.maxKind == computed.GridTrackFraction
+		})
+	}
+	for index := range states {
+		states[index].limit = math.Max(limits[index], states[index].base)
+		states[index].flexIntrinsic = math.Max(flexIntrinsic[index], states[index].base)
+	}
+}
+
+func distributeGridValue(values []float64, states []gridTrackState, start, span int, contribution, gap float64, eligible func(gridTrackState) bool) {
+	if start < 0 || span < 1 || start+span > len(values) {
 		return
 	}
-	current := sumFloat64(sizes[start:start+span]) + gap*float64(max(0, span-1))
+	current := sumFloat64(values[start:start+span]) + gap*float64(max(0, span-1))
 	deficit := contribution - current
 	if deficit <= 0 {
 		return
 	}
-	eligible := make([]int, 0, span)
+	indices := make([]int, 0, span)
 	for index := start; index < start+span; index++ {
-		if tracks[index].Kind() != computed.GridTrackLength {
-			eligible = append(eligible, index)
+		if eligible(states[index]) {
+			indices = append(indices, index)
 		}
 	}
-	if len(eligible) == 0 {
+	if len(indices) == 0 {
 		return
 	}
-	addition := deficit / float64(len(eligible))
-	for _, index := range eligible {
-		sizes[index] += addition
+	addition := deficit / float64(len(indices))
+	for _, index := range indices {
+		values[index] += addition
 	}
 }
 
-func distributeGridFreeSpace(sizes []float64, tracks []computed.GridTrackSize, available, gap float64) {
+func maximizeGridTracks(sizes []float64, states []gridTrackState, available, gap float64) {
+	free := available - gap*float64(max(0, len(sizes)-1)) - sumFloat64(sizes)
+	if free <= 0 {
+		return
+	}
+	active := make([]int, 0, len(states))
+	for index, state := range states {
+		if state.maxKind != computed.GridTrackFraction && state.limit > sizes[index] {
+			active = append(active, index)
+		}
+	}
+	for free > 0 && len(active) != 0 {
+		share := free / float64(len(active))
+		next := active[:0]
+		consumed := 0.0
+		for _, index := range active {
+			growth := math.Min(share, states[index].limit-sizes[index])
+			if growth > 0 {
+				sizes[index] += growth
+				consumed += growth
+			}
+			if sizes[index] < states[index].limit {
+				next = append(next, index)
+			}
+		}
+		if consumed <= 0 {
+			return
+		}
+		free -= consumed
+		active = next
+	}
+}
+
+func distributeGridFlexibleSpace(sizes []float64, states []gridTrackState, available, gap float64) {
 	gapTotal := gap * float64(max(0, len(sizes)-1))
 	nonFrTotal := 0.0
-	active := make([]int, 0, len(tracks))
-	for index, track := range tracks {
-		if track.Kind() == computed.GridTrackFraction && track.Fraction() > 0 {
+	active := make([]int, 0, len(states))
+	for index, state := range states {
+		if state.maxKind == computed.GridTrackFraction && state.fraction > 0 {
 			active = append(active, index)
 		} else {
 			nonFrTotal += sizes[index]
@@ -523,13 +654,13 @@ func distributeGridFreeSpace(sizes []float64, tracks []computed.GridTrackSize, a
 		for len(active) != 0 {
 			factorTotal := 0.0
 			for _, index := range active {
-				factorTotal += tracks[index].Fraction()
+				factorTotal += states[index].fraction
 			}
 			unit = math.Max(0, available-gapTotal-frozen) / math.Max(1, factorTotal)
 			remaining := active[:0]
 			frozeTrack := false
 			for _, index := range active {
-				if sizes[index] > unit*tracks[index].Fraction() {
+				if sizes[index] > unit*states[index].fraction {
 					frozen += sizes[index]
 					frozeTrack = true
 					continue
@@ -542,17 +673,21 @@ func distributeGridFreeSpace(sizes []float64, tracks []computed.GridTrackSize, a
 			}
 		}
 		for _, index := range active {
-			sizes[index] = unit * tracks[index].Fraction()
+			sizes[index] = unit * states[index].fraction
 		}
 	}
+}
+
+func stretchGridAutoTracks(sizes []float64, states []gridTrackState, available, gap float64) {
+	gapTotal := gap * float64(max(0, len(sizes)-1))
 	used := sumFloat64(sizes) + gapTotal
 	leftover := available - used
 	if leftover <= 0 {
 		return
 	}
 	autoCount := 0
-	for _, track := range tracks {
-		if track.Kind() == computed.GridTrackAuto {
+	for _, state := range states {
+		if state.maxKind == computed.GridTrackAuto {
 			autoCount++
 		}
 	}
@@ -560,11 +695,25 @@ func distributeGridFreeSpace(sizes []float64, tracks []computed.GridTrackSize, a
 		return
 	}
 	addition := leftover / float64(autoCount)
-	for index, track := range tracks {
-		if track.Kind() == computed.GridTrackAuto {
+	for index, state := range states {
+		if state.maxKind == computed.GridTrackAuto {
 			sizes[index] += addition
 		}
 	}
+}
+
+func indefiniteGridTrackSizes(states []gridTrackState) []float64 {
+	sizes := make([]float64, len(states))
+	for index, state := range states {
+		switch state.maxKind {
+		case computed.GridTrackFraction:
+			sizes[index] = math.Max(state.base, state.flexIntrinsic)
+		default:
+			sizes[index] = math.Max(state.base, state.limit)
+		}
+	}
+	expandIntrinsicGridFractions(sizes, states)
+	return sizes
 }
 
 func (context *layoutContext) measureGridItems(model *gridLayoutModel, contentWidth float64, columnStarts, columnEnds []float64) error {
@@ -585,30 +734,18 @@ func (context *layoutContext) measureGridItems(model *gridLayoutModel, contentWi
 }
 
 func (context *layoutContext) sizeGridRows(items []gridLayoutItem, tracks []computed.GridTrackSize, definiteHeight *float64, gap float64) []float64 {
-	percentageBase := 0.0
-	if definiteHeight != nil {
-		percentageBase = *definiteHeight
-	}
-	effectiveTracks := append([]computed.GridTrackSize(nil), tracks...)
-	sizes := make([]float64, len(tracks))
-	for index, track := range tracks {
-		if track.Kind() == computed.GridTrackLength && (!track.Length().DependsOnPercent() || definiteHeight != nil) {
-			sizes[index] = math.Max(0, resolveLength(track.Length(), percentageBase, context.viewport, 0))
-		} else if track.Kind() == computed.GridTrackLength {
-			effectiveTracks[index] = computed.GridTrackSize{}
-		}
-	}
+	contributions := make([]gridTrackContribution, 0, len(items))
 	for index := range items {
 		item := &items[index]
 		contribution := item.box.Bounds.Height + item.marginTop + item.marginBottom
-		distributeGridContribution(sizes, effectiveTracks, item.row.start, item.row.span, contribution, gap)
+		contributions = append(contributions, gridTrackContribution{
+			start:     item.row.start,
+			span:      item.row.span,
+			minimum:   contribution,
+			preferred: contribution,
+		})
 	}
-	if definiteHeight != nil {
-		distributeGridFreeSpace(sizes, effectiveTracks, *definiteHeight, gap)
-	} else {
-		expandIntrinsicGridFractions(sizes, effectiveTracks)
-	}
-	return sizes
+	return sizeGridTrackAxis(tracks, contributions, definiteHeight, gap, context.viewport)
 }
 
 func (context *layoutContext) placeGridItems(container *styledNode, box *Box, model *gridLayoutModel, columnStarts, columnEnds, rowStarts, rowEnds []float64) error {
@@ -671,46 +808,46 @@ func (context *layoutContext) intrinsicGridContentWidths(node *styledNode, avail
 	}
 	gap := math.Max(0, resolveLength(node.style.ColumnGap(), availableWidth, context.viewport, 0))
 	tracks := gridTrackSizes(node.style.GridTemplateColumns(), node.style.GridAutoColumns(), model.columns, model.columnOffset)
-	effectiveTracks := append([]computed.GridTrackSize(nil), tracks...)
-	minimum := make([]float64, len(tracks))
-	for index, track := range tracks {
-		if track.Kind() == computed.GridTrackLength && !track.Length().DependsOnPercent() {
-			minimum[index] = math.Max(0, resolveLength(track.Length(), availableWidth, context.viewport, 0))
-		} else if track.Kind() == computed.GridTrackLength {
-			effectiveTracks[index] = computed.GridTrackSize{}
-		}
-	}
-	preferred := append([]float64(nil), minimum...)
+	contributions := make([]gridTrackContribution, 0, len(model.items))
 	for index := range model.items {
 		item := &model.items[index]
 		intrinsic, measureErr := context.gridItemIntrinsicWidths(item.node, availableWidth)
 		if measureErr != nil {
 			return intrinsicWidths{}, measureErr
 		}
-		distributeGridContribution(minimum, effectiveTracks, item.column.start, item.column.span, intrinsic.minimum, gap)
-		distributeGridContribution(preferred, effectiveTracks, item.column.start, item.column.span, intrinsic.preferred, gap)
+		contributions = append(contributions, gridTrackContribution{
+			start:     item.column.start,
+			span:      item.column.span,
+			minimum:   intrinsic.minimum,
+			preferred: intrinsic.preferred,
+		})
 	}
-	expandIntrinsicGridFractions(minimum, effectiveTracks)
-	expandIntrinsicGridFractions(preferred, effectiveTracks)
+	states := initializeGridTrackStates(tracks, nil, context.viewport)
+	applyGridTrackContributions(states, contributions, gap)
+	minimum := make([]float64, len(states))
+	for index := range states {
+		minimum[index] = states[index].base
+	}
+	preferred := indefiniteGridTrackSizes(states)
 	gapTotal := gap * float64(max(0, len(tracks)-1))
 	return intrinsicWidths{minimum: sumFloat64(minimum) + gapTotal, preferred: sumFloat64(preferred) + gapTotal}, nil
 }
 
-func expandIntrinsicGridFractions(sizes []float64, tracks []computed.GridTrackSize) {
+func expandIntrinsicGridFractions(sizes []float64, states []gridTrackState) {
 	unit := 0.0
-	for index, track := range tracks {
-		if track.Kind() != computed.GridTrackFraction || track.Fraction() <= 0 {
+	for index, state := range states {
+		if state.maxKind != computed.GridTrackFraction || state.fraction <= 0 {
 			continue
 		}
 		candidate := sizes[index]
-		if track.Fraction() > 1 {
-			candidate /= track.Fraction()
+		if state.fraction > 1 {
+			candidate /= state.fraction
 		}
 		unit = math.Max(unit, candidate)
 	}
-	for index, track := range tracks {
-		if track.Kind() == computed.GridTrackFraction {
-			sizes[index] = math.Max(sizes[index], unit*track.Fraction())
+	for index, state := range states {
+		if state.maxKind == computed.GridTrackFraction {
+			sizes[index] = math.Max(sizes[index], unit*state.fraction)
 		}
 	}
 }

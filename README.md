@@ -281,10 +281,11 @@ performance budgets; see
   content, and atomic inline formatting roots, with shifted geometry and hit
   testing
 - Block and inline Grid containers with bounded explicit and implicit tracks,
-  fixed/percentage/`auto`/`fr` breadths, integer `repeat()`, numbered and
-  negative line placement, spans, row/column dense auto-flow, gaps, anonymous
-  text items, order-modified placement and paint, retained track geometry, and
-  live resolved `grid-template-*` CSSOM reads
+  fixed/percentage/`auto`/`fr`/`min-content`/`max-content` breadths, bounded
+  `minmax()` ranges and integer `repeat()`, numbered and negative line
+  placement, spans, row/column dense auto-flow, gaps, anonymous text items,
+  order-modified placement and paint, retained track geometry, and live
+  resolved `grid-template-*` CSSOM reads
 - HTML and CSS table display roles with anonymous wrapper fixup, bounded
   intrinsic column sizing, captions, column and row groups, `colspan`/
   `rowspan`, inline-table participation, separated border spacing, fixed
@@ -327,11 +328,11 @@ The following are intentionally still outside the current milestone:
 - Full HTML error recovery beyond the current table insertion modes and foster
   parenting, including formatting-element reconstruction, complete template
   modes, SVG/MathML, and encoding sniffing
-- Flex wrapping and full intrinsic sizing, advanced Grid track functions,
-  named lines and areas, auto-repeat, subgrid, remaining table track merging,
-  percentage sizing, visibility-collapse, wrapper, writing-mode, and border
-  junction behavior, floats, sticky and full inline positioned layout, and
-  retained inline boxes
+- Flex wrapping and full intrinsic sizing, Grid `fit-content()` tracks, named
+  lines and areas, auto-repeat, subgrid, advanced alignment, remaining table
+  track merging, percentage sizing, visibility-collapse, wrapper,
+  writing-mode, and border junction behavior, floats, sticky and full inline
+  positioned layout, and retained inline boxes
 - The remaining CSS math grammar beyond the current bounded length
   `calc()`/`min()`/`max()`/`clamp()` slice, plus gradients, background images,
   border radii, shadows, transforms, counters, quotation marks, and generated

@@ -239,6 +239,107 @@ func TestEmptyGridDoesNotInventImplicitTracks(t *testing.T) {
 	}
 }
 
+func TestGridIntrinsicTrackKeywordsAndMinMaxRanges(t *testing.T) {
+	t.Parallel()
+
+	document, err := htmlparser.Parse(strings.NewReader(`<!doctype html><html><body style="margin:0">
+		<section id=grid style="display:grid;width:400px;grid-template-columns:min-content max-content minmax(40px,80px);grid-template-rows:min-content max-content minmax(10px,40px)">
+			<div id=min style="grid-column:1;grid-row:1">alpha beta</div>
+			<div id=max style="grid-column:2;grid-row:2">alpha beta</div>
+			<div id=range style="grid-column:3;grid-row:3;height:5px"></div>
+		</section>
+	</body></html>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame, err := render.Render(document, render.Viewport{Width: 440, Height: 180})
+	if err != nil {
+		t.Fatal(err)
+	}
+	grid, _ := frame.Layout.Geometry(findStaticPageElementByID(document, "grid"))
+	minimum, _ := frame.Layout.Geometry(findStaticPageElementByID(document, "min"))
+	maximum, _ := frame.Layout.Geometry(findStaticPageElementByID(document, "max"))
+	ranged, _ := frame.Layout.Geometry(findStaticPageElementByID(document, "range"))
+	if minimum.Bounds.Width <= 0 || maximum.Bounds.Width <= minimum.Bounds.Width {
+		t.Fatalf("intrinsic keyword widths min=%v max=%v", minimum.Bounds.Width, maximum.Bounds.Width)
+	}
+	assertNear(t, "fixed minmax maximum", ranged.Bounds.Width, 80)
+	columns, rows := grid.GridColumnSizes(), grid.GridRowSizes()
+	if len(columns) != 3 || len(rows) != 3 {
+		t.Fatalf("intrinsic grid tracks = columns:%v rows:%v", columns, rows)
+	}
+	assertNear(t, "fixed minmax column", columns[2], 80)
+	assertNear(t, "fixed minmax row", rows[2], 40)
+	if rows[0] <= 0 || rows[1] <= 0 {
+		t.Fatalf("intrinsic row tracks = %v, want positive content contributions", rows)
+	}
+}
+
+func TestGridMinMaxFlexibleTrackFreezesItsIntrinsicMinimum(t *testing.T) {
+	t.Parallel()
+
+	document, err := htmlparser.Parse(strings.NewReader(`<!doctype html><html><body style="margin:0">
+		<section id=grid style="display:grid;width:200px;grid-template-columns:minmax(min-content,1fr) 1fr">
+			<div id=wide style="width:160px"></div><div id=narrow></div>
+		</section>
+		<section id=floored style="display:grid;width:300px;grid-template-columns:minmax(100px,40px)"><div></div></section>
+	</body></html>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame, err := render.Render(document, render.Viewport{Width: 340, Height: 120})
+	if err != nil {
+		t.Fatal(err)
+	}
+	grid, _ := frame.Layout.Geometry(findStaticPageElementByID(document, "grid"))
+	tracks := grid.GridColumnSizes()
+	if len(tracks) != 2 {
+		t.Fatalf("flex minmax tracks = %v", tracks)
+	}
+	assertNear(t, "minmax intrinsic floor", tracks[0], 160)
+	assertNear(t, "remaining flexible space", tracks[1], 40)
+	floored, _ := frame.Layout.Geometry(findStaticPageElementByID(document, "floored"))
+	assertNear(t, "maximum below minimum is floored", floored.GridColumnSizes()[0], 100)
+}
+
+func TestInlineGridMinMaxContentRangeUsesMaxContentWidth(t *testing.T) {
+	t.Parallel()
+
+	document, err := htmlparser.Parse(strings.NewReader(`<!doctype html><html><body style="margin:0"><div><span id=grid style="display:inline-grid;grid-template-columns:minmax(min-content,max-content)"><span id=item>alpha beta</span></span></div></body></html>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame, err := render.Render(document, render.Viewport{Width: 240, Height: 80})
+	if err != nil {
+		t.Fatal(err)
+	}
+	grid, _ := frame.Layout.Geometry(findStaticPageElementByID(document, "grid"))
+	item, _ := frame.Layout.Geometry(findStaticPageElementByID(document, "item"))
+	if grid.ContentBounds.Width <= 40 || item.Bounds.Width != grid.ContentBounds.Width {
+		t.Fatalf("inline intrinsic range grid=%#v item=%#v", grid.ContentBounds, item.Bounds)
+	}
+}
+
+func TestGridPercentageMinMaxMaximumDependsOnDefiniteAxis(t *testing.T) {
+	t.Parallel()
+
+	document, err := htmlparser.Parse(strings.NewReader(`<!doctype html><html><body style="margin:0">
+		<section id=indefinite style="display:grid;width:100px;grid-template-rows:minmax(10px,50%)"><div style="height:30px"></div></section>
+		<section id=definite style="display:grid;width:100px;height:100px;grid-template-rows:minmax(10px,50%)"><div style="height:30px"></div></section>
+	</body></html>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame, err := render.Render(document, render.Viewport{Width: 140, Height: 240})
+	if err != nil {
+		t.Fatal(err)
+	}
+	indefinite, _ := frame.Layout.Geometry(findStaticPageElementByID(document, "indefinite"))
+	definite, _ := frame.Layout.Geometry(findStaticPageElementByID(document, "definite"))
+	assertNear(t, "indefinite percentage maximum behaves as auto", indefinite.GridRowSizes()[0], 30)
+	assertNear(t, "definite percentage maximum", definite.GridRowSizes()[0], 50)
+}
+
 func TestGridAlignmentOverlapPaintAndHitOrderFollowOrderModifiedItems(t *testing.T) {
 	t.Parallel()
 

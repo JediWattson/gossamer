@@ -15,9 +15,9 @@ func TestGridPropertiesComputeSerializeAndStayImmutable(t *testing.T) {
 	body := dom.NewElement("body")
 	target := dom.NewElement("div", dom.Attribute{Name: "style", Value: `
 		display:grid;
-		grid-template-columns:repeat(2, 40px 1fr);
-		grid-template-rows:auto 25%;
-		grid-auto-columns:3fr;
+		grid-template-columns:repeat(2, 40px minmax(min-content, 1fr)) max-content;
+		grid-template-rows:auto min-content 25%;
+		grid-auto-columns:minmax(20px, max-content);
 		grid-auto-rows:18px;
 		grid-auto-flow:column dense;
 		grid-column:2 / span 3;
@@ -34,9 +34,9 @@ func TestGridPropertiesComputeSerializeAndStayImmutable(t *testing.T) {
 	}
 	properties := map[string]string{
 		"display":               "grid",
-		"grid-template-columns": "repeat(2, 40px 1fr)",
-		"grid-template-rows":    "auto 25%",
-		"grid-auto-columns":     "3fr",
+		"grid-template-columns": "repeat(2, 40px minmax(min-content, 1fr)) max-content",
+		"grid-template-rows":    "auto min-content 25%",
+		"grid-auto-columns":     "minmax(20px, max-content)",
 		"grid-auto-rows":        "18px",
 		"grid-auto-flow":        "column dense",
 		"grid-column-start":     "2",
@@ -51,10 +51,10 @@ func TestGridPropertiesComputeSerializeAndStayImmutable(t *testing.T) {
 	}
 
 	tracks := computed.GridTemplateColumns().Tracks()
-	if len(tracks) != 4 || tracks[1].Kind() != GridTrackFraction || tracks[1].Fraction() != 1 {
+	if len(tracks) != 5 || !tracks[1].IsMinMax() || tracks[1].MinKind() != GridTrackMinContent || tracks[1].MaxKind() != GridTrackFraction || tracks[1].MaxFraction() != 1 || tracks[4].Kind() != GridTrackMaxContent {
 		t.Fatalf("computed grid tracks = %#v", tracks)
 	}
-	tracks[0] = GridTrackSize{kind: GridTrackAuto}
+	tracks[0] = GridTrackSize{}
 	again, _ := snapshot.Lookup(target)
 	first, _ := again.GridTemplateColumns().At(0)
 	if first.Kind() != GridTrackLength || first.Length().Value() != 40 {
@@ -69,6 +69,8 @@ func TestGridPropertyGrammarRejectsUnboundedOrUnsupportedTracks(t *testing.T) {
 		{Property: "display", Value: "inline-grid"},
 		{Property: "grid-template-columns", Value: "repeat(4, min(10px, 2vw) 1fr)"},
 		{Property: "grid-auto-columns", Value: "0fr"},
+		{Property: "grid-auto-rows", Value: "minmax(min-content, max-content)"},
+		{Property: "grid-template-rows", Value: "min-content max-content minmax(auto, 2fr)"},
 		{Property: "grid-auto-flow", Value: "dense row"},
 		{Property: "grid-column", Value: "span 2 / -1"},
 	}
@@ -81,7 +83,10 @@ func TestGridPropertyGrammarRejectsUnboundedOrUnsupportedTracks(t *testing.T) {
 	invalid := []css.Declaration{
 		{Property: "grid-template-columns", Value: "repeat(0, 1fr)"},
 		{Property: "grid-template-columns", Value: "repeat(1025, 1fr)"},
-		{Property: "grid-template-columns", Value: "minmax(10px, 1fr)"},
+		{Property: "grid-template-columns", Value: "minmax(1fr, 20px)"},
+		{Property: "grid-template-columns", Value: "minmax(10px)"},
+		{Property: "grid-template-columns", Value: "minmax(10px, 20px, 30px)"},
+		{Property: "grid-template-columns", Value: "fit-content(20px)"},
 		{Property: "grid-auto-columns", Value: "1fr 2fr"},
 		{Property: "grid-auto-flow", Value: "row column"},
 		{Property: "grid-column-start", Value: "0"},
