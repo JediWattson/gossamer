@@ -99,8 +99,24 @@ func (execution *execution) getProperty(base, key memory.Value) (memory.Value, b
 
 func (execution *execution) getNamedProperty(base memory.Value, ref, name memory.Ref) (memory.Value, bool, error) {
 	_, descriptor, found, err := resolveObjectProperty(execution.context, ref, name)
-	if err != nil || !found {
+	if err != nil {
 		return memory.Value{}, found, err
+	}
+	if !found {
+		nameText, nameErr := execution.context.DerefString(name)
+		if nameErr != nil {
+			return memory.Value{}, false, nameErr
+		}
+		for _, interceptor := range execution.interpreter.propertyInterceptors() {
+			if interceptor.Get == nil {
+				continue
+			}
+			value, interceptedFound, handled, interceptErr := interceptor.Get(execution.context, ref, nameText)
+			if interceptErr != nil || handled {
+				return value, interceptedFound, interceptErr
+			}
+		}
+		return memory.Value{}, false, nil
 	}
 	if descriptor.Kind == memory.PropertyData {
 		return descriptor.Value, true, nil
@@ -137,6 +153,19 @@ func (execution *execution) setPropertyValue(base, key, value memory.Value) erro
 			return err
 		}
 		if !found {
+			nameText, nameErr := context.DerefString(name)
+			if nameErr != nil {
+				return nameErr
+			}
+			for _, interceptor := range execution.interpreter.propertyInterceptors() {
+				if interceptor.Set == nil {
+					continue
+				}
+				handled, interceptErr := interceptor.Set(context, ref, nameText, value)
+				if interceptErr != nil || handled {
+					return interceptErr
+				}
+			}
 			return context.SetProperty(ref, name, value)
 		}
 		if descriptor.Kind == memory.PropertyAccessor {
@@ -252,6 +281,19 @@ func (execution *execution) deletePropertyValue(base, key memory.Value) (bool, e
 		if _, found, err := context.GetOwnPropertyDescriptor(ref, name); err != nil {
 			return false, err
 		} else if !found {
+			nameText, nameErr := context.DerefString(name)
+			if nameErr != nil {
+				return false, nameErr
+			}
+			for _, interceptor := range execution.interpreter.propertyInterceptors() {
+				if interceptor.Delete == nil {
+					continue
+				}
+				deleted, handled, interceptErr := interceptor.Delete(context, ref, nameText)
+				if interceptErr != nil || handled {
+					return deleted, interceptErr
+				}
+			}
 			return true, nil
 		}
 		return context.DeleteProperty(ref, name)
