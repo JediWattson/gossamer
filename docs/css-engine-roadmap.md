@@ -379,7 +379,11 @@ text items without mutating computed snapshots, and bounds placement by item,
 track, occupied-cell, and operation budgets. Explicit and implicit tracks
 accept fixed/percentage/`auto`/`fr`/`min-content`/`max-content` breadths,
 bounded `minmax()` ranges, clamped `fit-content()` maxima, cyclic multi-size
-implicit-track patterns, and bounded integer `repeat()`. Explicit templates
+implicit-track patterns, bounded integer `repeat()`, and one bounded
+`auto-fill`/`auto-fit` repeat per standalone axis. Automatic repetitions keep
+their computed notation until layout selects a definite-space count with gaps
+and a one-pixel divisor floor; `auto-fit` then collapses every empty repeated
+track and its adjacent gutters after placement. Explicit templates
 also retain case-sensitive named line sets; repeat expansion merges adjacent
 boundary sets and resolved CSSOM interleaves those names with used track sizes.
 Rectangular `grid-template-areas` values now retain an immutable bounded cell
@@ -406,8 +410,7 @@ rules, and retained stable-ID geometry exposes resolved explicit and implicit
   edge cases, row/column `visibility: collapse`, table-wrapper separation,
   direction/writing-mode placement, and collapsed-border junctions once the
   wider border-style set exists.
-- Extend Grid with auto-fill/auto-fit, baseline/safe/unsafe alignment,
-  subgrid, and the remaining
+- Extend Grid with baseline/safe/unsafe alignment, subgrid, and the remaining
   intrinsic/overflow interactions.
 - Add multicolumn and fragmentation only after their block/inline consumers
   are retained and testable.

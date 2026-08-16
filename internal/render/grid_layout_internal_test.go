@@ -128,6 +128,52 @@ func TestGridPlacementBudgetsFailClosed(t *testing.T) {
 	}
 }
 
+func TestGridAutoRepeatCountUsesOnePixelFloorAndTrackBudget(t *testing.T) {
+	t.Parallel()
+
+	template := computedGridTrackListFromCSS("repeat(auto-fill,0px)")
+	available := 1_000_000_000.0
+	expanded := resolveGridAutoRepeat(template, &available, false, 0, Viewport{Width: 800, Height: 600})
+	if expanded.Len() != maxGridTracksPerAxis {
+		t.Fatalf("zero-sized auto-repeat expanded to %d tracks, want bounded %d", expanded.Len(), maxGridTracksPerAxis)
+	}
+	if start, end, ok := expanded.AutoRepeatRange(); !ok || start != 0 || end != maxGridTracksPerAxis {
+		t.Fatalf("bounded auto-repeat range = %d..%d, %t", start, end, ok)
+	}
+}
+
+func TestGridAutoRepeatCountUsesFixedBreadthsPercentagesAndGaps(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		template  string
+		available *float64
+		gap       float64
+		minimum   bool
+		want      int
+	}{
+		{name: "single fixed", template: "repeat(auto-fill,100px)", available: float64Pointer(320), gap: 10, want: 3},
+		{name: "pattern plus surrounding tracks", template: "20px repeat(auto-fill,50px 30px) 30px", available: float64Pointer(300), gap: 10, want: 6},
+		{name: "percentage", template: "repeat(auto-fill,20%)", available: float64Pointer(500), want: 5},
+		{name: "max floored by min", template: "repeat(auto-fill,minmax(100px,20%))", available: float64Pointer(400), want: 4},
+		{name: "minimum chooses enough repetitions", template: "repeat(auto-fill,100px)", available: float64Pointer(320), gap: 10, minimum: true, want: 3},
+		{name: "indefinite repeats once", template: "repeat(auto-fill,100px)", want: 1},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			template := computedGridTrackListFromCSS(test.template)
+			expanded := resolveGridAutoRepeat(template, test.available, test.minimum, test.gap, Viewport{Width: 800, Height: 600})
+			if expanded.Len() != test.want {
+				t.Fatalf("resolved %q to %d tracks, want %d", test.template, expanded.Len(), test.want)
+			}
+		})
+	}
+}
+
+func float64Pointer(value float64) *float64 { return &value }
+
 func gridLineForTest(kind computed.GridLineKind, number int) computed.GridLine {
 	switch kind {
 	case computed.GridLineNumber:

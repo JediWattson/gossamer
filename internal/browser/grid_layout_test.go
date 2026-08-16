@@ -164,6 +164,43 @@ func TestComputedGridTemplateAreasStayLiveAndDriveGeometry(t *testing.T) {
 	}
 }
 
+func TestComputedGridAutoRepeatStaysLiveAndCollapsesAutoFitTracks(t *testing.T) {
+	t.Parallel()
+
+	engine, page, gridID := computedStyleTestPage(t, `<!doctype html><html><body style="margin:0">
+		<section id=target style="display:grid;width:430px;column-gap:10px;grid-template-columns:repeat(auto-fit,100px)"><div id=first></div><div id=second></div></section>
+	</body></html>`)
+	defer engine.Close()
+	generation := page.DocumentGeneration()
+	grid := NodeHandle{Document: generation, Node: gridID}
+	second := NodeHandle{Document: generation, Node: mustPageElementID(t, page, "second")}
+
+	assertResolvedProperty(t, page, grid, "grid-template-columns", "100px 100px 0px 0px")
+	geometry, err := page.ElementGeometry(second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if geometry.Rect.X != 110 || geometry.Rect.Width != 100 {
+		t.Fatalf("auto-fit second geometry = %#v", geometry.Rect)
+	}
+
+	if err := page.document.SetAttribute(gridID, "style", "display:grid;width:430px;column-gap:10px;grid-template-columns:repeat(auto-fit,[slot] 100px [edge])"); err != nil {
+		t.Fatal(err)
+	}
+	assertResolvedProperty(t, page, grid, "grid-template-columns", "[slot] 100px [edge slot] 100px [edge slot] 0px [edge slot] 0px [edge]")
+	if err := page.document.SetAttribute(gridID, "style", "display:grid;width:430px;column-gap:10px;grid-template-columns:repeat(auto-fill,100px)"); err != nil {
+		t.Fatal(err)
+	}
+	assertResolvedProperty(t, page, grid, "grid-template-columns", "100px 100px 100px 100px")
+	if err := page.document.SetAttribute(gridID, "style", "display:grid;width:320px;column-gap:10px;grid-template-columns:repeat(auto-fit,100px)"); err != nil {
+		t.Fatal(err)
+	}
+	assertResolvedProperty(t, page, grid, "grid-template-columns", "100px 100px 0px")
+	if page.Frame() != nil || !page.Dirty() {
+		t.Fatal("auto-repeat computed/layout reads published a frame or cleared dirtiness")
+	}
+}
+
 func TestComputedGridMinMaxTracksResolveAndStayLive(t *testing.T) {
 	t.Parallel()
 

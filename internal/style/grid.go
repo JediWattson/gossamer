@@ -61,7 +61,25 @@ func (track GridTrackSize) FitContentLimit() Length {
 type GridTrackList struct {
 	tracks        []GridTrackSize
 	lineNames     [][]string
+	autoRepeat    *gridAutoRepeatDefinition
+	autoStart     int
+	autoEnd       int
 	serialization string
+}
+
+// GridAutoRepeatKind identifies the layout-dependent repeat-to-fill form
+// retained by a computed track list.
+type GridAutoRepeatKind uint8
+
+const (
+	GridAutoRepeatNone GridAutoRepeatKind = iota
+	GridAutoRepeatFill
+	GridAutoRepeatFit
+)
+
+type gridAutoRepeatDefinition struct {
+	kind                    GridAutoRepeatKind
+	prefix, pattern, suffix gridTrackListBuilder
 }
 
 // GridNamedArea is one rectangular region in a computed
@@ -139,6 +157,46 @@ func (list GridTrackList) LineNames(index int) []string {
 		return nil
 	}
 	return append([]string(nil), list.lineNames[index]...)
+}
+
+// AutoRepeatKind reports whether this computed list contains auto-fill or
+// auto-fit. The repetition count remains a used-value decision in layout.
+func (list GridTrackList) AutoRepeatKind() GridAutoRepeatKind {
+	if list.autoRepeat == nil {
+		return GridAutoRepeatNone
+	}
+	return list.autoRepeat.kind
+}
+
+// AutoRepeatRange returns the half-open range occupied by the auto-repeated
+// tracks in this expansion. Computed lists retain one repetition; a list
+// returned by ExpandAutoRepeat retains the requested bounded count.
+func (list GridTrackList) AutoRepeatRange() (int, int, bool) {
+	return list.autoStart, list.autoEnd, list.autoRepeat != nil
+}
+
+// ExpandAutoRepeat mechanically expands the retained repeat-to-fill fragment.
+// Layout owns selection of count; style only preserves immutable track and
+// line-name semantics. Expansion fails closed at the existing track/name
+// budgets.
+func (list GridTrackList) ExpandAutoRepeat(count int) (GridTrackList, bool) {
+	if list.autoRepeat == nil {
+		return list, count == 1
+	}
+	if count < 1 {
+		return GridTrackList{}, false
+	}
+	builder, ok := list.autoRepeat.expand(count)
+	if !ok {
+		return GridTrackList{}, false
+	}
+	start := len(list.autoRepeat.prefix.tracks)
+	return GridTrackList{
+		tracks: builder.tracks, lineNames: builder.lineNames,
+		autoRepeat: list.autoRepeat, autoStart: start,
+		autoEnd:       start + count*len(list.autoRepeat.pattern.tracks),
+		serialization: list.serialization,
+	}, true
 }
 
 // GridAutoFlowAxis is the major axis used by the auto-placement cursor.
@@ -237,6 +295,41 @@ func (builder *gridTrackListBuilder) appendRepeated(repeated gridTrackListBuilde
 	return true
 }
 
+func (builder *gridTrackListBuilder) appendBuilder(other gridTrackListBuilder) bool {
+	if len(other.lineNames) == 0 || !builder.appendNames(other.lineNames[0]) {
+		return false
+	}
+	for index, track := range other.tracks {
+		if !builder.appendTrack(track) || !builder.appendNames(other.lineNames[index+1]) {
+			return false
+		}
+	}
+	return true
+}
+
+func cloneGridTrackListBuilder(source gridTrackListBuilder) gridTrackListBuilder {
+	cloned := gridTrackListBuilder{
+		tracks:    append([]GridTrackSize(nil), source.tracks...),
+		lineNames: make([][]string, len(source.lineNames)),
+		nameCount: source.nameCount,
+	}
+	for index := range source.lineNames {
+		cloned.lineNames[index] = append([]string(nil), source.lineNames[index]...)
+	}
+	return cloned
+}
+
+func (definition *gridAutoRepeatDefinition) expand(count int) (gridTrackListBuilder, bool) {
+	if definition == nil || count < 1 || len(definition.pattern.tracks) == 0 {
+		return gridTrackListBuilder{}, false
+	}
+	builder := cloneGridTrackListBuilder(definition.prefix)
+	if !builder.appendRepeated(definition.pattern, count) || !builder.appendBuilder(definition.suffix) {
+		return gridTrackListBuilder{}, false
+	}
+	return builder, true
+}
+
 func parseGridTrackList(source string, fontSize float64, viewport Viewport) (GridTrackList, bool) {
 	value, ok := parsePropertyValue(source)
 	if !ok || len(value.terms) == 0 {
@@ -247,7 +340,7 @@ func parseGridTrackList(source string, fontSize float64, viewport Viewport) (Gri
 			return GridTrackList{serialization: "none"}, true
 		}
 	}
-	builder, ok := parseGridTrackSequence(value.terms, value.source, fontSize, viewport, true)
+	builder, automatic, ok := parseExplicitGridTrackSequence(value.terms, value.source, fontSize, viewport)
 	if !ok || len(builder.tracks) == 0 {
 		return GridTrackList{}, false
 	}
@@ -255,7 +348,71 @@ func parseGridTrackList(source string, fontSize float64, viewport Viewport) (Gri
 	if !ok {
 		return GridTrackList{}, false
 	}
-	return GridTrackList{tracks: builder.tracks, lineNames: builder.lineNames, serialization: serialization}, true
+	list := GridTrackList{tracks: builder.tracks, lineNames: builder.lineNames, serialization: serialization}
+	if automatic != nil {
+		list.autoRepeat = automatic
+		list.autoStart = len(automatic.prefix.tracks)
+		list.autoEnd = list.autoStart + len(automatic.pattern.tracks)
+	}
+	return list, true
+}
+
+func parseExplicitGridTrackSequence(components []css.ComponentValue, source string, fontSize float64, viewport Viewport) (gridTrackListBuilder, *gridAutoRepeatDefinition, bool) {
+	prefix := newGridTrackListBuilder(len(components))
+	current := &prefix
+	var automatic *gridAutoRepeatDefinition
+	previousNames := false
+	for _, component := range components {
+		if names, ok := parseGridLineNameSet(component); ok {
+			if previousNames || !current.appendNames(names) {
+				return gridTrackListBuilder{}, nil, false
+			}
+			previousNames = true
+			continue
+		}
+		if component.Kind == css.ComponentBlock && component.Token.Kind == css.TokenOpenSquare {
+			return gridTrackListBuilder{}, nil, false
+		}
+		previousNames = false
+		if component.Kind == css.ComponentFunction && lowerASCIIValue(component.Token.Value) == "repeat" {
+			repeat, ok := gridRepeatParts(component)
+			if !ok {
+				return gridTrackListBuilder{}, nil, false
+			}
+			body, ok := parseGridTrackSequence(repeat.body, source, fontSize, viewport, false)
+			if !ok {
+				return gridTrackListBuilder{}, nil, false
+			}
+			if repeat.kind == GridAutoRepeatNone {
+				if !current.appendRepeated(body, repeat.count) {
+					return gridTrackListBuilder{}, nil, false
+				}
+				continue
+			}
+			if automatic != nil || !gridAutoRepeatTracksAreFixed(body.tracks) {
+				return gridTrackListBuilder{}, nil, false
+			}
+			automatic = &gridAutoRepeatDefinition{
+				kind: repeat.kind, prefix: cloneGridTrackListBuilder(prefix),
+				pattern: body, suffix: newGridTrackListBuilder(len(components)),
+			}
+			current = &automatic.suffix
+			continue
+		}
+		track, ok := parseGridTrackSizeComponent(component, source, fontSize, viewport)
+		if !ok || !current.appendTrack(track) {
+			return gridTrackListBuilder{}, nil, false
+		}
+	}
+	if automatic == nil {
+		return prefix, nil, len(prefix.tracks) != 0
+	}
+	if !gridAutoRepeatTracksAreFixed(automatic.prefix.tracks) ||
+		!gridAutoRepeatTracksAreFixed(automatic.suffix.tracks) {
+		return gridTrackListBuilder{}, nil, false
+	}
+	expanded, ok := automatic.expand(1)
+	return expanded, automatic, ok
 }
 
 func defaultGridAutoTrackList() GridTrackList {
@@ -299,12 +456,12 @@ func parseGridTrackSequence(components []css.ComponentValue, source string, font
 			if !allowRepeat {
 				return gridTrackListBuilder{}, false
 			}
-			count, body, ok := gridRepeatParts(component)
-			if !ok {
+			repeat, ok := gridRepeatParts(component)
+			if !ok || repeat.kind != GridAutoRepeatNone {
 				return gridTrackListBuilder{}, false
 			}
-			repeated, ok := parseGridTrackSequence(body, source, fontSize, viewport, false)
-			if !ok || !builder.appendRepeated(repeated, count) {
+			repeated, ok := parseGridTrackSequence(repeat.body, source, fontSize, viewport, false)
+			if !ok || !builder.appendRepeated(repeated, repeat.count) {
 				return gridTrackListBuilder{}, false
 			}
 			continue
@@ -440,7 +597,13 @@ func gridMinMaxParts(component css.ComponentValue) (css.ComponentValue, css.Comp
 	return minimum[0], maximum[0], true
 }
 
-func gridRepeatParts(component css.ComponentValue) (int, []css.ComponentValue, bool) {
+type gridRepeatSpec struct {
+	kind  GridAutoRepeatKind
+	count int
+	body  []css.ComponentValue
+}
+
+func gridRepeatParts(component css.ComponentValue) (gridRepeatSpec, bool) {
 	values := trimValueWhitespace(component.Values)
 	comma := -1
 	for index, candidate := range values {
@@ -450,18 +613,39 @@ func gridRepeatParts(component css.ComponentValue) (int, []css.ComponentValue, b
 		}
 	}
 	if comma < 1 {
-		return 0, nil, false
+		return gridRepeatSpec{}, false
 	}
 	countTerms := nonWhitespaceComponents(values[:comma])
 	body := nonWhitespaceComponents(values[comma+1:])
 	if len(countTerms) != 1 || len(body) == 0 {
-		return 0, nil, false
+		return gridRepeatSpec{}, false
+	}
+	if keyword, ok := componentKeyword(countTerms[0]); ok {
+		kind := GridAutoRepeatNone
+		switch keyword {
+		case "auto-fill":
+			kind = GridAutoRepeatFill
+		case "auto-fit":
+			kind = GridAutoRepeatFit
+		default:
+			return gridRepeatSpec{}, false
+		}
+		return gridRepeatSpec{kind: kind, count: 1, body: body}, true
 	}
 	countToken, ok := componentToken(countTerms[0])
 	if !ok || countToken.Kind != css.TokenNumber || !countToken.Integer || countToken.Number < 1 || countToken.Number > maxGridTrackListEntries {
-		return 0, nil, false
+		return gridRepeatSpec{}, false
 	}
-	return int(countToken.Number), body, true
+	return gridRepeatSpec{count: int(countToken.Number), body: body}, true
+}
+
+func gridAutoRepeatTracksAreFixed(tracks []GridTrackSize) bool {
+	for _, track := range tracks {
+		if track.fitContent || track.minKind != GridTrackLength && track.maxKind != GridTrackLength {
+			return false
+		}
+	}
+	return true
 }
 
 func canonicalGridTrackList(terms []css.ComponentValue, source string, fontSize float64, viewport Viewport) (string, bool) {
@@ -472,12 +656,12 @@ func canonicalGridTrackList(terms []css.ComponentValue, source string, fontSize 
 			continue
 		}
 		if term.Kind == css.ComponentFunction && lowerASCIIValue(term.Token.Value) == "repeat" {
-			count, body, ok := gridRepeatParts(term)
+			repeat, ok := gridRepeatParts(term)
 			if !ok {
 				return "", false
 			}
-			bodyParts := make([]string, 0, len(body))
-			for _, child := range body {
+			bodyParts := make([]string, 0, len(repeat.body))
+			for _, child := range repeat.body {
 				if names, namesOK := parseGridLineNameSet(child); namesOK {
 					bodyParts = append(bodyParts, serializeGridLineNameSet(names))
 					continue
@@ -488,7 +672,13 @@ func canonicalGridTrackList(terms []css.ComponentValue, source string, fontSize 
 				}
 				bodyParts = append(bodyParts, serializeGridTrackSize(track))
 			}
-			parts = append(parts, "repeat("+strconv.Itoa(count)+", "+strings.Join(bodyParts, " ")+")")
+			count := strconv.Itoa(repeat.count)
+			if repeat.kind == GridAutoRepeatFill {
+				count = "auto-fill"
+			} else if repeat.kind == GridAutoRepeatFit {
+				count = "auto-fit"
+			}
+			parts = append(parts, "repeat("+count+", "+strings.Join(bodyParts, " ")+")")
 			continue
 		}
 		track, ok := parseGridTrackSizeComponent(term, source, fontSize, viewport)

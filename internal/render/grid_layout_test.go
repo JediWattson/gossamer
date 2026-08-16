@@ -158,6 +158,191 @@ func TestGridTemplateAreasCreateExplicitTracksAndPlaceNamedItems(t *testing.T) {
 	}
 }
 
+func TestGridAutoFillCountsDefiniteTracksWithGapsAndNames(t *testing.T) {
+	t.Parallel()
+
+	document, err := htmlparser.Parse(strings.NewReader(`<!doctype html><html><body style="margin:0">
+		<section id=grid style="display:grid;width:330px;column-gap:10px;grid-template-columns:[outer] 20px [before] repeat(auto-fill,[cell] minmax(80px,1fr) [edge]) [after] 30px [last]"><div id=third style="grid-column:cell 3 / edge 3"></div></section>
+	</body></html>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame, err := render.Render(document, render.Viewport{Width: 400, Height: 200})
+	if err != nil {
+		t.Fatal(err)
+	}
+	grid, ok := frame.Layout.Geometry(findStaticPageElementByID(document, "grid"))
+	if !ok {
+		t.Fatal("grid has no geometry")
+	}
+	if got, want := grid.GridColumnSizes(), []float64{20, 80, 80, 80, 30}; !nearSlice(got, want) {
+		t.Fatalf("auto-fill columns = %v, want %v", got, want)
+	}
+	wantNames := [][]string{
+		{"outer"}, {"before", "cell"}, {"edge", "cell"},
+		{"edge", "cell"}, {"edge", "after"}, {"last"},
+	}
+	if got := grid.GridColumnLineNames(); !reflect.DeepEqual(got, wantNames) {
+		t.Fatalf("auto-fill line names = %v, want %v", got, wantNames)
+	}
+	third, ok := frame.Layout.Geometry(findStaticPageElementByID(document, "third"))
+	if !ok {
+		t.Fatal("named auto-repeat item has no geometry")
+	}
+	assertNear(t, "third named auto-repeat x", third.Bounds.X-grid.ContentBounds.X, 210)
+	assertNear(t, "third named auto-repeat width", third.Bounds.Width, 80)
+}
+
+func TestGridAutoFitCollapsesEmptyTracksAndAdjacentGaps(t *testing.T) {
+	t.Parallel()
+
+	document, err := htmlparser.Parse(strings.NewReader(`<!doctype html><html><body style="margin:0">
+		<section id=fit style="display:grid;width:430px;column-gap:10px;grid-template-columns:repeat(auto-fit,100px)"><div id=first></div><div id=second></div></section>
+		<section id=fill style="display:grid;width:430px;column-gap:10px;grid-template-columns:repeat(auto-fill,100px)"><div></div><div></div></section>
+	</body></html>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame, err := render.Render(document, render.Viewport{Width: 500, Height: 200})
+	if err != nil {
+		t.Fatal(err)
+	}
+	geometry := func(id string) render.LayoutGeometry {
+		t.Helper()
+		value, ok := frame.Layout.Geometry(findStaticPageElementByID(document, id))
+		if !ok {
+			t.Fatalf("%s has no geometry", id)
+		}
+		return value
+	}
+	if got, want := geometry("fit").GridColumnSizes(), []float64{100, 100, 0, 0}; !nearSlice(got, want) {
+		t.Fatalf("auto-fit columns = %v, want %v", got, want)
+	}
+	if got, want := geometry("fill").GridColumnSizes(), []float64{100, 100, 100, 100}; !nearSlice(got, want) {
+		t.Fatalf("auto-fill columns = %v, want %v", got, want)
+	}
+	first, second := geometry("first"), geometry("second")
+	assertNear(t, "first auto-fit width", first.Bounds.Width, 100)
+	assertNear(t, "second auto-fit x", second.Bounds.X-first.Bounds.X, 110)
+	assertNear(t, "second auto-fit width", second.Bounds.Width, 100)
+}
+
+func TestGridAutoFitRowsUseDefiniteHeight(t *testing.T) {
+	t.Parallel()
+
+	document, err := htmlparser.Parse(strings.NewReader(`<!doctype html><html><body style="margin:0">
+		<section id=grid style="display:grid;width:100px;height:230px;row-gap:10px;grid-template-columns:100px;grid-template-rows:repeat(auto-fit,50px);grid-auto-flow:column"><div id=first></div><div id=second></div></section>
+	</body></html>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame, err := render.Render(document, render.Viewport{Width: 300, Height: 300})
+	if err != nil {
+		t.Fatal(err)
+	}
+	geometry := func(id string) render.LayoutGeometry {
+		t.Helper()
+		value, ok := frame.Layout.Geometry(findStaticPageElementByID(document, id))
+		if !ok {
+			t.Fatalf("%s has no geometry", id)
+		}
+		return value
+	}
+	if got, want := geometry("grid").GridRowSizes(), []float64{50, 50, 0, 0}; !nearSlice(got, want) {
+		t.Fatalf("auto-fit rows = %v, want %v", got, want)
+	}
+	first, second := geometry("first"), geometry("second")
+	assertNear(t, "first auto-fit row height", first.Bounds.Height, 50)
+	assertNear(t, "second auto-fit row y", second.Bounds.Y-first.Bounds.Y, 60)
+}
+
+func TestGridAutoFillRowsUseDefiniteMinAndMaxHeightConstraints(t *testing.T) {
+	t.Parallel()
+
+	document, err := htmlparser.Parse(strings.NewReader(`<!doctype html><html><body style="margin:0">
+		<section id=minimum style="display:grid;width:100px;min-height:230px;row-gap:10px;grid-template-rows:repeat(auto-fill,50px)"></section>
+		<section id=maximum style="display:grid;width:100px;max-height:230px;row-gap:10px;grid-template-rows:repeat(auto-fill,50px)"></section>
+	</body></html>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame, err := render.Render(document, render.Viewport{Width: 300, Height: 600})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"minimum", "maximum"} {
+		geometry, ok := frame.Layout.Geometry(findStaticPageElementByID(document, id))
+		if !ok {
+			t.Fatalf("%s has no geometry", id)
+		}
+		if got, want := geometry.GridRowSizes(), []float64{50, 50, 50, 50}; !nearSlice(got, want) {
+			t.Fatalf("%s auto-fill rows = %v, want %v", id, got, want)
+		}
+		assertNear(t, id+" constrained grid height", geometry.ContentBounds.Height, 230)
+	}
+}
+
+func TestGridAutoFitDistributedAlignmentSkipsCollapsedMiddleTracks(t *testing.T) {
+	t.Parallel()
+
+	document, err := htmlparser.Parse(strings.NewReader(`<!doctype html><html><body style="margin:0">
+		<section id=grid style="display:grid;width:430px;column-gap:10px;justify-content:space-between;grid-template-columns:repeat(auto-fit,100px)"><div id=first style="grid-column:1"></div><div id=last style="grid-column:4"></div></section>
+	</body></html>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame, err := render.Render(document, render.Viewport{Width: 500, Height: 200})
+	if err != nil {
+		t.Fatal(err)
+	}
+	geometry := func(id string) render.LayoutGeometry {
+		t.Helper()
+		value, ok := frame.Layout.Geometry(findStaticPageElementByID(document, id))
+		if !ok {
+			t.Fatalf("%s has no geometry", id)
+		}
+		return value
+	}
+	if got, want := geometry("grid").GridColumnSizes(), []float64{100, 0, 0, 100}; !nearSlice(got, want) {
+		t.Fatalf("middle-collapse columns = %v, want %v", got, want)
+	}
+	first, last := geometry("first"), geometry("last")
+	assertNear(t, "space-between surviving auto-fit tracks", last.Bounds.X-first.Bounds.X, 330)
+}
+
+func TestGridAutoRepeatFlexibleMaximumUsesOnlySurvivingTracks(t *testing.T) {
+	t.Parallel()
+
+	document, err := htmlparser.Parse(strings.NewReader(`<!doctype html><html><body style="margin:0">
+		<section id=fit style="display:grid;width:450px;column-gap:10px;grid-template-columns:repeat(auto-fit,minmax(100px,1fr))"><div id=first></div><div id=second></div></section>
+		<section id=fill style="display:grid;width:450px;column-gap:10px;grid-template-columns:repeat(auto-fill,minmax(100px,1fr))"><div></div><div></div></section>
+	</body></html>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame, err := render.Render(document, render.Viewport{Width: 500, Height: 200})
+	if err != nil {
+		t.Fatal(err)
+	}
+	geometry := func(id string) render.LayoutGeometry {
+		t.Helper()
+		value, ok := frame.Layout.Geometry(findStaticPageElementByID(document, id))
+		if !ok {
+			t.Fatalf("%s has no geometry", id)
+		}
+		return value
+	}
+	if got, want := geometry("fit").GridColumnSizes(), []float64{220, 220, 0, 0}; !nearSlice(got, want) {
+		t.Fatalf("flexible auto-fit columns = %v, want %v", got, want)
+	}
+	if got, want := geometry("fill").GridColumnSizes(), []float64{105, 105, 105, 105}; !nearSlice(got, want) {
+		t.Fatalf("flexible auto-fill columns = %v, want %v", got, want)
+	}
+	first, second := geometry("first"), geometry("second")
+	assertNear(t, "flexible auto-fit first width", first.Bounds.Width, 220)
+	assertNear(t, "flexible auto-fit second x", second.Bounds.X-first.Bounds.X, 230)
+}
+
 func TestGridDenseAutoPlacementBackfillsEarlierHole(t *testing.T) {
 	t.Parallel()
 

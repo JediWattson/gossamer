@@ -152,6 +152,60 @@ func TestNamedGridLinesComputeExpandRepeatAndStayImmutable(t *testing.T) {
 	}
 }
 
+func TestGridAutoRepeatRetainsComputedFormAndExpandsNames(t *testing.T) {
+	t.Parallel()
+
+	document := dom.NewDocument()
+	target := dom.NewElement("div", dom.Attribute{Name: "style", Value: `grid-template-columns:[outer] 20px [before] repeat(auto-fill, [cell] minmax(50px, 1fr) [edge]) [after] 30px [last]`})
+	document.AppendChild(target)
+	snapshot := Compute(document, Input{Environment: Environment{Width: 800, Height: 600, InitialFontSize: 16}})
+	computed, ok := snapshot.Lookup(target)
+	if !ok {
+		t.Fatal("missing computed style")
+	}
+	if got, found := ComputedPropertyValue(computed, "grid-template-columns"); !found || got != "[outer] 20px [before] repeat(auto-fill, [cell] minmax(50px, 1fr) [edge]) [after] 30px [last]" {
+		t.Fatalf("computed auto-repeat = %q, %t", got, found)
+	}
+	template := computed.GridTemplateColumns()
+	if template.AutoRepeatKind() != GridAutoRepeatFill || template.Len() != 3 {
+		t.Fatalf("auto-repeat kind/one-repeat length = %v/%d", template.AutoRepeatKind(), template.Len())
+	}
+	if start, end, present := template.AutoRepeatRange(); !present || start != 1 || end != 2 {
+		t.Fatalf("computed auto-repeat range = %d..%d, %t", start, end, present)
+	}
+	expanded, ok := template.ExpandAutoRepeat(3)
+	if !ok || expanded.Len() != 5 {
+		t.Fatalf("expanded auto-repeat length = %d, %t", expanded.Len(), ok)
+	}
+	wantNames := [][]string{
+		{"outer"}, {"before", "cell"}, {"edge", "cell"},
+		{"edge", "cell"}, {"edge", "after"}, {"last"},
+	}
+	for line, want := range wantNames {
+		if got := expanded.LineNames(line); !slices.Equal(got, want) {
+			t.Fatalf("expanded line %d names = %v, want %v", line, got, want)
+		}
+	}
+	mutated := expanded.LineNames(2)
+	mutated[0] = "changed"
+	if got := expanded.LineNames(2)[0]; got != "edge" {
+		t.Fatalf("auto-repeat line names are mutable: %q", got)
+	}
+	if _, ok := template.ExpandAutoRepeat(0); ok {
+		t.Fatal("accepted zero auto repetitions")
+	}
+	nameHeavy, ok := parseGridTrackList("repeat(auto-fill,[a b c d e f g h i] 1px)", 16, Viewport{Width: 800, Height: 600})
+	if !ok {
+		t.Fatal("rejected bounded computed auto-repeat line names")
+	}
+	if _, ok := nameHeavy.ExpandAutoRepeat(1024); ok {
+		t.Fatal("expanded auto-repeat beyond the line-name budget")
+	}
+	if expanded, ok := nameHeavy.ExpandAutoRepeat(910); !ok || expanded.Len() != 910 {
+		t.Fatalf("last bounded name-heavy expansion = %d, %t", expanded.Len(), ok)
+	}
+}
+
 func TestNamedGridAreasComputeSerializeAndGenerateLines(t *testing.T) {
 	t.Parallel()
 
@@ -261,6 +315,9 @@ func TestGridPropertyGrammarRejectsUnboundedOrUnsupportedTracks(t *testing.T) {
 		{Property: "grid-template-columns", Value: "repeat(2, fit-content(10vw))"},
 		{Property: "grid-template-columns", Value: "[first] 20px [middle] repeat(2, [track] 1fr [edge]) [last]"},
 		{Property: "grid-template-columns", Value: "[] 10px []"},
+		{Property: "grid-template-columns", Value: "repeat(auto-fill, 100px)"},
+		{Property: "grid-template-columns", Value: "20px repeat(auto-fit, [slot] minmax(50px, 1fr) [edge]) 30px"},
+		{Property: "grid-template-columns", Value: "repeat(2, 20px) repeat(auto-fill, minmax(auto, 50px)) repeat(2, 30px)"},
 		{Property: "grid-template-areas", Value: `"head head" "nav main"`},
 		{Property: "grid-template-areas", Value: `"1st 1st"`},
 		{Property: "grid-auto-columns", Value: "fit-content(calc(20px + 5%))"},
@@ -301,6 +358,16 @@ func TestGridPropertyGrammarRejectsUnboundedOrUnsupportedTracks(t *testing.T) {
 		{Property: "grid-template-columns", Value: "[initial] 10px"},
 		{Property: "grid-template-columns", Value: "[a][b] 10px"},
 		{Property: "grid-template-columns", Value: "[a]"},
+		{Property: "grid-template-columns", Value: "repeat(auto-fill, 1fr)"},
+		{Property: "grid-template-columns", Value: "repeat(auto-fill, auto)"},
+		{Property: "grid-template-columns", Value: "repeat(auto-fill, min-content)"},
+		{Property: "grid-template-columns", Value: "repeat(auto-fill, fit-content(20px))"},
+		{Property: "grid-template-columns", Value: "repeat(auto-fill, minmax(auto, 1fr))"},
+		{Property: "grid-template-columns", Value: "1fr repeat(auto-fill, 100px)"},
+		{Property: "grid-template-columns", Value: "repeat(auto-fill, 100px) max-content"},
+		{Property: "grid-template-columns", Value: "repeat(auto-fill, 100px) repeat(auto-fit, 100px)"},
+		{Property: "grid-template-columns", Value: "repeat(auto-fill, repeat(2, 100px))"},
+		{Property: "grid-auto-columns", Value: "repeat(auto-fill, 100px)"},
 		{Property: "grid-template-areas", Value: `"a a" "a"`},
 		{Property: "grid-template-areas", Value: `"a a" "a ."`},
 		{Property: "grid-template-areas", Value: `"a /"`},

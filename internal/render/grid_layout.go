@@ -38,10 +38,16 @@ type gridAxisDefinition struct {
 	template       computed.GridTrackList
 	explicitTracks int
 	areaLineNames  [][]string
+	autoFitStart   int
+	autoFitEnd     int
 }
 
 func gridAxisDefinitionFromTemplate(template computed.GridTrackList) gridAxisDefinition {
-	return gridAxisDefinition{template: template, explicitTracks: template.Len()}
+	definition := gridAxisDefinition{template: template, explicitTracks: template.Len()}
+	if template.AutoRepeatKind() == computed.GridAutoRepeatFit {
+		definition.autoFitStart, definition.autoFitEnd, _ = template.AutoRepeatRange()
+	}
+	return definition
 }
 
 func gridAxisDefinitionWithAreas(template computed.GridTrackList, areas computed.GridTemplateAreas, rows bool) gridAxisDefinition {
@@ -54,6 +60,9 @@ func gridAxisDefinitionWithAreas(template computed.GridTrackList, areas computed
 		template:       template,
 		explicitTracks: explicitTracks,
 		areaLineNames:  make([][]string, explicitTracks+1),
+	}
+	if template.AutoRepeatKind() == computed.GridAutoRepeatFit {
+		definition.autoFitStart, definition.autoFitEnd, _ = template.AutoRepeatRange()
 	}
 	for line := range definition.areaLineNames {
 		if rows {
@@ -84,6 +93,105 @@ func (definition gridAxisDefinition) lineHasName(line int, name string) bool {
 	return false
 }
 
+func resolveGridAutoRepeat(template computed.GridTrackList, available *float64, fulfillMinimum bool, gap float64, viewport Viewport) computed.GridTrackList {
+	start, end, ok := template.AutoRepeatRange()
+	if !ok || available == nil || end <= start {
+		return template
+	}
+	patternCount := end - start
+	fixedCount := template.Len() - patternCount
+	maximum := (maxGridTracksPerAxis - fixedCount) / patternCount
+	if maximum < 1 {
+		maximum = 1
+	}
+	fixedSize := 0.0
+	patternSize := 0.0
+	for index := 0; index < template.Len(); index++ {
+		size, definite := gridAutoRepeatTrackSize(template, index, *available, viewport)
+		if !definite {
+			return template
+		}
+		if index >= start && index < end {
+			patternSize += size
+		} else {
+			fixedSize += size
+		}
+	}
+	total := func(count int) float64 {
+		trackCount := fixedCount + count*patternCount
+		return fixedSize + float64(count)*patternSize + gap*float64(max(0, trackCount-1))
+	}
+	denominator := patternSize + gap*float64(patternCount)
+	numerator := *available - fixedSize - gap*float64(fixedCount-1)
+	count := 1
+	if denominator > 0 {
+		if fulfillMinimum {
+			count = int(math.Ceil(numerator / denominator))
+		} else {
+			count = int(math.Floor(numerator / denominator))
+		}
+	}
+	count = min(max(1, count), maximum)
+	if fulfillMinimum {
+		for count > 1 && total(count-1) >= *available {
+			count--
+		}
+		for count < maximum && total(count) < *available {
+			count++
+		}
+	} else {
+		for count > 1 && total(count) > *available {
+			count--
+		}
+		for count < maximum && total(count+1) <= *available {
+			count++
+		}
+	}
+	if expanded, expandedOK := template.ExpandAutoRepeat(count); expandedOK {
+		return expanded
+	}
+	low, high := 1, count
+	for low < high {
+		middle := low + (high-low+1)/2
+		if _, expandedOK := template.ExpandAutoRepeat(middle); expandedOK {
+			low = middle
+		} else {
+			high = middle - 1
+		}
+	}
+	expanded, _ := template.ExpandAutoRepeat(low)
+	return expanded
+}
+
+func gridAutoRepeatTrackSize(template computed.GridTrackList, index int, available float64, viewport Viewport) (float64, bool) {
+	track, ok := template.At(index)
+	if !ok {
+		return 0, false
+	}
+	minimum, minimumOK := definiteGridTrackBreadth(track.MinKind(), track.MinLength(), available, viewport)
+	maximum, maximumOK := definiteGridTrackBreadth(track.MaxKind(), track.MaxLength(), available, viewport)
+	if !minimumOK && !maximumOK {
+		return 0, false
+	}
+	size := minimum
+	if maximumOK {
+		size = maximum
+		if minimumOK {
+			size = math.Max(size, minimum)
+		}
+	}
+	// The repeat-to-fill divisor is floored to one CSS pixel so zero-sized
+	// tracks cannot request an unbounded repetition count.
+	return math.Max(1, size), true
+}
+
+func definiteGridTrackBreadth(kind computed.GridTrackKind, length computed.Length, available float64, viewport Viewport) (float64, bool) {
+	if kind != computed.GridTrackLength {
+		return 0, false
+	}
+	return math.Max(0, resolveLength(length, available, viewport, 0)), true
+}
+
 type gridLayoutModel struct {
 	items        []gridLayoutItem
 	columns      int
@@ -103,21 +211,58 @@ type gridCell struct {
 	column int
 }
 
-func (context *layoutContext) layoutGridContainer(node *styledNode, box *Box, contentWidth float64, definiteHeight *float64) (float64, error) {
-	model, err := context.buildGridLayoutModel(node)
-	if err != nil {
-		return 0, err
+func (model *gridLayoutModel) collapsedAutoFitTracks(rows bool) []bool {
+	axis := model.columnAxis
+	count := model.columns
+	offset := model.columnOffset
+	if rows {
+		axis = model.rowAxis
+		count = model.rows
+		offset = model.rowOffset
 	}
+	if axis.autoFitEnd <= axis.autoFitStart || count == 0 {
+		return nil
+	}
+	collapsed := make([]bool, count)
+	start := max(0, axis.autoFitStart+offset)
+	end := min(count, axis.autoFitEnd+offset)
+	for index := start; index < end; index++ {
+		collapsed[index] = true
+	}
+	for _, item := range model.items {
+		placement := item.column
+		if rows {
+			placement = item.row
+		}
+		if !placement.definite {
+			continue
+		}
+		for index := max(start, placement.start); index < min(end, placement.start+placement.span); index++ {
+			collapsed[index] = false
+		}
+	}
+	return collapsed
+}
+
+func (context *layoutContext) layoutGridContainer(node *styledNode, box *Box, contentWidth float64, definiteHeight, repeatHeight *float64, repeatFulfillsMinimum bool) (float64, error) {
 	columnGap := math.Max(0, resolveLength(node.style.ColumnGap(), contentWidth, context.viewport, 0))
 	rowGap := math.Max(0, resolveLength(node.style.RowGap(), contentWidth, context.viewport, 0))
-	columnTracks := gridTrackSizes(node.style.GridTemplateColumns(), node.style.GridAutoColumns(), model.columns, model.columnOffset)
-	columnSizes, err := context.sizeGridColumns(model.items, columnTracks, contentWidth, columnGap, contentAlignmentStretches(node.style.JustifyContent()))
+	columnTemplate := resolveGridAutoRepeat(node.style.GridTemplateColumns(), &contentWidth, false, columnGap, context.viewport)
+	rowTemplate := resolveGridAutoRepeat(node.style.GridTemplateRows(), repeatHeight, repeatFulfillsMinimum, rowGap, context.viewport)
+	model, err := context.buildGridLayoutModel(node, columnTemplate, rowTemplate)
 	if err != nil {
 		return 0, err
 	}
-	columnStarts, columnEnds, _ := alignedGridTrackGeometry(columnSizes, columnGap, contentWidth, node.style.JustifyContent())
+	collapsedColumns := model.collapsedAutoFitTracks(false)
+	collapsedRows := model.collapsedAutoFitTracks(true)
+	columnTracks := gridTrackSizes(model.columnAxis.template, node.style.GridAutoColumns(), model.columns, model.columnOffset)
+	columnSizes, err := context.sizeGridColumns(model.items, columnTracks, collapsedColumns, contentWidth, columnGap, contentAlignmentStretches(node.style.JustifyContent()))
+	if err != nil {
+		return 0, err
+	}
+	columnStarts, columnEnds, _ := alignedGridTrackGeometry(columnSizes, collapsedColumns, columnGap, contentWidth, node.style.JustifyContent())
 	box.gridColumnSizes = append([]float64(nil), columnSizes...)
-	box.gridColumnLineNames = gridUsedLineNames(node.style.GridTemplateColumns(), len(columnSizes), model.columnOffset)
+	box.gridColumnLineNames = gridUsedLineNames(model.columnAxis.template, len(columnSizes), model.columnOffset)
 
 	// The first item pass obtains max-content row contributions. Once rows are
 	// sized, a second bounded pass supplies each area's definite height so
@@ -125,29 +270,29 @@ func (context *layoutContext) layoutGridContainer(node *styledNode, box *Box, co
 	if err := context.measureGridItems(&model, contentWidth, columnStarts, columnEnds); err != nil {
 		return 0, err
 	}
-	rowTracks := gridTrackSizes(node.style.GridTemplateRows(), node.style.GridAutoRows(), model.rows, model.rowOffset)
-	rowSizes := context.sizeGridRows(model.items, rowTracks, definiteHeight, rowGap, contentAlignmentStretches(node.style.AlignContent()))
+	rowTracks := gridTrackSizes(model.rowAxis.template, node.style.GridAutoRows(), model.rows, model.rowOffset)
+	rowSizes := context.sizeGridRows(model.items, rowTracks, collapsedRows, definiteHeight, rowGap, contentAlignmentStretches(node.style.AlignContent()))
 	box.gridRowSizes = append([]float64(nil), rowSizes...)
-	box.gridRowLineNames = gridUsedLineNames(node.style.GridTemplateRows(), len(rowSizes), model.rowOffset)
-	rowAvailable := sumFloat64(rowSizes) + rowGap*float64(max(0, len(rowSizes)-1))
+	box.gridRowLineNames = gridUsedLineNames(model.rowAxis.template, len(rowSizes), model.rowOffset)
+	rowAvailable := sumFloat64(rowSizes) + gridGapTotal(collapsedRows, len(rowSizes), rowGap)
 	if definiteHeight != nil {
 		rowAvailable = *definiteHeight
 	}
-	rowStarts, rowEnds, gridHeight := alignedGridTrackGeometry(rowSizes, rowGap, rowAvailable, node.style.AlignContent())
+	rowStarts, rowEnds, gridHeight := alignedGridTrackGeometry(rowSizes, collapsedRows, rowGap, rowAvailable, node.style.AlignContent())
 	if err := context.placeGridItems(node, box, &model, columnStarts, columnEnds, rowStarts, rowEnds); err != nil {
 		return 0, err
 	}
 	return gridHeight, nil
 }
 
-func (context *layoutContext) buildGridLayoutModel(container *styledNode) (gridLayoutModel, error) {
+func (context *layoutContext) buildGridLayoutModel(container *styledNode, columnTemplate, rowTemplate computed.GridTrackList) (gridLayoutModel, error) {
 	model := gridLayoutModel{occupied: make(map[gridCell]struct{})}
 	model.items = context.gridItems(container)
 	if len(model.items) > maxGridItems {
 		return gridLayoutModel{}, fmt.Errorf("render: grid exceeds %d items", maxGridItems)
 	}
-	model.columnAxis = gridAxisDefinitionWithAreas(container.style.GridTemplateColumns(), container.style.GridTemplateAreas(), false)
-	model.rowAxis = gridAxisDefinitionWithAreas(container.style.GridTemplateRows(), container.style.GridTemplateAreas(), true)
+	model.columnAxis = gridAxisDefinitionWithAreas(columnTemplate, container.style.GridTemplateAreas(), false)
+	model.rowAxis = gridAxisDefinitionWithAreas(rowTemplate, container.style.GridTemplateAreas(), true)
 	model.explicitCols = model.columnAxis.explicitTracks
 	model.explicitRows = model.rowAxis.explicitTracks
 	model.columns = model.explicitCols
@@ -659,7 +804,7 @@ func gridUsedLineNames(template computed.GridTrackList, count, offset int) [][]s
 	return lines
 }
 
-func (context *layoutContext) sizeGridColumns(items []gridLayoutItem, tracks []computed.GridTrackSize, availableWidth, gap float64, stretchAuto bool) ([]float64, error) {
+func (context *layoutContext) sizeGridColumns(items []gridLayoutItem, tracks []computed.GridTrackSize, collapsed []bool, availableWidth, gap float64, stretchAuto bool) ([]float64, error) {
 	contributions := make([]gridTrackContribution, 0, len(items))
 	for index := range items {
 		item := &items[index]
@@ -675,7 +820,7 @@ func (context *layoutContext) sizeGridColumns(items []gridLayoutItem, tracks []c
 		})
 	}
 	height := availableWidth
-	return sizeGridTrackAxis(tracks, contributions, &height, gap, context.viewport, stretchAuto), nil
+	return sizeGridTrackAxis(tracks, contributions, collapsed, &height, gap, context.viewport, stretchAuto), nil
 }
 
 type gridTrackContribution struct {
@@ -695,10 +840,11 @@ type gridTrackState struct {
 	fitContent    bool
 	fitLimit      float64
 	fitLimitKnown bool
+	collapsed     bool
 }
 
-func sizeGridTrackAxis(tracks []computed.GridTrackSize, contributions []gridTrackContribution, available *float64, gap float64, viewport Viewport, stretchAuto bool) []float64 {
-	states := initializeGridTrackStates(tracks, available, viewport)
+func sizeGridTrackAxis(tracks []computed.GridTrackSize, contributions []gridTrackContribution, collapsed []bool, available *float64, gap float64, viewport Viewport, stretchAuto bool) []float64 {
+	states := initializeGridTrackStates(tracks, collapsed, available, viewport)
 	applyGridTrackContributions(states, contributions, gap)
 	sizes := make([]float64, len(states))
 	for index := range states {
@@ -715,13 +861,17 @@ func sizeGridTrackAxis(tracks []computed.GridTrackSize, contributions []gridTrac
 	return sizes
 }
 
-func initializeGridTrackStates(tracks []computed.GridTrackSize, available *float64, viewport Viewport) []gridTrackState {
+func initializeGridTrackStates(tracks []computed.GridTrackSize, collapsed []bool, available *float64, viewport Viewport) []gridTrackState {
 	states := make([]gridTrackState, len(tracks))
 	percentageBase := 0.0
 	if available != nil {
 		percentageBase = *available
 	}
 	for index, track := range tracks {
+		if index < len(collapsed) && collapsed[index] {
+			states[index] = gridTrackState{collapsed: true}
+			continue
+		}
 		minKind := effectiveGridBreadthKind(track.MinKind(), track.MinLength(), available != nil)
 		maxKind := effectiveGridBreadthKind(track.MaxKind(), track.MaxLength(), available != nil)
 		state := gridTrackState{minKind: minKind, maxKind: maxKind, fraction: track.MaxFraction(), fitContent: track.IsFitContent()}
@@ -798,14 +948,14 @@ func distributeGridValue(values []float64, states []gridTrackState, start, span 
 	if start < 0 || span < 1 || start+span > len(values) {
 		return
 	}
-	current := sumFloat64(values[start:start+span]) + gap*float64(max(0, span-1))
+	current := sumFloat64(values[start:start+span]) + gridStateGapTotal(states[start:start+span], gap)
 	deficit := contribution - current
 	if deficit <= 0 {
 		return
 	}
 	indices := make([]int, 0, span)
 	for index := start; index < start+span; index++ {
-		if eligible(states[index]) {
+		if !states[index].collapsed && eligible(states[index]) {
 			indices = append(indices, index)
 		}
 	}
@@ -819,13 +969,13 @@ func distributeGridValue(values []float64, states []gridTrackState, start, span 
 }
 
 func maximizeGridTracks(sizes []float64, states []gridTrackState, available, gap float64) {
-	free := available - gap*float64(max(0, len(sizes)-1)) - sumFloat64(sizes)
+	free := available - gridStateGapTotal(states, gap) - sumFloat64(sizes)
 	if free <= 0 {
 		return
 	}
 	active := make([]int, 0, len(states))
 	for index, state := range states {
-		if state.maxKind != computed.GridTrackFraction && state.limit > sizes[index] {
+		if !state.collapsed && state.maxKind != computed.GridTrackFraction && state.limit > sizes[index] {
 			active = append(active, index)
 		}
 	}
@@ -852,11 +1002,11 @@ func maximizeGridTracks(sizes []float64, states []gridTrackState, available, gap
 }
 
 func distributeGridFlexibleSpace(sizes []float64, states []gridTrackState, available, gap float64) {
-	gapTotal := gap * float64(max(0, len(sizes)-1))
+	gapTotal := gridStateGapTotal(states, gap)
 	nonFrTotal := 0.0
 	active := make([]int, 0, len(states))
 	for index, state := range states {
-		if state.maxKind == computed.GridTrackFraction && state.fraction > 0 {
+		if !state.collapsed && state.maxKind == computed.GridTrackFraction && state.fraction > 0 {
 			active = append(active, index)
 		} else {
 			nonFrTotal += sizes[index]
@@ -893,7 +1043,7 @@ func distributeGridFlexibleSpace(sizes []float64, states []gridTrackState, avail
 }
 
 func stretchGridAutoTracks(sizes []float64, states []gridTrackState, available, gap float64) {
-	gapTotal := gap * float64(max(0, len(sizes)-1))
+	gapTotal := gridStateGapTotal(states, gap)
 	used := sumFloat64(sizes) + gapTotal
 	leftover := available - used
 	if leftover <= 0 {
@@ -901,7 +1051,7 @@ func stretchGridAutoTracks(sizes []float64, states []gridTrackState, available, 
 	}
 	autoCount := 0
 	for _, state := range states {
-		if state.maxKind == computed.GridTrackAuto {
+		if !state.collapsed && state.maxKind == computed.GridTrackAuto {
 			autoCount++
 		}
 	}
@@ -910,7 +1060,7 @@ func stretchGridAutoTracks(sizes []float64, states []gridTrackState, available, 
 	}
 	addition := leftover / float64(autoCount)
 	for index, state := range states {
-		if state.maxKind == computed.GridTrackAuto {
+		if !state.collapsed && state.maxKind == computed.GridTrackAuto {
 			sizes[index] += addition
 		}
 	}
@@ -930,6 +1080,19 @@ func indefiniteGridTrackSizes(states []gridTrackState) []float64 {
 	return sizes
 }
 
+func gridStateGapTotal(states []gridTrackState, gap float64) float64 {
+	if gap <= 0 || len(states) < 2 {
+		return 0
+	}
+	total := 0.0
+	for index := 0; index+1 < len(states); index++ {
+		if !states[index].collapsed && !states[index+1].collapsed {
+			total += gap
+		}
+	}
+	return total
+}
+
 func (context *layoutContext) measureGridItems(model *gridLayoutModel, contentWidth float64, columnStarts, columnEnds []float64) error {
 	for index := range model.items {
 		item := &model.items[index]
@@ -947,7 +1110,7 @@ func (context *layoutContext) measureGridItems(model *gridLayoutModel, contentWi
 	return nil
 }
 
-func (context *layoutContext) sizeGridRows(items []gridLayoutItem, tracks []computed.GridTrackSize, definiteHeight *float64, gap float64, stretchAuto bool) []float64 {
+func (context *layoutContext) sizeGridRows(items []gridLayoutItem, tracks []computed.GridTrackSize, collapsed []bool, definiteHeight *float64, gap float64, stretchAuto bool) []float64 {
 	contributions := make([]gridTrackContribution, 0, len(items))
 	for index := range items {
 		item := &items[index]
@@ -959,7 +1122,7 @@ func (context *layoutContext) sizeGridRows(items []gridLayoutItem, tracks []comp
 			preferred: contribution,
 		})
 	}
-	return sizeGridTrackAxis(tracks, contributions, definiteHeight, gap, context.viewport, stretchAuto)
+	return sizeGridTrackAxis(tracks, contributions, collapsed, definiteHeight, gap, context.viewport, stretchAuto)
 }
 
 func (context *layoutContext) placeGridItems(container *styledNode, box *Box, model *gridLayoutModel, columnStarts, columnEnds, rowStarts, rowEnds []float64) error {
@@ -1001,24 +1164,69 @@ func (context *layoutContext) placeGridItems(container *styledNode, box *Box, mo
 
 func gridTrackGeometry(sizes []float64, gap float64) ([]float64, []float64, float64) {
 	available := sumFloat64(sizes) + gap*float64(max(0, len(sizes)-1))
-	return alignedGridTrackGeometry(sizes, gap, available, computed.JustifyStart)
+	return alignedGridTrackGeometry(sizes, nil, gap, available, computed.JustifyStart)
 }
 
-func alignedGridTrackGeometry(sizes []float64, gap, available float64, alignment computed.JustifyContent) ([]float64, []float64, float64) {
+func alignedGridTrackGeometry(sizes []float64, collapsed []bool, gap, available float64, alignment computed.JustifyContent) ([]float64, []float64, float64) {
 	starts := make([]float64, len(sizes))
 	ends := make([]float64, len(sizes))
-	used := sumFloat64(sizes) + gap*float64(max(0, len(sizes)-1))
-	start, extraGap := gridContentSpace(alignment, math.Max(0, available-used), len(sizes))
+	used := sumFloat64(sizes) + gridGapTotal(collapsed, len(sizes), gap)
+	visible := len(sizes)
+	if len(collapsed) == len(sizes) {
+		visible = 0
+		for _, isCollapsed := range collapsed {
+			if !isCollapsed {
+				visible++
+			}
+		}
+	}
+	start, extraGap := gridContentSpace(alignment, math.Max(0, available-used), visible)
 	cursor := start
 	for index, size := range sizes {
 		starts[index] = cursor
 		ends[index] = cursor + math.Max(0, size)
 		cursor = ends[index]
-		if index+1 < len(sizes) {
-			cursor += gap + extraGap
+		if gridGapAfter(collapsed, len(sizes), index) {
+			cursor += gap
+		}
+		if !gridTrackIsCollapsed(collapsed, len(sizes), index) && gridHasVisibleTrackAfter(collapsed, len(sizes), index) {
+			cursor += extraGap
 		}
 	}
 	return starts, ends, cursor
+}
+
+func gridGapTotal(collapsed []bool, count int, gap float64) float64 {
+	if gap <= 0 || count < 2 {
+		return 0
+	}
+	total := 0.0
+	for index := 0; index+1 < count; index++ {
+		if gridGapAfter(collapsed, count, index) {
+			total += gap
+		}
+	}
+	return total
+}
+
+func gridGapAfter(collapsed []bool, count, index int) bool {
+	if index < 0 || index+1 >= count {
+		return false
+	}
+	return !gridTrackIsCollapsed(collapsed, count, index) && !gridTrackIsCollapsed(collapsed, count, index+1)
+}
+
+func gridTrackIsCollapsed(collapsed []bool, count, index int) bool {
+	return len(collapsed) == count && index >= 0 && index < count && collapsed[index]
+}
+
+func gridHasVisibleTrackAfter(collapsed []bool, count, index int) bool {
+	for candidate := index + 1; candidate < count; candidate++ {
+		if !gridTrackIsCollapsed(collapsed, count, candidate) {
+			return true
+		}
+	}
+	return false
 }
 
 func gridContentSpace(alignment computed.JustifyContent, free float64, count int) (start, extraGap float64) {
@@ -1056,12 +1264,14 @@ func gridTrackSpan(starts, ends []float64, start, span int) float64 {
 }
 
 func (context *layoutContext) intrinsicGridContentWidths(node *styledNode, availableWidth float64) (intrinsicWidths, error) {
-	model, err := context.buildGridLayoutModel(node)
+	columnTemplate := resolveGridAutoRepeat(node.style.GridTemplateColumns(), nil, false, 0, context.viewport)
+	rowTemplate := resolveGridAutoRepeat(node.style.GridTemplateRows(), nil, false, 0, context.viewport)
+	model, err := context.buildGridLayoutModel(node, columnTemplate, rowTemplate)
 	if err != nil {
 		return intrinsicWidths{}, err
 	}
 	gap := math.Max(0, resolveLength(node.style.ColumnGap(), availableWidth, context.viewport, 0))
-	tracks := gridTrackSizes(node.style.GridTemplateColumns(), node.style.GridAutoColumns(), model.columns, model.columnOffset)
+	tracks := gridTrackSizes(model.columnAxis.template, node.style.GridAutoColumns(), model.columns, model.columnOffset)
 	contributions := make([]gridTrackContribution, 0, len(model.items))
 	for index := range model.items {
 		item := &model.items[index]
@@ -1076,7 +1286,7 @@ func (context *layoutContext) intrinsicGridContentWidths(node *styledNode, avail
 			preferred: intrinsic.preferred,
 		})
 	}
-	states := initializeGridTrackStates(tracks, nil, context.viewport)
+	states := initializeGridTrackStates(tracks, nil, nil, context.viewport)
 	applyGridTrackContributions(states, contributions, gap)
 	minimum := make([]float64, len(states))
 	for index := range states {

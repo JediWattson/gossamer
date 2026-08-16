@@ -502,7 +502,33 @@ func (context *layoutContext) layoutBlockSized(node *styledNode, containingX, co
 		return context.finalizeBlock(node, box, availableWidth)
 	}
 	if style.Display().Inside() == computed.DisplayInsideGrid {
-		contentHeight, err := context.layoutGridContainer(node, box, width, childContainingHeight)
+		repeatHeight := childContainingHeight
+		repeatFulfillsMinimum := false
+		if repeatHeight == nil {
+			percentageBase := 0.0
+			if containingHeight != nil {
+				percentageBase = *containingHeight
+			}
+			minimum, hasMinimum := 0.0, resolvableHeight(style.MinHeight(), containingHeight)
+			if hasMinimum {
+				minimum = math.Max(0, resolveLength(style.MinHeight(), percentageBase, context.viewport, 0))
+				if style.BoxSizing() == boxSizingBorderBox {
+					minimum = math.Max(0, minimum-verticalInsets)
+				}
+			}
+			if resolvableHeight(style.MaxHeight(), containingHeight) {
+				maximum := math.Max(0, resolveLength(style.MaxHeight(), percentageBase, context.viewport, 0))
+				if style.BoxSizing() == boxSizingBorderBox {
+					maximum = math.Max(0, maximum-verticalInsets)
+				}
+				maximum = math.Max(maximum, minimum)
+				repeatHeight = &maximum
+			} else if hasMinimum {
+				repeatHeight = &minimum
+				repeatFulfillsMinimum = true
+			}
+		}
+		contentHeight, err := context.layoutGridContainer(node, box, width, childContainingHeight, repeatHeight, repeatFulfillsMinimum)
 		if err != nil {
 			return nil, err
 		}

@@ -98,6 +98,17 @@ func TestStockV8GridComputedStyleAndGeometryStayLive(t *testing.T) {
 				if (retained["grid-template-areas"] !== '"head main" "head main"' || movedArea.left !== 100 || movedArea.top !== 0 || movedArea.width !== 200 || movedArea.height !== 60) {
 					throw new Error("live named grid areas: " + [retained["grid-template-areas"], movedArea.left, movedArea.top, movedArea.width, movedArea.height]);
 				}
+				grid.style.cssText = "display:grid;width:430px;column-gap:10px;grid-template-columns:repeat(auto-fit,100px)";
+				first.style.cssText = "";
+				second.style.cssText = "";
+				const fitted = second.getBoundingClientRect();
+				if (retained.gridTemplateColumns !== "100px 100px 0px 0px" || fitted.left !== 110 || fitted.width !== 100) {
+					throw new Error("auto-fit grid tracks: " + [retained.gridTemplateColumns, fitted.left, fitted.width]);
+				}
+				grid.style.gridTemplateColumns = "repeat(auto-fill,100px)";
+				if (retained["grid-template-columns"] !== "100px 100px 100px 100px") {
+					throw new Error("live auto-fill grid tracks: " + retained["grid-template-columns"]);
+				}
 			})();
 		`,
 	}); err != nil {
