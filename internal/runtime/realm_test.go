@@ -8,6 +8,7 @@ import (
 	"time"
 
 	browserruntime "github.com/JediWattson/gossamer/internal/runtime"
+	"github.com/JediWattson/gossamer/internal/runtime/memory"
 	"github.com/JediWattson/gossamer/internal/runtime/ownership"
 )
 
@@ -51,6 +52,70 @@ func TestRealmExecutesTasksInOrderAndDrainsMicrotasks(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertOrder(t, order, []string{"task:1", "microtask:1", "microtask:2", "task:2"})
+}
+
+func TestRealmProfileTracksQueuedNativeGraphLifetime(t *testing.T) {
+	t.Parallel()
+
+	realm, err := browserruntime.NewRealm(900, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer realm.Close()
+
+	baseline := realm.Profile()
+	if baseline.TaskDepth != 0 || baseline.MicrotaskDepth != 0 || baseline.Memory.LiveSlots != 0 {
+		t.Fatalf("baseline profile = %#v", baseline)
+	}
+
+	_, err = realm.EnqueueTask(func(context *browserruntime.TaskContext) error {
+		name, err := context.NewString("profile-root")
+		if err != nil {
+			return err
+		}
+		root, err := context.NewCell()
+		if err != nil {
+			return err
+		}
+		if err := context.Set(root, 0, memory.RefValue(name)); err != nil {
+			return err
+		}
+		_, err = context.Transfer(context.Realm, func(consumer *browserruntime.TaskContext) error {
+			if len(consumer.Refs) != 1 {
+				t.Fatalf("consumer refs = %v", consumer.Refs)
+			}
+			return nil
+		}, root)
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queued := realm.Profile(); queued.TaskDepth != 1 {
+		t.Fatalf("queued producer profile = %#v", queued)
+	}
+
+	if err := realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	inTransit := realm.Profile()
+	if inTransit.TaskDepth != 1 || inTransit.Memory.LiveCells != 1 || inTransit.Memory.LiveStrings != 1 || inTransit.Memory.LiveSlots != 2 || inTransit.Ownership.LiveObjects != 2 {
+		t.Fatalf("in-transit profile = %#v", inTransit)
+	}
+	if err := realm.Store().CheckInvariants(); err != nil {
+		t.Fatalf("in-transit invariants: %v", err)
+	}
+
+	if err := realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	released := realm.Profile()
+	if released.TaskDepth != 0 || released.Memory.LiveSlots != 0 || released.Ownership.LiveObjects != 0 || released.Memory.BulkRegionReleases-baseline.Memory.BulkRegionReleases != 2 {
+		t.Fatalf("released profile = %#v, baseline=%#v", released, baseline)
+	}
+	if err := realm.Store().CheckInvariants(); err != nil {
+		t.Fatalf("released invariants: %v", err)
+	}
 }
 
 func TestQueuedObjectTransfersBetweenTaskRegions(t *testing.T) {

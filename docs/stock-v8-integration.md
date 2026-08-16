@@ -187,11 +187,15 @@ permanent and disallows reinitialization, so closing a Gossamer `Engine` closes
 all of its isolates but intentionally leaves the shared platform alive until
 process exit. Isolate teardown remains complete and independently measurable.
 
-`tools/v8/profile.sh` runs a standalone allocation workload and emits JSON for
-three points: baseline, after JavaScript execution and its explicit microtask
-checkpoint, and after releasing the workload followed by a forced collection.
-Byte fields are raw bytes; `evaluationNanos` and `gcNanos` are integer
-nanoseconds. An alternate source file can be supplied with `-script`.
+`tools/v8/profile.sh` runs a browser-hosted allocation and DOM churn workload.
+Its ordered JSON timeline joins stock-V8 heap, sampling, GC, wrapper, callback,
+and listener counters with the Go Realm's physical RegionStore counters,
+semantic ownership counters, queue depths, and document-node totals. Each live
+iteration is captured while a representative typed native graph is owned by a
+queued consumer; the final checkpoint follows DOM release, task settlement,
+forced V8 collection, weak-wrapper reconciliation, and a Go heap invariant
+check. Byte fields are raw bytes; `evaluationNanos` and `gcNanos` are integer
+nanoseconds. An alternate browser source file can be supplied with `-script`.
 
 ```sh
 tools/v8/profile.sh -iterations 5 -sampling-interval 4096

@@ -51,28 +51,28 @@ var (
 
 // Stats describes physical heap activity, independently from ledger telemetry.
 type Stats struct {
-	Allocations        uint64
-	Frees              uint64
-	LiveSlots          uint64
-	LiveCells          uint64
-	LiveStrings        uint64
-	LiveObjects        uint64
-	LiveArrays         uint64
-	LiveContexts       uint64
-	LiveFunctions      uint64
-	LivePromises       uint64
-	LiveBigInts        uint64
-	LiveSymbols        uint64
-	LiveArrayBuffers   uint64
-	LiveTypedArrays    uint64
-	LiveMaps           uint64
-	LiveSets           uint64
-	LiveDates          uint64
-	LiveRegExps        uint64
-	LiveErrors         uint64
-	LiveBytes          uint64
-	LiveRegions        uint64
-	BulkRegionReleases uint64
+	Allocations        uint64 `json:"allocations"`
+	Frees              uint64 `json:"frees"`
+	LiveSlots          uint64 `json:"liveSlots"`
+	LiveCells          uint64 `json:"liveCells"`
+	LiveStrings        uint64 `json:"liveStrings"`
+	LiveObjects        uint64 `json:"liveObjects"`
+	LiveArrays         uint64 `json:"liveArrays"`
+	LiveContexts       uint64 `json:"liveContexts"`
+	LiveFunctions      uint64 `json:"liveFunctions"`
+	LivePromises       uint64 `json:"livePromises"`
+	LiveBigInts        uint64 `json:"liveBigInts"`
+	LiveSymbols        uint64 `json:"liveSymbols"`
+	LiveArrayBuffers   uint64 `json:"liveArrayBuffers"`
+	LiveTypedArrays    uint64 `json:"liveTypedArrays"`
+	LiveMaps           uint64 `json:"liveMaps"`
+	LiveSets           uint64 `json:"liveSets"`
+	LiveDates          uint64 `json:"liveDates"`
+	LiveRegExps        uint64 `json:"liveRegExps"`
+	LiveErrors         uint64 `json:"liveErrors"`
+	LiveBytes          uint64 `json:"liveBytes"`
+	LiveRegions        uint64 `json:"liveRegions"`
+	BulkRegionReleases uint64 `json:"bulkRegionReleases"`
 }
 
 type objectEdge struct {

@@ -12,6 +12,12 @@ with `ErrTypeMismatch`. Ownership and queue operations remain properties of the
 containing region, so adding a payload type cannot bypass Transfer, Publish,
 Copy, Promote, stale-reference checks, or bulk region release.
 
+`runtime.Realm.Profile` snapshots these physical counters beside the ownership
+ledger and queue depths. The stock-V8 profiling command records that Go
+snapshot and V8's heap/wrapper counters at the same between-task checkpoints,
+so later allocator changes can be compared without changing lifetime
+semantics.
+
 ## Implemented types
 
 ### String
