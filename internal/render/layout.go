@@ -368,9 +368,15 @@ func (context *layoutContext) layoutBlockSizedWithSubgrid(node *styledNode, cont
 		!style.verticalLayout() && style.WritingMode() != writingModeHorizontalTB
 	verticalGrid := style.Display().Inside() == computed.DisplayInsideGrid &&
 		!style.verticalLayout() && style.WritingMode() != writingModeHorizontalTB
+	verticalFlex := style.Display().Inside() == computed.DisplayInsideFlex &&
+		!style.verticalLayout() && style.WritingMode() != writingModeHorizontalTB
 	horizontalGridInVertical := style.Display().Inside() == computed.DisplayInsideGrid &&
 		style.verticalLayout() && style.WritingMode() == writingModeHorizontalTB
+	horizontalFlexInVertical := style.Display().Inside() == computed.DisplayInsideFlex &&
+		style.verticalLayout() && style.WritingMode() == writingModeHorizontalTB
 	reversedVerticalGrid := style.Display().Inside() == computed.DisplayInsideGrid &&
+		style.verticalLayout() && style.WritingMode() != writingModeHorizontalTB && style.WritingMode() != style.layoutAxes
+	reversedVerticalFlex := style.Display().Inside() == computed.DisplayInsideFlex &&
 		style.verticalLayout() && style.WritingMode() != writingModeHorizontalTB && style.WritingMode() != style.layoutAxes
 	leftAuto := style.MarginLeft().Unit() == lengthAuto
 	rightAuto := style.MarginRight().Unit() == lengthAuto
@@ -563,6 +569,24 @@ func (context *layoutContext) layoutBlockSizedWithSubgrid(node *styledNode, cont
 		return context.finalizeBlock(node, wrapper, availableWidth)
 	}
 	if style.Display().Inside() == computed.DisplayInsideFlex {
+		if verticalFlex {
+			if _, err := context.layoutVerticalFlexContainer(node, box, containingHeight, width); err != nil {
+				return nil, err
+			}
+			return context.finalizeBlock(node, box, availableWidth)
+		}
+		if horizontalFlexInVertical {
+			if _, err := context.layoutHorizontalFlexInVerticalPlane(node, box, containingHeight, width, style.layoutAxes); err != nil {
+				return nil, err
+			}
+			return context.finalizeBlock(node, box, availableWidth)
+		}
+		if reversedVerticalFlex {
+			if _, err := context.layoutReversedVerticalFlexInVerticalPlane(node, box, width, childContainingHeight, style.layoutAxes); err != nil {
+				return nil, err
+			}
+			return context.finalizeBlock(node, box, availableWidth)
+		}
 		contentHeight, err := context.layoutFlexContainer(node, box, width, childContainingHeight)
 		if err != nil {
 			return nil, err
@@ -787,18 +811,22 @@ func (context *layoutContext) layoutFlexContainer(node *styledNode, box *Box, co
 		return items[left].node.style.Order() < items[right].node.style.Order()
 	})
 	direction := node.style.FlexDirection()
-	if direction == computed.FlexDirectionRowReverse || direction == computed.FlexDirectionColumnReverse {
+	reverse := direction == computed.FlexDirectionColumnReverse
+	if direction == computed.FlexDirectionRow || direction == computed.FlexDirectionRowReverse {
+		reverse = (direction == computed.FlexDirectionRowReverse) != (node.style.Direction() == directionRTL)
+	}
+	if reverse {
 		for left, right := 0, len(items)-1; left < right; left, right = left+1, right-1 {
 			items[left], items[right] = items[right], items[left]
 		}
 	}
 	if direction == computed.FlexDirectionColumn || direction == computed.FlexDirectionColumnReverse {
-		return context.layoutFlexColumn(node, box, contentWidth, definiteHeight, items)
+		return context.layoutFlexColumn(node, box, contentWidth, definiteHeight, items, reverse)
 	}
-	return context.layoutFlexRow(node, box, contentWidth, definiteHeight, items)
+	return context.layoutFlexRow(node, box, contentWidth, definiteHeight, items, reverse)
 }
 
-func (context *layoutContext) layoutFlexRow(node *styledNode, box *Box, contentWidth float64, definiteHeight *float64, items []flexLayoutItem) (float64, error) {
+func (context *layoutContext) layoutFlexRow(node *styledNode, box *Box, contentWidth float64, definiteHeight *float64, items []flexLayoutItem, reverse bool) (float64, error) {
 	if len(items) == 0 {
 		return flexContainerHeight(definiteHeight, 0), nil
 	}
@@ -847,7 +875,7 @@ func (context *layoutContext) layoutFlexRow(node *styledNode, box *Box, contentW
 		}
 		free = 0
 	}
-	start, extraGap := justifyFlexSpace(node.style.JustifyContent(), node.style.JustifyContentOverflow(), free, len(items), node.style.FlexDirection() == computed.FlexDirectionRowReverse)
+	start, extraGap := justifyFlexSpace(node.style.JustifyContent(), node.style.JustifyContentOverflow(), free, len(items), reverse)
 	cursorX := box.ContentBounds.X + start
 	maxCross := 0.0
 	var firstBaselineGroup, lastBaselineGroup baselineAlignmentGroup
@@ -902,7 +930,7 @@ func (context *layoutContext) layoutFlexRow(node *styledNode, box *Box, contentW
 	return containerHeight, nil
 }
 
-func (context *layoutContext) layoutFlexColumn(node *styledNode, box *Box, contentWidth float64, definiteHeight *float64, items []flexLayoutItem) (float64, error) {
+func (context *layoutContext) layoutFlexColumn(node *styledNode, box *Box, contentWidth float64, definiteHeight *float64, items []flexLayoutItem, reverse bool) (float64, error) {
 	gap := math.Max(0, resolveLength(node.style.RowGap(), contentWidth, context.viewport, 0))
 	totalMain := gap * math.Max(0, float64(len(items)-1))
 	for index := range items {
@@ -956,7 +984,7 @@ func (context *layoutContext) layoutFlexColumn(node *styledNode, box *Box, conte
 		}
 		free = 0
 	}
-	start, extraGap := justifyFlexSpace(node.style.JustifyContent(), node.style.JustifyContentOverflow(), free, len(items), node.style.FlexDirection() == computed.FlexDirectionColumnReverse)
+	start, extraGap := justifyFlexSpace(node.style.JustifyContent(), node.style.JustifyContentOverflow(), free, len(items), reverse)
 	cursorY := box.ContentBounds.Y + start
 	for index := range items {
 		item := &items[index]

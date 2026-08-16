@@ -91,6 +91,28 @@ func TestHorizontalGridKeepsIndependentAxesInsideVerticalTable(t *testing.T) {
 	assertNear(t, "horizontal Grid second column", b.Bounds.X-a.Bounds.X, 40)
 }
 
+func TestHorizontalFlexKeepsIndependentAxesInsideVerticalTable(t *testing.T) {
+	t.Parallel()
+
+	document := mustParseTableDocument(t, `<!doctype html><html><body style="margin:0"><table style="writing-mode:vertical-lr;width:120px;height:180px;border-spacing:0"><tr style="width:120px"><td style="height:180px;padding:0"><div id=inner style="display:flex;writing-mode:horizontal-tb;width:100px;height:60px;align-items:flex-start"><i id=a style="flex:none;width:40px;height:30px">A</i><i id=b style="flex:none;width:60px;height:20px">B</i></div></td></tr></table></body></html>`)
+	frame, err := render.Render(document, render.Viewport{Width: 300, Height: 300})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inner := findBox(frame.Root, tableElementByID(t, document, "inner"))
+	a := findBox(frame.Root, tableElementByID(t, document, "a"))
+	b := findBox(frame.Root, tableElementByID(t, document, "b"))
+	if inner == nil || a == nil || b == nil {
+		t.Fatalf("horizontal Flex boxes inside vertical table missing: %v/%v/%v", inner, a, b)
+	}
+	assertNear(t, "horizontal Flex physical width", inner.Bounds.Width, 100)
+	assertNear(t, "horizontal Flex physical height", inner.Bounds.Height, 60)
+	assertNear(t, "horizontal Flex first item", a.Bounds.Width, 40)
+	assertNear(t, "horizontal Flex second item", b.Bounds.Width, 60)
+	assertNear(t, "horizontal Flex shared row", b.Bounds.Y, a.Bounds.Y)
+	assertNear(t, "horizontal Flex second offset", b.Bounds.X-a.Bounds.X, 40)
+}
+
 func TestVerticalTableCaptionsTextAndCollapsedBordersTransformTogether(t *testing.T) {
 	t.Parallel()
 

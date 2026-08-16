@@ -289,6 +289,173 @@ func (context *layoutContext) layoutHorizontalGridInVerticalPlane(
 	return inlineSize, nil
 }
 
+// layoutVerticalFlexContainer uses the same logical-coordinate contract as
+// vertical Grid and table layout: the existing Flex algorithm sees the
+// container's inline axis as x and block axis as y, and the complete retained
+// tree is projected once after sizing and placement finish.
+func (context *layoutContext) layoutVerticalFlexContainer(
+	flex *styledNode,
+	box *Box,
+	availableInlineSize *float64,
+	physicalContentBlockSize float64,
+) (float64, error) {
+	if flex == nil || box == nil {
+		return 0, fmt.Errorf("render: invalid vertical flex layout input")
+	}
+	mode := flex.style.WritingMode()
+	if mode != writingModeVerticalRL && mode != writingModeVerticalLR {
+		return 0, fmt.Errorf("render: unsupported vertical flex writing mode %d", mode)
+	}
+
+	logicalFlex := context.cloneStyledNodeWithLayoutAxes(flex, mode)
+	inlineAvailable := float64(context.viewport.Height)
+	inlineBaseDefinite := availableInlineSize != nil && isFinite(*availableInlineSize) && *availableInlineSize >= 0
+	if inlineBaseDefinite {
+		inlineAvailable = *availableInlineSize
+	}
+	inlineAvailable = math.Max(0, inlineAvailable)
+	logicalPadding := context.resolvePadding(logicalFlex.style, inlineAvailable)
+	logicalBorder := context.resolveBorder(logicalFlex.style, inlineAvailable)
+	inlineInsets := logicalPadding.Left + logicalPadding.Right + logicalBorder.Left + logicalBorder.Right
+
+	intrinsic, err := context.intrinsicContentWidths(logicalFlex, inlineAvailable)
+	if err != nil {
+		return 0, err
+	}
+	inlineSize := math.Max(0, inlineAvailable-inlineInsets)
+	if logicalFlex.style.Width().Unit() != lengthAuto && (inlineBaseDefinite || !logicalFlex.style.Width().DependsOnPercent()) {
+		inlineSize = resolveLength(logicalFlex.style.Width(), inlineAvailable, context.viewport, inlineSize)
+		if logicalFlex.style.BoxSizing() == boxSizingBorderBox {
+			inlineSize = math.Max(0, inlineSize-inlineInsets)
+		}
+	} else {
+		inlineSize = math.Min(math.Max(intrinsic.minimum, inlineSize), intrinsic.preferred)
+	}
+	inlineSize = context.constrainVerticalInlineSize(logicalFlex.style, inlineSize, inlineAvailable, inlineInsets, inlineBaseDefinite)
+	blockSize := math.Max(0, physicalContentBlockSize)
+
+	originX, originY := box.Bounds.X, box.Bounds.Y
+	box.Bounds = Rect{
+		X: originX, Y: originY,
+		Width:  logicalBorder.Left + logicalPadding.Left + inlineSize + logicalPadding.Right + logicalBorder.Right,
+		Height: logicalBorder.Top + logicalPadding.Top + blockSize + logicalPadding.Bottom + logicalBorder.Bottom,
+	}
+	box.ContentBounds = Rect{
+		X:     originX + logicalBorder.Left + logicalPadding.Left,
+		Y:     originY + logicalBorder.Top + logicalPadding.Top,
+		Width: inlineSize, Height: blockSize,
+	}
+	box.Padding = logicalPadding
+	box.Border = logicalBorder
+	box.style = logicalFlex.style
+	if _, err := context.layoutFlexContainer(logicalFlex, box, inlineSize, &blockSize); err != nil {
+		return 0, err
+	}
+
+	logicalBlockExtent := box.Bounds.Height
+	transformVerticalLayoutBox(box, originX, originY, logicalBlockExtent, mode)
+	return inlineSize, nil
+}
+
+// layoutHorizontalFlexInVerticalPlane is the inverse projection for an
+// orthogonal horizontal Flex formatting root inside a vertical logical tree.
+// The later outer projection composes with this transform, so its children,
+// text, borders, clips, and hit geometry all return to physical horizontal
+// coordinates together.
+func (context *layoutContext) layoutHorizontalFlexInVerticalPlane(
+	flex *styledNode,
+	box *Box,
+	availableBlockInParent *float64,
+	parentInlineContentSize float64,
+	parentMode writingMode,
+) (float64, error) {
+	if flex == nil || box == nil || flex.style.WritingMode() != writingModeHorizontalTB ||
+		(parentMode != writingModeVerticalRL && parentMode != writingModeVerticalLR) {
+		return 0, fmt.Errorf("render: invalid horizontal flex in vertical layout input")
+	}
+
+	logicalFlex := context.cloneStyledNodeWithLayoutAxes(flex, writingModeHorizontalTB)
+	inlineAvailable := float64(context.viewport.Width)
+	inlineBaseDefinite := availableBlockInParent != nil && isFinite(*availableBlockInParent) && *availableBlockInParent >= 0
+	if inlineBaseDefinite {
+		inlineAvailable = *availableBlockInParent
+	}
+	inlineAvailable = math.Max(0, inlineAvailable)
+	logicalPadding := context.resolvePadding(logicalFlex.style, inlineAvailable)
+	logicalBorder := context.resolveBorder(logicalFlex.style, inlineAvailable)
+	inlineInsets := logicalPadding.Left + logicalPadding.Right + logicalBorder.Left + logicalBorder.Right
+	intrinsic, err := context.intrinsicContentWidths(logicalFlex, inlineAvailable)
+	if err != nil {
+		return 0, err
+	}
+	inlineSize := math.Max(0, inlineAvailable-inlineInsets)
+	if logicalFlex.style.Width().Unit() != lengthAuto && (inlineBaseDefinite || !logicalFlex.style.Width().DependsOnPercent()) {
+		inlineSize = resolveLength(logicalFlex.style.Width(), inlineAvailable, context.viewport, inlineSize)
+		if logicalFlex.style.BoxSizing() == boxSizingBorderBox {
+			inlineSize = math.Max(0, inlineSize-inlineInsets)
+		}
+	} else {
+		inlineSize = math.Min(math.Max(intrinsic.minimum, inlineSize), intrinsic.preferred)
+	}
+	inlineSize = context.constrainWidth(logicalFlex.style, inlineSize, inlineAvailable, inlineInsets)
+	blockSize := math.Max(0, parentInlineContentSize)
+
+	originX, originY := box.Bounds.X, box.Bounds.Y
+	box.Bounds = Rect{
+		X: originX, Y: originY,
+		Width:  logicalBorder.Left + logicalPadding.Left + inlineSize + logicalPadding.Right + logicalBorder.Right,
+		Height: logicalBorder.Top + logicalPadding.Top + blockSize + logicalPadding.Bottom + logicalBorder.Bottom,
+	}
+	box.ContentBounds = Rect{
+		X:     originX + logicalBorder.Left + logicalPadding.Left,
+		Y:     originY + logicalBorder.Top + logicalPadding.Top,
+		Width: inlineSize, Height: blockSize,
+	}
+	box.Padding = logicalPadding
+	box.Border = logicalBorder
+	box.style = logicalFlex.style
+	if _, err := context.layoutFlexContainer(logicalFlex, box, inlineSize, &blockSize); err != nil {
+		return 0, err
+	}
+
+	physicalBlockExtent := box.Bounds.Width
+	transformHorizontalLayoutBoxIntoVerticalPlane(box, originX, originY, physicalBlockExtent, parentMode)
+	return inlineSize, nil
+}
+
+func (context *layoutContext) layoutReversedVerticalFlexInVerticalPlane(
+	flex *styledNode,
+	box *Box,
+	contentInlineSize float64,
+	definiteBlockSize *float64,
+	parentMode writingMode,
+) (float64, error) {
+	if flex == nil || box == nil || flex.style.WritingMode() == writingModeHorizontalTB ||
+		parentMode == writingModeHorizontalTB || flex.style.WritingMode() == parentMode {
+		return 0, fmt.Errorf("render: invalid reversed vertical flex input")
+	}
+	logicalFlex := context.cloneStyledNodeWithLayoutAxes(flex, flex.style.WritingMode())
+	logicalPadding := context.resolvePadding(logicalFlex.style, contentInlineSize)
+	logicalBorder := context.resolveBorder(logicalFlex.style, contentInlineSize)
+	box.Padding = logicalPadding
+	box.Border = logicalBorder
+	box.ContentBounds.X = box.Bounds.X + logicalBorder.Left + logicalPadding.Left
+	box.ContentBounds.Y = box.Bounds.Y + logicalBorder.Top + logicalPadding.Top
+	box.ContentBounds.Width = contentInlineSize
+	box.style = logicalFlex.style
+	contentBlockSize, err := context.layoutFlexContainer(logicalFlex, box, contentInlineSize, definiteBlockSize)
+	if err != nil {
+		return 0, err
+	}
+	if definiteBlockSize != nil {
+		contentBlockSize = *definiteBlockSize
+	}
+	box.ContentBounds.Height = math.Max(0, contentBlockSize)
+	box.Bounds.Height = logicalBorder.Top + logicalPadding.Top + box.ContentBounds.Height + logicalPadding.Bottom + logicalBorder.Bottom
+	transformParallelVerticalLayoutBox(box, box.Bounds.Y, box.Bounds.Height, parentMode)
+	return contentBlockSize, nil
+}
+
 func (context *layoutContext) layoutReversedVerticalGridInVerticalPlane(
 	grid *styledNode,
 	box *Box,

@@ -511,11 +511,18 @@ formatting roots retain their own horizontal/vertical axes, including opposite
 replaced content therefore remain upright inside vertical Grid and table
 trees. Browser-live, V8, hit-testing, paint-orientation, and bounded fuzz
 fixtures exercise the same retained transforms.
+Single-line Flex roots now use the same independent logical-coordinate
+boundary. Row and column main axes compose `direction`, `flex-direction`, and
+vertical block progression; orthogonal and opposite-vertical descendants
+project their complete retained subtree rather than only rotating paint.
+Physical padding and borders, live geometry, hit testing, sideways/upright text
+composition, and horizontal Flex descendants inside vertical Grid and table
+roots share that projection and a bounded writing-mode fuzz corpus.
 
 - Complete the remaining advanced table intrinsic edge cases, orthogonal flow
   roots inside vertical tables, and complete vertical-script orientation.
 - Complete the remaining advanced Grid intrinsic/overflow interactions and
-  non-Grid independent descendant writing-mode boundaries.
+  ordinary block/table independent descendant writing-mode boundaries.
 - Add multicolumn and fragmentation only after their block/inline consumers
   are retained and testable.
 - Keep each formatting context as an independent computed-to-used vertical

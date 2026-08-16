@@ -284,6 +284,12 @@ performance budgets; see
   length-percentage `vertical-align` placement for inline runs, replaced
   content, and atomic inline formatting roots, with shifted geometry and hit
   testing
+- Single-line row/column Flex containers with grow/shrink, basis, order,
+  gaps, main/cross-axis alignment, baseline groups, and logical main-axis
+  direction. Vertical Flex roots now size and place in their own logical axes;
+  nested horizontal/vertical Flex roots retain independent progression inside
+  vertical Grid and table trees while physical borders, decorations, text,
+  hit-testing, CSSOM geometry, and live V8 reads transform together
 - Block and inline Grid containers with bounded explicit and implicit tracks,
   fixed/percentage/`auto`/`fr`/`min-content`/`max-content` breadths, bounded
   `minmax()` ranges, clamped `fit-content()`, multi-size implicit-track
@@ -362,9 +368,9 @@ The following are intentionally still outside the current milestone:
   parenting, including formatting-element reconstruction, complete template
   modes, SVG/MathML, and encoding sniffing
 - Flex wrapping and full intrinsic sizing, remaining advanced Grid
-  intrinsic/overflow interactions and non-Grid independent descendant
-  writing-mode boundaries, remaining advanced table intrinsic sizing,
-  non-Grid orthogonal descendants inside vertical tables, and full
+  intrinsic/overflow interactions and ordinary block/table independent
+  descendant writing-mode boundaries, remaining advanced table intrinsic
+  sizing, ordinary orthogonal flow descendants inside vertical tables, and full
   vertical-script text orientation,
   floats, sticky and full inline positioned layout, and retained inline boxes
 - The remaining CSS math grammar beyond the current bounded length
