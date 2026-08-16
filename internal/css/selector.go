@@ -451,6 +451,12 @@ func matchesPseudoClass(pseudo pseudoClassSelector, node *dom.Node, context Matc
 	case "invalid":
 		participates, valid, ok := htmlValidityState(node, state)
 		return ok && participates && !valid
+	case "in-range":
+		participates, inRange, ok := dom.EvaluateRangeValidity(node, state.take)
+		return ok && participates && inRange
+	case "out-of-range":
+		participates, inRange, ok := dom.EvaluateRangeValidity(node, state.take)
+		return ok && participates && !inRange
 	case "lang":
 		return matchesLanguageRanges(node, pseudo.arguments, context, state)
 	case "dir":
@@ -483,7 +489,8 @@ func supportedSimplePseudoClass(name string) bool {
 		"link", "any-link", "visited",
 		"hover", "active", "focus", "focus-visible", "focus-within", "target",
 		"checked", "disabled", "enabled", "required", "optional",
-		"read-only", "read-write", "placeholder-shown", "default", "indeterminate", "valid", "invalid":
+		"read-only", "read-write", "placeholder-shown", "default", "indeterminate", "valid", "invalid",
+		"in-range", "out-of-range":
 		return true
 	default:
 		return false

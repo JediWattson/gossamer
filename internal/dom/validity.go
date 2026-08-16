@@ -1,6 +1,7 @@
 package dom
 
 import (
+	"math"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -12,39 +13,11 @@ import (
 // and whether evaluation completed. take may bound tree work; returning false
 // from it makes the evaluation fail closed through completed=false.
 func EvaluateConstraintValidity(node *Node, take func() bool) (candidate, valid, completed bool) {
-	if node == nil || node.Type != ElementNode || node.NamespaceURI != HTMLNamespace {
-		return false, false, true
-	}
-	if node.Data != "input" && node.Data != "select" && node.Data != "textarea" {
-		return false, false, true
-	}
-	disabled, ok := constraintActuallyDisabled(node, take)
-	if !ok {
-		return false, false, false
-	}
-	if disabled {
-		return false, false, true
-	}
-	for ancestor := node.Parent; ancestor != nil; ancestor = ancestor.Parent {
-		if !constraintTake(take) {
-			return false, false, false
-		}
-		if isHTMLControl(ancestor, "datalist") {
-			return false, false, true
-		}
+	candidate, completed = constraintValidationCandidate(node, take)
+	if !completed || !candidate {
+		return candidate, false, completed
 	}
 	typeName := constraintInputType(node)
-	if node.Data == "input" {
-		switch typeName {
-		case "hidden", "button", "reset", "submit", "image":
-			return false, false, true
-		}
-		if hasAttributeValue(node, "readonly") && constraintInputSupportsReadOnly(typeName) {
-			return false, false, true
-		}
-	} else if node.Data == "textarea" && hasAttributeValue(node, "readonly") {
-		return false, false, true
-	}
 
 	value, selectedOption, firstOption, ok := constraintControlValue(node, take)
 	if !ok {
@@ -97,15 +70,15 @@ func EvaluateConstraintValidity(node *Node, take func() bool) (candidate, valid,
 			if err != nil || parsed.Scheme == "" {
 				return true, false, true
 			}
-		case "number", "range":
-			number, err := strconv.ParseFloat(value, 64)
-			if err != nil {
+		case "date", "month", "week", "time", "datetime-local", "number", "range":
+			if _, parsed := constraintRangeScalar(typeName, value); !parsed && typeName != "range" {
 				return true, false, true
 			}
-			if minimum, err := strconv.ParseFloat(contentAttribute(node, "min"), 64); err == nil && number < minimum {
-				return true, false, true
+			participates, inRange, complete := EvaluateRangeValidity(node, take)
+			if !complete {
+				return true, false, false
 			}
-			if maximum, err := strconv.ParseFloat(contentAttribute(node, "max"), 64); err == nil && number > maximum {
+			if participates && !inRange {
 				return true, false, true
 			}
 		}
@@ -126,6 +99,263 @@ func EvaluateConstraintValidity(node *Node, take func() bool) (candidate, valid,
 		}
 	}
 	return true, true, true
+}
+
+func constraintValidationCandidate(node *Node, take func() bool) (candidate, completed bool) {
+	if node == nil || node.Type != ElementNode || node.NamespaceURI != HTMLNamespace {
+		return false, true
+	}
+	if node.Data != "input" && node.Data != "select" && node.Data != "textarea" {
+		return false, true
+	}
+	disabled, ok := constraintActuallyDisabled(node, take)
+	if !ok {
+		return false, false
+	}
+	if disabled {
+		return false, true
+	}
+	for ancestor := node.Parent; ancestor != nil; ancestor = ancestor.Parent {
+		if !constraintTake(take) {
+			return false, false
+		}
+		if isHTMLControl(ancestor, "datalist") {
+			return false, true
+		}
+	}
+	typeName := constraintInputType(node)
+	if node.Data == "input" {
+		switch typeName {
+		case "hidden", "button", "reset", "submit", "image":
+			return false, true
+		}
+		if hasAttributeValue(node, "readonly") && constraintInputSupportsReadOnly(typeName) {
+			return false, true
+		}
+	} else if node.Data == "textarea" && hasAttributeValue(node, "readonly") {
+		return false, true
+	}
+	return true, true
+}
+
+// EvaluateRangeValidity returns whether node participates in HTML's range
+// pseudo-classes, whether it is in range, and whether bounded evaluation
+// completed. Empty or unparsable values are in range when valid min/max
+// limitations exist because they suffer from neither underflow nor overflow.
+func EvaluateRangeValidity(node *Node, take func() bool) (participates, inRange, completed bool) {
+	candidate, completed := constraintValidationCandidate(node, take)
+	if !completed || !candidate || node.Data != "input" {
+		return false, false, completed
+	}
+	typeName := constraintInputType(node)
+	switch typeName {
+	case "date", "month", "week", "time", "datetime-local", "number", "range":
+	default:
+		return false, false, true
+	}
+
+	minimum, hasMinimum := constraintRangeScalar(typeName, contentAttribute(node, "min"))
+	maximum, hasMaximum := constraintRangeScalar(typeName, contentAttribute(node, "max"))
+	if typeName == "range" {
+		if !hasMinimum {
+			minimum, hasMinimum = 0, true
+		}
+		if !hasMaximum {
+			maximum, hasMaximum = 100, true
+		}
+	}
+	if !hasMinimum && !hasMaximum {
+		return false, false, true
+	}
+	valueText, _, _, ok := constraintControlValue(node, take)
+	if !ok {
+		return true, false, false
+	}
+	value, hasValue := constraintRangeScalar(typeName, valueText)
+	if typeName == "range" {
+		if !hasValue {
+			value = minimum
+			if maximum >= minimum {
+				value = minimum + (maximum-minimum)/2
+			}
+		}
+		if value < minimum {
+			value = minimum
+		}
+		if value > maximum && maximum >= minimum {
+			value = maximum
+		}
+		hasValue = true
+	}
+	if !hasValue {
+		return true, true, true
+	}
+	if typeName == "time" && hasMinimum && hasMaximum && minimum > maximum {
+		return true, !(value > maximum && value < minimum), true
+	}
+	underflow := hasMinimum && value < minimum
+	overflow := hasMaximum && value > maximum
+	return true, !underflow && !overflow, true
+}
+
+var (
+	constraintNumberPattern = regexp.MustCompile(`^-?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$`)
+	constraintDatePattern   = regexp.MustCompile(`^([0-9]{4,})-([0-9]{2})-([0-9]{2})$`)
+	constraintMonthPattern  = regexp.MustCompile(`^([0-9]{4,})-([0-9]{2})$`)
+	constraintWeekPattern   = regexp.MustCompile(`^([0-9]{4,})-W([0-9]{2})$`)
+	constraintTimePattern   = regexp.MustCompile(`^([0-9]{2}):([0-9]{2})(?::([0-9]{2})(?:\.([0-9]+))?)?$`)
+)
+
+func constraintRangeScalar(typeName, value string) (float64, bool) {
+	switch typeName {
+	case "number", "range":
+		if !constraintNumberPattern.MatchString(value) {
+			return 0, false
+		}
+		number, err := strconv.ParseFloat(value, 64)
+		return number, err == nil && !math.IsInf(number, 0) && !math.IsNaN(number)
+	case "date":
+		year, month, day, ok := constraintParseDate(value)
+		if !ok {
+			return 0, false
+		}
+		return float64(constraintDaysFromCivil(year, month, day)), true
+	case "month":
+		match := constraintMonthPattern.FindStringSubmatch(value)
+		if match == nil {
+			return 0, false
+		}
+		year, yearOK := constraintPositiveYear(match[1])
+		month, monthErr := strconv.ParseInt(match[2], 10, 64)
+		if !yearOK || monthErr != nil || month < 1 || month > 12 {
+			return 0, false
+		}
+		return float64(year*12 + month - 1), true
+	case "week":
+		match := constraintWeekPattern.FindStringSubmatch(value)
+		if match == nil {
+			return 0, false
+		}
+		year, yearOK := constraintPositiveYear(match[1])
+		week, weekErr := strconv.ParseInt(match[2], 10, 64)
+		if !yearOK || weekErr != nil || week < 1 || week > int64(constraintISOWeeksInYear(year)) {
+			return 0, false
+		}
+		jan4 := constraintDaysFromCivil(year, 1, 4)
+		weekOneMonday := jan4 - int64(constraintISOWeekday(jan4)-1)
+		return float64(weekOneMonday + (week-1)*7), true
+	case "time":
+		return constraintParseTime(value)
+	case "datetime-local":
+		separator := strings.IndexAny(value, "T ")
+		if separator <= 0 || separator == len(value)-1 || strings.IndexAny(value[separator+1:], "T ") >= 0 {
+			return 0, false
+		}
+		year, month, day, dateOK := constraintParseDate(value[:separator])
+		timeValue, timeOK := constraintParseTime(value[separator+1:])
+		if !dateOK || !timeOK {
+			return 0, false
+		}
+		return float64(constraintDaysFromCivil(year, month, day))*86_400_000 + timeValue, true
+	default:
+		return 0, false
+	}
+}
+
+func constraintParseDate(value string) (year, month, day int64, ok bool) {
+	match := constraintDatePattern.FindStringSubmatch(value)
+	if match == nil {
+		return 0, 0, 0, false
+	}
+	year, ok = constraintPositiveYear(match[1])
+	month, monthErr := strconv.ParseInt(match[2], 10, 64)
+	day, dayErr := strconv.ParseInt(match[3], 10, 64)
+	if !ok || monthErr != nil || dayErr != nil || month < 1 || month > 12 || day < 1 || day > int64(constraintDaysInMonth(year, month)) {
+		return 0, 0, 0, false
+	}
+	return year, month, day, true
+}
+
+func constraintParseTime(value string) (float64, bool) {
+	match := constraintTimePattern.FindStringSubmatch(value)
+	if match == nil {
+		return 0, false
+	}
+	hour, hourErr := strconv.ParseInt(match[1], 10, 64)
+	minute, minuteErr := strconv.ParseInt(match[2], 10, 64)
+	second := int64(0)
+	var secondErr error
+	if match[3] != "" {
+		second, secondErr = strconv.ParseInt(match[3], 10, 64)
+	}
+	if hourErr != nil || minuteErr != nil || secondErr != nil || hour > 23 || minute > 59 || second > 59 {
+		return 0, false
+	}
+	fraction := 0.0
+	if match[4] != "" {
+		parsed, err := strconv.ParseFloat("0."+match[4], 64)
+		if err != nil {
+			return 0, false
+		}
+		fraction = parsed
+	}
+	return float64(hour*3_600_000+minute*60_000+second*1_000) + fraction*1_000, true
+}
+
+func constraintPositiveYear(value string) (int64, bool) {
+	year, err := strconv.ParseInt(value, 10, 64)
+	return year, err == nil && year > 0 && year <= 999_999_999
+}
+
+func constraintDaysInMonth(year, month int64) int {
+	switch month {
+	case 4, 6, 9, 11:
+		return 30
+	case 2:
+		if constraintLeapYear(year) {
+			return 29
+		}
+		return 28
+	default:
+		return 31
+	}
+}
+
+func constraintLeapYear(year int64) bool {
+	return year%4 == 0 && (year%100 != 0 || year%400 == 0)
+}
+
+func constraintDaysFromCivil(year, month, day int64) int64 {
+	if month <= 2 {
+		year--
+	}
+	era := year / 400
+	yearOfEra := year - era*400
+	adjustedMonth := month
+	if month > 2 {
+		adjustedMonth -= 3
+	} else {
+		adjustedMonth += 9
+	}
+	dayOfYear := (153*adjustedMonth+2)/5 + day - 1
+	dayOfEra := yearOfEra*365 + yearOfEra/4 - yearOfEra/100 + dayOfYear
+	return era*146097 + dayOfEra - 719468
+}
+
+func constraintISOWeekday(days int64) int {
+	weekday := int((days+3)%7) + 1
+	if weekday <= 0 {
+		weekday += 7
+	}
+	return weekday
+}
+
+func constraintISOWeeksInYear(year int64) int {
+	jan1 := constraintISOWeekday(constraintDaysFromCivil(year, 1, 1))
+	if jan1 == 4 || jan1 == 3 && constraintLeapYear(year) {
+		return 53
+	}
+	return 52
 }
 
 func constraintActuallyDisabled(node *Node, take func() bool) (bool, bool) {

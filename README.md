@@ -253,8 +253,8 @@ performance budgets; see
   linguistic `:lang()`/`:dir()`, logical and relational `:has()`, link, target,
   hover, active, focus, focus-visible, focus-within, checked, enabled/disabled,
   required/optional, read-only/read-write, placeholder-shown, default,
-  indeterminate, valid, and invalid pseudo-classes driven by live DOM/browser
-  state
+  indeterminate, valid/invalid, and in-range/out-of-range pseudo-classes driven
+  by live DOM/browser state
 - Cascade ordering across `!important`, specificity, source order, inline
   styles, and named top-level `@layer` rules
 - Versioned, immutable computed-style snapshots and a live, read-only

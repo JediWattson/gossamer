@@ -233,9 +233,14 @@ readonly, hidden/button, and datalist-contained controls; and aggregates
 invalid owned controls onto forms plus invalid descendants onto fieldsets.
 Live control mutations invalidate selector queries and computed styles without
 publishing an early frame.
+`:in-range` and `:out-of-range` share those candidate rules and parse the HTML
+number, range, date, month, ISO week, time, and local date-time value spaces.
+They honor valid one-sided or two-sided limits, reversed periodic time ranges,
+empty-value semantics, range-input defaults/sanitization, and live value or
+attribute mutations.
 
-- Add range and user-interaction form-state pseudo-classes, plus browser history
-  plumbing for the matcher-level visited link hook.
+- Add user-interaction form-state pseudo-classes, plus browser history plumbing
+  for the matcher-level visited link hook.
 - Finish pseudo-elements and the remaining stateful selector grammar.
 - Add memoization and selector/property dependency indexes after profiling the
   now-bounded combinator backtracking paths.
