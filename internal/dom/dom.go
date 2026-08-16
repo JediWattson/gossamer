@@ -51,6 +51,8 @@ type ControlState struct {
 	Checked            bool
 	CheckedDirty       bool
 	Indeterminate      bool
+	UserValidity       bool
+	UserInteracted     bool
 	Selected           bool
 	SelectedDirty      bool
 	SelectionStart     int

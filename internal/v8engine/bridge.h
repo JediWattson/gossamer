@@ -357,6 +357,9 @@ typedef struct gossamer_v8_host {
   int (*set_form_indeterminate)(uint64_t execution_id, uint64_t document,
                                 uint32_t node, int indeterminate,
                                 char **error_out);
+  int (*mark_form_user_validity_for_submission)(
+      uint64_t execution_id, uint64_t document, uint32_t node,
+      char **error_out);
 } gossamer_v8_host;
 
 typedef struct gossamer_v8_node_handle {

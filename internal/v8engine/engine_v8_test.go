@@ -3114,12 +3114,15 @@ func TestStockV8FormSubmissionNavigatesAndTearsDownOldRealm(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	page, err := browserRuntime.LoadPage(ctx, "https://gossamer.test/form-start", staticDocumentLoader{
-		document: `<!doctype html><html><body>
+			document: `<!doctype html><html><body>
 			<form id="search" action="/results">
 				<input id="query" name="q" required>
 				<input name="tag" value="memory">
 				<input name="tag" value="regions">
 				<button id="go" name="commit" value="yes">Go</button>
+			</form>
+			<form id="novalidate-search" novalidate>
+				<input id="novalidate-query" required>
 			</form>
 		</body></html>`,
 	})
@@ -3171,11 +3174,33 @@ func TestStockV8FormSubmissionNavigatesAndTearsDownOldRealm(t *testing.T) {
 					}
 					invalid++;
 				});
+				if (query.matches(":user-valid") || query.matches(":user-invalid")) {
+					throw new Error("untouched required input matched a user-validity pseudo");
+				}
 				if (form.checkValidity() || invalid !== 1) throw new Error("checkValidity accepted required input");
+				if (query.matches(":user-invalid")) throw new Error("checkValidity changed user validity");
 				form.requestSubmit(button);
 				if (invalid !== 2) throw new Error("requestSubmit skipped invalid dispatch");
+				if (!query.matches(":user-invalid") || query.matches(":user-valid")) {
+					throw new Error("requestSubmit did not expose :user-invalid");
+				}
+				form.reset();
+				if (query.matches(":user-valid") || query.matches(":user-invalid")) {
+					throw new Error("form reset did not clear user validity");
+				}
+
+				const novalidateForm = document.getElementById("novalidate-search");
+				const novalidateQuery = document.getElementById("novalidate-query");
+				novalidateForm.addEventListener("submit", event => event.preventDefault());
+				novalidateForm.requestSubmit();
+				if (!novalidateQuery.matches(":user-invalid")) {
+					throw new Error("novalidate requestSubmit did not set user validity");
+				}
 
 				query.value = "gossamer";
+				if (query.matches(":user-valid") || query.matches(":user-invalid")) {
+					throw new Error("programmatic value setter changed user validity");
+				}
 				globalThis.__gossamerFormSubmitted = 0;
 				globalThis.__gossamerFormCanceled = 0;
 				globalThis.__gossamerFormDefaultStates = [];
@@ -3192,6 +3217,9 @@ func TestStockV8FormSubmissionNavigatesAndTearsDownOldRealm(t *testing.T) {
 				}, {once: true});
 				form.requestSubmit(button);
 				if (__gossamerFormSubmitted !== 1) throw new Error("cancelable submit event did not run");
+				if (!query.matches(":user-valid") || query.matches(":user-invalid")) {
+					throw new Error("successful requestSubmit did not expose :user-valid");
+				}
 			})();
 		`,
 	})

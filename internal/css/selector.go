@@ -451,6 +451,12 @@ func matchesPseudoClass(pseudo pseudoClassSelector, node *dom.Node, context Matc
 	case "invalid":
 		participates, valid, ok := htmlValidityState(node, state)
 		return ok && participates && !valid
+	case "user-valid":
+		participates, valid, ok := htmlUserValidityState(node, state)
+		return ok && participates && valid
+	case "user-invalid":
+		participates, valid, ok := htmlUserValidityState(node, state)
+		return ok && participates && !valid
 	case "in-range":
 		participates, inRange, ok := dom.EvaluateRangeValidity(node, state.take)
 		return ok && participates && inRange
@@ -490,7 +496,7 @@ func supportedSimplePseudoClass(name string) bool {
 		"hover", "active", "focus", "focus-visible", "focus-within", "target",
 		"checked", "disabled", "enabled", "required", "optional",
 		"read-only", "read-write", "placeholder-shown", "default", "indeterminate", "valid", "invalid",
-		"in-range", "out-of-range":
+		"user-valid", "user-invalid", "in-range", "out-of-range":
 		return true
 	default:
 		return false

@@ -1398,6 +1398,24 @@ func goGossamerV8HostSetFormIndeterminate(
 	}, executionID)
 }
 
+//export goGossamerV8HostMarkFormUserValidityForSubmission
+func goGossamerV8HostMarkFormUserValidityForSubmission(
+	executionID C.uint64_t,
+	document C.uint64_t,
+	node C.uint32_t,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domElementHost(host)
+		if err != nil {
+			return err
+		}
+		return domHost.MarkFormUserValidityForSubmission(
+			browserNodeHandle(document, node),
+		)
+	}, executionID)
+}
+
 //export goGossamerV8HostFormSelected
 func goGossamerV8HostFormSelected(
 	executionID C.uint64_t,

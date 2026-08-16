@@ -173,7 +173,7 @@ func (page *Page) dispatchInput(context *browserruntime.TaskContext, event Input
 	if result.DefaultPrevented && rollback != nil {
 		defaultErr = errors.Join(defaultErr, rollback())
 	} else if !result.DefaultPrevented && event.Type == InputClick {
-		defaultErr = errors.Join(defaultErr, host.focus(event.Target, false))
+		defaultErr = errors.Join(defaultErr, host.commitCheckableUserValidity(event.Target), host.focus(event.Target, false))
 	}
 	clearPressed()
 	microtaskErr := script.DrainMicrotasks(host)
@@ -220,7 +220,7 @@ func (host *taskHost) applyInputStateBeforeDispatch(event InputEvent) (func() er
 	case InputFocus, InputFocusIn:
 		return nil, host.Focus(event.Target)
 	case InputBlur, InputFocusOut:
-		return nil, host.Blur(event.Target)
+		return nil, errors.Join(host.commitPendingUserValidity(event.Target), host.Blur(event.Target))
 	case InputInput:
 		err := host.ReplaceFormSelection(event.Target, event.Data, event.InputType)
 		if err != nil {
@@ -303,6 +303,8 @@ func (host *taskHost) applyInputStateBeforeDispatch(event InputEvent) (func() er
 		default:
 			return nil, nil
 		}
+	case InputChange:
+		return nil, host.setControlUserValidity(event.Target)
 	default:
 		return nil, nil
 	}
@@ -1181,6 +1183,51 @@ func (host *taskHost) FormValidity(handle NodeHandle) (bool, []NodeHandle, error
 		handles[index] = NodeHandle{Document: host.generation, Node: node}
 	}
 	return valid, handles, nil
+}
+
+func (host *taskHost) MarkFormUserValidityForSubmission(handle NodeHandle) error {
+	return host.mutateNodes(handle, NodeHandle{}, NodeHandle{}, func() error {
+		return host.page.document.MarkFormUserValidityForSubmission(handle.Node)
+	})
+}
+
+func (host *taskHost) setControlUserValidity(handle NodeHandle) error {
+	err := host.mutateNodes(handle, NodeHandle{}, NodeHandle{}, func() error {
+		return host.page.document.SetFormUserValidity(handle.Node, true)
+	})
+	if errors.Is(err, dom.ErrWrongNodeKind) {
+		return nil
+	}
+	return err
+}
+
+func (host *taskHost) commitPendingUserValidity(handle NodeHandle) error {
+	err := host.mutateNodes(handle, NodeHandle{}, NodeHandle{}, func() error {
+		return host.page.document.CommitFormUserInteraction(handle.Node)
+	})
+	if errors.Is(err, dom.ErrWrongNodeKind) {
+		return nil
+	}
+	return err
+}
+
+func (host *taskHost) commitCheckableUserValidity(handle NodeHandle) error {
+	host.page.mutex.RLock()
+	if err := host.validateHandleLocked(handle); err != nil {
+		host.page.mutex.RUnlock()
+		return err
+	}
+	node, ok := host.page.document.Resolve(handle.Node)
+	checkable := ok && node.Type == dom.ElementNode && node.NamespaceURI == dom.HTMLNamespace && node.Data == "input"
+	if checkable {
+		inputType, _, _ := host.page.document.GetAttribute(handle.Node, "type")
+		checkable = strings.EqualFold(inputType, "checkbox") || strings.EqualFold(inputType, "radio")
+	}
+	host.page.mutex.RUnlock()
+	if !checkable {
+		return nil
+	}
+	return host.setControlUserValidity(handle)
 }
 
 func (host *taskHost) FormData(form, submitter NodeHandle) ([]dom.FormEntry, error) {

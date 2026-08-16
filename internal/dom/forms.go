@@ -237,11 +237,121 @@ func (document *Document) ReplaceFormSelection(id NodeID, data, inputType string
 	updated = append(updated, units[end:]...)
 	state.Value = string(utf16.Decode(updated))
 	state.ValueDirty = true
+	state.UserInteracted = true
 	state.SelectionStart = start + len(replacementUnits)
 	state.SelectionEnd = state.SelectionStart
 	state.SelectionDirection = "none"
 	document.version.Add(1)
 	return nil
+}
+
+// FormUserValidity returns the live user-validity boolean shared by HTML's
+// :user-valid and :user-invalid pseudo-classes. Only input, textarea, and
+// select elements own that state.
+func (document *Document) FormUserValidity(id NodeID) (bool, error) {
+	if document == nil || document.store == nil {
+		return false, ErrInvalidDocument
+	}
+	document.store.mutex.RLock()
+	defer document.store.mutex.RUnlock()
+	node, ok := document.store.resolveLocked(id)
+	if !ok {
+		return false, fmt.Errorf("%w: %d", ErrUnknownNode, id)
+	}
+	if !hasUserValidity(node) {
+		return false, fmt.Errorf("%w: node %d has no user-validity state", ErrWrongNodeKind, id)
+	}
+	return node.Control != nil && node.Control.UserValidity, nil
+}
+
+// SetFormUserValidity updates one control's user-validity boolean. Browser
+// interaction code uses true when a user commits a change; reset uses false.
+func (document *Document) SetFormUserValidity(id NodeID, userValidity bool) error {
+	if document == nil || document.store == nil {
+		return ErrInvalidDocument
+	}
+	document.store.mutex.Lock()
+	defer document.store.mutex.Unlock()
+	node, ok := document.store.resolveLocked(id)
+	if !ok {
+		return fmt.Errorf("%w: %d", ErrUnknownNode, id)
+	}
+	if !hasUserValidity(node) {
+		return fmt.Errorf("%w: node %d has no user-validity state", ErrWrongNodeKind, id)
+	}
+	if setUserValidityLocked(node, userValidity) {
+		document.version.Add(1)
+	}
+	return nil
+}
+
+// CommitFormUserInteraction promotes a pending native edit to user validity.
+// It is a no-op for programmatic value changes and controls with no pending
+// user edit.
+func (document *Document) CommitFormUserInteraction(id NodeID) error {
+	if document == nil || document.store == nil {
+		return ErrInvalidDocument
+	}
+	document.store.mutex.Lock()
+	defer document.store.mutex.Unlock()
+	node, ok := document.store.resolveLocked(id)
+	if !ok {
+		return fmt.Errorf("%w: %d", ErrUnknownNode, id)
+	}
+	if !hasUserValidity(node) {
+		return fmt.Errorf("%w: node %d has no user-validity state", ErrWrongNodeKind, id)
+	}
+	state := ensureControlState(node)
+	if !state.UserInteracted {
+		return nil
+	}
+	state.UserInteracted = false
+	changed := !state.UserValidity
+	state.UserValidity = true
+	if changed {
+		document.version.Add(1)
+	}
+	return nil
+}
+
+// MarkFormUserValidityForSubmission sets user validity on every input,
+// textarea, and select owned by form. HTML does this before interactive
+// constraint validation, including submissions that bypass validation.
+func (document *Document) MarkFormUserValidityForSubmission(formID NodeID) error {
+	if document == nil || document.store == nil {
+		return ErrInvalidDocument
+	}
+	document.store.mutex.Lock()
+	defer document.store.mutex.Unlock()
+	form, ok := document.store.resolveLocked(formID)
+	if !ok {
+		return fmt.Errorf("%w: %d", ErrUnknownNode, formID)
+	}
+	if !isHTMLControl(form, "form") {
+		return fmt.Errorf("%w: node %d is not a form", ErrWrongNodeKind, formID)
+	}
+	changed := false
+	for _, control := range listedFormControlsLocked(document, form) {
+		if hasUserValidity(control) && setUserValidityLocked(control, true) {
+			changed = true
+		}
+	}
+	if changed {
+		document.version.Add(1)
+	}
+	return nil
+}
+
+func hasUserValidity(node *Node) bool {
+	return isHTMLControl(node, "input") || isHTMLControl(node, "textarea") || isHTMLControl(node, "select")
+}
+
+func setUserValidityLocked(node *Node, value bool) bool {
+	state := ensureControlState(node)
+	changed := state.UserValidity != value || state.UserInteracted
+	state.UserValidity = value
+	state.UserInteracted = false
+	return changed
 }
 
 func (document *Document) FormChecked(id NodeID) (bool, error) {
@@ -637,13 +747,16 @@ func (document *Document) ResetForm(id NodeID) error {
 				return
 			}
 		}
-		if candidate.Control.ValueDirty || candidate.Control.CheckedDirty || candidate.Control.SelectedDirty {
+		if candidate.Control.ValueDirty || candidate.Control.CheckedDirty || candidate.Control.SelectedDirty ||
+			candidate.Control.UserValidity || candidate.Control.UserInteracted {
 			changed = true
 		}
 		candidate.Control.Value = ""
 		candidate.Control.ValueDirty = false
 		candidate.Control.Checked = false
 		candidate.Control.CheckedDirty = false
+		candidate.Control.UserValidity = false
+		candidate.Control.UserInteracted = false
 		candidate.Control.Selected = false
 		candidate.Control.SelectedDirty = false
 		candidate.Control.SelectionStart = 0

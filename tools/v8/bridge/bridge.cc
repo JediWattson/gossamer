@@ -8414,6 +8414,22 @@ bool SubmitHostForm(gossamer_v8_realm *realm, const WrapperKey &form,
   return true;
 }
 
+bool MarkHostFormUserValidityForSubmission(gossamer_v8_realm *realm,
+                                           const WrapperKey &form,
+                                           std::string *error) {
+  if (!RequireHost(realm, error))
+    return false;
+  char *host_error = nullptr;
+  if (realm->active_host->mark_form_user_validity_for_submission(
+          realm->active_host->execution_id, form.document, form.node,
+          &host_error) == 0) {
+    *error = TakeCString(host_error);
+    return false;
+  }
+  std::free(host_error);
+  return true;
+}
+
 void HTMLFormElementCheckValidity(
     const v8::FunctionCallbackInfo<v8::Value> &info) {
   v8::Isolate *isolate = info.GetIsolate();
@@ -8470,6 +8486,11 @@ void HTMLFormElementRequestSubmit(
       return;
     }
     skip_validation = found;
+  }
+  if (!MarkHostFormUserValidityForSubmission(realm, form, &error)) {
+    ThrowError(isolate,
+               error.empty() ? "marking form user validity failed" : error);
+    return;
   }
   if (!skip_validation) {
     bool valid = false;

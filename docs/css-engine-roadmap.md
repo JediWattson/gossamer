@@ -233,14 +233,20 @@ readonly, hidden/button, and datalist-contained controls; and aggregates
 invalid owned controls onto forms plus invalid descendants onto fieldsets.
 Live control mutations invalidate selector queries and computed styles without
 publishing an early frame.
+`:user-valid` and `:user-invalid` reuse that evaluator for input, select, and
+textarea controls after committed native interaction or a request-submission
+attempt. Script value and checkedness setters do not fabricate user
+interaction; reset clears it; native text editing remains pending until change
+or blur; and `requestSubmit()` marks all owned controls before validation,
+including the `novalidate` path. The state is versioned with the DOM so retained
+selector queries and computed-style declarations observe it synchronously.
 `:in-range` and `:out-of-range` share those candidate rules and parse the HTML
 number, range, date, month, ISO week, time, and local date-time value spaces.
 They honor valid one-sided or two-sided limits, reversed periodic time ranges,
 empty-value semantics, range-input defaults/sanitization, and live value or
 attribute mutations.
 
-- Add user-interaction form-state pseudo-classes, plus browser history plumbing
-  for the matcher-level visited link hook.
+- Add browser history plumbing for the matcher-level visited link hook.
 - Finish pseudo-elements and the remaining stateful selector grammar.
 - Add memoization and selector/property dependency indexes after profiling the
   now-bounded combinator backtracking paths.

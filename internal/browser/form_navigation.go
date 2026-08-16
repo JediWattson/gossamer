@@ -102,6 +102,11 @@ func (page *Page) requestSubmitFromTask(
 		return err
 	}
 	host := &taskHost{page: page, task: task, generation: form.Document, autoRender: false}
+	if validate || dispatchSubmit {
+		if err := host.MarkFormUserValidityForSubmission(form); err != nil {
+			return err
+		}
+	}
 	if validate && !submission.NoValidate {
 		valid, invalid, validityErr := host.FormValidity(form)
 		if validityErr != nil {

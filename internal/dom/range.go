@@ -335,6 +335,8 @@ func cloneRangeNode(node *Node, deep bool) *Node {
 	}
 	if node.Control != nil {
 		state := *node.Control
+		state.UserValidity = false
+		state.UserInteracted = false
 		clone.Control = &state
 	}
 	if node.TemplateContent != nil {

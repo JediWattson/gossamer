@@ -48,3 +48,12 @@ func htmlValidityState(node *dom.Node, state *selectorMatchState) (participates,
 	}
 	return true, true, true
 }
+
+func htmlUserValidityState(node *dom.Node, state *selectorMatchState) (participates, valid, completed bool) {
+	if node == nil || node.Type != dom.ElementNode || node.NamespaceURI != dom.HTMLNamespace ||
+		(node.Data != "input" && node.Data != "textarea" && node.Data != "select") ||
+		node.Control == nil || !node.Control.UserValidity {
+		return false, false, true
+	}
+	return dom.EvaluateConstraintValidity(node, state.take)
+}

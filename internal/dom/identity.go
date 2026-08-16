@@ -581,6 +581,8 @@ func (document *Document) CloneNode(id NodeID, deep bool) (NodeID, error) {
 		}
 		if node.Control != nil {
 			state := *node.Control
+			state.UserValidity = false
+			state.UserInteracted = false
 			copy.Control = &state
 		}
 		if node.TemplateContent != nil {

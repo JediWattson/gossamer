@@ -348,6 +348,7 @@ type DOMElementHost interface {
 	FormOwner(NodeHandle) (NodeHandle, bool, error)
 	ResetForm(NodeHandle) error
 	FormValidity(NodeHandle) (bool, []NodeHandle, error)
+	MarkFormUserValidityForSubmission(NodeHandle) error
 	FormData(NodeHandle, NodeHandle) ([]dom.FormEntry, error)
 	SubmitForm(NodeHandle, NodeHandle) error
 	Focus(NodeHandle) error
