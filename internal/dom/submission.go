@@ -2,9 +2,6 @@ package dom
 
 import (
 	"fmt"
-	"net/url"
-	"regexp"
-	"strconv"
 	"strings"
 )
 
@@ -136,82 +133,8 @@ func listedFormControlsLocked(document *Document, form *Node) []*Node {
 }
 
 func validFormControlLocked(document *Document, control *Node) bool {
-	if control == nil || hasAttributeValue(control, "disabled") {
-		return true
-	}
-	typeName := strings.ToLower(contentAttribute(control, "type"))
-	if control.Data == "input" && (typeName == "hidden" || typeName == "button" || typeName == "reset" || typeName == "submit" || typeName == "image") {
-		return true
-	}
-	if control.Data == "button" || control.Data == "option" {
-		return true
-	}
-	value, _ := formValueLocked(control)
-	if hasAttributeValue(control, "required") {
-		switch {
-		case control.Data == "input" && typeName == "checkbox":
-			if !checkedLocked(control) {
-				return false
-			}
-		case control.Data == "input" && typeName == "radio":
-			checked := false
-			for _, candidate := range document.store.nodes {
-				if sameRadioGroupLocked(document, control, candidate) && checkedLocked(candidate) {
-					checked = true
-					break
-				}
-			}
-			if !checked {
-				return false
-			}
-		default:
-			if value == "" {
-				return false
-			}
-		}
-	}
-	if value == "" {
-		return true
-	}
-	if control.Data == "input" {
-		switch typeName {
-		case "email":
-			at := strings.LastIndexByte(value, '@')
-			if at <= 0 || at == len(value)-1 || strings.ContainsAny(value, " \t\r\n") {
-				return false
-			}
-		case "url":
-			parsed, err := url.ParseRequestURI(value)
-			if err != nil || parsed.Scheme == "" {
-				return false
-			}
-		case "number", "range":
-			number, err := strconv.ParseFloat(value, 64)
-			if err != nil {
-				return false
-			}
-			if minimum, err := strconv.ParseFloat(contentAttribute(control, "min"), 64); err == nil && number < minimum {
-				return false
-			}
-			if maximum, err := strconv.ParseFloat(contentAttribute(control, "max"), 64); err == nil && number > maximum {
-				return false
-			}
-		}
-	}
-	if pattern := contentAttribute(control, "pattern"); pattern != "" {
-		compiled, err := regexp.Compile("^(?:" + pattern + ")$")
-		if err == nil && !compiled.MatchString(value) {
-			return false
-		}
-	}
-	length := utf16Length(value)
-	if minimum, err := strconv.Atoi(contentAttribute(control, "minlength")); err == nil && minimum >= 0 && length < minimum {
-		return false
-	}
-	if maximum, err := strconv.Atoi(contentAttribute(control, "maxlength")); err == nil && maximum >= 0 && length > maximum {
-		return false
-	}
-	return true
+	candidate, valid, completed := EvaluateConstraintValidity(control, nil)
+	return completed && (!candidate || valid)
 }
 
 func formEntriesLocked(document *Document, form, submitter *Node) []FormEntry {

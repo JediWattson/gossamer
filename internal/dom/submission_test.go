@@ -104,7 +104,7 @@ func TestFormValidityCoversRequiredGroupsAndTypeMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if valid || len(invalid) != 2 || invalid[0] != emailID || invalid[1] != firstID {
+	if valid || len(invalid) != 3 || invalid[0] != emailID || invalid[1] != firstID || invalid[2] != secondID {
 		t.Fatalf("validity = %t, %#v", valid, invalid)
 	}
 	if err := document.SetFormValue(emailID, "user@example.test"); err != nil {

@@ -74,6 +74,9 @@ func selectorFormOwner(node *dom.Node, state *selectorMatchState) (*dom.Node, bo
 	if found {
 		root := selectorTreeRoot(node)
 		if root != nil && root.Type == dom.DocumentNode {
+			if explicit == "" {
+				return nil, true
+			}
 			stack := []*dom.Node{root}
 			for len(stack) != 0 {
 				last := len(stack) - 1

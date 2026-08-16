@@ -226,9 +226,16 @@ checkboxes, radio groups with no checked member, and progress elements without
 a `value` attribute. Checkbox activation clears indeterminateness before event
 dispatch and restores it when canceled; the live IDL setter, selector queries,
 and computed-style invalidation share the versioned DOM state.
+`:valid` and `:invalid` now share one bounded constraint evaluator with form
+submission. It covers the engine's implemented required, checked/selected,
+email/URL, numeric range, pattern, and text-length constraints; bars disabled,
+readonly, hidden/button, and datalist-contained controls; and aggregates
+invalid owned controls onto forms plus invalid descendants onto fieldsets.
+Live control mutations invalidate selector queries and computed styles without
+publishing an early frame.
 
-- Add validation/range/user-interaction form-state pseudo-classes, plus browser
-  history plumbing for the matcher-level visited link hook.
+- Add range and user-interaction form-state pseudo-classes, plus browser history
+  plumbing for the matcher-level visited link hook.
 - Finish pseudo-elements and the remaining stateful selector grammar.
 - Add memoization and selector/property dependency indexes after profiling the
   now-bounded combinator backtracking paths.

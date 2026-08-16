@@ -677,17 +677,8 @@ func sameRadioGroupLocked(document *Document, first, second *Node) bool {
 }
 
 func formOwnerNodeLocked(document *Document, node *Node) *Node {
-	if explicit, found := attributeValue(node, "form"); found && explicit != "" {
-		root, _ := document.store.resolveLocked(document.root)
-		var match *Node
-		walkElements(root, func(candidate *Node) {
-			if match == nil && isHTMLControl(candidate, "form") && contentAttribute(candidate, "id") == explicit {
-				match = candidate
-			}
-		})
-		return match
-	}
-	return nearestHTMLAncestor(node, "form")
+	owner, _ := constraintFormOwner(node, nil)
+	return owner
 }
 
 func nearestHTMLAncestor(node *Node, name string) *Node {

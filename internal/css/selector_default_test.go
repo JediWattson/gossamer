@@ -98,11 +98,14 @@ func TestDefaultPseudoHonorsExternalFormOwnersAndFirstMatchingID(t *testing.T) {
 	external := dom.NewElement("button", dom.Attribute{Name: "form", Value: "checkout"})
 	shadowID := dom.NewElement("div", dom.Attribute{Name: "id", Value: "blocked"})
 	blocked := dom.NewElement("button", dom.Attribute{Name: "form", Value: "blocked"})
+	emptyAssociation := dom.NewElement("button", dom.Attribute{Name: "form", Value: ""})
+	emptyForm := dom.NewElement("form")
+	emptyForm.AppendChild(emptyAssociation)
 	checkout := dom.NewElement("form", dom.Attribute{Name: "id", Value: "checkout"})
 	other := dom.NewElement("form", dom.Attribute{Name: "id", Value: "other"})
 	inside := dom.NewElement("button")
 	checkout.AppendChild(inside)
-	for _, node := range []*dom.Node{otherOwnerButton, external, shadowID, blocked, checkout, other} {
+	for _, node := range []*dom.Node{otherOwnerButton, external, shadowID, blocked, checkout, other, emptyForm} {
 		body.AppendChild(node)
 	}
 	html.AppendChild(body)
@@ -116,6 +119,9 @@ func TestDefaultPseudoHonorsExternalFormOwnersAndFirstMatchingID(t *testing.T) {
 	}
 	if selector.Matches(blocked) {
 		t.Fatal("form attribute resolved past the first non-form element with the ID")
+	}
+	if selector.Matches(emptyAssociation) {
+		t.Fatal("connected empty form attribute fell back to an ancestor or empty ID")
 	}
 
 	detachedForm := dom.NewElement("form")
