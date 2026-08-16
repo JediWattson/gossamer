@@ -1,0 +1,121 @@
+package lexer_test
+
+import (
+	"errors"
+	"testing"
+	"unicode/utf8"
+
+	"github.com/JediWattson/gossamer/internal/js/lexer"
+)
+
+func TestLexTokenizesNativeSubsetWithExactSpans(t *testing.T) {
+	t.Parallel()
+
+	source := "// setup\r\nlet café = 0x28 + .5e1;\nconst text = \"go\\u{73}samer\"; café === 45;"
+	tokens, err := lexer.Lex(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []lexer.Kind{
+		lexer.Let, lexer.Identifier, lexer.Assign, lexer.Number, lexer.Plus, lexer.Number, lexer.Semicolon,
+		lexer.Const, lexer.Identifier, lexer.Assign, lexer.String, lexer.Semicolon,
+		lexer.Identifier, lexer.StrictEqual, lexer.Number, lexer.Semicolon, lexer.EOF,
+	}
+	if len(tokens) != len(want) {
+		t.Fatalf("token count = %d, want %d: %#v", len(tokens), len(want), tokens)
+	}
+	for index, kind := range want {
+		if tokens[index].Kind != kind {
+			t.Fatalf("token %d = %s, want %s", index, tokens[index].Kind, kind)
+		}
+		if tokens[index].Span.End.Offset < tokens[index].Span.Start.Offset {
+			t.Fatalf("token %d span = %#v", index, tokens[index].Span)
+		}
+		if tokens[index].Kind != lexer.EOF {
+			got := source[tokens[index].Span.Start.Offset:tokens[index].Span.End.Offset]
+			if got != tokens[index].Lexeme {
+				t.Fatalf("token %d source = %q, lexeme %q", index, got, tokens[index].Lexeme)
+			}
+		}
+	}
+	if tokens[1].Text != "café" || tokens[1].Span.Start.Line != 2 || tokens[1].Span.Start.Column != 5 {
+		t.Fatalf("Unicode identifier = %#v", tokens[1])
+	}
+	if tokens[3].Number != 40 || tokens[5].Number != 5 {
+		t.Fatalf("numbers = %v and %v", tokens[3].Number, tokens[5].Number)
+	}
+	if tokens[10].Text != "gossamer" {
+		t.Fatalf("decoded String = %q", tokens[10].Text)
+	}
+}
+
+func TestLexRecognizesLongestOperatorsAndEscapes(t *testing.T) {
+	t.Parallel()
+
+	tokens, err := lexer.Lex("a!==b >>> 2 && c===\"x\\n\\x79\" ?? d=>d")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []lexer.Kind{
+		lexer.Identifier, lexer.StrictNotEqual, lexer.Identifier, lexer.UnsignedShiftRight, lexer.Number,
+		lexer.AndAnd, lexer.Identifier, lexer.StrictEqual, lexer.String, lexer.Nullish,
+		lexer.Identifier, lexer.Arrow, lexer.Identifier, lexer.EOF,
+	}
+	for index, kind := range want {
+		if tokens[index].Kind != kind {
+			t.Fatalf("token %d = %s, want %s", index, tokens[index].Kind, kind)
+		}
+	}
+	if tokens[8].Text != "x\ny" {
+		t.Fatalf("escaped String = %q", tokens[8].Text)
+	}
+}
+
+func TestLexRejectsMalformedInputPrecisely(t *testing.T) {
+	t.Parallel()
+
+	for _, source := range []string{
+		"/* never closed",
+		"\"never closed",
+		"1e+",
+		"0x",
+		"0b2",
+		"1name",
+		"\"\\u{110000}\"",
+		"`template`",
+		string([]byte{0xff}),
+	} {
+		_, err := lexer.Lex(source)
+		if !errors.Is(err, lexer.ErrInvalidToken) {
+			t.Fatalf("Lex(%q) error = %v", source, err)
+		}
+		var problem *lexer.Error
+		if !errors.As(err, &problem) || problem.Span.Start.Line == 0 || problem.Span.Start.Column == 0 {
+			t.Fatalf("Lex(%q) diagnostic = %#v", source, problem)
+		}
+	}
+}
+
+func FuzzLexNeverPanicsAndSpansStayOrdered(f *testing.F) {
+	f.Add("let answer = 40 + 2;")
+	f.Add("function f(x) { try { return x; } finally {} }")
+	f.Fuzz(func(t *testing.T, source string) {
+		tokens, err := lexer.Lex(source)
+		if err != nil {
+			return
+		}
+		var previous uint32
+		for _, token := range tokens {
+			if token.Span.Start.Offset < previous || token.Span.End.Offset < token.Span.Start.Offset || uint64(token.Span.End.Offset) > uint64(len(source)) {
+				t.Fatalf("unordered span %#v after %d", token.Span, previous)
+			}
+			if token.Kind != lexer.EOF && source[token.Span.Start.Offset:token.Span.End.Offset] != token.Lexeme {
+				t.Fatalf("span text differs for %#v", token)
+			}
+			previous = token.Span.End.Offset
+		}
+		if !utf8.ValidString(source) && err == nil {
+			t.Fatal("invalid UTF-8 was accepted")
+		}
+	})
+}
