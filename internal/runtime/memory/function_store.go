@@ -26,6 +26,17 @@ func (store *Store) AllocNativeConstructor(owner ownership.OwnerID, regionID Reg
 	return store.allocNativeFunction(owner, regionID, name, environment, arity, nativeID, true)
 }
 
+func (store *Store) AllocBoundNativeFunction(owner ownership.OwnerID, regionID RegionID, name, environment Value, arity uint32, nativeID uint64, captures []Value) (Ref, error) {
+	return store.allocFunction(owner, regionID, Function{
+		Kind:        FunctionNative,
+		Name:        name,
+		Environment: environment,
+		Arity:       arity,
+		NativeID:    nativeID,
+		Captures:    append([]Value(nil), captures...),
+	})
+}
+
 func (store *Store) allocNativeFunction(owner ownership.OwnerID, regionID RegionID, name, environment Value, arity uint32, nativeID uint64, constructible bool) (Ref, error) {
 	return store.allocFunction(owner, regionID, Function{
 		Kind:          FunctionNative,
@@ -99,9 +110,10 @@ func (store *Store) initializeFunctionLocked(owner ownership.OwnerID, ref Ref, f
 	if err := store.validateOptionalTypedValueLocked(owner, function.Environment, HeapContext, "Function environment", internal); err != nil {
 		return err
 	}
-	values := make([]Value, 0, 2+len(function.Constants))
+	values := make([]Value, 0, 2+len(function.Constants)+len(function.Captures))
 	values = append(values, function.Name, function.Environment)
 	values = append(values, function.Constants...)
+	values = append(values, function.Captures...)
 	linked := make([]Value, 0, len(values))
 	for _, value := range values {
 		value, err = store.replaceValueLocked(owner, region, slot, Value{}, value, internal)
@@ -115,7 +127,9 @@ func (store *Store) initializeFunctionLocked(owner ownership.OwnerID, ref Ref, f
 	}
 	function.Name = linked[0]
 	function.Environment = linked[1]
-	function.Constants = append([]Value(nil), linked[2:]...)
+	constantEnd := 2 + len(function.Constants)
+	function.Constants = append([]Value(nil), linked[2:constantEnd]...)
+	function.Captures = append([]Value(nil), linked[constantEnd:]...)
 	slot.Function = cloneFunction(function)
 	store.stats.LiveBytes += uint64(len(slot.Function.Code))
 	return nil

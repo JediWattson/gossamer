@@ -94,9 +94,13 @@ native String name, and an optional captured Context. A native Function carries
 the same name/environment metadata plus a nonzero opaque numeric callback ID;
 it never stores a Go pointer.
 
-Function names, environments, and Ref constants are counted edges. Copy and
-Promote clone bytecode and preserve closure and constant aliasing. Execution is
-deliberately deferred to the interpreter layer.
+Native Functions may also retain explicit Value captures. Promise resolver
+Functions use one captured Promise Ref, so copy, promotion, barriers, and bulk
+release see the dependency exactly like any other heap edge.
+
+Function names, environments, Ref constants, and captures are counted edges.
+Copy and Promote clone bytecode and preserve closure, constant, and capture
+aliasing. Execution is deliberately deferred to the interpreter layer.
 
 ### Promise
 

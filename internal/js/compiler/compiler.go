@@ -102,6 +102,7 @@ var nativeGlobalBindings = map[string]bool{
 	"Map":            true,
 	"Set":            true,
 	"Promise":        true,
+	"queueMicrotask": true,
 }
 
 type loopTarget struct {

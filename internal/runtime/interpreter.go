@@ -70,6 +70,9 @@ type Interpreter struct {
 	natives     map[uint64]nativeFunction
 	builtinOnce sync.Once
 	builtinErr  error
+
+	jobMutex sync.Mutex
+	jobs     map[TaskID][]microtaskJob
 }
 
 func NewInterpreter(config InterpreterConfig) *Interpreter {
@@ -79,7 +82,7 @@ func NewInterpreter(config InterpreterConfig) *Interpreter {
 	if config.MaxCallDepth == 0 {
 		config.MaxCallDepth = 256
 	}
-	return &Interpreter{config: config, natives: make(map[uint64]nativeFunction)}
+	return &Interpreter{config: config, natives: make(map[uint64]nativeFunction), jobs: make(map[TaskID][]microtaskJob)}
 }
 
 func (interpreter *Interpreter) RegisterNative(id uint64, function NativeFunction) error {
@@ -135,7 +138,20 @@ func (interpreter *Interpreter) Execute(context *TaskContext, function memory.Re
 		return memory.Value{}, fmt.Errorf("runtime: nil task context")
 	}
 	execution := &execution{interpreter: interpreter, context: context}
-	return execution.call(function, memory.UndefinedValue(), arguments, callAny)
+	result, callErr := execution.call(function, memory.UndefinedValue(), arguments, callAny)
+	jobErr := execution.drainJobs()
+	return result, errors.Join(callErr, jobErr)
+}
+
+// DrainJobs runs the current task's queued native microtasks in FIFO order.
+// Execute already calls it at its top-level checkpoint; embedders may call it
+// after explicitly enqueueing jobs outside bytecode execution.
+func (interpreter *Interpreter) DrainJobs(context *TaskContext) error {
+	if interpreter == nil || context == nil || context.Realm == nil {
+		return fmt.Errorf("runtime: nil interpreter or task context")
+	}
+	execution := &execution{interpreter: interpreter, context: context}
+	return execution.drainJobs()
 }
 
 func (execution *execution) call(function memory.Ref, this memory.Value, arguments []memory.Value, mode callMode) (memory.Value, error) {

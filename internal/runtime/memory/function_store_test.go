@@ -117,3 +117,36 @@ func TestNativeFunctionPromotionPreservesClosureAndAliases(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestBoundNativeFunctionCapturesParticipateInGraphCopy(t *testing.T) {
+	t.Parallel()
+
+	store := memory.NewStore(nil)
+	defer store.Close()
+	owner := realmOwner(52)
+	functionRegion := mustRegion(t, store, owner)
+	valueRegion := mustRegion(t, store, owner)
+	value, _ := store.AllocObject(owner, valueRegion)
+	function, err := store.AllocBoundNativeFunction(
+		owner, functionRegion, memory.NullValue(), memory.NullValue(), 1, 99,
+		[]memory.Value{memory.RefValue(value), memory.RefValue(value)},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := store.EdgeCount(functionRegion, valueRegion); got != 2 {
+		t.Fatalf("capture edge count = %d, want 2", got)
+	}
+	reader := realmOwner(53)
+	copied, err := store.Copy(owner, reader, function)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := store.DerefFunction(reader, copied[0])
+	if err != nil || len(snapshot.Captures) != 2 || snapshot.Captures[0] != snapshot.Captures[1] || snapshot.Captures[0].Ref() == value {
+		t.Fatalf("copied captures = %#v, %v", snapshot.Captures, err)
+	}
+	if err := store.CheckInvariants(); err != nil {
+		t.Fatal(err)
+	}
+}

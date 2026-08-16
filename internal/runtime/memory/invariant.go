@@ -696,7 +696,7 @@ func slotHasOtherPayload(slot *Slot, kind HeapKind) bool {
 	if kind != HeapContext && (slot.Context.Parent != (Value{}) || len(slot.Context.Bindings) != 0) {
 		return true
 	}
-	if kind != HeapFunction && (!objectHeaderStorageEmpty(slot.Function.ObjectHeader) || slot.Function.Kind != 0 || slot.Function.Name != (Value{}) || slot.Function.Environment != (Value{}) || slot.Function.Arity != 0 || slot.Function.Constructible || len(slot.Function.Code) != 0 || len(slot.Function.Constants) != 0 || slot.Function.NativeID != 0) {
+	if kind != HeapFunction && (!objectHeaderStorageEmpty(slot.Function.ObjectHeader) || slot.Function.Kind != 0 || slot.Function.Name != (Value{}) || slot.Function.Environment != (Value{}) || slot.Function.Arity != 0 || slot.Function.Constructible || len(slot.Function.Code) != 0 || len(slot.Function.Constants) != 0 || len(slot.Function.Captures) != 0 || slot.Function.NativeID != 0) {
 		return true
 	}
 	if kind != HeapPromise && (!objectHeaderStorageEmpty(slot.Promise.ObjectHeader) || slot.Promise.State != PromisePending || slot.Promise.Result != (Value{}) || len(slot.Promise.Reactions) != 0 || slot.Promise.Handled) {

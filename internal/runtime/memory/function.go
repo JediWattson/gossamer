@@ -21,6 +21,7 @@ type Function struct {
 	Constructible bool
 	Code          []byte
 	Constants     []Value
+	Captures      []Value
 	NativeID      uint64
 }
 
@@ -34,6 +35,7 @@ func cloneFunction(function Function) Function {
 		Constructible: function.Constructible,
 		Code:          append([]byte(nil), function.Code...),
 		Constants:     append([]Value(nil), function.Constants...),
+		Captures:      append([]Value(nil), function.Captures...),
 		NativeID:      function.NativeID,
 	}
 }

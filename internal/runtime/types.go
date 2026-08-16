@@ -288,6 +288,21 @@ func (context *TaskContext) NewNativeConstructor(name, environment memory.Value,
 	return ref, nil
 }
 
+func (context *TaskContext) NewBoundNativeFunction(name, environment memory.Value, arity uint32, nativeID uint64, captures ...memory.Value) (memory.Ref, error) {
+	if context == nil || context.Realm == nil {
+		return memory.Ref{}, fmt.Errorf("runtime: nil task context")
+	}
+	ref, err := context.Realm.store.AllocBoundNativeFunction(context.Owner, context.MemoryRegion, name, environment, arity, nativeID, captures)
+	if err != nil || context.intrinsics == nil {
+		return ref, err
+	}
+	if err := context.intrinsics.initializeFunction(context, ref, name, arity, false); err != nil {
+		_ = context.Realm.store.Free(context.Owner, ref)
+		return memory.Ref{}, err
+	}
+	return ref, nil
+}
+
 func (context *TaskContext) DerefFunction(ref memory.Ref) (memory.Function, error) {
 	if context == nil || context.Realm == nil {
 		return memory.Function{}, fmt.Errorf("runtime: nil task context")

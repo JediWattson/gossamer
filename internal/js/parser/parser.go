@@ -540,10 +540,11 @@ func (input *parser) parsePostfix() (ast.Expression, error) {
 func (input *parser) parseMembers(expression ast.Expression) (ast.Expression, error) {
 	for {
 		if input.match(lexer.Dot) {
-			property, err := input.consume(lexer.Identifier, "expected property name after '.'")
-			if err != nil {
-				return nil, err
+			property := input.current()
+			if property.Kind != lexer.Identifier && (property.Kind < lexer.Let || property.Kind > lexer.Delete) {
+				return nil, input.errorAt(property, "expected property name after '.'")
 			}
+			input.advance()
 			propertyExpression := identifier(property)
 			expression = &ast.MemberExpression{
 				Base: ast.Base{Range: join(expression.Span(), property.Span)}, Object: expression, Property: propertyExpression,

@@ -149,3 +149,123 @@ secondCharacter.value === "o" && stringDone.done;
 		t.Fatalf("N9 result = %#v, want true", result)
 	}
 }
+
+func TestN10PromisesAndDeterministicMicrotaskCheckpoint(t *testing.T) {
+	t.Parallel()
+
+	image, err := compiler.Compile(`
+let order = [];
+queueMicrotask(function() {
+  order.push(1);
+  queueMicrotask(function() { order.push(4); });
+});
+queueMicrotask(function() { order.push(2); });
+
+let chain = Promise.resolve(3).then(function(value) {
+  order.push(value); return value + 1;
+}).then(function(value) { order.push(value); return value * 10; });
+
+let recovered = Promise.reject("bad").catch(function(reason) {
+  order.push(reason); return 9;
+});
+
+let constructedBase = new Promise(function(resolve, reject) {
+  resolve(5);
+  resolve(6);
+});
+let constructed = constructedBase.then(function(value) { return value + 1; });
+
+let thrown = Promise.resolve(1).then(function() {
+  throw new TypeError("boom");
+}).catch(function(error) { return error.name; });
+
+let adopted = new Promise(function(resolve) { resolve(Promise.resolve(11)); });
+let selfResolve = null;
+let self = new Promise(function(resolve) { selfResolve = resolve; });
+selfResolve(self);
+
+[order, chain, recovered, constructed, thrown, adopted, self];
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	realm, err := browserruntime.NewRealm(828, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer realm.Close()
+	interpreter := browserruntime.NewInterpreter(browserruntime.InterpreterConfig{})
+	_, err = realm.EnqueueTask(func(task *browserruntime.TaskContext) error {
+		intrinsics, err := interpreter.Bootstrap(task)
+		if err != nil {
+			return err
+		}
+		loaded, err := program.Load(task, image, memory.RefValue(intrinsics.Global))
+		if err != nil {
+			return err
+		}
+		result, err := interpreter.Execute(task, loaded.Entry)
+		if err != nil {
+			return err
+		}
+		outer, err := task.DerefArray(result.Ref())
+		if err != nil {
+			return err
+		}
+		order, err := task.DerefArray(outer.Elements[0].Value.Ref())
+		if err != nil {
+			return err
+		}
+		if order.Length != 6 {
+			t.Fatalf("microtask order length = %d, want 6", order.Length)
+		}
+		wantNumbers := map[uint32]float64{0: 1, 1: 2, 2: 3, 4: 4, 5: 4}
+		for index, want := range wantNumbers {
+			value, found, err := task.ArrayElement(outer.Elements[0].Value.Ref(), index)
+			if err != nil || !found || value.Number() != want {
+				t.Fatalf("order[%d] = %#v, %t, %v; want %v", index, value, found, err, want)
+			}
+		}
+		bad, found, err := task.ArrayElement(outer.Elements[0].Value.Ref(), 3)
+		if err != nil || !found {
+			return err
+		}
+		if text, err := task.DerefString(bad.Ref()); err != nil || text != "bad" {
+			t.Fatalf("order[3] = %q, %v", text, err)
+		}
+		for index, want := range []float64{40, 9, 6} {
+			promiseRef := outer.Elements[index+1].Value.Ref()
+			promise, err := task.DerefPromise(promiseRef)
+			if err != nil || promise.State != memory.PromiseFulfilled || promise.Result.Number() != want {
+				t.Fatalf("promise %d = %#v, %v; want %v", index, promise, err, want)
+			}
+		}
+		thrown, err := task.DerefPromise(outer.Elements[4].Value.Ref())
+		if err != nil || thrown.State != memory.PromiseFulfilled {
+			t.Fatalf("thrown chain = %#v, %v", thrown, err)
+		}
+		if text, err := task.DerefString(thrown.Result.Ref()); err != nil || text != "TypeError" {
+			t.Fatalf("thrown result = %q, %v", text, err)
+		}
+		adopted, err := task.DerefPromise(outer.Elements[5].Value.Ref())
+		if err != nil || adopted.State != memory.PromiseFulfilled || adopted.Result.Number() != 11 {
+			t.Fatalf("adopted promise = %#v, %v", adopted, err)
+		}
+		self, err := task.DerefPromise(outer.Elements[6].Value.Ref())
+		if err != nil || self.State != memory.PromiseRejected {
+			t.Fatalf("self-resolved promise = %#v, %v", self, err)
+		}
+		selfError, err := task.DerefError(self.Result.Ref())
+		if err != nil || selfError.Kind != memory.ErrorType {
+			t.Fatalf("self-resolution reason = %#v, %v", selfError, err)
+		}
+		return task.Realm.Store().CheckInvariants()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -1452,6 +1452,9 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 			for index, constant := range function.Constants {
 				function.Constants[index] = remapValue(constant, mapping)
 			}
+			for index, capture := range function.Captures {
+				function.Captures[index] = remapValue(capture, mapping)
+			}
 			if err := store.initializeFunctionLocked(to, copyRef, function, true); err != nil {
 				_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
 				return nil, err

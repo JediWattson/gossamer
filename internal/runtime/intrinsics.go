@@ -71,6 +71,14 @@ const (
 	nativeSetValues
 	nativeSetEntries
 	nativeSetForEach
+	nativePromiseConstructor
+	nativePromiseResolveFunction
+	nativePromiseRejectFunction
+	nativePromiseResolve
+	nativePromiseReject
+	nativePromiseThen
+	nativePromiseCatch
+	nativeQueueMicrotask
 )
 
 // Intrinsics is one task-local instantiation of the native ECMAScript
@@ -98,6 +106,8 @@ type Intrinsics struct {
 	StringConstructor         memory.Ref
 	MapConstructor            memory.Ref
 	SetConstructor            memory.Ref
+	PromiseConstructor        memory.Ref
+	QueueMicrotask            memory.Ref
 	ErrorConstructor          memory.Ref
 	TypeErrorConstructor      memory.Ref
 	RangeErrorConstructor     memory.Ref
@@ -201,6 +211,10 @@ func (interpreter *Interpreter) Bootstrap(context *TaskContext) (*Intrinsics, er
 		context.intrinsics = nil
 		return nil, err
 	}
+	if err := intrinsics.installPromiseBuiltins(context); err != nil {
+		context.intrinsics = nil
+		return nil, err
+	}
 	if err := intrinsics.installErrorPrototypes(context); err != nil {
 		context.intrinsics = nil
 		return nil, err
@@ -218,6 +232,8 @@ func (interpreter *Interpreter) Bootstrap(context *TaskContext) (*Intrinsics, er
 		{"String", memory.RefValue(intrinsics.StringConstructor)},
 		{"Map", memory.RefValue(intrinsics.MapConstructor)},
 		{"Set", memory.RefValue(intrinsics.SetConstructor)},
+		{"Promise", memory.RefValue(intrinsics.PromiseConstructor)},
+		{"queueMicrotask", memory.RefValue(intrinsics.QueueMicrotask)},
 		{"Error", memory.RefValue(intrinsics.ErrorConstructor)},
 		{"TypeError", memory.RefValue(intrinsics.TypeErrorConstructor)},
 		{"RangeError", memory.RefValue(intrinsics.RangeErrorConstructor)},
@@ -301,6 +317,14 @@ func (interpreter *Interpreter) registerBuiltinCallbacks() error {
 		nativeSetValues:                      builtinSetValues,
 		nativeSetEntries:                     builtinSetEntries,
 		nativeSetForEach:                     builtinSetForEach,
+		nativePromiseConstructor:             builtinPromiseConstructor,
+		nativePromiseResolveFunction:         builtinPromiseResolveFunction,
+		nativePromiseRejectFunction:          builtinPromiseRejectFunction,
+		nativePromiseResolve:                 builtinPromiseResolve,
+		nativePromiseReject:                  builtinPromiseReject,
+		nativePromiseThen:                    builtinPromiseThen,
+		nativePromiseCatch:                   builtinPromiseCatch,
+		nativeQueueMicrotask:                 builtinQueueMicrotask,
 	}
 	for id, callback := range callbacks {
 		interpreter.nativeMutex.RLock()

@@ -43,6 +43,8 @@ adding ownership claims or reference-count traffic.
   actual `prototype` property with explicit `this`.
 - Built-ins: core Object, Array, String, Error, Map, and Set constructors and
   prototype methods, including explicit deterministic iterator objects.
+- Jobs: Promise reactions and `queueMicrotask` callbacks drained FIFO after
+  top-level execution, with nested jobs appended to the same checkpoint.
 - Exceptions: thrown Values, nested catch handlers, rethrow, and finally
   unwinding on normal and exceptional paths.
 
@@ -51,10 +53,12 @@ own properties also load as `undefined`. Mutations call the existing
 TaskContext APIs, so every retained Ref passes through RegionStore's counted
 write barrier.
 
-Native Functions keep only an opaque nonzero `NativeID` in RegionStore. A Go
-callback must be registered explicitly with an Interpreter. A callback may
-return `runtime.Throw(value)` to participate in bytecode exception unwinding;
-ordinary Go errors remain host failures and are not catchable language Values.
+Native Functions keep an opaque nonzero `NativeID` and optional RegionStore
+Value captures. Captures retain resolver state through the counted graph; no
+Go pointer is stored in a Function. A Go callback must be registered explicitly
+with an Interpreter. A callback may return `runtime.Throw(value)` to
+participate in bytecode exception unwinding; ordinary Go errors remain host
+failures and are not catchable language Values.
 
 ## Lifetime boundary
 

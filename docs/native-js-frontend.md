@@ -37,6 +37,9 @@ and ordinary task release invalidates every unpromoted loaded Ref.
   and callback methods;
 - explicit Array, String, Map, and Set iterator objects whose `next()` method
   returns ordinary `{value, done}` Objects in deterministic native order;
+- Promise construction, `resolve`, `reject`, `then`, and `catch`, including
+  chained fulfillment/rejection and Promise adoption, plus FIFO
+  `queueMicrotask` callbacks drained at the native execution checkpoint;
 - assignment, deletion, and prefix/postfix identifier or property updates;
 - numeric, bitwise, strict comparison, logical, nullish, and conditional
   expressions, plus coercive arithmetic, relational comparison, unary `+`,
@@ -73,13 +76,19 @@ This is not yet an ECMAScript-compatible engine. In particular:
   Object coercion uses explicit or inherited `valueOf`/`toString` hooks;
 - full BigInt/Symbol and UTF-16 edge semantics, regex and template literals,
   `for...of`, well-known `Symbol.iterator`, modules, generators, async
-  Functions, and Promise jobs are absent;
+  Functions, `await`, thenable assimilation, Promise combinators/finally, and
+  browser-level unhandled-rejection reporting are absent;
 - source evaluation is not wired into `browser.Engine` or `browser.JSRealm`.
 
 `runtime.Interpreter.Bootstrap` currently instantiates the native global
 Context and intrinsic graph inside one task region. This deliberately leaves
 cross-task Realm retention to the N11 engine adapter instead of bypassing the
 ownership model with hidden Go pointers.
+
+`Interpreter.Execute` performs the N10 microtask checkpoint after top-level
+bytecode returns (or throws). Jobs may append more jobs and are drained FIFO
+before the task can release its private region. This is an interpreter-local
+checkpoint; N11 will connect it to the browser Realm's task/microtask queues.
 
 Unsupported constructs fail with source-ranged compiler diagnostics. There is
 no per-expression fallback to V8.
