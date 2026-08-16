@@ -12,6 +12,7 @@ import (
 	"github.com/JediWattson/gossamer/internal/js/program"
 	browserruntime "github.com/JediWattson/gossamer/internal/runtime"
 	"github.com/JediWattson/gossamer/internal/runtime/memory"
+	"github.com/JediWattson/gossamer/internal/runtime/ownership"
 )
 
 var (
@@ -62,21 +63,25 @@ type Realm struct {
 	interpreter *browserruntime.Interpreter
 	runtime     *browserruntime.Realm
 
-	persistent           *browserruntime.Intrinsics
-	persistentRegion     memory.RegionID
-	active               *browserruntime.Intrinsics
-	activeRegion         memory.RegionID
-	activeTask           browserruntime.TaskID
-	bindings             *browserBindings
-	host                 browser.Host
-	nextCallback         browser.ValueHandle
-	timerCallbacks       map[browser.TimerID]browser.ValueHandle
-	animationCallbacks   map[browser.AnimationFrameID]browser.ValueHandle
-	mutationObservers    map[uint64]*mutationObserverState
-	nextMutationObserver uint64
-	listeners            map[eventListenerKey][]eventListener
-	listenerTargets      map[eventTargetID]uint64
-	activeEvent          *eventState
+	persistent                *browserruntime.Intrinsics
+	persistentRegion          memory.RegionID
+	persistentWrapperCache    memory.Ref
+	persistentFacadeCache     memory.Ref
+	persistentCollectionCache memory.Ref
+	active                    *browserruntime.Intrinsics
+	activeRegion              memory.RegionID
+	activeTask                browserruntime.TaskID
+	bindings                  *browserBindings
+	host                      browser.Host
+	nextCallback              browser.ValueHandle
+	timerCallbacks            map[browser.TimerID]browser.ValueHandle
+	animationCallbacks        map[browser.AnimationFrameID]browser.ValueHandle
+	mutationObservers         map[uint64]*mutationObserverState
+	nextMutationObserver      uint64
+	collectedWrappers         []browser.NodeHandle
+	listeners                 map[eventListenerKey][]eventListener
+	listenerTargets           map[eventTargetID]uint64
+	activeEvent               *eventState
 
 	evaluations uint64
 	checkpoints uint64
@@ -375,9 +380,13 @@ func (realm *Realm) Close() error {
 	activeTask := realm.activeTask
 	realm.persistent = nil
 	realm.persistentRegion = 0
+	realm.persistentWrapperCache = memory.Ref{}
+	realm.persistentFacadeCache = memory.Ref{}
+	realm.persistentCollectionCache = memory.Ref{}
 	realm.timerCallbacks = nil
 	realm.animationCallbacks = nil
 	realm.mutationObservers = nil
+	realm.collectedWrappers = nil
 	realm.listeners = nil
 	realm.listenerTargets = nil
 	realm.activeEvent = nil
@@ -465,6 +474,21 @@ func (realm *Realm) persistLocked(task *browserruntime.TaskContext) (result erro
 		return err
 	}
 	newRegion := roots[0].Region
+	newWrapperCache, err := persistentBindingRef(task.Realm.Store(), realm.runtime.Owner(), newRegion, newIntrinsics.Global, bindingWrapperCache)
+	if err != nil {
+		_ = task.Realm.Store().DestroyRegion(realm.runtime.Owner(), newRegion)
+		return err
+	}
+	newFacadeCache, err := persistentBindingRef(task.Realm.Store(), realm.runtime.Owner(), newRegion, newIntrinsics.Global, bindingFacadeCache)
+	if err != nil {
+		_ = task.Realm.Store().DestroyRegion(realm.runtime.Owner(), newRegion)
+		return err
+	}
+	newCollectionCache, err := persistentBindingRef(task.Realm.Store(), realm.runtime.Owner(), newRegion, newIntrinsics.Global, bindingCollectionCache)
+	if err != nil {
+		_ = task.Realm.Store().DestroyRegion(realm.runtime.Owner(), newRegion)
+		return err
+	}
 	if realm.persistentRegion != 0 {
 		if err := task.Realm.Store().DestroyRegion(realm.runtime.Owner(), realm.persistentRegion); err != nil {
 			_ = task.Realm.Store().DestroyRegion(realm.runtime.Owner(), newRegion)
@@ -473,7 +497,29 @@ func (realm *Realm) persistLocked(task *browserruntime.TaskContext) (result erro
 	}
 	realm.persistent = newIntrinsics
 	realm.persistentRegion = newRegion
+	realm.persistentWrapperCache = newWrapperCache
+	realm.persistentFacadeCache = newFacadeCache
+	realm.persistentCollectionCache = newCollectionCache
 	return task.Realm.Store().CheckInvariants()
+}
+
+func persistentBindingRef(store *memory.Store, owner ownership.OwnerID, region memory.RegionID, global memory.Ref, name string) (memory.Ref, error) {
+	nameRef, err := store.AllocString(owner, region, name)
+	if err != nil {
+		return memory.Ref{}, err
+	}
+	value, found, resolveErr := store.ResolveBinding(owner, global, nameRef)
+	freeErr := store.Free(owner, nameRef)
+	if resolveErr != nil {
+		return memory.Ref{}, errors.Join(resolveErr, freeErr)
+	}
+	if freeErr != nil {
+		return memory.Ref{}, freeErr
+	}
+	if !found || !value.IsRef() {
+		return memory.Ref{}, fmt.Errorf("nativeengine: missing retained browser binding %q", name)
+	}
+	return value.Ref(), nil
 }
 
 func (realm *Realm) clearActiveLocked() {
