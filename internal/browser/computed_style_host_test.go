@@ -34,7 +34,7 @@ func TestTaskHostComputedStyleReadsCurrentCascadeWithoutPublishingFrame(t *testi
 	}{
 		{property: "display", want: "block"},
 		{property: "COLOR", want: "rgb(18, 52, 86)"},
-		{property: "width", want: "25vw"},
+		{property: "width", want: "200px"},
 		{property: "font-size", want: "20px"},
 		{property: "opacity", want: "0.5"},
 		{property: "--measure", want: "25vw"},
@@ -53,6 +53,9 @@ func TestTaskHostComputedStyleReadsCurrentCascadeWithoutPublishingFrame(t *testi
 	}
 	if got, found, err := host.ComputedStyleProperty(handle, "", "not-a-property"); err != nil || found || got != "" {
 		t.Errorf("unknown property = %q, %t, %v; want empty, false, nil", got, found, err)
+	}
+	if got, found, err := host.ComputedStyleProperty(handle, "", "WIDTH"); err != nil || !found || got != "200px" {
+		t.Errorf("ASCII-insensitive resolved width = %q, %t, %v; want 200px, true, nil", got, found, err)
 	}
 
 	names, err := host.ComputedStylePropertyNames(handle, "")
@@ -200,6 +203,9 @@ func TestTaskHostComputedStylePseudoAndHandleValidation(t *testing.T) {
 	}
 	if got, found, err := host.ComputedStyleProperty(handle, "", "color"); err != nil || found || got != "" {
 		t.Fatalf("detached computed property = %q, %t, %v; want empty, false, nil", got, found, err)
+	}
+	if got, found, err := host.ComputedStyleProperty(handle, "", "width"); err != nil || found || got != "" {
+		t.Fatalf("detached resolved width = %q, %t, %v; want empty, false, nil", got, found, err)
 	}
 	names, err = host.ComputedStylePropertyNames(handle, "")
 	if err != nil {

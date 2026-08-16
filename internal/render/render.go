@@ -98,6 +98,57 @@ func RenderWithStyleSnapshot(document *dom.Node, viewport Viewport, resources Re
 	return renderWithStyleSnapshotAndFonts(document, viewport, resources, snapshot, fonts)
 }
 
+// ComputeLayoutSnapshotWithStyleSnapshot lays out document without building a
+// display list. The result can serve synchronous resolved-style reads and can
+// later be painted without repeating layout.
+func ComputeLayoutSnapshotWithStyleSnapshot(document *dom.Node, viewport Viewport, resources Resources, snapshot *computed.Snapshot) (*LayoutSnapshot, error) {
+	fonts, err := newFontBook()
+	if err != nil {
+		return nil, err
+	}
+	defer fonts.Close()
+	return computeLayoutWithStyleSnapshotAndFonts(document, viewport, resources, snapshot, fonts)
+}
+
+// ComputeLayoutSnapshotFromReadView lays out one coherent stable-ID DOM read
+// without publishing a Frame or building a display list.
+func ComputeLayoutSnapshotFromReadView(view dom.ReadView, viewport Viewport, resources Resources, snapshot *computed.Snapshot) (*LayoutSnapshot, error) {
+	access, err := view.Acquire()
+	if err != nil {
+		return nil, err
+	}
+	defer access.Close()
+	fonts, err := newFontBook()
+	if err != nil {
+		return nil, err
+	}
+	defer fonts.Close()
+	return computeReadAccessLayoutWithStyleSnapshotAndFonts(access, viewport, resources, snapshot, fonts)
+}
+
+// RenderWithLayoutSnapshot paints a pointer-based layout snapshot without
+// repeating style or layout computation.
+func RenderWithLayoutSnapshot(document *dom.Node, snapshot *LayoutSnapshot) (*Frame, error) {
+	if err := validatePointerLayoutSnapshot(document, snapshot); err != nil {
+		return nil, err
+	}
+	return frameFromLayout(document, snapshot), nil
+}
+
+// RenderReadViewWithLayoutSnapshot paints a stable-ID layout snapshot from the
+// same Document version without repeating style or layout computation.
+func RenderReadViewWithLayoutSnapshot(view dom.ReadView, snapshot *LayoutSnapshot) (*Frame, error) {
+	access, err := view.Acquire()
+	if err != nil {
+		return nil, err
+	}
+	defer access.Close()
+	if err := validateStableLayoutSnapshot(access, snapshot); err != nil {
+		return nil, err
+	}
+	return frameFromLayout(access.Root(), snapshot), nil
+}
+
 // RenderReadViewWithStyleSnapshot lays out and paints one coherent stable-ID
 // DOM read using an ID-only Snapshot produced by ComputeStyleSnapshotFromReadView.
 // Neither the Snapshot nor the resulting Frame's computed-style data retains
@@ -153,6 +204,14 @@ func renderWithFonts(document *dom.Node, viewport Viewport, resources Resources,
 }
 
 func renderWithStyleSnapshotAndFonts(document *dom.Node, viewport Viewport, resources Resources, snapshot *computed.Snapshot, fonts *fontBook) (*Frame, error) {
+	layout, err := computeLayoutWithStyleSnapshotAndFonts(document, viewport, resources, snapshot, fonts)
+	if err != nil {
+		return nil, err
+	}
+	return frameFromLayout(document, layout), nil
+}
+
+func computeLayoutWithStyleSnapshotAndFonts(document *dom.Node, viewport Viewport, resources Resources, snapshot *computed.Snapshot, fonts *fontBook) (*LayoutSnapshot, error) {
 	if viewport.Width <= 0 || viewport.Height <= 0 {
 		return nil, fmt.Errorf("render: invalid viewport %dx%d", viewport.Width, viewport.Height)
 	}
@@ -173,10 +232,22 @@ func renderWithStyleSnapshotAndFonts(document *dom.Node, viewport Viewport, reso
 	if styledRoot == nil {
 		return nil, fmt.Errorf("render: style snapshot does not contain the document root")
 	}
-	return renderProjectedStyles(document, styledRoot, viewport, resources, snapshot, fonts)
+	rootBox, styles, err := layoutProjectedStyles(styledRoot, viewport, resources, fonts)
+	if err != nil {
+		return nil, err
+	}
+	return newPointerLayoutSnapshot(document, rootBox, styles, viewport, snapshot), nil
 }
 
 func renderReadAccessWithStyleSnapshotAndFonts(access *dom.ReadAccess, viewport Viewport, resources Resources, snapshot *computed.Snapshot, fonts *fontBook) (*Frame, error) {
+	layout, err := computeReadAccessLayoutWithStyleSnapshotAndFonts(access, viewport, resources, snapshot, fonts)
+	if err != nil {
+		return nil, err
+	}
+	return frameFromLayout(access.Root(), layout), nil
+}
+
+func computeReadAccessLayoutWithStyleSnapshotAndFonts(access *dom.ReadAccess, viewport Viewport, resources Resources, snapshot *computed.Snapshot, fonts *fontBook) (*LayoutSnapshot, error) {
 	if viewport.Width <= 0 || viewport.Height <= 0 {
 		return nil, fmt.Errorf("render: invalid viewport %dx%d", viewport.Width, viewport.Height)
 	}
@@ -205,21 +276,64 @@ func renderReadAccessWithStyleSnapshotAndFonts(access *dom.ReadAccess, viewport 
 	if styledRoot == nil {
 		return nil, fmt.Errorf("render: style snapshot does not contain the document root")
 	}
-	return renderProjectedStyles(document, styledRoot, viewport, resources, snapshot, fonts)
+	rootBox, styles, err := layoutProjectedStyles(styledRoot, viewport, resources, fonts)
+	if err != nil {
+		return nil, err
+	}
+	return newStableLayoutSnapshot(access, rootBox, styles, viewport, snapshot)
 }
 
-func renderProjectedStyles(document *dom.Node, styledRoot *styledNode, viewport Viewport, resources Resources, snapshot *computed.Snapshot, fonts *fontBook) (*Frame, error) {
+func layoutProjectedStyles(styledRoot *styledNode, viewport Viewport, resources Resources, fonts *fontBook) (*Box, map[*dom.Node]computedStyle, error) {
 	rootBox, styles, err := layoutDocument(styledRoot, viewport, resources.Images, fonts)
 	if err != nil {
-		return nil, fmt.Errorf("render: layout: %w", err)
+		return nil, nil, fmt.Errorf("render: layout: %w", err)
 	}
-	displayList := buildDisplayList(document, rootBox, styles, viewport)
+	return rootBox, styles, nil
+}
+
+func frameFromLayout(document *dom.Node, layout *LayoutSnapshot) *Frame {
+	displayList := buildDisplayList(document, layout.root, layout.styles, layout.viewport)
 	return &Frame{
-		Viewport:       viewport,
-		Root:           rootBox,
-		ComputedStyles: snapshot,
+		Viewport:       layout.viewport,
+		Root:           layout.root,
+		Layout:         layout,
+		ComputedStyles: layout.computedStyles,
 		DisplayList:    displayList,
-	}, nil
+	}
+}
+
+func validatePointerLayoutSnapshot(document *dom.Node, snapshot *LayoutSnapshot) error {
+	if err := validateDocument(document); err != nil {
+		return err
+	}
+	if snapshot == nil {
+		return fmt.Errorf("render: nil layout snapshot")
+	}
+	if snapshot.rootNode != document || snapshot.document != (dom.DocumentIdentity{}) {
+		return fmt.Errorf("render: layout snapshot belongs to a different document")
+	}
+	return nil
+}
+
+func validateStableLayoutSnapshot(access *dom.ReadAccess, snapshot *LayoutSnapshot) error {
+	document := access.Root()
+	if err := validateDocument(document); err != nil {
+		return err
+	}
+	if snapshot == nil {
+		return fmt.Errorf("render: nil layout snapshot")
+	}
+	if snapshot.document != access.Identity() {
+		return fmt.Errorf("render: layout snapshot belongs to a different document")
+	}
+	rootID, ok := access.ID(document)
+	if !ok || snapshot.rootID != rootID {
+		return fmt.Errorf("render: layout snapshot belongs to a different document")
+	}
+	if snapshot.version != access.Version() {
+		return fmt.Errorf("render: layout snapshot version is %d, want %d", snapshot.version, access.Version())
+	}
+	return nil
 }
 
 func buildDisplayList(document *dom.Node, root *Box, styles map[*dom.Node]computedStyle, viewport Viewport) DisplayList {

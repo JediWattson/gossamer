@@ -21,7 +21,7 @@ not.
   drives the supported longhands through cascade and CSSOM; provenance and the
   remaining origins continue to move into it.
 - `internal/render` owns used-value resolution that depends on containing-block
-  geometry, layout, display-list construction, and paint.
+  geometry, immutable layout snapshots, display-list construction, and paint.
 - `internal/browser` owns stylesheet sets, viewport/environment changes,
   invalidation, and scheduling.
 - V8 bindings mutate the DOM through browser host APIs. They do not parse CSS,
@@ -143,9 +143,13 @@ attribute, while `getComputedStyle()` returns a fresh read-only declaration
 whose property, indexed-name, and length reads synchronously consult the
 browser's current versioned Go snapshot. Same-task DOM/style mutations are
 therefore observable without publishing a frame or clearing render dirtiness.
-The exposed values are still the layout-independent subset represented by
-`internal/style`; box-dependent resolved-value serialization and
-pseudo-element style slots are pending.
+Width and the currently definite height cases synchronously consult a separate
+stable-ID layout snapshot and serialize principal content-box geometry in
+pixels; the next render reuses that exact layout result. Percentage heights,
+ordinary inline and `display:none` elements, and the current inline-block
+fallback retain their layout-independent computed values. Broader
+box-dependent resolved-value serialization and pseudo-element style slots are
+pending.
 
 - Expose stylesheet, rule, declaration, and computed-style APIs through stable
   numeric browser handles.

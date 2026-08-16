@@ -149,6 +149,7 @@ type DisplayList struct {
 type Frame struct {
 	Viewport       Viewport
 	Root           *Box
+	Layout         *LayoutSnapshot
 	ComputedStyles *computed.Snapshot
 	DisplayList    DisplayList
 }

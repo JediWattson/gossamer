@@ -1188,18 +1188,21 @@ func (host *taskHost) StylePropertyNames(handle NodeHandle) ([]string, error) {
 }
 
 func (host *taskHost) ComputedStyleProperty(handle NodeHandle, pseudo, property string) (string, bool, error) {
-	computedStyle, err := host.page.ComputedStyle(handle)
-	if err != nil {
-		if errors.Is(err, ErrComputedStyleUnavailable) {
-			return "", false, nil
-		}
-		return "", false, err
-	}
 	if pseudo != "" {
+		_, err := host.page.ComputedStyle(handle)
+		if err != nil {
+			if errors.Is(err, ErrComputedStyleUnavailable) {
+				return "", false, nil
+			}
+			return "", false, err
+		}
 		return "", false, nil
 	}
-	value, found := computed.ComputedPropertyValue(computedStyle, property)
-	return value, found, nil
+	value, found, err := host.page.ComputedStyleProperty(handle, property)
+	if errors.Is(err, ErrComputedStyleUnavailable) {
+		return "", false, nil
+	}
+	return value, found, err
 }
 
 func (host *taskHost) ComputedStylePropertyNames(handle NodeHandle, pseudo string) ([]string, error) {

@@ -567,7 +567,7 @@ func TestStockV8GetComputedStyleIsFreshLiveAndReadOnly(t *testing.T) {
 					throw new Error("getComputedStyle did not return a fresh declaration");
 				}
 				if (computed.display !== "block" || computed.color !== "rgb(18, 52, 86)" ||
-					computed.width !== "25%" || computed.getPropertyValue("--accent") !== "ready" ||
+					computed.width !== "196px" || computed.getPropertyValue("--accent") !== "ready" ||
 					computed["background-color"] !== "rgb(1, 2, 3)" || computed["--accent"] !== "ready" ||
 					computed.getPropertyValue("not-a-property") !== "" ||
 					computed.getPropertyPriority("color") !== "" || computed.cssText !== "") {
