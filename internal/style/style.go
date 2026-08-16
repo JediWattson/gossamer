@@ -687,13 +687,24 @@ func (computed ComputedStyle) CaptionSide() CaptionSide       { return computed.
 func (computed ComputedStyle) EmptyCells() EmptyCells         { return computed.emptyCells }
 func (computed ComputedStyle) TableLayout() TableLayout       { return computed.tableLayout }
 
-// WithAnonymousDisplay returns a copy whose display role is suitable for a
-// renderer-generated anonymous formatting box. The inherited values already
-// carried by computed are intentionally preserved; anonymous boxes are not
-// exposed through CSSOM or retained in the style snapshot.
+// WithAnonymousDisplay returns the initial style of a renderer-generated
+// anonymous formatting box with inherited values copied from computed and the
+// requested display role. Non-inherited declarations on the generating box do
+// not leak into anonymous table wrappers or missing cells. Anonymous boxes are
+// not exposed through CSSOM or retained in the style snapshot.
 func (computed ComputedStyle) WithAnonymousDisplay(display DisplayMode) ComputedStyle {
-	computed.display = display
-	return computed
+	anonymous := cssInitialStyle(Viewport{})
+	for index := range propertyDefinitions {
+		definition := propertyDefinitions[index]
+		if definition.inherited {
+			definition.copy(&anonymous, computed)
+		}
+	}
+	anonymous.display = display
+	anonymous.ancestorUnderline = computed.underline
+	anonymous.underline = computed.underline
+	anonymous.customProperties = computed.customProperties
+	return anonymous
 }
 
 // WithBlockifiedDisplay returns the used style of a principal box whose outer

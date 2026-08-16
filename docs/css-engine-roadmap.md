@@ -379,7 +379,16 @@ and fixed sizing, then suppress their used track geometry and adjacent border
 spacing without a second layout. Spanning cells retain their logical content
 layout and clip paint and hit testing to the remaining visible tracks; the
 same model feeds separated and collapsed borders, retained geometry, live
-CSSOM reads, scroll transforms, and bounded table fuzzing. The first Grid vertical slice retains
+CSSOM reads, scroll transforms, and bounded table fuzzing. After HTML grid
+dimensioning, automatic tables now merge consecutive anonymous column tracks
+covered by the same spanning cells; fixed layouts, originating cells, separate
+column boxes, and nonzero column constraints preserve their tracks. The
+resulting grid is then filled with renderer-private anonymous cells for every
+uncovered slot. Those cells inherit from their row without copying
+non-inherited decoration, participate in separated and collapsed layout, and
+never mutate the DOM or immutable style snapshot. Sparse rows, large spans,
+`<col span>`, live constraint mutations, stable geometry, and operation/cell
+budgets are covered through layout, browser, V8, and fuzz fixtures. The first Grid vertical slice retains
 block and inline Grid formatting contexts, blockifies element and anonymous
 text items without mutating computed snapshots, and bounds placement by item,
 track, occupied-cell, and operation budgets. Explicit and implicit tracks
@@ -427,8 +436,8 @@ parent track model through explicit nesting and work budgets. A Subgrid without
 a compatible parent formatting context computes to the retained keyword but
 uses `none`, as exposed by live resolved CSSOM geometry.
 
-- Complete table track merging/missing-cell fixup, percentage/intrinsic sizing
-  edge cases, table-wrapper separation, direction/writing-mode placement, and
+- Complete table percentage/intrinsic sizing edge cases, table-wrapper
+  separation, direction/writing-mode placement, and
   collapsed-border junctions once the
   wider border-style set exists.
 - Extend Grid Subgrid through orthogonal writing modes and the remaining

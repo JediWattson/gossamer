@@ -300,7 +300,8 @@ performance budgets; see
   intrinsic column sizing, captions, column and row groups, `colspan`/
   `rowspan`, inline-table participation, separated border spacing, fixed
   layout, top/bottom captions, empty-cell decoration control, cell vertical
-  alignment, row/row-group and column/column-group `visibility: collapse`,
+  alignment, automatic anonymous-track merging, renderer-private missing-cell
+  fixup, row/row-group and column/column-group `visibility: collapse`,
   spanning-cell clipping, bounded collapsed-border conflict resolution,
   layered backgrounds, retained geometry, and live CSSOM reads
 - Inherited `visibility` plus normal, nowrap, pre, pre-wrap, pre-line, and
@@ -341,7 +342,7 @@ The following are intentionally still outside the current milestone:
   modes, SVG/MathML, and encoding sniffing
 - Flex wrapping and full intrinsic sizing, Grid orthogonal-flow behavior and
   remaining advanced intrinsic/overflow interactions, remaining table track
-  merging, percentage sizing, wrapper, writing-mode, and
+  percentage sizing, wrapper, writing-mode, and
   border junction behavior, floats, sticky and full inline positioned layout,
   and retained inline boxes
 - The remaining CSS math grammar beyond the current bounded length

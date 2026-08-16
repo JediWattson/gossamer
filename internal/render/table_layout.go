@@ -24,12 +24,17 @@ const (
 )
 
 type tableModel struct {
-	captions    []*styledNode
-	rows        []tableRowRecord
-	columns     []*styledNode
-	columnBoxes []tableColumnSpec
-	columnCount int
-	cells       []tableCellPlacement
+	captions []*styledNode
+	rows     []tableRowRecord
+	columns  []*styledNode
+	// columnExplicit distinguishes a column box which starts a track from the
+	// extra anonymous tracks produced by its span attribute. Tracks carrying a
+	// nonzero specified column width are explicit throughout the span. CSS
+	// Tables may merge only the remaining anonymous tracks in automatic layout.
+	columnExplicit []bool
+	columnBoxes    []tableColumnSpec
+	columnCount    int
+	cells          []tableCellPlacement
 }
 
 type tableRowRecord struct {
@@ -140,6 +145,13 @@ func buildTableModel(table *styledNode) (tableModel, error) {
 	}
 	if model.columnCount > len(model.columns) {
 		model.columns = append(model.columns, make([]*styledNode, model.columnCount-len(model.columns))...)
+		model.columnExplicit = append(model.columnExplicit, make([]bool, model.columnCount-len(model.columnExplicit))...)
+	}
+	if err := mergeAnonymousTableColumns(&model, tableUsesFixedLayout(table)); err != nil {
+		return tableModel{}, err
+	}
+	if err := appendMissingTableCells(&model); err != nil {
+		return tableModel{}, err
 	}
 	return model, nil
 }
@@ -361,11 +373,18 @@ func appendTableColumnGroup(model *tableModel, group *styledNode) (tableColumnSp
 		if len(model.columns)+span > maxTableColumns {
 			return tableColumnSpec{}, fmt.Errorf("render: table exceeds %d columns", maxTableColumns)
 		}
-		for range span {
+		constrained := tableColumnDefinesTracks(group)
+		for offset := range span {
 			model.columns = append(model.columns, group)
+			model.columnExplicit = append(model.columnExplicit, offset == 0 || constrained)
 		}
 	}
 	spec.span = len(model.columns) - spec.start
+	if tableColumnDefinesTracks(group) {
+		for index := spec.start; index < spec.start+spec.span; index++ {
+			model.columnExplicit[index] = true
+		}
+	}
 	return spec, nil
 }
 
@@ -375,10 +394,24 @@ func appendTableColumn(model *tableModel, column *styledNode) (tableColumnSpec, 
 		return tableColumnSpec{}, fmt.Errorf("render: table exceeds %d columns", maxTableColumns)
 	}
 	spec := tableColumnSpec{node: column, start: len(model.columns), span: span}
-	for range span {
+	constrained := tableColumnDefinesTracks(column)
+	for offset := range span {
 		model.columns = append(model.columns, column)
+		model.columnExplicit = append(model.columnExplicit, offset == 0 || constrained)
 	}
 	return spec, nil
+}
+
+func tableUsesFixedLayout(table *styledNode) bool {
+	return table != nil && table.style.TableLayout() == tableLayoutFixed && table.style.Width().Unit() != lengthAuto
+}
+
+func tableColumnDefinesTracks(column *styledNode) bool {
+	if column == nil {
+		return false
+	}
+	width := column.style.Width()
+	return width.Unit() != lengthAuto && !(width.Unit() == lengthPX && width.Value() == 0)
 }
 
 func placeTableCells(model *tableModel) error {
@@ -438,6 +471,158 @@ func placeTableCells(model *tableModel) error {
 		}
 	}
 	model.columnCount = max(model.columnCount, len(model.columns))
+	return nil
+}
+
+// mergeAnonymousTableColumns implements CSS Tables 3 track merging after the
+// HTML grid has been dimensioned and before missing cells are synthesized.
+// A track is mergeable only when it has no originating cell or explicit
+// column definition and it is covered by exactly the same set of spanning
+// cells as its predecessor. Fixed layout preserves every column track.
+func mergeAnonymousTableColumns(model *tableModel, fixed bool) error {
+	if model == nil || fixed || model.columnCount < 2 {
+		return nil
+	}
+	count := model.columnCount
+	originating := make([]bool, count)
+	wordCount := (len(model.cells) + 63) / 64
+	coverage := make([]uint64, count*wordCount)
+	operations := 0
+	for cellIndex, placement := range model.cells {
+		if placement.column >= 0 && placement.column < count {
+			originating[placement.column] = true
+		}
+		if placement.columnSpan <= 1 {
+			continue
+		}
+		end := min(count, placement.column+placement.columnSpan)
+		for column := max(0, placement.column); column < end; column++ {
+			operations++
+			if operations > maxTableGridOps {
+				return fmt.Errorf("render: table exceeds %d track merge operations", maxTableGridOps)
+			}
+			coverage[column*wordCount+cellIndex/64] |= uint64(1) << uint(cellIndex%64)
+		}
+	}
+
+	mapping := make([]int, count)
+	newCount := 1
+	for column := 1; column < count; column++ {
+		explicit := column < len(model.columnExplicit) && model.columnExplicit[column]
+		if !explicit && !originating[column] && tableTrackCoverageEqual(coverage, wordCount, column-1, column) {
+			mapping[column] = newCount - 1
+			continue
+		}
+		mapping[column] = newCount
+		newCount++
+	}
+	if newCount == count {
+		return nil
+	}
+
+	for index := range model.cells {
+		placement := &model.cells[index]
+		last := min(count-1, placement.column+placement.columnSpan-1)
+		placement.column = mapping[placement.column]
+		placement.columnSpan = mapping[last] - placement.column + 1
+	}
+	columns := make([]*styledNode, newCount)
+	explicit := make([]bool, newCount)
+	for old := 0; old < count; old++ {
+		mapped := mapping[old]
+		if columns[mapped] == nil && old < len(model.columns) {
+			columns[mapped] = model.columns[old]
+		}
+		if old < len(model.columnExplicit) {
+			explicit[mapped] = explicit[mapped] || model.columnExplicit[old]
+		}
+	}
+	for index := range model.columnBoxes {
+		remapTableColumnSpec(&model.columnBoxes[index], mapping)
+	}
+	model.columns = columns
+	model.columnExplicit = explicit
+	model.columnCount = newCount
+	return nil
+}
+
+func tableTrackCoverageEqual(coverage []uint64, wordCount, left, right int) bool {
+	if wordCount == 0 {
+		return true
+	}
+	leftStart := left * wordCount
+	rightStart := right * wordCount
+	for word := 0; word < wordCount; word++ {
+		if coverage[leftStart+word] != coverage[rightStart+word] {
+			return false
+		}
+	}
+	return true
+}
+
+func remapTableColumnSpec(spec *tableColumnSpec, mapping []int) {
+	if spec == nil || spec.span <= 0 || spec.start < 0 || spec.start >= len(mapping) {
+		return
+	}
+	last := min(len(mapping)-1, spec.start+spec.span-1)
+	start := mapping[spec.start]
+	spec.start = start
+	spec.span = mapping[last] - start + 1
+	for index := range spec.children {
+		remapTableColumnSpec(&spec.children[index], mapping)
+	}
+}
+
+// appendMissingTableCells fills every uncovered grid slot with one anonymous
+// cell owned by that row. The cells are renderer-private and preserve only the
+// inherited style of their row; the DOM and immutable style snapshot remain
+// unchanged.
+func appendMissingTableCells(model *tableModel) error {
+	if model == nil || len(model.rows) == 0 || model.columnCount == 0 {
+		return nil
+	}
+	if len(model.rows) > maxTableGridOps/model.columnCount {
+		return fmt.Errorf("render: table exceeds %d missing cell operations", maxTableGridOps)
+	}
+	occupied := make([]bool, len(model.rows)*model.columnCount)
+	operations := 0
+	byRow := make([][]tableCellPlacement, len(model.rows))
+	for _, placement := range model.cells {
+		if placement.row >= 0 && placement.row < len(byRow) {
+			byRow[placement.row] = append(byRow[placement.row], placement)
+		}
+		for row := max(0, placement.row); row < min(len(model.rows), placement.row+placement.rowSpan); row++ {
+			for column := max(0, placement.column); column < min(model.columnCount, placement.column+placement.columnSpan); column++ {
+				operations++
+				if operations > maxTableGridOps {
+					return fmt.Errorf("render: table exceeds %d missing cell operations", maxTableGridOps)
+				}
+				occupied[row*model.columnCount+column] = true
+			}
+		}
+	}
+
+	result := make([]tableCellPlacement, 0, len(model.cells))
+	for rowIndex, row := range model.rows {
+		result = append(result, byRow[rowIndex]...)
+		for column := 0; column < model.columnCount; column++ {
+			operations++
+			if operations > maxTableGridOps {
+				return fmt.Errorf("render: table exceeds %d missing cell operations", maxTableGridOps)
+			}
+			if occupied[rowIndex*model.columnCount+column] {
+				continue
+			}
+			if len(result) >= maxTableCells {
+				return fmt.Errorf("render: table exceeds %d cells after missing-cell fixup", maxTableCells)
+			}
+			result = append(result, tableCellPlacement{
+				node: anonymousTableNode(row.node, displayTableCell, nil),
+				row:  rowIndex, column: column, rowSpan: 1, columnSpan: 1,
+			})
+		}
+	}
+	model.cells = result
 	return nil
 }
 
@@ -648,7 +833,7 @@ func (context *layoutContext) layoutTableContainer(table *styledNode, tableBox *
 	assignableWidth := math.Max(0, contentWidth-spacingWidth)
 
 	var columnWidths []float64
-	fixed := table.style.TableLayout() == tableLayoutFixed && table.style.Width().Unit() != lengthAuto
+	fixed := tableUsesFixedLayout(table)
 	if fixed {
 		columnWidths, err = context.fixedTableColumnWidths(model, assignableWidth, contentWidth, horizontalSpacing, collapsed)
 	} else {

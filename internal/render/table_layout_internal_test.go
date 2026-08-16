@@ -30,13 +30,148 @@ func TestTableModelPlacesOverlappingSpansAndRowspanZeroWithinGroup(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(model.cells) != 4 || model.cells[0].column != 0 || model.cells[0].columnSpan != 2 || model.cells[0].rowSpan != 3 {
+	if len(model.cells) != 4 || model.cells[0].column != 0 || model.cells[0].columnSpan != 1 || model.cells[0].rowSpan != 3 {
 		t.Fatalf("spanning placement = %#v", model.cells)
 	}
 	for index, placement := range model.cells[1:] {
-		if placement.row != index || placement.column != 2 {
-			t.Errorf("ordinary placement %d = %#v, want row %d column 2", index, placement, index)
+		if placement.row != index || placement.column != 1 {
+			t.Errorf("ordinary placement %d = %#v, want row %d column 1", index, placement, index)
 		}
+	}
+}
+
+func TestTableModelMergesAnonymousColumnsBeforeFillingMissingCells(t *testing.T) {
+	t.Parallel()
+
+	spanned := internalTableNode(displayTable, nil)
+	for range 2 {
+		row := internalTableNode(displayTableRow, nil)
+		row.children = append(row.children,
+			internalTableNode(displayTableCell, dom.NewElement("td", dom.Attribute{Name: "colspan", Value: "10"})),
+			internalTableNode(displayTableCell, dom.NewElement("td")),
+		)
+		spanned.children = append(spanned.children, row)
+	}
+	model, err := buildTableModel(spanned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if model.columnCount != 2 || len(model.cells) != 4 {
+		t.Fatalf("merged colspan grid = %d columns, %d cells; want 2 and 4", model.columnCount, len(model.cells))
+	}
+	for index, placement := range model.cells {
+		if placement.columnSpan != 1 || placement.column != index%2 {
+			t.Errorf("merged placement %d = %#v", index, placement)
+		}
+	}
+
+	columns := internalTableNode(displayTable, nil)
+	column := internalTableNode(displayTableColumn, dom.NewElement("col", dom.Attribute{Name: "span", Value: "10"}))
+	columns.children = append(columns.children, column)
+	for range 2 {
+		row := internalTableNode(displayTableRow, nil)
+		row.children = append(row.children,
+			internalTableNode(displayTableCell, dom.NewElement("td")),
+			internalTableNode(displayTableCell, dom.NewElement("td")),
+		)
+		columns.children = append(columns.children, row)
+	}
+	model, err = buildTableModel(columns)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if model.columnCount != 2 || len(model.columnBoxes) != 1 || model.columnBoxes[0].span != 2 {
+		t.Fatalf("merged col span model = columns:%d boxes:%#v", model.columnCount, model.columnBoxes)
+	}
+}
+
+func TestTableModelPreservesExplicitTracksAndSynthesizesMissingCells(t *testing.T) {
+	t.Parallel()
+
+	table := internalTableNode(displayTable, nil)
+	for range 3 {
+		table.children = append(table.children, internalTableNode(displayTableColumn, dom.NewElement("col")))
+	}
+	first := internalTableNode(displayTableRow, nil)
+	for range 3 {
+		first.children = append(first.children, internalTableNode(displayTableCell, dom.NewElement("td")))
+	}
+	second := internalTableNode(displayTableRow, nil)
+	second.children = append(second.children, internalTableNode(displayTableCell, dom.NewElement("td")))
+	table.children = append(table.children, first, second)
+
+	model, err := buildTableModel(table)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if model.columnCount != 3 || len(model.cells) != 6 {
+		t.Fatalf("missing-cell grid = %d columns, %d cells; want 3 and 6", model.columnCount, len(model.cells))
+	}
+	for index, placement := range model.cells[4:] {
+		if placement.node == nil || placement.node.node != nil || placement.row != 1 || placement.column != index+1 || placement.rowSpan != 1 || placement.columnSpan != 1 {
+			t.Errorf("anonymous missing cell %d = %#v", index, placement)
+		}
+	}
+}
+
+func TestTableModelPreservesFixedAndWidthConstrainedColumnSpans(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		tableStyle string
+		column     *dom.Node
+		want       int
+	}{
+		{
+			name: "fixed layout keeps cell colspan tracks", tableStyle: "table-layout:fixed;width:400px",
+			want: 11,
+		},
+		{
+			name:   "nonzero column width keeps span tracks",
+			column: dom.NewElement("col", dom.Attribute{Name: "span", Value: "10"}, dom.Attribute{Name: "style", Value: "width:30px"}),
+			want:   10,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			document := dom.NewDocument()
+			html := dom.NewElement("html")
+			body := dom.NewElement("body")
+			tableNode := dom.NewElement("table", dom.Attribute{Name: "style", Value: test.tableStyle})
+			if test.column != nil {
+				tableNode.AppendChild(test.column)
+			}
+			for range 2 {
+				row := dom.NewElement("tr")
+				if test.column == nil {
+					row.AppendChild(dom.NewElement("td", dom.Attribute{Name: "colspan", Value: "10"}))
+				}
+				row.AppendChild(dom.NewElement("td"))
+				if test.column != nil {
+					row.AppendChild(dom.NewElement("td"))
+				}
+				tableNode.AppendChild(row)
+			}
+			body.AppendChild(tableNode)
+			html.AppendChild(dom.NewElement("head"))
+			html.AppendChild(body)
+			document.AppendChild(html)
+
+			projected := projectStyleTree(document, computed.Compute(document, computed.Input{}))
+			fixupTableFormattingTree(projected)
+			table := internalFindStyledNode(projected, tableNode)
+			if table == nil {
+				t.Fatal("projected table missing")
+			}
+			model, err := buildTableModel(table)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if model.columnCount != test.want {
+				t.Fatalf("column count = %d, want %d", model.columnCount, test.want)
+			}
+		})
 	}
 }
 
@@ -149,4 +284,19 @@ func TestTableStructuralBackgroundBudgetFailsClosed(t *testing.T) {
 
 func internalTableNode(display displayMode, node *dom.Node) *styledNode {
 	return &styledNode{node: node, style: computedStyle{}.WithAnonymousDisplay(display)}
+}
+
+func internalFindStyledNode(root *styledNode, node *dom.Node) *styledNode {
+	if root == nil {
+		return nil
+	}
+	if root.node == node {
+		return root
+	}
+	for _, child := range root.children {
+		if found := internalFindStyledNode(child, node); found != nil {
+			return found
+		}
+	}
+	return nil
 }

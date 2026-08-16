@@ -13,6 +13,7 @@ func FuzzTableLayoutSpansStayFinite(f *testing.F) {
 	f.Add(byte(2), byte(3), byte(1), byte(1), byte(0))
 	f.Add(byte(4), byte(4), byte(2), byte(3), byte(0xff))
 	f.Add(byte(8), byte(8), byte(255), byte(0), byte(0x55))
+	f.Add(byte(4), byte(5), byte(0x82), byte(0x81), byte(0))
 	f.Fuzz(func(t *testing.T, rawRows, rawColumns, rawColumnSpan, rawRowSpan, rawModes byte) {
 		rows := int(rawRows%8) + 1
 		columns := int(rawColumns%8) + 1
@@ -48,12 +49,19 @@ func FuzzTableLayoutSpansStayFinite(f *testing.F) {
 			columnGroupStyle = "visibility:collapse"
 		}
 		columnGroup := dom.NewElement("colgroup", dom.Attribute{Name: "style", Value: columnGroupStyle})
-		for columnIndex := range columns {
-			visibility := "visible"
-			if rawModes&64 != 0 && columnIndex%2 == 0 {
-				visibility = "collapse"
+		if rawColumnSpan&0x80 != 0 {
+			columnGroup.AppendChild(dom.NewElement("col",
+				dom.Attribute{Name: "span", Value: fmt.Sprint(columns)},
+				dom.Attribute{Name: "style", Value: "width:0"},
+			))
+		} else {
+			for columnIndex := range columns {
+				visibility := "visible"
+				if rawModes&64 != 0 && columnIndex%2 == 0 {
+					visibility = "collapse"
+				}
+				columnGroup.AppendChild(dom.NewElement("col", dom.Attribute{Name: "style", Value: fmt.Sprintf("width:%dpx;visibility:%s", 4+columnIndex, visibility)}))
 			}
-			columnGroup.AppendChild(dom.NewElement("col", dom.Attribute{Name: "style", Value: fmt.Sprintf("width:%dpx;visibility:%s", 4+columnIndex, visibility)}))
 		}
 		table.AppendChild(columnGroup)
 		groupStyle := ""
@@ -68,6 +76,9 @@ func FuzzTableLayoutSpansStayFinite(f *testing.F) {
 			}
 			row := dom.NewElement("tr", dom.Attribute{Name: "style", Value: "visibility:" + rowVisibility})
 			for columnIndex := range columns {
+				if rawRowSpan&0x80 != 0 && rowIndex%2 != 0 && columnIndex != 0 {
+					continue
+				}
 				alignment := []string{"baseline", "top", "middle", "bottom"}[(rowIndex+columnIndex)%4]
 				borderStyle := "solid"
 				if rawModes&8 != 0 && rowIndex == 0 && columnIndex == 0 {
