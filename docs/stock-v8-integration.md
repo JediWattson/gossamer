@@ -226,6 +226,13 @@ Realm until fire or clear; firing transfers it through the Page task queue.
 producer task into their queue. The consumer validates that record before
 invoking V8, and task release reclaims it.
 
+Child iframe Pages have separate stock-V8 Realms and Browser-unique document
+generations. The browser kernel does not pass wrapper or DOM backing pointers
+between those isolates. Cross-document node transfer uses a serialized native
+ArrayBuffer envelope and creates fresh target wrappers; general native
+`postMessage` payloads use RegionStore structured clone and transferable
+ArrayBuffer detachment.
+
 ## Proven sequence
 
 The tagged tests prove both the isolated adapter and the browser path:

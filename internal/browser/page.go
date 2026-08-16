@@ -23,28 +23,30 @@ type Page struct {
 	browser *Browser
 	script  JSRealm
 
-	mutex                  sync.RWMutex
-	document               *dom.Document
-	nodeLifetimes          *nodeLifetimeState
-	documentGeneration     DocumentGeneration
-	nextDocumentGeneration DocumentGeneration
-	location               *url.URL
-	resources              pageResources
-	viewport               render.Viewport
-	frame                  *render.Frame
-	frameGeneration        DocumentGeneration
-	computedStyle          computedStyleState
-	styleRevision          uint64
-	layout                 layoutState
-	layoutRevision         uint64
-	dirty                  bool
-	renderedVersion        uint64
-	activeElement          dom.NodeID
-	nextNavigation         NavigationID
-	navigation             navigationRecord
-	nextTimer              TimerID
-	timers                 map[TimerID]*pageTimer
-	closed                 bool
+	mutex              sync.RWMutex
+	document           *dom.Document
+	nodeLifetimes      *nodeLifetimeState
+	documentGeneration DocumentGeneration
+	parent             *Page
+	frameOwner         NodeHandle
+	children           map[dom.NodeID]*Page
+	location           *url.URL
+	resources          pageResources
+	viewport           render.Viewport
+	frame              *render.Frame
+	frameGeneration    DocumentGeneration
+	computedStyle      computedStyleState
+	styleRevision      uint64
+	layout             layoutState
+	layoutRevision     uint64
+	dirty              bool
+	renderedVersion    uint64
+	activeElement      dom.NodeID
+	nextNavigation     NavigationID
+	navigation         navigationRecord
+	nextTimer          TimerID
+	timers             map[TimerID]*pageTimer
+	closed             bool
 }
 
 // computedStyleState records the browser-owned inputs that make one immutable
@@ -74,28 +76,29 @@ func newPage(
 	realm *browserruntime.Realm,
 	script JSRealm,
 	document *dom.Document,
+	generation DocumentGeneration,
 	location *url.URL,
 ) (*Page, error) {
-	lifetimes, err := newNodeLifetimeState(realm, document, 1)
+	lifetimes, err := newNodeLifetimeState(realm, document, generation)
 	if err != nil {
 		return nil, err
 	}
 	return &Page{
-		ID:                     id,
-		Realm:                  realm,
-		browser:                browser,
-		script:                 script,
-		document:               document,
-		nodeLifetimes:          lifetimes,
-		documentGeneration:     1,
-		nextDocumentGeneration: 1,
-		location:               cloneURL(location),
-		resources:              newPageResources(),
-		viewport:               render.DefaultViewport,
-		styleRevision:          1,
-		layoutRevision:         1,
-		timers:                 make(map[TimerID]*pageTimer),
-		dirty:                  true,
+		ID:                 id,
+		Realm:              realm,
+		browser:            browser,
+		script:             script,
+		document:           document,
+		nodeLifetimes:      lifetimes,
+		documentGeneration: generation,
+		children:           make(map[dom.NodeID]*Page),
+		location:           cloneURL(location),
+		resources:          newPageResources(),
+		viewport:           render.DefaultViewport,
+		styleRevision:      1,
+		layoutRevision:     1,
+		timers:             make(map[TimerID]*pageTimer),
+		dirty:              true,
 	}, nil
 }
 
@@ -375,8 +378,22 @@ func (page *Page) Close() error {
 	page.script = nil
 	lifetimes := page.nodeLifetimes
 	page.nodeLifetimes = nil
+	children := page.takeChildFramesLocked()
+	parent := page.parent
+	page.parent = nil
+	generation := page.documentGeneration
 	page.mutex.Unlock()
+	if parent != nil {
+		parent.removeChildFrame(page)
+	}
+	if page.browser != nil {
+		page.browser.unregisterPage(page, generation)
+	}
 	timerErr := page.releaseTimers(timers)
+	var childErr error
+	for _, child := range children {
+		childErr = errors.Join(childErr, child.Close())
+	}
 	var scriptErr error
 	if script != nil {
 		scriptErr = script.Close()
@@ -385,7 +402,7 @@ func (page *Page) Close() error {
 	if lifetimes != nil {
 		lifetimeErr = lifetimes.close()
 	}
-	return errors.Join(timerErr, scriptErr, lifetimeErr, page.Realm.Close())
+	return errors.Join(timerErr, childErr, scriptErr, lifetimeErr, page.Realm.Close())
 }
 
 func (page *Page) renderLocked(onlyIfDirty bool) error {

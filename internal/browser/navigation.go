@@ -317,6 +317,13 @@ func (page *Page) commitNavigationDocument(
 			return err
 		}
 	}
+	generation, generationErr := page.browser.reserveDocumentGeneration()
+	if generationErr != nil {
+		if replacementScript != nil {
+			_ = replacementScript.Close()
+		}
+		return generationErr
+	}
 
 	page.mutex.Lock()
 	if !page.matchesNavigationLocked(id, 0) {
@@ -326,7 +333,6 @@ func (page *Page) commitNavigationDocument(
 		}
 		return nil
 	}
-	generation := page.nextDocumentGeneration + 1
 	replacementLifetimes, lifetimeErr := newNodeLifetimeState(
 		page.Realm,
 		prepared.document,
@@ -343,9 +349,10 @@ func (page *Page) commitNavigationDocument(
 	oldScript := page.script
 	oldLifetimes := page.nodeLifetimes
 	timers := page.takeTimersLocked()
+	children := page.takeChildFramesLocked()
+	oldGeneration := page.documentGeneration
 	page.script = replacementScript
 	page.nodeLifetimes = replacementLifetimes
-	page.nextDocumentGeneration = generation
 	page.document = prepared.document
 	page.documentGeneration = generation
 	page.activeElement = dom.InvalidNodeID
@@ -369,9 +376,13 @@ func (page *Page) commitNavigationDocument(
 	page.navigation.scriptsPending = len(page.navigation.scripts)
 	page.navigation.scriptsFailed = 0
 	navigationContext := page.navigation.context
+	page.browser.replaceDocument(page, oldGeneration, generation)
 	page.mutex.Unlock()
 
 	cleanupErr := page.releaseTimers(timers)
+	for _, child := range children {
+		cleanupErr = errors.Join(cleanupErr, child.Close())
+	}
 	if oldScript != nil {
 		cleanupErr = errors.Join(cleanupErr, oldScript.Close())
 	}

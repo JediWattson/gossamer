@@ -145,14 +145,14 @@ func (state *nodeLifetimeState) sync(task *browserruntime.TaskContext) error {
 
 	for node, oldParent := range state.parents {
 		newParent, retained := currentParents[node]
-		if !retained || oldParent == dom.InvalidNodeID || oldParent == newParent {
+		if oldParent == dom.InvalidNodeID || (retained && oldParent == newParent) {
 			continue
 		}
-		if err := state.ledger.RemoveReference(state.nodes[oldParent], state.nodes[node]); err != nil {
-			return err
-		}
 		if err := state.ledger.RemoveReference(state.nodes[node], state.nodes[oldParent]); err != nil {
-			return err
+			return fmt.Errorf("browser: remove native node %d -> parent %d edge: %w", node, oldParent, err)
+		}
+		if err := state.ledger.RemoveReference(state.nodes[oldParent], state.nodes[node]); err != nil {
+			return fmt.Errorf("browser: remove native parent %d -> node %d edge: %w", oldParent, node, err)
 		}
 	}
 	for _, record := range records {
@@ -189,6 +189,12 @@ func (state *nodeLifetimeState) sync(task *browserruntime.TaskContext) error {
 		if facade == (memory.Ref{}) {
 			return fmt.Errorf("browser: node %d has no facade record", record.ID)
 		}
+	}
+	// Keep every facade rooted through this reconciliation, including records
+	// whose DOM identities were just retired by a cross-document adoption.
+	// reclaim frees those physical slots after the semantic node graph reports
+	// its destroyed set; the next reconciliation then drops the facade claim.
+	for _, facade := range state.facades {
 		object, objectErr := state.store.ObjectID(state.documentOwner, facade)
 		if objectErr != nil {
 			return objectErr
@@ -384,7 +390,13 @@ func (state *nodeLifetimeState) reclaim(objects []ownership.ObjectID) error {
 		seen[node] = struct{}{}
 		nodes = append(nodes, node)
 	}
-	if err := state.document.Reclaim(nodes); err != nil {
+	retained := make([]dom.NodeID, 0, len(nodes))
+	for _, node := range nodes {
+		if _, exists := state.document.Resolve(node); exists {
+			retained = append(retained, node)
+		}
+	}
+	if err := state.document.Reclaim(retained); err != nil {
 		return err
 	}
 	for _, node := range nodes {

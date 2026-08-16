@@ -104,6 +104,13 @@ microtasks copy one native callback record directly into their destination
 queue; clearing, navigation replacement, and Page teardown destroy records
 that never fire.
 
+Cross-Realm transport is now pointer-free as well. Documents have
+Browser-unique generations, iframe child Pages own independent Realms, and
+parent replacement closes the child graph. Cross-document import/adoption
+serializes DOM state through a native ArrayBuffer queue envelope. Native
+`postMessage` uses structured clone, including atomic transfer-list validation
+and source ArrayBuffer detachment.
+
 A synchronous native interpreter can now execute hand-assembled Function
 bytecode over those payloads. Its borrowed frames expose Ref roots, all heap
 mutation stays behind TaskContext barriers, and returned private values still

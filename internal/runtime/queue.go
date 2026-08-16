@@ -128,6 +128,8 @@ func (queue *TaskQueue) enqueueMemory(task Task, publisher ownership.OwnerID, mo
 		err = queue.store.Publish(publisher, task.refs...)
 	case memoryCopy:
 		task.refs, err = queue.store.Copy(publisher, queue.owner, task.refs...)
+	case memoryStructuredClone:
+		task.refs, _, err = queue.store.StructuredClone(publisher, queue.owner, task.refs, task.transfers)
 	default:
 		err = fmt.Errorf("runtime: unknown memory send mode %d", mode)
 	}

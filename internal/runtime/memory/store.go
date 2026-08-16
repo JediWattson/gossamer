@@ -46,6 +46,7 @@ var (
 	ErrRegionReferenced      = errors.New("memory: region still has incoming references")
 	ErrExplicitSendRequired  = errors.New("memory: private refs require Transfer, Publish, or Copy")
 	ErrInvalidTransfer       = errors.New("memory: transfer destination is not a queue")
+	ErrDuplicateTransfer     = errors.New("memory: duplicate transferable")
 	ErrOwnerMismatch         = errors.New("memory: ownership claim does not match")
 )
 
@@ -717,6 +718,54 @@ func (store *Store) Copy(from, to ownership.OwnerID, roots ...Ref) ([]Ref, error
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
 	return store.copyLocked(from, to, append([]Ref(nil), roots...))
+}
+
+// StructuredClone copies roots into one destination-owned graph and moves the
+// bytes of every listed ArrayBuffer into the clone by detaching the source.
+// Validation and copying complete before any source buffer is detached.
+func (store *Store) StructuredClone(
+	from, to ownership.OwnerID,
+	roots []Ref,
+	transfers []Ref,
+) (clonedRoots []Ref, clonedTransfers []Ref, result error) {
+	if store == nil {
+		return nil, nil, fmt.Errorf("memory: nil store")
+	}
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+
+	seen := make(map[Ref]struct{}, len(transfers))
+	for _, ref := range transfers {
+		if _, duplicate := seen[ref]; duplicate {
+			return nil, nil, fmt.Errorf("%w: %s", ErrDuplicateTransfer, ref)
+		}
+		seen[ref] = struct{}{}
+		_, slot, err := store.writeSlotLocked(from, ref, false)
+		if err != nil {
+			return nil, nil, err
+		}
+		if slot.Kind != HeapArrayBuffer {
+			return nil, nil, typeError(ref, slot.Kind, HeapArrayBuffer)
+		}
+		if slot.ArrayBuffer.Detached {
+			return nil, nil, ErrDetachedBuffer
+		}
+	}
+
+	allRoots := make([]Ref, 0, len(roots)+len(transfers))
+	allRoots = append(allRoots, roots...)
+	allRoots = append(allRoots, transfers...)
+	cloned, err := store.copyLocked(from, to, allRoots)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, ref := range transfers {
+		_, slot, _ := store.slotLocked(ref)
+		store.stats.LiveBytes -= uint64(len(slot.ArrayBuffer.Bytes))
+		slot.ArrayBuffer.Bytes = nil
+		slot.ArrayBuffer.Detached = true
+	}
+	return cloned[:len(roots)], cloned[len(roots):], nil
 }
 
 // Promote explicitly copies the complete Cell graph reachable from roots into

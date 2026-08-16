@@ -67,6 +67,9 @@ claim(region, object) is either present or absent
 - Transfer moves the complete connected private region component through the
   queue; Copy clones the reachable Cell graph; Publish makes the outgoing
   region graph immutable and shared.
+- StructuredClone copies one graph into a task or microtask queue, validates
+  the complete transfer list before mutation, and detaches source
+  ArrayBuffers only after the destination graph exists.
 - Promote clones only the graph reachable from explicit roots into a new
   published region. Original refs remain private and die with their owner.
 - `Store.CheckInvariants` independently derives slot, free-list, object-edge,
@@ -133,6 +136,13 @@ callback execution, and destroyed at task release. Clear, navigation, and
 teardown destroy records still held by the Realm. Ordinary callbacks and
 microtasks copy their record from the producer task into the appropriate queue
 so no borrowed producer Ref escapes.
+
+Cross-document work uses the same boundary. An iframe child is a distinct Page
+and Realm with a Browser-unique document generation. Import and adoption
+encode a DOM subtree without NodeIDs or Go pointers, carry those bytes in a
+native ArrayBuffer, and rebuild fresh target-document identity in the consumer
+task. Parent navigation and teardown close child Realms before releasing the
+parent document.
 
 The first profile-driven physical optimization is implemented without changing
 the ownership model: short-lived regions use eight-slot buffers sized to the

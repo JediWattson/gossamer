@@ -45,8 +45,11 @@ and ownership barriers before a separate render task publishes a frame.
   select-all, deletion, string projection, and the standard range collection
   methods. Backward selections, `extend`, `setBaseAndExtent`, `modify`, and
   `containsNode` are not exposed yet.
-- `importNode` and `adoptNode` currently operate inside the active native
-  document. Cross-document and cross-Realm adoption is not exposed yet.
+- The Page API now performs cross-document import/adoption through explicit
+  source and target Realm tasks using a pointer-free DOM encoding. Stock-V8
+  Realms remain separate isolates, so a JavaScript wrapper itself cannot be
+  passed directly between iframe globals; cross-Realm data uses the native
+  structured-clone/`postMessage` seam and fresh target wrappers.
 - This gate does not claim Shadow DOM, custom elements, full form
   validation/submission, navigation globals, geometry, accessibility, or the
   complete Web Platform test surface.

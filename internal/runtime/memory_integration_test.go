@@ -99,6 +99,72 @@ func TestRealmQueueRequiresExplicitTransferForPrivateRefs(t *testing.T) {
 	}
 }
 
+func TestCrossRealmStructuredCloneTransfersArrayBufferWithoutSharingRefs(t *testing.T) {
+	t.Parallel()
+
+	scheduler, err := browserruntime.NewScheduler(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer scheduler.Close()
+	source, err := scheduler.NewRealm()
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination, err := scheduler.NewRealm()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var original memory.Ref
+	var received memory.Ref
+	if _, err := source.EnqueueTask(func(task *browserruntime.TaskContext) error {
+		var allocErr error
+		original, allocErr = task.NewArrayBuffer([]byte{9, 8, 7})
+		if allocErr != nil {
+			return allocErr
+		}
+		_, cloneErr := task.StructuredClone(destination, func(next *browserruntime.TaskContext) error {
+			if len(next.Refs) != 1 || next.Refs[0] == original {
+				t.Fatalf("structured clone refs = %#v, source = %s", next.Refs, original)
+			}
+			received = next.Refs[0]
+			bytes, readErr := next.ReadArrayBuffer(received, 0, 3)
+			if readErr != nil {
+				return readErr
+			}
+			if string(bytes) != string([]byte{9, 8, 7}) {
+				t.Fatalf("received bytes = %v", bytes)
+			}
+			return nil
+		}, []memory.Ref{original}, original)
+		if cloneErr != nil {
+			return cloneErr
+		}
+		if _, readErr := task.ReadArrayBuffer(original, 0, 0); !errors.Is(readErr, memory.ErrDetachedBuffer) {
+			t.Fatalf("source buffer after enqueue = %v, want ErrDetachedBuffer", readErr)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := source.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if destination.Tasks.Len() != 1 {
+		t.Fatalf("destination queue length = %d, want 1", destination.Tasks.Len())
+	}
+	if err := destination.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if received == (memory.Ref{}) {
+		t.Fatal("structured clone receiver did not run")
+	}
+	if _, err := scheduler.Store().DerefArrayBuffer(destination.Owner(), received); !errors.Is(err, memory.ErrStaleRef) {
+		t.Fatalf("received buffer after task release = %v, want ErrStaleRef", err)
+	}
+}
+
 func TestRealmRetainedRefTransfersThroughQueueToFiringTask(t *testing.T) {
 	t.Parallel()
 

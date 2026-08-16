@@ -209,6 +209,36 @@ func (realm *Realm) enqueueMemory(queue *TaskQueue, run TaskFunc, publisher owne
 	return id, nil
 }
 
+func (realm *Realm) enqueueStructuredClone(
+	queue *TaskQueue,
+	run TaskFunc,
+	publisher ownership.OwnerID,
+	refs []memory.Ref,
+	transfers []memory.Ref,
+) (TaskID, error) {
+	if realm == nil {
+		return 0, fmt.Errorf("runtime: nil realm")
+	}
+	if realm.closed.Load() {
+		return 0, ErrRealmClosed
+	}
+	if run == nil {
+		return 0, ErrNilTask
+	}
+	id := TaskID(nextTaskID.Add(1))
+	owner := ownership.OwnerID{Kind: ownership.OwnerTask, Value: uint64(id)}
+	task, err := realm.newTask(id, owner, run, nil, refs)
+	if err != nil {
+		return 0, err
+	}
+	task.transfers = append([]memory.Ref(nil), transfers...)
+	if err := queue.enqueueMemory(task, publisher, memoryStructuredClone); err != nil {
+		_ = realm.store.ReleaseOwner(owner)
+		return 0, err
+	}
+	return id, nil
+}
+
 func (realm *Realm) newTask(id TaskID, owner ownership.OwnerID, run TaskFunc, objects []ownership.ObjectID, refs []memory.Ref) (Task, error) {
 	region, err := realm.ledger.CreateRegion(owner)
 	if err != nil {

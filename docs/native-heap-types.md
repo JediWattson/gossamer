@@ -137,6 +137,12 @@ releases the bytes, is idempotent, and causes later reads or writes to fail.
 Copy and Promote clone attached bytes rather than sharing mutation. Detached
 state is preserved, and live-byte telemetry drops immediately on detach.
 
+StructuredClone accepts an explicit transfer list. It first validates every
+entry as a unique, attached, source-owned ArrayBuffer, builds the complete
+destination graph, then detaches all source entries as one committed
+operation. Aliases and typed views in the cloned graph point at the one cloned
+buffer; no mutable byte slice is shared across owners.
+
 ### TypedArray
 
 Native TypedArrays are immutable descriptors over an ArrayBuffer Ref. The

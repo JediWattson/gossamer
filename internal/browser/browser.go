@@ -27,10 +27,12 @@ type Browser struct {
 	scheduler *browserruntime.Scheduler
 	engine    Engine
 
-	mutex    sync.Mutex
-	nextPage PageID
-	pages    map[PageID]*Page
-	closed   bool
+	mutex        sync.Mutex
+	nextPage     PageID
+	nextDocument DocumentGeneration
+	pages        map[PageID]*Page
+	documents    map[DocumentGeneration]*Page
+	closed       bool
 }
 
 func New() (*Browser, error) {
@@ -44,7 +46,12 @@ func NewWithEngine(engine Engine) (*Browser, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Browser{scheduler: scheduler, engine: engine, pages: make(map[PageID]*Page)}, nil
+	return &Browser{
+		scheduler: scheduler,
+		engine:    engine,
+		pages:     make(map[PageID]*Page),
+		documents: make(map[DocumentGeneration]*Page),
+	}, nil
 }
 
 // NewPage establishes the Page/Realm/Document ownership boundary around an
@@ -81,7 +88,16 @@ func (browser *Browser) NewPage(root *dom.Node, location *url.URL) (*Page, error
 		return nil, ErrBrowserClosed
 	}
 	browser.nextPage++
-	page, err := newPage(browser, browser.nextPage, realm, script, document, location)
+	browser.nextDocument++
+	if browser.nextDocument == 0 {
+		if script != nil {
+			_ = script.Close()
+		}
+		_ = realm.Close()
+		return nil, fmt.Errorf("browser: exhausted document generations")
+	}
+	generation := browser.nextDocument
+	page, err := newPage(browser, browser.nextPage, realm, script, document, generation, location)
 	if err != nil {
 		if script != nil {
 			_ = script.Close()
@@ -90,7 +106,60 @@ func (browser *Browser) NewPage(root *dom.Node, location *url.URL) (*Page, error
 		return nil, err
 	}
 	browser.pages[page.ID] = page
+	browser.documents[generation] = page
 	return page, nil
+}
+
+func (browser *Browser) reserveDocumentGeneration() (DocumentGeneration, error) {
+	if browser == nil {
+		return 0, fmt.Errorf("browser: nil browser")
+	}
+	browser.mutex.Lock()
+	defer browser.mutex.Unlock()
+	if browser.closed {
+		return 0, ErrBrowserClosed
+	}
+	browser.nextDocument++
+	if browser.nextDocument == 0 {
+		return 0, fmt.Errorf("browser: exhausted document generations")
+	}
+	return browser.nextDocument, nil
+}
+
+func (browser *Browser) replaceDocument(page *Page, oldGeneration, newGeneration DocumentGeneration) {
+	if browser == nil || page == nil {
+		return
+	}
+	browser.mutex.Lock()
+	if browser.documents[oldGeneration] == page {
+		delete(browser.documents, oldGeneration)
+	}
+	browser.documents[newGeneration] = page
+	browser.mutex.Unlock()
+}
+
+func (browser *Browser) pageForDocument(generation DocumentGeneration) (*Page, bool) {
+	if browser == nil || generation == 0 {
+		return nil, false
+	}
+	browser.mutex.Lock()
+	page := browser.documents[generation]
+	browser.mutex.Unlock()
+	return page, page != nil
+}
+
+func (browser *Browser) unregisterPage(page *Page, generation DocumentGeneration) {
+	if browser == nil || page == nil {
+		return
+	}
+	browser.mutex.Lock()
+	if browser.pages[page.ID] == page {
+		delete(browser.pages, page.ID)
+	}
+	if browser.documents[generation] == page {
+		delete(browser.documents, generation)
+	}
+	browser.mutex.Unlock()
 }
 
 // LoadPage creates a Page, begins task-driven navigation, and drives its Realm

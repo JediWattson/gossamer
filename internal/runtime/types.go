@@ -27,6 +27,7 @@ type Task struct {
 	memoryRegion memory.RegionID
 	objects      []ownership.ObjectID
 	refs         []memory.Ref
+	transfers    []memory.Ref
 }
 
 // TaskContext exposes the current task's semantic lifetime and queue seams.
@@ -717,6 +718,19 @@ func (context *TaskContext) Copy(target *Realm, run TaskFunc, refs ...memory.Ref
 	return context.enqueueRefs(target, targetQueue(target), memoryCopy, run, refs)
 }
 
+// StructuredClone deep-copies refs into target's task queue and atomically
+// detaches the source ArrayBuffers listed in transfers. The receiving task sees
+// only cloned roots; transfer-list entries are cloned as graph dependencies.
+func (context *TaskContext) StructuredClone(target *Realm, run TaskFunc, transfers []memory.Ref, refs ...memory.Ref) (TaskID, error) {
+	if context == nil || context.Realm == nil || target == nil {
+		return 0, fmt.Errorf("runtime: nil task context or target realm")
+	}
+	if context.Realm.store != target.store {
+		return 0, fmt.Errorf("runtime: realms do not share a RegionStore")
+	}
+	return target.enqueueStructuredClone(target.Tasks, run, context.Owner, refs, transfers)
+}
+
 // CopyToRealm deep-copies the reachable native graph into Realm-owned storage.
 // It is the retention boundary for values that must outlive the current task
 // but are not runnable until a later external event fires.
@@ -746,6 +760,14 @@ func (context *TaskContext) QueueMicrotaskPublish(run TaskFunc, refs ...memory.R
 // QueueMicrotaskCopy clones refs into queue-owned storage for the microtask.
 func (context *TaskContext) QueueMicrotaskCopy(run TaskFunc, refs ...memory.Ref) (TaskID, error) {
 	return context.enqueueRefs(contextRealm(context), microtaskQueue(context), memoryCopy, run, refs)
+}
+
+// QueueMicrotaskStructuredClone is the microtask form of StructuredClone.
+func (context *TaskContext) QueueMicrotaskStructuredClone(run TaskFunc, transfers []memory.Ref, refs ...memory.Ref) (TaskID, error) {
+	if context == nil || context.Realm == nil {
+		return 0, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.enqueueStructuredClone(context.Realm.Microtasks, run, context.Owner, refs, transfers)
 }
 
 func (context *TaskContext) enqueueRefs(target *Realm, queue *TaskQueue, mode memorySendMode, run TaskFunc, refs []memory.Ref) (TaskID, error) {
@@ -814,4 +836,5 @@ const (
 	memoryTransfer
 	memoryPublish
 	memoryCopy
+	memoryStructuredClone
 )
