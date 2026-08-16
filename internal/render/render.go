@@ -389,6 +389,21 @@ func paintBox(list *DisplayList, box *Box, styles map[*dom.Node]computedStyle) {
 	if grouped {
 		list.Commands = append(list.Commands, Command{Kind: BeginOpacityCommand, Node: box.Node, Pseudo: box.Pseudo, Opacity: opacity})
 	}
+	paintBoxDecorations(list, box, style, visible)
+	if box.tableWrapper && box.tableRoot != nil {
+		paintTableWrapperContents(list, box, styles)
+	} else {
+		paintBoxContents(list, box, styles)
+	}
+	if grouped {
+		list.Commands = append(list.Commands, Command{Kind: EndOpacityCommand, Node: box.Node, Pseudo: box.Pseudo})
+	}
+	if box.hasClipBounds {
+		clipPaintCommands(list, commandStart, len(list.Commands), box.clipBounds)
+	}
+}
+
+func paintBoxDecorations(list *DisplayList, box *Box, style computedStyle, visible bool) {
 	background, hasBackground := style.Background()
 	if visible && !box.suppressDecorations && hasBackground {
 		if len(box.backgroundRects) == 0 {
@@ -417,6 +432,9 @@ func paintBox(list *DisplayList, box *Box, styles map[*dom.Node]computedStyle) {
 	if visible && !box.suppressDecorations && !box.suppressBorders {
 		paintBoxBorders(list, box, style)
 	}
+}
+
+func paintBoxContents(list *DisplayList, box *Box, styles map[*dom.Node]computedStyle) {
 	negative, nonNegative := positionedPaintChildren(box)
 	for _, child := range negative {
 		paintBox(list, child, styles)
@@ -458,20 +476,67 @@ func paintBox(list *DisplayList, box *Box, styles map[*dom.Node]computedStyle) {
 			Rect: overlay.Rect, Color: overlay.Color,
 		})
 	}
-	if grouped {
-		list.Commands = append(list.Commands, Command{Kind: EndOpacityCommand, Node: box.Node, Pseudo: box.Pseudo})
+}
+
+func paintTableWrapperContents(list *DisplayList, wrapper *Box, styles map[*dom.Node]computedStyle) {
+	root := wrapper.tableRoot
+	rootStart := len(list.Commands)
+	rootStyle, hasRootStyle := root.style, root.hasStyle
+	if !hasRootStyle {
+		rootStyle, hasRootStyle = styles[root.Node]
 	}
-	if box.hasClipBounds {
-		for index := commandStart; index < len(list.Commands); index++ {
-			command := &list.Commands[index]
-			if command.HasClip {
-				command.Clip = intersectRects(command.Clip, box.clipBounds)
-			} else {
-				command.HasClip = true
-				command.Clip = box.clipBounds
-			}
+	paintBoxDecorations(list, root, rootStyle, hasRootStyle && rootStyle.Visibility() == visibilityVisible)
+	rootDecorationsEnd := len(list.Commands)
+
+	negative, nonNegative := positionedPaintChildrenExcluding(wrapper, root)
+	for _, child := range negative {
+		paintBox(list, child, styles)
+	}
+	for _, child := range wrapper.Children {
+		if child != root && !child.positioned {
+			paintBox(list, child, styles)
 		}
 	}
+	rootContentsStart := len(list.Commands)
+	paintBoxContents(list, root, styles)
+	rootContentsEnd := len(list.Commands)
+	for _, child := range nonNegative {
+		paintBox(list, child, styles)
+	}
+	if root.hasClipBounds {
+		clipPaintCommands(list, rootStart, rootDecorationsEnd, root.clipBounds)
+		clipPaintCommands(list, rootContentsStart, rootContentsEnd, root.clipBounds)
+	}
+}
+
+func clipPaintCommands(list *DisplayList, start, end int, bounds Rect) {
+	for index := start; index < end; index++ {
+		command := &list.Commands[index]
+		if command.HasClip {
+			command.Clip = intersectRects(command.Clip, bounds)
+		} else {
+			command.HasClip = true
+			command.Clip = bounds
+		}
+	}
+}
+
+func positionedPaintChildrenExcluding(box, excluded *Box) (negative, nonNegative []*Box) {
+	if box == nil {
+		return nil, nil
+	}
+	for _, child := range box.Children {
+		if child == excluded || child == nil || !child.positioned {
+			continue
+		}
+		if !child.zIndexAuto && child.zIndex < 0 {
+			negative = append(negative, child)
+		} else {
+			nonNegative = append(nonNegative, child)
+		}
+	}
+	sortPositionedPaintChildren(negative, nonNegative)
+	return negative, nonNegative
 }
 
 func positionedPaintChildren(box *Box) (negative, nonNegative []*Box) {
@@ -488,6 +553,11 @@ func positionedPaintChildren(box *Box) (negative, nonNegative []*Box) {
 			nonNegative = append(nonNegative, child)
 		}
 	}
+	sortPositionedPaintChildren(negative, nonNegative)
+	return negative, nonNegative
+}
+
+func sortPositionedPaintChildren(negative, nonNegative []*Box) {
 	sort.SliceStable(negative, func(left, right int) bool {
 		return negative[left].zIndex < negative[right].zIndex
 	})
@@ -502,7 +572,6 @@ func positionedPaintChildren(box *Box) (negative, nonNegative []*Box) {
 		}
 		return leftIndex < rightIndex
 	})
-	return negative, nonNegative
 }
 
 func paintBoxBorders(list *DisplayList, box *Box, style computedStyle) {

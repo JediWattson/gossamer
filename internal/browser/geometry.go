@@ -110,10 +110,16 @@ func (page *Page) elementGeometryLocked(handle NodeHandle) (DOMElementGeometry, 
 			Width:  geometry.Bounds.Width,
 			Height: geometry.Bounds.Height,
 		}
+		for _, rectangle := range geometry.ClientRects() {
+			result.ClientRects = append(result.ClientRects, DOMRect{
+				X: rectangle.X - visual.OffsetX, Y: rectangle.Y - visual.OffsetY,
+				Width: rectangle.Width, Height: rectangle.Height,
+			})
+		}
 		result.ClientWidth = clientWidth
 		result.ClientHeight = clientHeight
-		result.OffsetWidth = geometry.Bounds.Width
-		result.OffsetHeight = geometry.Bounds.Height
+		result.OffsetWidth = geometry.OffsetBounds.Width
+		result.OffsetHeight = geometry.OffsetBounds.Height
 		result.ScrollWidth = scrollWidth
 		result.ScrollHeight = scrollHeight
 		if handle.Node != rootID {

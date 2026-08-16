@@ -305,9 +305,11 @@ performance budgets; see
   missing-cell fixup, row/row-group and column/column-group `visibility:
   collapse`, spanning-cell clipping, base/reference row-height distribution,
   percentage row/cell constraints, and the compatible second cell-content
-  layout pass for percentage-height descendants; bounded collapsed-border
-  conflict resolution, layered backgrounds, retained geometry, and live CSSOM
-  reads
+  layout pass for percentage-height descendants; distinct anonymous principal
+  wrappers retain caption margin boxes and caption-inclusive offset/client/
+  scroll dimensions while root and caption border boxes remain separately
+  observable through CSSOM; bounded collapsed-border conflict resolution,
+  layered backgrounds, retained geometry, and live CSSOM reads
 - Inherited `visibility` plus normal, nowrap, pre, pre-wrap, pre-line, and
   break-spaces text whitespace behavior
 - Bundled Go sans and monospace families with regular, bold, italic, and
@@ -346,7 +348,7 @@ The following are intentionally still outside the current milestone:
   modes, SVG/MathML, and encoding sniffing
 - Flex wrapping and full intrinsic sizing, Grid orthogonal-flow behavior and
   remaining advanced intrinsic/overflow interactions, remaining advanced table
-  intrinsic sizing, wrapper, writing-mode, and border junction behavior,
+  intrinsic sizing, writing-mode, and border junction behavior,
   floats, sticky and full inline positioned layout, and retained inline boxes
 - The remaining CSS math grammar beyond the current bounded length
   `calc()`/`min()`/`max()`/`clamp()` slice, plus gradients, background images,

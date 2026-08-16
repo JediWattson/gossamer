@@ -1299,14 +1299,22 @@ func tableCellRequiresPercentageRelayout(table, cell *styledNode) bool {
 	return height.Unit() != lengthAuto && !height.DependsOnPercent()
 }
 
-func (context *layoutContext) layoutTableContainer(table *styledNode, tableBox *Box, contentWidth float64, containingHeight *float64) (float64, float64, error) {
+func (context *layoutContext) layoutTableContainer(
+	table *styledNode,
+	wrapper, tableBox *Box,
+	contentWidth float64,
+	tableContentHeight, containingHeight *float64,
+	specifiedContentHeight float64,
+	hasDefiniteHeight bool,
+	verticalInsets float64,
+) (float64, error) {
 	model, err := buildTableModel(table)
 	if err != nil {
-		return 0, 0, err
+		return 0, err
 	}
 	collapsed, err := context.resolveCollapsedTableBorders(table, model)
 	if err != nil {
-		return 0, 0, err
+		return 0, err
 	}
 	horizontalSpacing, verticalSpacing := tableBorderSpacing(table.style, context.viewport)
 	collapsedColumns := tableCollapsedColumns(model)
@@ -1315,7 +1323,7 @@ func (context *layoutContext) layoutTableContainer(table *styledNode, tableBox *
 	clipStructuralBackgrounds := horizontalSpacing > 0 || verticalSpacing > 0
 	if clipStructuralBackgrounds {
 		if count := tableStructuralBackgroundRectCount(model); count > maxTableBackgroundRects {
-			return 0, 0, fmt.Errorf("render: table exceeds %d structural background rectangles", maxTableBackgroundRects)
+			return 0, fmt.Errorf("render: table exceeds %d structural background rectangles", maxTableBackgroundRects)
 		}
 	}
 	spacingWidth := totalTableSpacing(model.columnCount, horizontalSpacing)
@@ -1338,7 +1346,7 @@ func (context *layoutContext) layoutTableContainer(table *styledNode, tableBox *
 		}
 	}
 	if err != nil {
-		return 0, 0, err
+		return 0, err
 	}
 	logicalColumnStarts, logicalColumnEnds, _ := tableTrackGeometry(columnWidths, horizontalSpacing, nil)
 	columnStarts, columnEnds, gridWidth := tableTrackGeometry(columnWidths, horizontalSpacing, collapsedColumns)
@@ -1346,6 +1354,10 @@ func (context *layoutContext) layoutTableContainer(table *styledNode, tableBox *
 	if tableHasCollapsedTrack(collapsedColumns) {
 		usedWidth = gridWidth
 	}
+	tableBox.ContentBounds.Width = usedWidth
+	tableBox.Bounds.Width = tableBox.Border.Left + tableBox.Padding.Left + usedWidth + tableBox.Padding.Right + tableBox.Border.Right
+	wrapper.Bounds.Width = tableBox.Bounds.Width
+	wrapper.ContentBounds = tableBox.ContentBounds
 
 	topCaptions := make([]*styledNode, 0, len(model.captions))
 	bottomCaptions := make([]*styledNode, 0, len(model.captions))
@@ -1359,26 +1371,29 @@ func (context *layoutContext) layoutTableContainer(table *styledNode, tableBox *
 	layoutCaptions := func(captions []*styledNode, startY float64) ([]*Box, float64, error) {
 		boxes := make([]*Box, 0, len(captions))
 		cursor := startY
+		pending := marginStrut{}
 		for _, caption := range captions {
-			captionBox, layoutErr := context.layoutBlockSized(caption, tableBox.ContentBounds.X, cursor, usedWidth, containingHeight, nil, true)
+			pending = pending.add(resolveLength(caption.style.MarginTop(), wrapper.Bounds.Width, context.viewport, 0))
+			cursor += pending.value()
+			captionBox, layoutErr := context.layoutBlockSized(caption, wrapper.Bounds.X, cursor, wrapper.Bounds.Width, containingHeight, nil, true)
 			if layoutErr != nil {
 				return nil, 0, layoutErr
 			}
 			boxes = append(boxes, captionBox)
 			cursor = captionBox.Bounds.Y + captionBox.Bounds.Height
+			pending = marginStrut{}.add(resolveLength(caption.style.MarginBottom(), wrapper.Bounds.Width, context.viewport, 0))
 		}
+		cursor += pending.value()
 		return boxes, cursor - startY, nil
 	}
-	topBoxes, topCaptionHeight, err := layoutCaptions(topCaptions, tableBox.ContentBounds.Y)
+	topBoxes, topCaptionHeight, err := layoutCaptions(topCaptions, wrapper.Bounds.Y)
 	if err != nil {
-		return 0, 0, err
+		return 0, err
 	}
-	bottomBoxes, bottomCaptionHeight, err := layoutCaptions(bottomCaptions, 0)
-	if err != nil {
-		return 0, 0, err
-	}
-	tableBox.Children = append(tableBox.Children, topBoxes...)
-	gridY := tableBox.ContentBounds.Y + topCaptionHeight
+	tableBox.Bounds.Y = wrapper.Bounds.Y + topCaptionHeight
+	tableBox.ContentBounds.X = tableBox.Bounds.X + tableBox.Border.Left + tableBox.Padding.Left
+	tableBox.ContentBounds.Y = tableBox.Bounds.Y + tableBox.Border.Top + tableBox.Padding.Top
+	gridY := tableBox.ContentBounds.Y
 
 	rowMeasures := make([]tableRowHeightMeasure, len(model.rows))
 	for index, row := range model.rows {
@@ -1433,7 +1448,7 @@ func (context *layoutContext) layoutTableContainer(table *styledNode, tableBox *
 	for _, placement := range model.cells {
 		layout, layoutErr := layoutCell(placement, nil)
 		if layoutErr != nil {
-			return 0, 0, layoutErr
+			return 0, layoutErr
 		}
 		for row := placement.row; row < min(len(rowMeasures), placement.row+placement.rowSpan); row++ {
 			if placement.node.style.Height().Unit() != lengthAuto {
@@ -1466,7 +1481,7 @@ func (context *layoutContext) layoutTableContainer(table *styledNode, tableBox *
 	}
 	baseHeights, err = applyTableRowSpanRequirements(baseHeights, baseSpans, verticalSpacing)
 	if err != nil {
-		return 0, 0, err
+		return 0, err
 	}
 	for index := range rowMeasures {
 		rowMeasures[index].base = baseHeights[index]
@@ -1474,8 +1489,10 @@ func (context *layoutContext) layoutTableContainer(table *styledNode, tableBox *
 	}
 	spacingHeight := totalTableSpacing(len(rowMeasures), verticalSpacing)
 	targetRowsHeight := sumFloat64(baseHeights)
-	if containingHeight != nil {
-		targetRowsHeight = math.Max(targetRowsHeight, *containingHeight-topCaptionHeight-bottomCaptionHeight-spacingHeight)
+	if tableContentHeight != nil {
+		// The table height sizes the table-root grid; captions occupy the
+		// anonymous wrapper and do not consume that specified height.
+		targetRowsHeight = math.Max(targetRowsHeight, *tableContentHeight-spacingHeight)
 	}
 	for index, row := range model.rows {
 		if specified, ok := context.tableRowSpecifiedHeight(row.node, targetRowsHeight, true); ok {
@@ -1499,7 +1516,7 @@ func (context *layoutContext) layoutTableContainer(table *styledNode, tableBox *
 	}
 	referenceHeights, err = applyTableRowSpanRequirements(referenceHeights, referenceSpans, verticalSpacing)
 	if err != nil {
-		return 0, 0, err
+		return 0, err
 	}
 	for index := range rowMeasures {
 		rowMeasures[index].reference = referenceHeights[index]
@@ -1516,7 +1533,7 @@ func (context *layoutContext) layoutTableContainer(table *styledNode, tableBox *
 		childContainingHeight := math.Max(0, logicalHeight-verticalInsets)
 		relayout, layoutErr := layoutCell(cell.placement, &childContainingHeight)
 		if layoutErr != nil {
-			return 0, 0, layoutErr
+			return 0, layoutErr
 		}
 		// Height distribution does not change the row baseline established by
 		// the first pass, even though descendants now receive their final
@@ -1591,26 +1608,45 @@ func (context *layoutContext) layoutTableContainer(table *styledNode, tableBox *
 	for _, cell := range cellLayouts {
 		tableBox.Children = append(tableBox.Children, cell.box)
 	}
-	bottomY := gridY + gridHeight
-	for _, captionBox := range bottomBoxes {
-		translateLayoutBox(captionBox, 0, bottomY-captionBox.Bounds.Y)
-		tableBox.Children = append(tableBox.Children, captionBox)
-		bottomY = captionBox.Bounds.Y + captionBox.Bounds.Height
+	rootContentHeight := gridHeight
+	if hasDefiniteHeight && !tableBox.tableRowsCollapsed {
+		rootContentHeight = specifiedContentHeight
 	}
-	if len(model.rows) != 0 || model.columnCount != 0 || len(topCaptions) != 0 || len(bottomCaptions) != 0 {
-		tableBox.hasDecorationBounds = true
-		tableBox.decorationBounds = Rect{
-			X:      tableBox.ContentBounds.X - tableBox.Padding.Left - tableBox.Border.Left,
-			Y:      gridY - tableBox.Padding.Top - tableBox.Border.Top,
-			Width:  usedWidth + tableBox.Padding.Left + tableBox.Padding.Right + tableBox.Border.Left + tableBox.Border.Right,
-			Height: gridHeight + tableBox.Padding.Top + tableBox.Padding.Bottom + tableBox.Border.Top + tableBox.Border.Bottom,
+	if !tableBox.tableRowsCollapsed {
+		rootContentHeight = context.constrainHeight(table.style, rootContentHeight, verticalInsets, containingHeight)
+	}
+	tableBox.ContentBounds.Height = rootContentHeight
+	tableBox.Bounds.Height = tableBox.Border.Top + tableBox.Padding.Top + rootContentHeight + tableBox.Padding.Bottom + tableBox.Border.Bottom
+
+	bottomBoxes, bottomCaptionHeight, err := layoutCaptions(bottomCaptions, tableBox.Bounds.Y+tableBox.Bounds.Height)
+	if err != nil {
+		return 0, err
+	}
+	wrapper.Bounds.Height = topCaptionHeight + tableBox.Bounds.Height + bottomCaptionHeight
+	wrapper.ContentBounds = tableBox.ContentBounds
+	// Paint the table-root background and internal layers before captions while
+	// retaining captions as wrapper siblings rather than table-root children.
+	wrapper.Children = append(wrapper.Children, tableBox)
+	wrapper.Children = append(wrapper.Children, topBoxes...)
+	wrapper.Children = append(wrapper.Children, bottomBoxes...)
+	wrapper.tableClientRects = append(wrapper.tableClientRects, tableBox.Bounds)
+	captionBoxes := make(map[*styledNode]*Box, len(model.captions))
+	for index, caption := range topCaptions {
+		captionBoxes[caption] = topBoxes[index]
+	}
+	for index, caption := range bottomCaptions {
+		captionBoxes[caption] = bottomBoxes[index]
+	}
+	for _, caption := range model.captions {
+		if captionBox := captionBoxes[caption]; captionBox != nil {
+			wrapper.tableClientRects = append(wrapper.tableClientRects, captionBox.Bounds)
 		}
 	}
 	if collapsed != nil && collapsed.rows != 0 && collapsed.columns != 0 {
 		tableBox.suppressBorders = true
 		tableBox.afterPaint = collapsed.paintRects(tableBox.ContentBounds.X, gridY, columnStarts, columnEnds, rowStarts, rowEnds)
 	}
-	return usedWidth, topCaptionHeight + gridHeight + bottomCaptionHeight, nil
+	return usedWidth, nil
 }
 
 func layoutTableColumnSpec(spec tableColumnSpec, x, y float64, columnStarts, columnEnds, rowStarts, rowEnds []float64, clipBackground bool) *Box {

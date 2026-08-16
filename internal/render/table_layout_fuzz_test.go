@@ -52,7 +52,10 @@ func FuzzTableLayoutSpansStayFinite(f *testing.F) {
 		if rawModes&4 != 0 {
 			captionSide = "bottom"
 		}
-		caption := dom.NewElement("caption", dom.Attribute{Name: "style", Value: "caption-side:" + captionSide})
+		caption := dom.NewElement("caption", dom.Attribute{Name: "style", Value: fmt.Sprintf(
+			"caption-side:%s;height:%dpx;margin:%dpx %dpx %dpx %dpx",
+			captionSide, rawRows%40, rawColumns%7, rawColumnSpan%7, rawRowSpan%7, rawModes%7,
+		)})
 		caption.AppendChild(dom.NewText("caption"))
 		table.AppendChild(caption)
 		columnGroupStyle := ""

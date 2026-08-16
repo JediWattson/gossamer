@@ -335,6 +335,13 @@ typedef struct gossamer_v8_host {
                           uint32_t node,
                           gossamer_v8_element_geometry *geometry_out,
                           char **error_out);
+  int (*element_client_rect_count)(uint64_t execution_id, uint64_t document,
+                                   uint32_t node, size_t *count_out,
+                                   char **error_out);
+  int (*element_client_rect)(uint64_t execution_id, uint64_t document,
+                             uint32_t node, size_t index,
+                             gossamer_v8_rect *rect_out, int *found_out,
+                             char **error_out);
   int (*viewport_geometry)(uint64_t execution_id,
                            gossamer_v8_viewport_geometry *geometry_out,
                            char **error_out);

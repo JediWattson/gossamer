@@ -245,10 +245,20 @@ func TestEmptyCollapsedTableKeepsHalfWidthTableBorder(t *testing.T) {
 	if table == nil {
 		t.Fatal("empty collapsed table box missing")
 	}
-	assertNear(t, "empty collapsed top half border", table.Border.Top, 4)
-	assertNear(t, "empty collapsed right half border", table.Border.Right, 4)
-	assertNear(t, "empty collapsed bottom half border", table.Border.Bottom, 4)
-	assertNear(t, "empty collapsed left half border", table.Border.Left, 4)
+	var tableRoot *render.Box
+	for _, child := range table.Children {
+		if child.Node == tableNode {
+			tableRoot = child
+			break
+		}
+	}
+	if tableRoot == nil {
+		t.Fatal("empty collapsed table-root box missing")
+	}
+	assertNear(t, "empty collapsed top half border", tableRoot.Border.Top, 4)
+	assertNear(t, "empty collapsed right half border", tableRoot.Border.Right, 4)
+	assertNear(t, "empty collapsed bottom half border", tableRoot.Border.Bottom, 4)
+	assertNear(t, "empty collapsed left half border", tableRoot.Border.Left, 4)
 	if commandForNodeColor(frame.DisplayList.Commands, tableNode, color.NRGBA{R: 0x12, G: 0x34, B: 0x56, A: 0xff}) == nil {
 		t.Fatal("empty collapsed table border was not painted")
 	}

@@ -304,6 +304,12 @@ extern int goGossamerV8HostClearTimeout(uint64_t execution_id, uint64_t timer,
 extern int goGossamerV8HostElementGeometry(
     uint64_t execution_id, uint64_t document, uint32_t node,
     gossamer_v8_element_geometry *geometry_out, char **error_out);
+extern int goGossamerV8HostElementClientRectCount(
+    uint64_t execution_id, uint64_t document, uint32_t node,
+    size_t *count_out, char **error_out);
+extern int goGossamerV8HostElementClientRect(
+    uint64_t execution_id, uint64_t document, uint32_t node, size_t index,
+    gossamer_v8_rect *rect_out, int *found_out, char **error_out);
 extern int goGossamerV8HostViewportGeometry(
     uint64_t execution_id, gossamer_v8_viewport_geometry *geometry_out,
     char **error_out);
@@ -404,6 +410,8 @@ static gossamer_v8_host gossamer_v8_go_host(uint64_t execution_id) {
       .form_data_json = goGossamerV8HostFormDataJSON,
       .submit_form = goGossamerV8HostSubmitForm,
       .element_geometry = goGossamerV8HostElementGeometry,
+      .element_client_rect_count = goGossamerV8HostElementClientRectCount,
+      .element_client_rect = goGossamerV8HostElementClientRect,
       .viewport_geometry = goGossamerV8HostViewportGeometry,
       .scroll_element = goGossamerV8HostScrollElement,
       .scroll_viewport = goGossamerV8HostScrollViewport,

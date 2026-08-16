@@ -2,6 +2,7 @@ package render
 
 import (
 	"fmt"
+	"math"
 
 	"github.com/JediWattson/gossamer/internal/dom"
 	computed "github.com/JediWattson/gossamer/internal/style"
@@ -14,6 +15,7 @@ import (
 // overflow in the current formatting-context slice.
 type LayoutGeometry struct {
 	Bounds        Rect
+	OffsetBounds  Rect
 	ClientBounds  Rect
 	ContentBounds Rect
 	ScrollWidth   float64
@@ -28,6 +30,15 @@ type LayoutGeometry struct {
 	gridRowLineNames      [][]string
 	gridColumnSubgrid     bool
 	gridRowSubgrid        bool
+	clientRects           []Rect
+}
+
+// ClientRects returns the border-box fragments associated with the element in
+// CSS content order. Ordinary principal boxes return one rectangle. Tables
+// return the table-root and caption rectangles while omitting their anonymous
+// wrapper, as required by CSSOM View.
+func (geometry LayoutGeometry) ClientRects() []Rect {
+	return append([]Rect(nil), geometry.clientRects...)
 }
 
 // GridColumnSizes returns the used explicit and implicit column track sizes
@@ -245,6 +256,21 @@ func boxClientBounds(box *Box) Rect {
 
 func boxGeometry(box *Box, extent layoutExtent) LayoutGeometry {
 	client := boxClientBounds(box)
+	offset := box.Bounds
+	content := box.ContentBounds
+	percentHeightResolved := box.percentHeightResolved
+	clientRects := []Rect{box.Bounds}
+	bounds := box.Bounds
+	if box.tableWrapper && box.tableRoot != nil {
+		// CSSOM's table client/offset/scroll dimensions are those of the
+		// caption-inclusive anonymous wrapper, while getClientRects excludes
+		// that wrapper and computed width/height use the table-root content box.
+		client = box.Bounds
+		content = box.tableRoot.ContentBounds
+		percentHeightResolved = box.tableRoot.percentHeightResolved
+		clientRects = append([]Rect(nil), box.tableClientRects...)
+		bounds = boundingClientRects(clientRects)
+	}
 	scrollWidth := client.Width
 	scrollHeight := client.Height
 	if overflow := extent.right - client.X; overflow > scrollWidth {
@@ -254,19 +280,50 @@ func boxGeometry(box *Box, extent layoutExtent) LayoutGeometry {
 		scrollHeight = overflow
 	}
 	return LayoutGeometry{
-		Bounds:                box.Bounds,
+		Bounds:                bounds,
+		OffsetBounds:          offset,
 		ClientBounds:          client,
-		ContentBounds:         box.ContentBounds,
+		ContentBounds:         content,
 		ScrollWidth:           scrollWidth,
 		ScrollHeight:          scrollHeight,
-		PercentHeightResolved: box.percentHeightResolved,
+		PercentHeightResolved: percentHeightResolved,
 		gridColumnSizes:       append([]float64(nil), box.gridColumnSizes...),
 		gridRowSizes:          append([]float64(nil), box.gridRowSizes...),
 		gridColumnLineNames:   cloneGridLineNames(box.gridColumnLineNames),
 		gridRowLineNames:      cloneGridLineNames(box.gridRowLineNames),
 		gridColumnSubgrid:     box.gridColumnSubgrid,
 		gridRowSubgrid:        box.gridRowSubgrid,
+		clientRects:           clientRects,
 	}
+}
+
+func boundingClientRects(rectangles []Rect) Rect {
+	if len(rectangles) == 0 {
+		return Rect{}
+	}
+	firstNonEmpty := -1
+	for index, rectangle := range rectangles {
+		if rectangle.Width != 0 && rectangle.Height != 0 {
+			firstNonEmpty = index
+			break
+		}
+	}
+	if firstNonEmpty == -1 {
+		return rectangles[0]
+	}
+	result := rectangles[firstNonEmpty]
+	left, top := result.X, result.Y
+	right, bottom := result.X+result.Width, result.Y+result.Height
+	for _, rectangle := range rectangles[firstNonEmpty+1:] {
+		if rectangle.Width == 0 || rectangle.Height == 0 {
+			continue
+		}
+		left = math.Min(left, rectangle.X)
+		top = math.Min(top, rectangle.Y)
+		right = math.Max(right, rectangle.X+rectangle.Width)
+		bottom = math.Max(bottom, rectangle.Y+rectangle.Height)
+	}
+	return Rect{X: left, Y: top, Width: right - left, Height: bottom - top}
 }
 
 func indexPointerGeometry(box *Box, index map[*dom.Node]LayoutGeometry, pseudoIndex map[pointerPseudoGeometryKey]LayoutGeometry) layoutExtent {
@@ -301,7 +358,7 @@ func indexPointerGeometry(box *Box, index map[*dom.Node]LayoutGeometry, pseudoIn
 			extent.bottom = childExtent.bottom
 		}
 	}
-	if box.Node != nil && box.Node.Type == dom.ElementNode {
+	if !box.skipGeometryIndex && box.Node != nil && box.Node.Type == dom.ElementNode {
 		if box.Pseudo == computed.PseudoElementNone {
 			index[box.Node] = boxGeometry(box, extent)
 		} else {
@@ -315,11 +372,13 @@ func indexPointerGeometry(box *Box, index map[*dom.Node]LayoutGeometry, pseudoIn
 		if _, exists := index[fragment.Image.Node]; !exists {
 			index[fragment.Image.Node] = LayoutGeometry{
 				Bounds:                fragment.Image.Bounds,
+				OffsetBounds:          fragment.Image.Bounds,
 				ClientBounds:          fragment.Image.Bounds,
 				ContentBounds:         fragment.Image.Bounds,
 				ScrollWidth:           fragment.Image.Bounds.Width,
 				ScrollHeight:          fragment.Image.Bounds.Height,
 				PercentHeightResolved: fragment.Image.percentHeightResolved,
+				clientRects:           []Rect{fragment.Image.Bounds},
 			}
 		}
 	}
@@ -358,7 +417,7 @@ func indexStableGeometry(box *Box, access *dom.ReadAccess, index map[dom.NodeID]
 			extent.bottom = childExtent.bottom
 		}
 	}
-	if box.Node != nil && box.Node.Type == dom.ElementNode {
+	if !box.skipGeometryIndex && box.Node != nil && box.Node.Type == dom.ElementNode {
 		if id, ok := access.ID(box.Node); ok {
 			if box.Pseudo == computed.PseudoElementNone {
 				index[id] = boxGeometry(box, extent)
@@ -375,11 +434,13 @@ func indexStableGeometry(box *Box, access *dom.ReadAccess, index map[dom.NodeID]
 			if _, exists := index[id]; !exists {
 				index[id] = LayoutGeometry{
 					Bounds:                fragment.Image.Bounds,
+					OffsetBounds:          fragment.Image.Bounds,
 					ClientBounds:          fragment.Image.Bounds,
 					ContentBounds:         fragment.Image.Bounds,
 					ScrollWidth:           fragment.Image.Bounds.Width,
 					ScrollHeight:          fragment.Image.Bounds.Height,
 					PercentHeightResolved: fragment.Image.percentHeightResolved,
+					clientRects:           []Rect{fragment.Image.Bounds},
 				}
 			}
 		}

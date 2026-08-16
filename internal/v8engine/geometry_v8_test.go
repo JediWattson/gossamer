@@ -159,6 +159,27 @@ func TestStockV8CSSOMViewRootScrollAndReactMeasurement(t *testing.T) {
 			throw new Error("element scroll delivery was not coalesced");
 		}
 	`)
+	queueScript("table-wrapper", `
+		(() => {
+			const table = document.createElement("table");
+			table.setAttribute("style", "border-spacing:0;width:20px;height:30px");
+			const caption = document.createElement("caption");
+			caption.setAttribute("style", "width:10px;height:20px;padding:0");
+			table.appendChild(caption);
+			document.body.appendChild(table);
+			const rect = table.getBoundingClientRect();
+			const rects = table.getClientRects();
+			if (rects.length !== 2 || !(rects[0] instanceof DOMRect) ||
+				rects[0].width !== 20 || rects[0].height !== 30 ||
+				rects[1].width !== 10 || rects[1].height !== 20 ||
+				rects[0].y !== rects[1].bottom || rect.width !== 20 || rect.height !== 50 ||
+				table.offsetWidth !== 20 || table.offsetHeight !== 50 ||
+				table.clientWidth !== 20 || table.clientHeight !== 50) {
+				throw new Error("table wrapper CSSOM geometry failed");
+			}
+			table.remove();
+		})();
+	`)
 	if err := realm.CollectGarbage(page); err != nil {
 		t.Fatalf("CollectGarbage with retained DOMRect: %v", err)
 	}

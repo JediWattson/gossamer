@@ -102,6 +102,21 @@ type Box struct {
 	// this bit to decide whether layout may replace the computed percentage
 	// with a used pixel height.
 	percentHeightResolved bool
+	// A table-root element generates an anonymous principal wrapper around a
+	// distinct table-root box and its caption boxes. The wrapper owns outer
+	// flow, positioning, opacity, and CSSOM offset/client/scroll geometry; the
+	// root owns the element's border, padding, background, and computed used
+	// width/height. tableClientRects excludes the anonymous wrapper as required
+	// by CSSOM View.
+	tableRoot        *Box
+	tableClientRects []Rect
+	tableWrapper     bool
+	// The table-root and wrapper intentionally share the originating DOM node.
+	// Only the wrapper is the principal layout/geometry box, while the root
+	// remains the painted and hit-testable table border box.
+	skipLayoutIndex   bool
+	skipGeometryIndex bool
+	hitTransparent    bool
 	// Table formatting can paint a grid independently of the wrapper occupied
 	// by captions, clip structural backgrounds to cell tracks, suppress empty
 	// cell decorations, and draw harmonized collapsed borders after its cells.

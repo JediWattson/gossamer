@@ -370,6 +370,14 @@ backgrounds through the gaps. Definite-width fixed layout consumes columns,
 then first-row cells, then distributes the remaining width. Captions can sit
 above or below the grid, empty separated cells suppress their decorations,
 and top/middle/bottom/baseline cell content aligns inside stretched rows.
+Each table-root now sits in a distinct anonymous principal wrapper: outer flow,
+positioning, opacity, and caption-inclusive offset/client/scroll dimensions
+belong to the wrapper, while border, padding, background, computed width/height,
+and grid layout remain on the root. Caption margin boxes participate in wrapper
+sizing without entering the table-root border box. Stable CSSOM geometry retains
+the table-root and caption border boxes separately for `getClientRects()`, unions
+only those boxes for `getBoundingClientRect()`, and keeps wrapper-only margin
+space transparent to hit testing.
 Collapsed tables ignore spacing and table padding, harmonize the supported
 none/hidden/solid borders across table, column/group, row/group, and cell
 edges, use half-width layout insets, and paint one bounded winning segment
@@ -462,8 +470,8 @@ parent track model through explicit nesting and work budgets. A Subgrid without
 a compatible parent formatting context computes to the retained keyword but
 uses `none`, as exposed by live resolved CSSOM geometry.
 
-- Complete the remaining advanced table intrinsic edge cases, table-wrapper
-  separation, direction/writing-mode placement, and collapsed-border junctions
+- Complete the remaining advanced table intrinsic edge cases,
+  direction/writing-mode placement, and collapsed-border junctions
   once the wider border-style set exists.
 - Extend Grid Subgrid through orthogonal writing modes and the remaining
   advanced intrinsic/overflow interactions.

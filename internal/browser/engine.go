@@ -386,6 +386,7 @@ type DOMRect struct {
 // pixels owned by the Page.
 type DOMElementGeometry struct {
 	Rect         DOMRect
+	ClientRects  []DOMRect
 	ClientWidth  float64
 	ClientHeight float64
 	OffsetWidth  float64

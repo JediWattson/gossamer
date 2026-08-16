@@ -64,7 +64,7 @@ func TestTableLayoutBuildsColumnsRowsSpansAndPaintLayers(t *testing.T) {
 	tableBox := boxes["table"]
 	assertNear(t, "table content width", tableBox.ContentBounds.Width, 140)
 	assertNear(t, "table border width", tableBox.Bounds.Width, 144)
-	assertNear(t, "caption width", boxes["caption"].Bounds.Width, 140)
+	assertNear(t, "caption width", boxes["caption"].Bounds.Width, 144)
 	assertNear(t, "first column width", boxes["first column"].Bounds.Width, 60)
 	assertNear(t, "second column width", boxes["second column"].Bounds.Width, 80)
 	assertNear(t, "column group width", boxes["columns"].Bounds.Width, 140)

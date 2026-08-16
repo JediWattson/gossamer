@@ -83,7 +83,7 @@ func hitTestVisualBox(box *Box, x, y float64, transforms map[*dom.Node]VisualTra
 			return node
 		}
 	}
-	if containsPoint(translatedRect(box.Bounds, boxTransform), x, y) {
+	if !box.hitTransparent && containsPoint(translatedRect(box.Bounds, boxTransform), x, y) {
 		return box.Node
 	}
 	return nil
@@ -158,7 +158,7 @@ func hitTestBox(box *Box, x, y float64) *dom.Node {
 			return node
 		}
 	}
-	if containsPoint(box.Bounds, x, y) {
+	if !box.hitTransparent && containsPoint(box.Bounds, x, y) {
 		return box.Node
 	}
 	return nil

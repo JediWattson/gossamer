@@ -491,11 +491,28 @@ func (context *layoutContext) layoutBlockSizedWithSubgrid(node *styledNode, cont
 		Width: width,
 	}
 	if style.Display().Inside() == computed.DisplayInsideTable {
-		contentWidth, contentHeight, err := context.layoutTableContainer(node, box, width, childContainingHeight)
+		tableRoot := box
+		tableRoot.skipLayoutIndex = true
+		tableRoot.skipGeometryIndex = true
+		// Opacity and the outer positioning properties apply once to the
+		// anonymous wrapper, not independently to the table-root box.
+		tableRoot.hasOpacity = true
+		tableRoot.paintOpacity = 1
+		wrapper := &Box{
+			Node: node.node, Pseudo: node.pseudo,
+			Bounds: Rect{X: tableRoot.Bounds.X, Y: tableRoot.Bounds.Y, Width: tableRoot.Bounds.Width},
+			style:  node.style, hasStyle: node.node != nil,
+			tableRoot: tableRoot, tableWrapper: true, hitTransparent: true,
+			suppressDecorations: true, suppressBorders: true,
+		}
+		_, err := context.layoutTableContainer(
+			node, wrapper, tableRoot, width, childContainingHeight, containingHeight,
+			specifiedContentHeight, hasDefiniteHeight, verticalInsets,
+		)
 		if err != nil {
 			return nil, err
 		}
-		if contentWidth != box.ContentBounds.Width {
+		if wrapper.Bounds.Width != outerWidth {
 			baseLeft, baseRight := left, right
 			if leftAuto {
 				baseLeft = 0
@@ -503,9 +520,7 @@ func (context *layoutContext) layoutBlockSizedWithSubgrid(node *styledNode, cont
 			if rightAuto {
 				baseRight = 0
 			}
-			box.ContentBounds.Width = contentWidth
-			box.Bounds.Width = border.Left + padding.Left + contentWidth + padding.Right + border.Right
-			remaining := availableWidth - box.Bounds.Width - baseLeft - baseRight
+			remaining := availableWidth - wrapper.Bounds.Width - baseLeft - baseRight
 			newLeft := baseLeft
 			switch {
 			case leftAuto && rightAuto:
@@ -513,19 +528,9 @@ func (context *layoutContext) layoutBlockSizedWithSubgrid(node *styledNode, cont
 			case leftAuto:
 				newLeft = math.Max(0, remaining)
 			}
-			translateLayoutBox(box, containingX+newLeft-box.Bounds.X, 0)
+			translateLayoutBox(wrapper, containingX+newLeft-wrapper.Bounds.X, 0)
 		}
-		if hasDefiniteHeight {
-			if !box.tableRowsCollapsed {
-				contentHeight = specifiedContentHeight
-			}
-		}
-		if !box.tableRowsCollapsed {
-			contentHeight = context.constrainHeight(style, contentHeight, verticalInsets, containingHeight)
-		}
-		box.ContentBounds.Height = contentHeight
-		box.Bounds.Height = border.Top + padding.Top + contentHeight + padding.Bottom + border.Bottom
-		return context.finalizeBlock(node, box, availableWidth)
+		return context.finalizeBlock(node, wrapper, availableWidth)
 	}
 	if style.Display().Inside() == computed.DisplayInsideFlex {
 		contentHeight, err := context.layoutFlexContainer(node, box, width, childContainingHeight)
@@ -1139,6 +1144,10 @@ func translateLayoutBox(box *Box, deltaX, deltaY float64) {
 		box.afterPaint[index].Rect.X += deltaX
 		box.afterPaint[index].Rect.Y += deltaY
 	}
+	for index := range box.tableClientRects {
+		box.tableClientRects[index].X += deltaX
+		box.tableClientRects[index].Y += deltaY
+	}
 	for index := range box.Fragments {
 		translateInlineFragment(&box.Fragments[index], deltaX, deltaY)
 	}
@@ -1179,7 +1188,7 @@ func indexLayoutBoxes(box *Box, boxes map[layoutNodeKey]*Box) {
 	if box == nil {
 		return
 	}
-	if box.Node != nil {
+	if box.Node != nil && !box.skipLayoutIndex {
 		boxes[layoutNodeKey{node: box.Node, pseudo: box.Pseudo}] = box
 	}
 	for _, child := range box.Children {
@@ -1314,6 +1323,9 @@ func (context *layoutContext) addListMarker(node *styledNode, box *Box) error {
 func firstBoxBaseline(box *Box) (float64, bool) {
 	if box == nil {
 		return 0, false
+	}
+	if box.tableWrapper && box.tableRoot != nil {
+		return firstBoxBaseline(box.tableRoot)
 	}
 	for _, item := range box.flow {
 		if item.box != nil {
@@ -1996,6 +2008,9 @@ func translateInlineLayout(layout *inlineLayout, deltaX, deltaY float64) {
 func lastBoxBaseline(box *Box) (float64, bool) {
 	if box == nil {
 		return 0, false
+	}
+	if box.tableWrapper && box.tableRoot != nil {
+		return lastBoxBaseline(box.tableRoot)
 	}
 	for index := len(box.flow) - 1; index >= 0; index-- {
 		item := box.flow[index]

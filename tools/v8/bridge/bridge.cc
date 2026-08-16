@@ -9096,6 +9096,44 @@ bool ReadElementGeometry(gossamer_v8_realm *realm, const WrapperKey &key,
   return true;
 }
 
+bool ReadElementClientRectCount(gossamer_v8_realm *realm,
+                                const WrapperKey &key, size_t *count,
+                                std::string *error) {
+  if (!RequireHost(realm, error))
+    return false;
+  char *host_error = nullptr;
+  if (realm->active_host->element_client_rect_count(
+          realm->active_host->execution_id, key.document, key.node, count,
+          &host_error) == 0) {
+    *error = TakeCString(host_error);
+    if (error->empty())
+      *error = "reading element client rect count failed";
+    return false;
+  }
+  std::free(host_error);
+  return true;
+}
+
+bool ReadElementClientRect(gossamer_v8_realm *realm, const WrapperKey &key,
+                           size_t index, gossamer_v8_rect *rect, bool *found,
+                           std::string *error) {
+  if (!RequireHost(realm, error))
+    return false;
+  int host_found = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->element_client_rect(
+          realm->active_host->execution_id, key.document, key.node, index,
+          rect, &host_found, &host_error) == 0) {
+    *error = TakeCString(host_error);
+    if (error->empty())
+      *error = "reading element client rect failed";
+    return false;
+  }
+  std::free(host_error);
+  *found = host_found != 0;
+  return true;
+}
+
 bool ReadViewportGeometry(gossamer_v8_realm *realm,
                           gossamer_v8_viewport_geometry *geometry,
                           std::string *error) {
@@ -9622,18 +9660,36 @@ void ElementGetClientRects(const v8::FunctionCallbackInfo<v8::Value> &info) {
   WrapperKey key;
   if (!ReadReceiverKey(isolate, info.This(), &key))
     return;
-  gossamer_v8_element_geometry geometry{};
+  size_t count = 0;
   std::string error;
-  if (!ReadElementGeometry(realm, key, &geometry, &error)) {
+  if (!ReadElementClientRectCount(realm, key, &count, &error)) {
     ThrowError(isolate, error);
     return;
   }
-  v8::Local<v8::Array> rects = v8::Array::New(isolate);
-  if (geometry.rect.width > 0 && geometry.rect.height > 0) {
+  if (count > static_cast<size_t>(std::numeric_limits<int>::max())) {
+    ThrowError(isolate, "element client rect list is too large");
+    return;
+  }
+  v8::Local<v8::Array> rects =
+      v8::Array::New(isolate, static_cast<int>(count));
+  for (size_t index = 0; index < count; ++index) {
+    gossamer_v8_rect geometry{};
+    bool found = false;
+    if (!ReadElementClientRect(realm, key, index, &geometry, &found, &error)) {
+      ThrowError(isolate, error);
+      return;
+    }
+    if (!found) {
+      ThrowError(isolate, "element client rect list changed during read");
+      return;
+    }
     v8::Local<v8::Object> rect;
-    if (!CreateDOMRect(realm, isolate->GetCurrentContext(), geometry.rect)
+    if (!CreateDOMRect(realm, isolate->GetCurrentContext(), geometry)
              .ToLocal(&rect) ||
-        !rects->Set(isolate->GetCurrentContext(), 0, rect).FromMaybe(false)) {
+        !rects
+             ->Set(isolate->GetCurrentContext(), static_cast<uint32_t>(index),
+                   rect)
+             .FromMaybe(false)) {
       ThrowError(isolate, "V8 failed to allocate client rect list");
       return;
     }

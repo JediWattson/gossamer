@@ -2173,6 +2173,68 @@ func goGossamerV8HostElementGeometry(
 	}, executionID)
 }
 
+//export goGossamerV8HostElementClientRectCount
+func goGossamerV8HostElementClientRectCount(
+	executionID C.uint64_t,
+	document C.uint64_t,
+	node C.uint32_t,
+	countOut *C.size_t,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domGeometryHost(host)
+		if err != nil {
+			return err
+		}
+		geometry, err := domHost.ElementGeometry(browserNodeHandle(document, node))
+		if err != nil {
+			return err
+		}
+		if countOut != nil {
+			*countOut = C.size_t(len(geometry.ClientRects))
+		}
+		return nil
+	}, executionID)
+}
+
+//export goGossamerV8HostElementClientRect
+func goGossamerV8HostElementClientRect(
+	executionID C.uint64_t,
+	document C.uint64_t,
+	node C.uint32_t,
+	index C.size_t,
+	rectOut *C.gossamer_v8_rect,
+	foundOut *C.int,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domGeometryHost(host)
+		if err != nil {
+			return err
+		}
+		geometry, err := domHost.ElementGeometry(browserNodeHandle(document, node))
+		if err != nil {
+			return err
+		}
+		found := uint64(index) < uint64(len(geometry.ClientRects))
+		if foundOut != nil {
+			if found {
+				*foundOut = 1
+			} else {
+				*foundOut = 0
+			}
+		}
+		if found && rectOut != nil {
+			rectangle := geometry.ClientRects[int(index)]
+			rectOut.x = C.double(rectangle.X)
+			rectOut.y = C.double(rectangle.Y)
+			rectOut.width = C.double(rectangle.Width)
+			rectOut.height = C.double(rectangle.Height)
+		}
+		return nil
+	}, executionID)
+}
+
 //export goGossamerV8HostViewportGeometry
 func goGossamerV8HostViewportGeometry(
 	executionID C.uint64_t,
