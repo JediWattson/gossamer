@@ -698,9 +698,14 @@ func applyCascade(style *computedStyle, explanations map[string]PropertyExplanat
 					if !matches {
 						continue
 					}
+					var declarationSource css.DeclarationSource
+					if declarationIndex < len(rule.DeclarationSources) {
+						declarationSource = rule.DeclarationSources[declarationIndex]
+					}
 					record(winningDeclaration{
 						declaration: declaration, origin: origin, kind: source.kind, owner: source.owner,
-						specificity: specificity, layer: rule.Layer, stylesheetOrder: source.order,
+						declarationSource: declarationSource,
+						specificity:       specificity, layer: rule.Layer, stylesheetOrder: source.order,
 						ruleOrder: ruleIndex, declarationOrder: declarationIndex, order: order,
 					})
 				}
@@ -731,10 +736,10 @@ func applyCascade(style *computedStyle, explanations map[string]PropertyExplanat
 	recordSheets(CascadeOriginAuthor, context.author)
 
 	if source, ok := attribute(node, "style"); ok {
-		declarations, _ := css.ParseRawDeclarationList(source)
-		for declarationIndex, declaration := range declarations {
+		declarations, _ := css.ParseRawDeclarationListWithSources(source)
+		for declarationIndex, sourced := range declarations {
 			recordInSourceOrder(winningDeclaration{
-				declaration: declaration, origin: CascadeOriginAuthor, kind: SourceInlineStyle,
+				declaration: sourced.Declaration, declarationSource: sourced.Source, origin: CascadeOriginAuthor, kind: SourceInlineStyle,
 				owner: node, inline: true, stylesheetOrder: -1, ruleOrder: -1,
 				declarationOrder: declarationIndex,
 			})

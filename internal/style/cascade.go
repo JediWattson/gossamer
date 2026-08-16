@@ -32,22 +32,23 @@ type cascadeStyleContext struct {
 // one custom property). The name is retained because the list is sorted in
 // winning order, although rollback can deliberately select a later entry.
 type winningDeclaration struct {
-	declaration      css.Declaration
-	target           string
-	origin           CascadeOrigin
-	kind             SourceKind
-	owner            *dom.Node
-	attribute        string
-	specificity      css.Specificity
-	order            int
-	layer            string
-	layerRank        int
-	layered          bool
-	inline           bool
-	stylesheetOrder  int
-	ruleOrder        int
-	declarationOrder int
-	authoredValue    string
+	declaration       css.Declaration
+	declarationSource css.DeclarationSource
+	target            string
+	origin            CascadeOrigin
+	kind              SourceKind
+	owner             *dom.Node
+	attribute         string
+	specificity       css.Specificity
+	order             int
+	layer             string
+	layerRank         int
+	layered           bool
+	inline            bool
+	stylesheetOrder   int
+	ruleOrder         int
+	declarationOrder  int
+	authoredValue     string
 }
 
 func (candidate winningDeclaration) source() PropertySource {
@@ -60,6 +61,9 @@ func (candidate winningDeclaration) source() PropertySource {
 		Kind:                candidate.kind,
 		DeclarationProperty: candidate.declaration.Property,
 		DeclarationValue:    value,
+		DeclarationSpan:     candidate.declarationSource.Span,
+		NameSpan:            candidate.declarationSource.NameSpan,
+		ValueSpan:           candidate.declarationSource.ValueSpan,
 		Attribute:           candidate.attribute,
 		Important:           candidate.declaration.Important,
 		Layer:               candidate.layer,

@@ -125,14 +125,18 @@ func (resolution ResolutionKind) String() string {
 // OwnerID is the stable ID of an element-attached source such as an inline
 // declaration, a presentational hint, or an element-owned stylesheet. It is
 // InvalidNodeID when stable identity was unavailable or the source is not
-// attached to an element. Source spans deliberately remain outside this type
-// until the shared CSS Syntax layer can provide them consistently.
+// attached to an element. DeclarationSpan, NameSpan, and ValueSpan use byte
+// offsets in the source stylesheet or inline style attribute. Zero spans mean
+// the source was synthesized or supplied through the older value-only API.
 type PropertySource struct {
 	Origin              CascadeOrigin
 	Kind                SourceKind
 	OwnerID             dom.NodeID
 	DeclarationProperty string
 	DeclarationValue    string
+	DeclarationSpan     css.Span
+	NameSpan            css.Span
+	ValueSpan           css.Span
 	Attribute           string
 	Important           bool
 	Layer               string
@@ -154,6 +158,9 @@ func (source PropertySource) String() string {
 		" owner=" + strconv.FormatUint(uint64(source.OwnerID), 10) +
 		" declaration=" + strconv.Quote(source.DeclarationProperty) +
 		" authored-value=" + strconv.Quote(source.DeclarationValue) +
+		" declaration-span=" + formatSpan(source.DeclarationSpan) +
+		" name-span=" + formatSpan(source.NameSpan) +
+		" value-span=" + formatSpan(source.ValueSpan) +
 		" attribute=" + strconv.Quote(source.Attribute) +
 		" important=" + strconv.FormatBool(source.Important) +
 		" layer=" + strconv.Quote(source.Layer) +
@@ -163,6 +170,10 @@ func (source PropertySource) String() string {
 		" rule=" + strconv.Itoa(source.RuleOrder) +
 		" declaration-index=" + strconv.Itoa(source.DeclarationOrder) +
 		" source-order=" + strconv.Itoa(source.SourceOrder)
+}
+
+func formatSpan(span css.Span) string {
+	return strconv.Itoa(span.Start) + ":" + strconv.Itoa(span.End)
 }
 
 // PropertyExplanation records why one computed value won. Controller is the

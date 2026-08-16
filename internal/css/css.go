@@ -1,9 +1,9 @@
 // Package css parses and matches the CSS subset used by Gossamer's rendering
 // pipeline. It supports complex selectors, attribute selectors, logical and
 // structural pseudo-classes, named top-level cascade layers, viewport media
-// queries, and the declarations consumed by the renderer. Namespaces,
-// pseudo-elements, escaped identifiers, and the remaining at-rules are outside
-// the current subset.
+// queries, and tokenized declarations consumed by the renderer. Selector
+// namespaces, pseudo-elements, selector escapes, and the remaining at-rules
+// are outside the current subset.
 package css
 
 import (
@@ -29,11 +29,32 @@ type Stylesheet struct {
 // empty for unlayered rules. Media contains the outer-to-inner @media query
 // lists that must all match for the rule to apply.
 type Rule struct {
-	Selectors    []Selector
-	Declarations []Declaration
-	Order        int
-	Layer        string
-	Media        []string
+	Selectors          []Selector
+	Declarations       []Declaration
+	DeclarationSources []DeclarationSource
+	Order              int
+	Layer              string
+	Media              []string
+}
+
+// DeclarationSource identifies the original source ranges for one parsed
+// declaration. Span covers the declaration without its terminating semicolon,
+// NameSpan covers the authored property token, and ValueSpan covers the value
+// before an optional !important annotation. Stylesheet rule spans are absolute
+// within the stylesheet source; declaration-list spans are relative to the
+// declaration-list source.
+type DeclarationSource struct {
+	Span      Span
+	NameSpan  Span
+	ValueSpan Span
+}
+
+// SourcedDeclaration pairs the existing cascade value with its source ranges.
+// Keeping source metadata parallel avoids making Declaration identity depend
+// on diagnostics and preserves its small value semantics for CSSOM callers.
+type SourcedDeclaration struct {
+	Declaration Declaration
+	Source      DeclarationSource
 }
 
 // Selector is a parsed complex selector. Its representation is deliberately

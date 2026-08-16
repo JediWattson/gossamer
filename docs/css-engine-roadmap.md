@@ -51,13 +51,19 @@ reviving a losing declaration.
 
 ### 2. CSS Syntax foundation
 
-- Introduce CSS Syntax token and component-value types for identifiers,
-  strings, numbers, dimensions, percentages, URLs, functions, blocks, and
-  delimiters.
-- Preserve source spans for diagnostics and CSSOM serialization.
-- Migrate declarations, selectors, media queries, and value parsers away from
-  independent byte scanners one grammar at a time.
-- Add escaped identifiers and code-point preprocessing.
+Current foundation: `internal/css` now exposes bounded CSS Syntax tokens and
+recursively grouped component values with code-point preprocessing, decoded
+escapes, and original byte spans. Raw and CSSOM declaration parsing share that
+layer, including token-correct `!important` handling and recovery, while
+stylesheet and inline declaration spans flow into computed-style provenance.
+Selector, media-query, and individual property-value parsers still use their
+existing scanners and should migrate independently without changing behavior.
+
+- Migrate selectors, media queries, and property-value grammars onto the shared
+  representation, adding grammar-specific escaped identifiers as each moves.
+- Preserve declaration spans through future stylesheet identity and caching
+  work so diagnostics never rely on transient DOM or source pointers.
+- Expand recovery fixtures and fuzz corpora as each grammar migrates.
 
 Acceptance: parser recovery and serialization are covered by conformance
 fixtures and fuzzing, and existing selectors retain their behavior through the
@@ -81,9 +87,9 @@ provenance and can produce deterministic per-property explanation dumps.
 - Extend CSS-wide handling and the central property registry with every new
   longhand while preserving `all` exclusions such as `direction`,
   `unicode-bidi`, and custom properties.
-- Add tokenizer-backed source spans to retained provenance, then cache parsed
-  embedded and inline declaration blocks without changing observable cascade
-  order.
+- Cache parsed embedded and inline declaration blocks without changing
+  observable cascade order; retain source identities so existing spans remain
+  meaningful after caching.
 
 Acceptance: a deterministic computed-style dump explains the winning source
 for every supported property independently of layout.

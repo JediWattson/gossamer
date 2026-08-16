@@ -81,11 +81,12 @@ func TestProvenanceChainedCustomRollbackPointerAndStable(t *testing.T) {
 	html := dom.NewElement("html")
 	head := dom.NewElement("head")
 	styleOwner := dom.NewElement("style")
-	styleOwner.AppendChild(dom.NewText(`
+	authorSource := `
 		@layer base, theme;
 		@layer base { #target { --tone: revert; } }
 		@layer theme { #target { --tone: revert-layer; } }
-	`))
+	`
+	styleOwner.AppendChild(dom.NewText(authorSource))
 	head.AppendChild(styleOwner)
 	body := dom.NewElement("body")
 	target := dom.NewElement("div", dom.Attribute{Name: "id", Value: "target"})
@@ -93,7 +94,8 @@ func TestProvenanceChainedCustomRollbackPointerAndStable(t *testing.T) {
 	html.AppendChild(head)
 	html.AppendChild(body)
 	root.AppendChild(html)
-	user, err := css.Parse(`#target { --tone: from-user; }`)
+	userSource := `#target { --tone: from-user; }`
+	user, err := css.Parse(userSource)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,6 +117,12 @@ func TestProvenanceChainedCustomRollbackPointerAndStable(t *testing.T) {
 	assertCustomRollbackExplanation(t, stableExplanation)
 	assertStableOwner(t, "custom rollback controller", stableExplanation.Controller, styleOwnerID)
 	assertStableOwner(t, "custom rollback step", stableExplanation.Rollback[0], styleOwnerID)
+	assertPropertySourceSpans(t, "custom rollback controller", authorSource, stableExplanation.Controller,
+		`--tone: revert-layer`, `--tone`, `revert-layer`)
+	assertPropertySourceSpans(t, "custom rollback step", authorSource, stableExplanation.Rollback[0],
+		`--tone: revert`, `--tone`, `revert`)
+	assertPropertySourceSpans(t, "custom rollback value", userSource, stableExplanation.ValueSource,
+		`--tone: from-user`, `--tone`, `from-user`)
 	if stableExplanation.ValueSource.OwnerID != dom.InvalidNodeID || stableExplanation.ValueSource.owner != nil {
 		t.Errorf("user stylesheet value source owner = %d/%p, want no element owner", stableExplanation.ValueSource.OwnerID, stableExplanation.ValueSource.owner)
 	}
@@ -284,6 +292,61 @@ func TestProvenanceNaturalAndExplicitInheritanceUseUltimateParentSource(t *testi
 	}
 	assertStableOwner(t, "explicit inherited controller", stableExplicit.Controller, explicitID)
 	assertStableOwner(t, "explicit inherited value source", stableExplicit.ValueSource, parentID)
+}
+
+func TestProvenanceRetainsStylesheetAndInlineDeclarationSpans(t *testing.T) {
+	t.Parallel()
+
+	stylesheetSource := `/* lead */ #target { background-color: #010203; }`
+	inlineSource := ` width: 20px !important; `
+	root := dom.NewDocument()
+	html := dom.NewElement("html")
+	head := dom.NewElement("head")
+	styleOwner := dom.NewElement("style")
+	styleOwner.AppendChild(dom.NewText(stylesheetSource))
+	head.AppendChild(styleOwner)
+	body := dom.NewElement("body")
+	target := dom.NewElement("div",
+		dom.Attribute{Name: "id", Value: "target"},
+		dom.Attribute{Name: "style", Value: inlineSource},
+	)
+	body.AppendChild(target)
+	html.AppendChild(head)
+	html.AppendChild(body)
+	root.AppendChild(html)
+
+	pointer, stable, document := computeProvenanceSnapshots(t, root, Input{
+		Environment: Environment{Width: 320, Height: 200, MediaType: "screen", InitialFontSize: 16},
+	})
+	targetID := provenanceNodeID(t, document, target)
+
+	for name, explanation := range map[string]PropertyExplanation{
+		"pointer stylesheet": requirePointerExplanation(t, pointer, target, "background-color"),
+		"stable stylesheet":  requireStableExplanation(t, stable, targetID, "background-color"),
+	} {
+		assertPropertySourceSpans(t, name, stylesheetSource, explanation.Controller,
+			`background-color: #010203`, `background-color`, `#010203`)
+		assertPropertySourceSpans(t, name+" value source", stylesheetSource, explanation.ValueSource,
+			`background-color: #010203`, `background-color`, `#010203`)
+	}
+	for name, explanation := range map[string]PropertyExplanation{
+		"pointer inline": requirePointerExplanation(t, pointer, target, "width"),
+		"stable inline":  requireStableExplanation(t, stable, targetID, "width"),
+	} {
+		assertPropertySourceSpans(t, name, inlineSource, explanation.Controller,
+			`width: 20px !important`, `width`, `20px`)
+		assertPropertySourceSpans(t, name+" value source", inlineSource, explanation.ValueSource,
+			`width: 20px !important`, `width`, `20px`)
+	}
+}
+
+func assertPropertySourceSpans(t *testing.T, name, source string, got PropertySource, declaration, property, value string) {
+	t.Helper()
+	if got.DeclarationSpan.Slice(source) != declaration || got.NameSpan.Slice(source) != property || got.ValueSpan.Slice(source) != value {
+		t.Errorf("%s spans = declaration:%q name:%q value:%q, want %q/%q/%q", name,
+			got.DeclarationSpan.Slice(source), got.NameSpan.Slice(source), got.ValueSpan.Slice(source),
+			declaration, property, value)
+	}
 }
 
 func computeProvenanceSnapshots(t *testing.T, root *dom.Node, input Input) (*Snapshot, *Snapshot, *dom.Document) {

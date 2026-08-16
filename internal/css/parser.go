@@ -20,7 +20,7 @@ const maxGroupRuleNesting = 128
 // or string makes it unsafe to locate the next rule boundary.
 func Parse(source string) (Stylesheet, error) {
 	cleaned, commentErr := stripComments(source)
-	parser := stylesheetParser{source: cleaned}
+	parser := stylesheetParser{source: cleaned, original: source}
 	stylesheet, parseErr := parser.parse()
 	if parseErr != nil {
 		return stylesheet, parseErr
@@ -35,16 +35,24 @@ func Parse(source string) (Stylesheet, error) {
 // Safely parsed declarations are returned alongside an error when an
 // unterminated comment or string prevents further recovery.
 func ParseRawDeclarationList(source string) ([]Declaration, error) {
-	cleaned, commentErr := stripComments(source)
-	declarations, stringErr := parseCleanDeclarationList(cleaned)
-	if stringErr != nil {
-		return declarations, stringErr
+	sourced, err := ParseRawDeclarationListWithSources(source)
+	declarations := make([]Declaration, len(sourced))
+	for index := range sourced {
+		declarations[index] = sourced[index].Declaration
 	}
-	return declarations, commentErr
+	return declarations, err
+}
+
+// ParseRawDeclarationListWithSources is ParseRawDeclarationList with original
+// byte ranges for diagnostics and cascade provenance.
+func ParseRawDeclarationListWithSources(source string) ([]SourcedDeclaration, error) {
+	return parseSourcedDeclarationList(source, 0)
 }
 
 type stylesheetParser struct {
 	source     string
+	original   string
+	baseOffset int
 	pos        int
 	stylesheet *Stylesheet
 	context    ruleContext
@@ -89,6 +97,7 @@ func (parser *stylesheetParser) parseRuleList() error {
 			continue
 		}
 
+		blockStart := parser.pos
 		block, err := parser.readBlock()
 		if err != nil {
 			return err
@@ -97,14 +106,17 @@ func (parser *stylesheetParser) parseRuleList() error {
 		if !valid {
 			continue
 		}
-		declarations := parseDeclarations(block)
+		originalBlock := parser.original[blockStart : blockStart+len(block)]
+		sourced, _ := parseSourcedDeclarationList(originalBlock, parser.baseOffset+blockStart)
+		declarations, sources := splitSourcedDeclarations(sourced)
 
 		parser.stylesheet.Rules = append(parser.stylesheet.Rules, Rule{
-			Selectors:    selectors,
-			Declarations: declarations,
-			Order:        len(parser.stylesheet.Rules),
-			Layer:        parser.context.layer,
-			Media:        append([]string(nil), parser.context.media...),
+			Selectors:          selectors,
+			Declarations:       declarations,
+			DeclarationSources: sources,
+			Order:              len(parser.stylesheet.Rules),
+			Layer:              parser.context.layer,
+			Media:              append([]string(nil), parser.context.media...),
 		})
 	}
 
@@ -136,6 +148,7 @@ func (parser *stylesheetParser) parseAtRule() error {
 		}
 		return nil
 	case '{':
+		blockStart := parser.pos
 		block, err := parser.readBlock()
 		if err != nil {
 			return err
@@ -152,14 +165,14 @@ func (parser *stylesheetParser) parseAtRule() error {
 				return nil
 			}
 			parser.recordLayer(layers[0])
-			return parser.parseNestedRuleList(block, ruleContext{
+			return parser.parseNestedRuleList(block, parser.original[blockStart:blockStart+len(block)], parser.baseOffset+blockStart, ruleContext{
 				layer: layers[0],
 				media: append([]string(nil), parser.context.media...),
 			})
 		case "media":
 			media := append([]string(nil), parser.context.media...)
 			media = append(media, prelude)
-			return parser.parseNestedRuleList(block, ruleContext{
+			return parser.parseNestedRuleList(block, parser.original[blockStart:blockStart+len(block)], parser.baseOffset+blockStart, ruleContext{
 				layer: parser.context.layer,
 				media: media,
 			})
@@ -171,12 +184,14 @@ func (parser *stylesheetParser) parseAtRule() error {
 	}
 }
 
-func (parser *stylesheetParser) parseNestedRuleList(source string, context ruleContext) error {
+func (parser *stylesheetParser) parseNestedRuleList(source, original string, baseOffset int, context ruleContext) error {
 	if parser.nesting >= maxGroupRuleNesting {
 		return nil
 	}
 	nested := stylesheetParser{
 		source:     source,
+		original:   original,
+		baseOffset: baseOffset,
 		stylesheet: parser.stylesheet,
 		context:    context,
 		nesting:    parser.nesting + 1,
@@ -440,177 +455,9 @@ func (parser *stylesheetParser) skipAtRuleTail() error {
 }
 
 func parseDeclarations(block string) []Declaration {
-	declarations, _ := parseCleanDeclarationList(block)
+	sourced, _ := parseSourcedDeclarationList(block, 0)
+	declarations, _ := splitSourcedDeclarations(sourced)
 	return declarations
-}
-
-func parseCleanDeclarationList(source string) ([]Declaration, error) {
-	parts, err := splitDeclarationList(source)
-	declarations := make([]Declaration, 0, len(parts))
-	for _, part := range parts {
-		colon := indexTopLevel(part, ':')
-		if colon < 0 {
-			continue
-		}
-
-		property := trimCSSIgnorable(part[:colon])
-		if !validPropertyName(property) {
-			continue
-		}
-		custom := strings.HasPrefix(property, "--")
-		if !custom {
-			property = strings.ToLower(property)
-		}
-
-		value := normalizeCommentBoundaries(part[colon+1:])
-		value = strings.TrimSpace(value)
-		value, important := removeImportant(value)
-		if value == "" && !custom {
-			continue
-		}
-		if custom && !ValidCustomPropertyValue(value) {
-			continue
-		}
-		declarations = append(declarations, Declaration{
-			Property:  property,
-			Value:     value,
-			Important: important,
-		})
-	}
-	return declarations, err
-}
-
-func splitDeclarationList(source string) ([]string, error) {
-	var parts []string
-	start := 0
-	quote := byte(0)
-	escaped := false
-	parenDepth := 0
-	bracketDepth := 0
-	braceDepth := 0
-
-	for position := 0; position < len(source); position++ {
-		character := source[position]
-		if quote != 0 {
-			if escaped {
-				escaped = false
-				continue
-			}
-			if character == '\\' {
-				escaped = true
-				continue
-			}
-			if character == quote {
-				quote = 0
-			}
-			continue
-		}
-		if character == '\\' && validCSSEscapeAt(source, position) {
-			position = skipCSSEscape(source, position) - 1
-			continue
-		}
-
-		switch character {
-		case '\'', '"':
-			quote = character
-		case '(':
-			parenDepth++
-		case ')':
-			if parenDepth > 0 {
-				parenDepth--
-			}
-		case '[':
-			bracketDepth++
-		case ']':
-			if bracketDepth > 0 {
-				bracketDepth--
-			}
-		case '{':
-			braceDepth++
-		case '}':
-			if braceDepth > 0 {
-				braceDepth--
-			}
-		case ';':
-			if parenDepth == 0 && bracketDepth == 0 && braceDepth == 0 {
-				parts = append(parts, source[start:position])
-				start = position + 1
-			}
-		}
-	}
-
-	if quote != 0 {
-		return parts, fmt.Errorf("css: unterminated string in declaration list")
-	}
-	return append(parts, source[start:]), nil
-}
-
-func removeImportant(value string) (string, bool) {
-	importantAt := -1
-	quote := byte(0)
-	escaped := false
-	parenDepth := 0
-	bracketDepth := 0
-	braceDepth := 0
-
-	for position := 0; position < len(value); position++ {
-		character := value[position]
-		if quote != 0 {
-			if escaped {
-				escaped = false
-				continue
-			}
-			if character == '\\' {
-				escaped = true
-				continue
-			}
-			if character == quote {
-				quote = 0
-			}
-			continue
-		}
-		if character == '\\' && validCSSEscapeAt(value, position) {
-			// An escaped exclamation mark is part of an identifier token, not
-			// the delimiter token that can begin an !important annotation.
-			position = skipCSSEscape(value, position) - 1
-			continue
-		}
-		switch character {
-		case '\'', '"':
-			quote = character
-		case '(':
-			parenDepth++
-		case ')':
-			if parenDepth > 0 {
-				parenDepth--
-			}
-		case '[':
-			bracketDepth++
-		case ']':
-			if bracketDepth > 0 {
-				bracketDepth--
-			}
-		case '{':
-			braceDepth++
-		case '}':
-			if braceDepth > 0 {
-				braceDepth--
-			}
-		case '!':
-			if parenDepth == 0 && bracketDepth == 0 && braceDepth == 0 {
-				importantAt = position
-			}
-		}
-	}
-
-	if importantAt < 0 {
-		return strings.TrimSpace(value), false
-	}
-	suffix, ok := parseSingleCSSIdentifier(value[importantAt+1:])
-	if !ok || !equalASCIIFold(suffix, "important") {
-		return strings.TrimSpace(value), false
-	}
-	return strings.TrimSpace(value[:importantAt]), true
 }
 
 func splitTopLevel(source string, delimiter byte) []string {
@@ -783,7 +630,10 @@ func stripComments(source string) (string, error) {
 	for position := 0; position < len(source); {
 		character := source[position]
 		if character == 0 {
-			cleaned.WriteRune(utf8.RuneError)
+			// Preserve byte offsets. Shared CSS Syntax preprocessing handles raw
+			// NULs when declaration values are tokenized; legacy parsers treat this
+			// byte as a non-merging boundary until they migrate to tokens.
+			cleaned.WriteByte(commentBoundary)
 			position++
 			continue
 		}
@@ -821,8 +671,11 @@ func stripComments(source string) (string, error) {
 			if end < 0 {
 				return cleaned.String(), fmt.Errorf("css: unterminated comment")
 			}
-			cleaned.WriteByte(commentBoundary)
-			position += end + 4
+			commentLength := end + 4
+			for range commentLength {
+				cleaned.WriteByte(commentBoundary)
+			}
+			position += commentLength
 			continue
 		}
 		cleaned.WriteByte(character)
@@ -850,11 +703,16 @@ func normalizeCommentBoundaries(source string) string {
 	}
 	var normalized strings.Builder
 	normalized.Grow(len(source))
+	boundary := false
 	for position := 0; position < len(source); position++ {
 		if source[position] == commentBoundary {
-			normalized.WriteByte(' ')
+			if !boundary {
+				normalized.WriteByte(' ')
+				boundary = true
+			}
 			continue
 		}
+		boundary = false
 		normalized.WriteByte(source[position])
 	}
 	return normalized.String()
