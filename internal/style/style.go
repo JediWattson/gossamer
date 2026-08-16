@@ -34,8 +34,12 @@ type Viewport = Environment
 // each external sheet. UserStylesheets and UserAgentStylesheets are ordered
 // origin inputs; built-in user-agent declarations precede supplied UA sheets.
 type Input struct {
-	Environment          Environment
-	Stylesheets          map[*dom.Node]css.Stylesheet
+	Environment Environment
+	Stylesheets map[*dom.Node]css.Stylesheet
+	// InlineDeclarations optionally supplies browser-cached, source-ordered
+	// style-attribute declarations. A present map entry, including an empty
+	// slice, is authoritative for that element during this computation.
+	InlineDeclarations   map[*dom.Node][]css.SourcedDeclaration
 	UserStylesheets      []css.Stylesheet
 	UserAgentStylesheets []css.Stylesheet
 	SelectorState        SelectorState
@@ -951,11 +955,12 @@ func buildStyleTree(document *dom.Node, input Input) *styledNode {
 	}}, inputStylesheets(input.UserAgentStylesheets, SourceUserAgentRule)...)
 	mediaEnvironment := screenMediaEnvironment(input.Environment)
 	context := cascadeStyleContext{
-		userAgent:        originStyleContext{sheets: userAgentSheets, layerRanks: originLayerRanks(userAgentSheets, mediaEnvironment)},
-		user:             originStyleContext{sheets: userSheets, layerRanks: originLayerRanks(userSheets, mediaEnvironment)},
-		author:           originStyleContext{sheets: authorSheets, layerRanks: originLayerRanks(authorSheets, mediaEnvironment)},
-		mediaEnvironment: mediaEnvironment,
-		selectorContext:  input.selectorContext,
+		userAgent:          originStyleContext{sheets: userAgentSheets, layerRanks: originLayerRanks(userAgentSheets, mediaEnvironment)},
+		user:               originStyleContext{sheets: userSheets, layerRanks: originLayerRanks(userSheets, mediaEnvironment)},
+		author:             originStyleContext{sheets: authorSheets, layerRanks: originLayerRanks(authorSheets, mediaEnvironment)},
+		mediaEnvironment:   mediaEnvironment,
+		selectorContext:    input.selectorContext,
+		inlineDeclarations: input.InlineDeclarations,
 	}
 	for _, origin := range []originStyleContext{context.userAgent, context.user, context.author} {
 		for _, source := range origin.sheets {
@@ -1304,7 +1309,10 @@ func applyCascade(style *computedStyle, explanations map[string]PropertyExplanat
 
 	if pseudo == css.PseudoElementNone {
 		if source, ok := attribute(node, "style"); ok {
-			declarations, _ := css.ParseRawDeclarationListWithSources(source)
+			declarations, cached := context.inlineDeclarations[node]
+			if !cached {
+				declarations, _ = css.ParseRawDeclarationListWithSources(source)
+			}
 			for declarationIndex, sourced := range declarations {
 				recordInSourceOrder(winningDeclaration{
 					declaration: sourced.Declaration, declarationSource: sourced.Source, origin: CascadeOriginAuthor, kind: SourceInlineStyle,

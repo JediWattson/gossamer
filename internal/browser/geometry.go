@@ -63,6 +63,9 @@ func (page *Page) elementGeometryLocked(handle NodeHandle) (DOMElementGeometry, 
 	if handle.Document == 0 || handle.Node == dom.InvalidNodeID || handle.Document != page.documentGeneration {
 		return DOMElementGeometry{}, ErrStaleNodeHandle
 	}
+	if _, err := page.syncStylesheetsLocked(); err != nil {
+		return DOMElementGeometry{}, err
+	}
 
 	resources := page.resources.rendererResources(page.document)
 	rootID, _, _ := page.document.RelatedNode(page.document.RootID(), dom.DocumentElement)

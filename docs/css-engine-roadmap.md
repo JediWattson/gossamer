@@ -86,14 +86,18 @@ share one origin-aware candidate model for normal and important declarations,
 including origin-correct `revert` and `revert-layer` behavior for ordinary and
 custom properties. Immutable snapshots retain compact, stable-ID winner
 provenance and can produce deterministic per-property explanation dumps.
+The browser-owned stylesheet graph reuses parsed embedded/external sheets, and
+a document-versioned inline-style cache retains raw ordered declarations by
+stable element identity and exact source. Repeated computed-style,
+geometry, and render reads therefore do not reparse unchanged `style`
+attributes; reconnecting or changing an element replaces only that entry.
 
 - Move cascade and computed-value ownership out of `internal/render`.
 - Extend CSS-wide handling and the central property registry with every new
   longhand while preserving `all` exclusions such as `direction`,
   `unicode-bidi`, and custom properties.
-- Cache parsed embedded and inline declaration blocks without changing
-  observable cascade order; retain source identities so existing spans remain
-  meaningful after caching.
+- Retain cache source identities so existing spans remain meaningful when
+  rule/declaration objects become script-visible.
 
 Acceptance: a deterministic computed-style dump explains the winning source
 for every supported property independently of layout.
@@ -363,7 +367,15 @@ participate in general page rendering.
 
 ### 10. Incremental restyle and performance
 
-- Cache parsed rules and declarations by stable sheet/element generation.
+Current foundation: parsed embedded/external stylesheets and inline declaration
+lists are cached by browser-owned stable identities and content generations.
+The inline cache is bounded by the currently connected styled elements, drops
+detached entries, preserves raw duplicates and source spans, and uses the
+uncached style path as an executable equivalence oracle. Style, layout, and
+paint still rebuild globally after connected mutations.
+
+- Extend parsed-rule caches with script-visible stylesheet identities and
+  generation-aware rule handles.
 - Add selector candidate indexes and property/state dependency tracking.
 - Classify connected mutations, then introduce subtree restyle against the
   full-document rebuild as an executable correctness oracle.

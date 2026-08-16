@@ -747,6 +747,11 @@ func (page *Page) styleSnapshotForViewLocked(view dom.ReadView, resources render
 		state.styleRevision == page.styleRevision {
 		return state.snapshot, nil
 	}
+	inlineDeclarations, err := page.resources.inlineStyles.declarationsForView(view)
+	if err != nil {
+		return nil, err
+	}
+	resources.InlineDeclarations = inlineDeclarations
 
 	selectorState, err := page.selectorStateForViewLocked(view)
 	if err != nil {

@@ -45,6 +45,7 @@ func ComputeStyleSnapshot(document *dom.Node, viewport Viewport, resources Resou
 	return computed.Compute(document, computed.Input{
 		Environment:          styleEnvironment(viewport),
 		Stylesheets:          resources.Stylesheets,
+		InlineDeclarations:   resources.InlineDeclarations,
 		UserStylesheets:      resources.UserStylesheets,
 		UserAgentStylesheets: resources.UserAgentStylesheets,
 		SelectorState:        resources.SelectorState,
@@ -83,6 +84,7 @@ func ComputeStyleSnapshotFromReadView(view dom.ReadView, viewport Viewport, reso
 	return computed.ComputeReadView(view, computed.Input{
 		Environment:          styleEnvironment(viewport),
 		Stylesheets:          resources.Stylesheets,
+		InlineDeclarations:   resources.InlineDeclarations,
 		UserStylesheets:      resources.UserStylesheets,
 		UserAgentStylesheets: resources.UserAgentStylesheets,
 		SelectorState:        resources.SelectorState,

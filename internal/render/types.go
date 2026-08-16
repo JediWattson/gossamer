@@ -26,6 +26,7 @@ var DefaultViewport = Viewport{Width: 800, Height: 600}
 // within their respective cascade origins.
 type Resources struct {
 	Stylesheets          map[*dom.Node]css.Stylesheet
+	InlineDeclarations   map[*dom.Node][]css.SourcedDeclaration
 	UserStylesheets      []css.Stylesheet
 	UserAgentStylesheets []css.Stylesheet
 	SelectorState        computed.SelectorState

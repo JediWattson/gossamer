@@ -19,6 +19,7 @@ const maxNavigationImagePixels int64 = 32_000_000
 
 type pageResources struct {
 	stylesheets          stylesheetGraph
+	inlineStyles         inlineStyleCache
 	userStylesheets      []css.Stylesheet
 	userAgentStylesheets []css.Stylesheet
 	images               map[dom.NodeID]image.Image
@@ -44,8 +45,9 @@ type navigationResourceResult struct {
 
 func newPageResources() pageResources {
 	return pageResources{
-		stylesheets: newStylesheetGraph(),
-		images:      make(map[dom.NodeID]image.Image),
+		stylesheets:  newStylesheetGraph(),
+		inlineStyles: newInlineStyleCache(),
+		images:       make(map[dom.NodeID]image.Image),
 	}
 }
 
@@ -82,6 +84,20 @@ func pageResourcesFromRenderer(document *dom.Document, resources render.Resource
 	stable := newPageResources()
 	stable.userStylesheets = append([]css.Stylesheet(nil), resources.UserStylesheets...)
 	stable.userAgentStylesheets = append([]css.Stylesheet(nil), resources.UserAgentStylesheets...)
+	for node, declarations := range resources.InlineDeclarations {
+		id, ok := document.ID(node)
+		if !ok {
+			return pageResources{}, fmt.Errorf("browser: inline declaration resource references a node outside the document")
+		}
+		source, _, err := document.GetAttribute(id, "style")
+		if err != nil {
+			return pageResources{}, err
+		}
+		stable.inlineStyles.entries[id] = inlineStyleCacheEntry{
+			source:       source,
+			declarations: append([]css.SourcedDeclaration(nil), declarations...),
+		}
+	}
 	for node, stylesheet := range resources.Stylesheets {
 		id, ok := document.ID(node)
 		if !ok {

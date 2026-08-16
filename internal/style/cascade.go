@@ -28,12 +28,13 @@ type layerIdentity struct {
 }
 
 type cascadeStyleContext struct {
-	userAgent        originStyleContext
-	user             originStyleContext
-	author           originStyleContext
-	mediaEnvironment css.MediaEnvironment
-	selectorContext  css.MatchContext
-	pseudoElements   [3]bool
+	userAgent          originStyleContext
+	user               originStyleContext
+	author             originStyleContext
+	mediaEnvironment   css.MediaEnvironment
+	selectorContext    css.MatchContext
+	inlineDeclarations map[*dom.Node][]css.SourcedDeclaration
+	pseudoElements     [3]bool
 }
 
 // winningDeclaration is one validated declaration expanded to a longhand (or
