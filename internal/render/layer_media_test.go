@@ -398,7 +398,7 @@ p { color: #111111; }
   @layer conditional { #target { color: #ff0000 !important; } }
 }
 `,
-			want: color.NRGBA{R: 0x11, G: 0x11, B: 0x11, A: 0xff},
+			want: color.NRGBA{R: 0xff, A: 0xff},
 		},
 	}
 

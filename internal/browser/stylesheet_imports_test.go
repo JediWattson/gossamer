@@ -113,6 +113,41 @@ func TestLoadStylesheetWithImportsRemapsAnonymousLayers(t *testing.T) {
 	}
 }
 
+func TestLoadStylesheetWithImportsPreservesLayerEventOrderOnCycle(t *testing.T) {
+	t.Parallel()
+
+	fetcher := &importMapFetcher{
+		responses: map[string]string{
+			"https://events.test/root.css": `
+				@layer base;
+				@import "root.css" layer(cycle);
+				@layer theme;
+			`,
+		},
+		calls: make(map[string]int),
+	}
+	pipeline := resource.NewPipeline(fetcher, resource.PipelineOptions{})
+	rootURL, _ := url.Parse("https://events.test/root.css")
+	asset, err := pipeline.Fetch(context.Background(), resource.Reference{Kind: resource.Stylesheet, URL: rootURL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stylesheet, err := loadStylesheetWithImports(context.Background(), pipeline, asset)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"base", "cycle", "theme"}
+	if got := stylesheet.LayerOrder; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
+		t.Fatalf("layer event order = %q, want %q", got, want)
+	}
+	if got, wantCount := len(stylesheet.LayerDeclarations), 3; got != wantCount {
+		t.Fatalf("layer declaration count = %d, want %d", got, wantCount)
+	}
+	if fetcher.calls["https://events.test/root.css"] != 1 {
+		t.Fatalf("cyclic root fetch count = %d, want 1", fetcher.calls["https://events.test/root.css"])
+	}
+}
+
 func TestLoadStylesheetWithImportsBoundsDepth(t *testing.T) {
 	t.Parallel()
 

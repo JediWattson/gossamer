@@ -21,9 +21,20 @@ var ErrInvalidSelector = errors.New("css: invalid selector")
 // flattened low-to-high ordering of nested layer identities; a parent layer's
 // implicit declarations follow its explicit child layers.
 type Stylesheet struct {
-	Rules      []Rule
-	LayerOrder []string
-	Imports    []ImportRule
+	Rules             []Rule
+	LayerOrder        []string
+	LayerDeclarations []LayerDeclaration
+	Imports           []ImportRule
+}
+
+// LayerDeclaration is one appearance of a layer identity in source order.
+// Media and Supports capture enclosing document-global conditions so the
+// style engine can establish the environment-dependent layer order.
+type LayerDeclaration struct {
+	Name     string
+	Media    []string
+	Supports []string
+	Order    int
 }
 
 // ImportRule is one valid top-level @import that precedes qualified rules.
@@ -32,12 +43,13 @@ type Stylesheet struct {
 // Supports and Media retain their authored component-value source for the
 // browser-owned stylesheet graph to evaluate in the importing context.
 type ImportRule struct {
-	URL      string
-	Layer    string
-	Layered  bool
-	Supports string
-	Media    string
-	Order    int
+	URL             string
+	Layer           string
+	Layered         bool
+	Supports        string
+	Media           string
+	Order           int
+	AppearanceOrder int
 }
 
 // Rule associates one or more selectors with an ordered declaration block.

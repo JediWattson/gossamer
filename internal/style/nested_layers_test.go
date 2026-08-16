@@ -53,7 +53,33 @@ func TestNestedRevertLayerExposesPriorSibling(t *testing.T) {
 	assertComputedLayerValue(t, computed, "color", "rgb(255, 0, 0)")
 }
 
+func TestConditionalLayerOrderTracksMediaAndSupports(t *testing.T) {
+	t.Parallel()
+
+	source := `
+		@media (min-width: 30em) { @layer layout {} }
+		@supports (display: block) { @layer supported {} }
+		@supports (display: grid) { @layer unsupported {} }
+		@layer theme, layout, supported, unsupported;
+		@layer theme { #target { color: blue; background-color: blue } }
+		@layer layout { #target { color: red } }
+		@layer supported { #target { background-color: green } }
+	`
+	wide := computeLayerFixtureAtWidth(t, []string{source}, 800)
+	// The matching media declaration establishes layout before theme.
+	assertComputedLayerValue(t, wide, "color", "rgb(0, 0, 255)")
+	assertComputedLayerValue(t, wide, "background-color", "rgb(0, 0, 255)")
+	narrow := computeLayerFixtureAtWidth(t, []string{source}, 320)
+	// Without that declaration, the explicit statement establishes theme first.
+	assertComputedLayerValue(t, narrow, "color", "rgb(255, 0, 0)")
+	assertComputedLayerValue(t, narrow, "background-color", "rgb(0, 0, 255)")
+}
+
 func computeLayerFixture(t *testing.T, sheets []string) style.ComputedStyle {
+	return computeLayerFixtureAtWidth(t, sheets, 800)
+}
+
+func computeLayerFixtureAtWidth(t *testing.T, sheets []string, width int) style.ComputedStyle {
 	t.Helper()
 	document := dom.NewDocument()
 	html := dom.NewElement("html")
@@ -69,7 +95,7 @@ func computeLayerFixture(t *testing.T, sheets []string) style.ComputedStyle {
 	html.AppendChild(head)
 	html.AppendChild(body)
 	document.AppendChild(html)
-	snapshot := style.Compute(document, style.Input{Environment: style.Environment{Width: 800, Height: 600, MediaType: "screen", InitialFontSize: 16}})
+	snapshot := style.Compute(document, style.Input{Environment: style.Environment{Width: width, Height: 600, MediaType: "screen", InitialFontSize: 16}})
 	computed, ok := snapshot.Lookup(target)
 	if !ok {
 		t.Fatal("target has no computed style")

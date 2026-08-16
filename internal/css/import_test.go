@@ -22,9 +22,9 @@ func TestParseImportRulesFromComponentValues(t *testing.T) {
 	}
 	want := []css.ImportRule{
 		{URL: "base.css", Order: 0},
-		{URL: "theme.css", Layer: "theme", Layered: true, Supports: "display: block", Media: "screen and (min-width: 40em)", Order: 1},
-		{URL: "print.css", Layered: true, Media: "print", Order: 2},
-		{URL: "nested.css", Layer: "frame.theme", Layered: true, Order: 3},
+		{URL: "theme.css", Layer: "theme", Layered: true, Supports: "display: block", Media: "screen and (min-width: 40em)", Order: 1, AppearanceOrder: 1},
+		{URL: "print.css", Layered: true, Media: "print", Order: 2, AppearanceOrder: 2},
+		{URL: "nested.css", Layer: "frame.theme", Layered: true, Order: 3, AppearanceOrder: 3},
 	}
 	if !reflect.DeepEqual(stylesheet.Imports, want) {
 		t.Fatalf("imports = %#v, want %#v", stylesheet.Imports, want)
@@ -65,7 +65,7 @@ func TestParseImportIsRejectedAfterAnyGroupOrQualifiedRule(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []css.ImportRule{{URL: "allowed-after-layer-statement.css", Order: 0}}
+	want := []css.ImportRule{{URL: "allowed-after-layer-statement.css", Order: 0, AppearanceOrder: 1}}
 	if !reflect.DeepEqual(stylesheet.Imports, want) {
 		t.Fatalf("imports = %#v, want %#v", stylesheet.Imports, want)
 	}

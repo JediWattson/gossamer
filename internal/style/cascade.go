@@ -239,14 +239,24 @@ func survivesSameOriginRevertLayer(current, candidate winningDeclaration) bool {
 	return candidate.layerRank < current.layerRank
 }
 
-func originLayerRanks(sheets []stylesheetSource) map[layerIdentity]int {
+func originLayerRanks(sheets []stylesheetSource, environment css.MediaEnvironment) map[layerIdentity]int {
 	order := make([]layerIdentity, 0)
 	for _, source := range sheets {
+		if len(source.stylesheet.LayerDeclarations) > 0 {
+			for _, declaration := range source.stylesheet.LayerDeclarations {
+				if layerDeclarationMatches(declaration, environment) {
+					recordLayerIdentity(&order, layerIdentityFor(source.order, declaration.Name))
+				}
+			}
+			continue
+		}
 		for _, name := range source.stylesheet.LayerOrder {
 			recordLayerIdentity(&order, layerIdentityFor(source.order, name))
 		}
 		for _, rule := range source.stylesheet.Rules {
-			recordLayerIdentity(&order, layerIdentityFor(source.order, rule.Layer))
+			if rule.MatchesMedia(environment) && rule.MatchesSupports(SupportsDeclaration) {
+				recordLayerIdentity(&order, layerIdentityFor(source.order, rule.Layer))
+			}
 		}
 	}
 	ranks := make(map[layerIdentity]int, len(order))
@@ -254,6 +264,20 @@ func originLayerRanks(sheets []stylesheetSource) map[layerIdentity]int {
 		ranks[identity] = rank
 	}
 	return ranks
+}
+
+func layerDeclarationMatches(declaration css.LayerDeclaration, environment css.MediaEnvironment) bool {
+	for _, media := range declaration.Media {
+		if !css.MediaQueryListMatches(media, environment) {
+			return false
+		}
+	}
+	for _, condition := range declaration.Supports {
+		if !css.SupportsConditionMatches(condition, SupportsDeclaration) {
+			return false
+		}
+	}
+	return true
 }
 
 func layerIdentityFor(sheet int, name string) layerIdentity {

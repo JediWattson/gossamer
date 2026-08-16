@@ -74,9 +74,28 @@ func expandStylesheetImports(
 
 	parsed, _ := css.Parse(source)
 	flattened := css.Stylesheet{}
+	layerDeclarations := parsed.LayerDeclarations
+	parsed.LayerDeclarations = nil
+	parsed.LayerOrder = nil
+	nextLayerDeclaration := 0
 	for _, imported := range parsed.Imports {
+		for nextLayerDeclaration < len(layerDeclarations) && layerDeclarations[nextLayerDeclaration].Order < imported.AppearanceOrder {
+			appendLayerDeclaration(&flattened, layerDeclarations[nextLayerDeclaration])
+			nextLayerDeclaration++
+		}
 		if imported.Supports != "" && !importSupportsMatches(imported.Supports) {
 			continue
+		}
+		if imported.Layered {
+			if imported.Layer == "" {
+				budget.nextAnonymous++
+				imported.Layer = fmt.Sprintf("\x00import-%d", budget.nextAnonymous)
+			}
+			declaration := css.LayerDeclaration{Name: imported.Layer}
+			if imported.Media != "" {
+				declaration.Media = []string{imported.Media}
+			}
+			appendLayerDeclaration(&flattened, declaration)
 		}
 		resolved, ok := resolveStylesheetImport(base, imported.URL)
 		if !ok {
@@ -108,6 +127,9 @@ func expandStylesheetImports(
 		child = applyImportRuleContext(child, imported, budget)
 		appendFlattenedStylesheet(&flattened, child)
 	}
+	for ; nextLayerDeclaration < len(layerDeclarations); nextLayerDeclaration++ {
+		appendLayerDeclaration(&flattened, layerDeclarations[nextLayerDeclaration])
+	}
 	parsed.Imports = nil
 	appendFlattenedStylesheet(&flattened, parsed)
 	return flattened, nil
@@ -116,11 +138,6 @@ func expandStylesheetImports(
 func applyImportRuleContext(stylesheet css.Stylesheet, imported css.ImportRule, budget *stylesheetImportBudget) css.Stylesheet {
 	stylesheet = remapImportedAnonymousLayers(stylesheet, budget)
 	layer := imported.Layer
-	if imported.Layered && layer == "" {
-		budget.nextAnonymous++
-		// A NUL-prefixed identity cannot collide with an authored CSS identifier.
-		layer = fmt.Sprintf("\x00import-%d", budget.nextAnonymous)
-	}
 	if imported.Layered {
 		layers := make([]string, 0, len(stylesheet.LayerOrder)+1)
 		for _, childLayer := range stylesheet.LayerOrder {
@@ -128,6 +145,15 @@ func applyImportRuleContext(stylesheet css.Stylesheet, imported css.ImportRule, 
 		}
 		recordLayerOrder(&layers, layer)
 		stylesheet.LayerOrder = layers
+	}
+	for index := range stylesheet.LayerDeclarations {
+		declaration := &stylesheet.LayerDeclarations[index]
+		if imported.Layered {
+			declaration.Name = layer + "." + declaration.Name
+		}
+		if imported.Media != "" {
+			declaration.Media = append([]string{imported.Media}, declaration.Media...)
+		}
 	}
 	for index := range stylesheet.Rules {
 		rule := &stylesheet.Rules[index]
@@ -166,6 +192,9 @@ func remapImportedAnonymousLayers(stylesheet css.Stylesheet, budget *stylesheetI
 	for index := range stylesheet.LayerOrder {
 		stylesheet.LayerOrder[index] = rename(stylesheet.LayerOrder[index])
 	}
+	for index := range stylesheet.LayerDeclarations {
+		stylesheet.LayerDeclarations[index].Name = rename(stylesheet.LayerDeclarations[index].Name)
+	}
 	for index := range stylesheet.Rules {
 		stylesheet.Rules[index].Layer = rename(stylesheet.Rules[index].Layer)
 	}
@@ -173,13 +202,25 @@ func remapImportedAnonymousLayers(stylesheet css.Stylesheet, budget *stylesheetI
 }
 
 func appendFlattenedStylesheet(destination *css.Stylesheet, source css.Stylesheet) {
-	for _, layer := range source.LayerOrder {
-		recordLayerOrder(&destination.LayerOrder, layer)
+	if len(source.LayerDeclarations) > 0 {
+		for _, declaration := range source.LayerDeclarations {
+			appendLayerDeclaration(destination, declaration)
+		}
+	} else {
+		for _, layer := range source.LayerOrder {
+			recordLayerOrder(&destination.LayerOrder, layer)
+		}
 	}
 	for _, rule := range source.Rules {
 		rule.Order = len(destination.Rules)
 		destination.Rules = append(destination.Rules, rule)
 	}
+}
+
+func appendLayerDeclaration(destination *css.Stylesheet, declaration css.LayerDeclaration) {
+	declaration.Order = len(destination.LayerDeclarations)
+	destination.LayerDeclarations = append(destination.LayerDeclarations, declaration)
+	recordLayerOrder(&destination.LayerOrder, declaration.Name)
 }
 
 func recordLayerOrder(order *[]string, candidate string) {

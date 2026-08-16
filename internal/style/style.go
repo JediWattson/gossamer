@@ -468,11 +468,12 @@ func buildStyleTree(document *dom.Node, input Input) *styledNode {
 		kind:       SourceUserAgentRule,
 		order:      -1,
 	}}, inputStylesheets(input.UserAgentStylesheets, SourceUserAgentRule)...)
+	mediaEnvironment := screenMediaEnvironment(input.Environment)
 	context := cascadeStyleContext{
-		userAgent:        originStyleContext{sheets: userAgentSheets, layerRanks: originLayerRanks(userAgentSheets)},
-		user:             originStyleContext{sheets: userSheets, layerRanks: originLayerRanks(userSheets)},
-		author:           originStyleContext{sheets: authorSheets, layerRanks: originLayerRanks(authorSheets)},
-		mediaEnvironment: screenMediaEnvironment(input.Environment),
+		userAgent:        originStyleContext{sheets: userAgentSheets, layerRanks: originLayerRanks(userAgentSheets, mediaEnvironment)},
+		user:             originStyleContext{sheets: userSheets, layerRanks: originLayerRanks(userSheets, mediaEnvironment)},
+		author:           originStyleContext{sheets: authorSheets, layerRanks: originLayerRanks(authorSheets, mediaEnvironment)},
+		mediaEnvironment: mediaEnvironment,
 	}
 	return styleNode(document, nil, context, input.Environment)
 }

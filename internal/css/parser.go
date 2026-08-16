@@ -60,6 +60,7 @@ type stylesheetParser struct {
 	importsAllowed bool
 	seenImport     bool
 	anonymousLayer *int
+	appearance     *int
 }
 
 type ruleContext struct {
@@ -74,6 +75,8 @@ func (parser *stylesheetParser) parse() (Stylesheet, error) {
 	parser.importsAllowed = true
 	anonymousLayer := 0
 	parser.anonymousLayer = &anonymousLayer
+	appearance := 0
+	parser.appearance = &appearance
 	if err := parser.parseRuleList(); err != nil {
 		return stylesheet, err
 	}
@@ -160,12 +163,13 @@ func (parser *stylesheetParser) parseAtRule() error {
 		if name == "import" && delimiter == ';' && canImport && parser.context.layer == "" && len(parser.context.media) == 0 && len(parser.context.supports) == 0 {
 			if imported, ok := parseImportRule(prelude); ok {
 				imported.Order = len(parser.stylesheet.Imports)
+				imported.AppearanceOrder = parser.nextAppearanceOrder()
 				parser.stylesheet.Imports = append(parser.stylesheet.Imports, imported)
 				parser.seenImport = true
 			}
 			return nil
 		}
-		if name == "layer" && delimiter == ';' && len(parser.context.media) == 0 && len(parser.context.supports) == 0 {
+		if name == "layer" && delimiter == ';' {
 			if layers, ok := parseLayerNameList(prelude); ok {
 				for _, layer := range layers {
 					parser.recordLayer(qualifyLayerName(parser.context.layer, layer))
@@ -181,9 +185,6 @@ func (parser *stylesheetParser) parseAtRule() error {
 		}
 		switch name {
 		case "layer":
-			if len(parser.context.media) != 0 || len(parser.context.supports) != 0 {
-				return nil
-			}
 			layer := ""
 			if strings.TrimSpace(prelude) == "" {
 				layer = parser.newAnonymousLayer()
@@ -304,6 +305,7 @@ func (parser *stylesheetParser) parseNestedRuleList(source, original string, bas
 		context:        context,
 		nesting:        parser.nesting + 1,
 		anonymousLayer: parser.anonymousLayer,
+		appearance:     parser.appearance,
 	}
 	return nested.parseRuleList()
 }
@@ -312,6 +314,14 @@ func (parser *stylesheetParser) recordLayer(name string) {
 	if name == "" {
 		return
 	}
+	if separator := strings.LastIndexByte(name, '.'); separator >= 0 {
+		parser.recordLayer(name[:separator])
+	}
+	parser.stylesheet.LayerDeclarations = append(parser.stylesheet.LayerDeclarations, LayerDeclaration{
+		Name: name, Media: append([]string(nil), parser.context.media...),
+		Supports: append([]string(nil), parser.context.supports...),
+		Order:    parser.nextAppearanceOrder(),
+	})
 	for _, existing := range parser.stylesheet.LayerOrder {
 		if existing == name {
 			return
@@ -319,7 +329,6 @@ func (parser *stylesheetParser) recordLayer(name string) {
 	}
 	if separator := strings.LastIndexByte(name, '.'); separator >= 0 {
 		parent := name[:separator]
-		parser.recordLayer(parent)
 		for index, existing := range parser.stylesheet.LayerOrder {
 			if existing == parent {
 				parser.stylesheet.LayerOrder = append(parser.stylesheet.LayerOrder, "")
@@ -330,6 +339,16 @@ func (parser *stylesheetParser) recordLayer(name string) {
 		}
 	}
 	parser.stylesheet.LayerOrder = append(parser.stylesheet.LayerOrder, name)
+}
+
+func (parser *stylesheetParser) nextAppearanceOrder() int {
+	if parser.appearance == nil {
+		appearance := 0
+		parser.appearance = &appearance
+	}
+	order := *parser.appearance
+	*parser.appearance = order + 1
+	return order
 }
 
 func parseLayerNameList(source string) ([]string, bool) {

@@ -126,10 +126,11 @@ embedded sheets. Tokenized `@supports` declaration, logical, nested, and
 `selector()` conditions share the style engine's actual capability boundary.
 Named, dotted, nested, and anonymous layer blocks now flatten into the correct
 normal/important priority order, including distinct anonymous identities across
-independently parsed and imported sheets.
+independently parsed and imported sheets. Ordered layer-declaration events keep
+`@media`, `@supports`, and interleaved import conditions in the browser's
+current environment instead of freezing one parse-time order.
 
-- Add condition-dependent layer ordering inside `@media`/`@supports`,
-  `@font-face`, keyframes, and CSS nesting.
+- Add `@font-face`, keyframes, and CSS nesting.
 - Retain imported-sheet identities and source spans instead of only the current
   flattened immutable renderer view.
 - Track stylesheet identity and generations so dynamic `<style>` and `<link>`
