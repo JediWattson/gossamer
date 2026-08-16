@@ -5,7 +5,7 @@ DOM compatibility gate verifies that this split remains observable as one DOM:
 canonical V8 wrappers carry numeric `NodeHandle` values, while Go owns node
 identity, mutation, form state, construction regions, and queue ARC.
 
-## Selected completed milestones 8-30
+## Selected completed milestones 8-31
 
 | Milestone | Native surface | Regression boundary |
 | --- | --- | --- |
@@ -24,6 +24,7 @@ identity, mutation, form state, construction regions, and queue ARC.
 | 28. Element overflow scrolling | Typed `overflow-x`/`overflow-y`, Page-owned per-element offsets, nested `scrollTop`/`scrollLeft`, scrollport clipping, ancestor-aware `scrollIntoView`, translated paint/hit testing, element scroll events | Stable `NodeID` offsets do not mutate layout; nested geometry reads are synchronous; paint and input share one transform/clip projection; scroll events coalesce per target; navigation clears all offsets |
 | 29. Animation timing and resize | `requestAnimationFrame`, cancellation, Page-relative `performance.now()`, batched timestamps, queued viewport resize events | Callback records transfer Realm to queue to task; canceled callbacks release or drain their region; one frame batch shares a timestamp; resize listeners and microtasks run before rAF and one render |
 | 30. Layout observation | `ResizeObserver`, `IntersectionObserver`, entry geometry, thresholds, target registration lifecycle | Delivery reads the current immutable Go layout snapshot at the explicit checkpoint; observers retain canonical target wrappers across forced V8 GC; disconnect and Realm teardown release every native claim |
+| 31. Positioned layout | Typed `position`, physical insets, integer `z-index`, relative/absolute/fixed block geometry, local stacking order | Absolute boxes leave normal flow; fixed boxes bypass root scrolling; display-list paint and hit testing share the same ordered positioned children; a React layout effect measures the same native geometry used by delegated click routing |
 
 Run the gate against the locally built stock V8:
 
@@ -47,6 +48,11 @@ and ownership barriers before a separate render task publishes a frame.
   at that explicit checkpoint. Resize box options, custom intersection roots,
   `rootMargin`, visibility tracking, and browser-exact observer task timing are
   not yet claimed.
+- Positioned layout currently covers block boxes, physical insets, viewport
+  fixed positioning, nearest represented positioned containing blocks, and
+  local integer stacking order. Inline containing blocks, logical insets,
+  sticky positioning, transforms, and the complete CSS stacking-context paint
+  algorithm remain future work.
 - Range contents now cross nested containers and UTF-16 character data.
   `surroundContents`, contextual fragments, point-comparison helpers, and full
   live boundary adjustment after unrelated DOM mutations remain future work.

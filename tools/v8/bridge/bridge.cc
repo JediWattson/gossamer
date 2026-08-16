@@ -990,7 +990,8 @@ bool IsSupportedDashedStylePropertyName(const std::string &name) {
            "border-left-width",   "border-top-style",    "border-right-style",
            "border-bottom-style", "border-left-style",   "border-top-color",
            "border-right-color",  "border-bottom-color", "border-left-color",
-           "list-style",          "list-style-type",
+           "list-style",          "list-style-type",      "overflow-x",
+           "overflow-y",          "z-index",
        }) {
     if (name == supported)
       return true;
@@ -10990,6 +10991,9 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
            "lineHeight",       "textDecoration",     "textDecorationLine",
            "textAlign",        "opacity",            "width",
            "height",           "minWidth",           "maxWidth",
+           "overflow",         "overflowX",          "overflowY",
+           "position",         "top",                "right",
+           "bottom",           "left",               "zIndex",
            "padding",          "paddingTop",         "paddingRight",
            "paddingBottom",    "paddingLeft",        "margin",
            "marginTop",        "marginRight",        "marginBottom",

@@ -330,6 +330,13 @@ func (page *Page) visualTransformForNodeLocked(node *dom.Node, layout *render.La
 	if node == nil || layout == nil || styles == nil {
 		return transform
 	}
+	if id, ok := page.document.ID(node); ok {
+		if style, found := styles.LookupID(id); found && style.Position() == computed.PositionFixed {
+			// Fixed boxes use viewport coordinates and therefore do not inherit
+			// root or element scrolling in the current positioned-layout slice.
+			return render.VisualTransform{}
+		}
+	}
 	ancestors := make([]*dom.Node, 0, 8)
 	for ancestor := node.Parent; ancestor != nil; ancestor = ancestor.Parent {
 		ancestors = append(ancestors, ancestor)

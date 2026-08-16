@@ -6,6 +6,7 @@ import (
 	"image/color"
 	"io"
 	"math"
+	"sort"
 
 	"github.com/JediWattson/gossamer/internal/dom"
 	computed "github.com/JediWattson/gossamer/internal/style"
@@ -386,6 +387,10 @@ func paintBox(list *DisplayList, box *Box, styles map[*dom.Node]computedStyle) {
 	if hasStyle {
 		paintBoxBorders(list, box, style)
 	}
+	negative, nonNegative := positionedPaintChildren(box)
+	for _, child := range negative {
+		paintBox(list, child, styles)
+	}
 	if len(box.flow) != 0 {
 		for _, item := range box.flow {
 			if item.box != nil {
@@ -406,12 +411,48 @@ func paintBox(list *DisplayList, box *Box, styles map[*dom.Node]computedStyle) {
 	}
 	if len(box.flow) == 0 {
 		for _, child := range box.Children {
-			paintBox(list, child, styles)
+			if !child.positioned {
+				paintBox(list, child, styles)
+			}
 		}
+	}
+	for _, child := range nonNegative {
+		paintBox(list, child, styles)
 	}
 	if grouped {
 		list.Commands = append(list.Commands, Command{Kind: EndOpacityCommand})
 	}
+}
+
+func positionedPaintChildren(box *Box) (negative, nonNegative []*Box) {
+	if box == nil {
+		return nil, nil
+	}
+	for _, child := range box.Children {
+		if child == nil || !child.positioned {
+			continue
+		}
+		if !child.zIndexAuto && child.zIndex < 0 {
+			negative = append(negative, child)
+		} else {
+			nonNegative = append(nonNegative, child)
+		}
+	}
+	sort.SliceStable(negative, func(left, right int) bool {
+		return negative[left].zIndex < negative[right].zIndex
+	})
+	sort.SliceStable(nonNegative, func(left, right int) bool {
+		leftIndex := nonNegative[left].zIndex
+		if nonNegative[left].zIndexAuto {
+			leftIndex = 0
+		}
+		rightIndex := nonNegative[right].zIndex
+		if nonNegative[right].zIndexAuto {
+			rightIndex = 0
+		}
+		return leftIndex < rightIndex
+	})
+	return negative, nonNegative
 }
 
 func paintBoxBorders(list *DisplayList, box *Box, style computedStyle) {

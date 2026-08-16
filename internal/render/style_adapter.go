@@ -47,6 +47,15 @@ const (
 	borderStyleHidden = computed.BorderStyleHidden
 )
 
+type positionMode = computed.PositionMode
+
+const (
+	positionStatic   = computed.PositionStatic
+	positionRelative = computed.PositionRelative
+	positionAbsolute = computed.PositionAbsolute
+	positionFixed    = computed.PositionFixed
+)
+
 type lengthUnit = computed.LengthUnit
 
 const (
@@ -126,6 +135,10 @@ func resolveLength(value length, percentBase float64, viewport Viewport, autoVal
 
 func isBlockLevel(display displayMode) bool {
 	return display == displayBlock || display == displayListItem
+}
+
+func isOutOfFlow(position positionMode) bool {
+	return position == positionAbsolute || position == positionFixed
 }
 
 func attribute(node *dom.Node, name string) (string, bool) {

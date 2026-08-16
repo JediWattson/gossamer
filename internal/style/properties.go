@@ -32,6 +32,7 @@ const (
 	propertyFontSize
 	propertyFontWeight
 	propertyHeight
+	propertyInset
 	propertyLineHeight
 	propertyListStyleType
 	propertyMargin
@@ -41,9 +42,11 @@ const (
 	propertyOverflowX
 	propertyOverflowY
 	propertyPadding
+	propertyPosition
 	propertyTextAlign
 	propertyTextDecorationLine
 	propertyWidth
+	propertyZIndex
 )
 
 type propertyEdge uint8
@@ -89,11 +92,13 @@ var propertyDefinitions = [...]propertyDefinition{
 	{name: "border-top-color", kind: propertyBorderColor, edge: propertyTop, invalidation: propertyInvalidatesPaint},
 	{name: "border-top-style", kind: propertyBorderStyle, edge: propertyTop, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "border-top-width", kind: propertyBorderWidth, edge: propertyTop, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
+	{name: "bottom", kind: propertyInset, edge: propertyBottom, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "color", kind: propertyColor, inherited: true, invalidation: propertyInvalidatesPaint},
 	{name: "display", kind: propertyDisplay, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "font-size", kind: propertyFontSize, inherited: true, computeEarly: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "font-weight", kind: propertyFontWeight, inherited: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "height", kind: propertyHeight, invalidation: propertyInvalidatesLayout},
+	{name: "left", kind: propertyInset, edge: propertyLeft, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "line-height", kind: propertyLineHeight, inherited: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "list-style-type", kind: propertyListStyleType, inherited: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "margin-bottom", kind: propertyMargin, edge: propertyBottom, invalidation: propertyInvalidatesLayout},
@@ -109,9 +114,13 @@ var propertyDefinitions = [...]propertyDefinition{
 	{name: "padding-left", kind: propertyPadding, edge: propertyLeft, invalidation: propertyInvalidatesLayout},
 	{name: "padding-right", kind: propertyPadding, edge: propertyRight, invalidation: propertyInvalidatesLayout},
 	{name: "padding-top", kind: propertyPadding, edge: propertyTop, invalidation: propertyInvalidatesLayout},
+	{name: "position", kind: propertyPosition, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
+	{name: "right", kind: propertyInset, edge: propertyRight, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "text-align", kind: propertyTextAlign, inherited: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "text-decoration-line", kind: propertyTextDecorationLine, invalidation: propertyInvalidatesPaint},
+	{name: "top", kind: propertyInset, edge: propertyTop, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "width", kind: propertyWidth, invalidation: propertyInvalidatesLayout},
+	{name: "z-index", kind: propertyZIndex, invalidation: propertyInvalidatesPaint},
 }
 
 var computedPropertyNames = func() []string {
@@ -210,6 +219,8 @@ func (definition propertyDefinition) copy(destination *computedStyle, source com
 		destination.fontWeightValue = source.fontWeightValue
 	case propertyHeight:
 		destination.height = source.height
+	case propertyInset:
+		*definition.boxLength(destination) = *definition.boxLength(&source)
 	case propertyLineHeight:
 		destination.lineHeight = source.lineHeight
 	case propertyListStyleType:
@@ -228,6 +239,8 @@ func (definition propertyDefinition) copy(destination *computedStyle, source com
 		destination.overflowY = source.overflowY
 	case propertyPadding:
 		*definition.boxLength(destination) = *definition.boxLength(&source)
+	case propertyPosition:
+		destination.position = source.position
 	case propertyTextAlign:
 		destination.textAlign = source.textAlign
 	case propertyTextDecorationLine:
@@ -235,6 +248,8 @@ func (definition propertyDefinition) copy(destination *computedStyle, source com
 		destination.underline = destination.ancestorUnderline || source.textDecoration == TextDecorationUnderline
 	case propertyWidth:
 		destination.width = source.width
+	case propertyZIndex:
+		destination.zIndex = source.zIndex
 	}
 }
 
@@ -286,6 +301,9 @@ func (definition propertyDefinition) valid(source string, viewport Viewport) boo
 	case propertyHeight, propertyMinWidth, propertyWidth:
 		parsed, ok := parseLength(source, 1, 1, viewport)
 		return ok && nonNegativeLength(parsed)
+	case propertyInset:
+		_, ok := parseLength(source, 1, 1, viewport)
+		return ok
 	case propertyLineHeight:
 		if keyword, ok := singleCSSKeyword(source); ok && keyword == "normal" {
 			return true
@@ -320,6 +338,9 @@ func (definition propertyDefinition) valid(source string, viewport Viewport) boo
 	case propertyPadding:
 		parsed, ok := parseLength(source, 1, 1, viewport)
 		return ok && parsed.unit != lengthAuto && nonNegativeLength(parsed)
+	case propertyPosition:
+		keyword, ok := singleCSSKeyword(source)
+		return ok && (keyword == "static" || keyword == "relative" || keyword == "absolute" || keyword == "fixed")
 	case propertyTextAlign:
 		keyword, ok := singleCSSKeyword(source)
 		if !ok {
@@ -336,6 +357,12 @@ func (definition propertyDefinition) valid(source string, viewport Viewport) boo
 			return true
 		}
 		return valueContainsKeyword(source, "underline")
+	case propertyZIndex:
+		if keyword, ok := singleCSSKeyword(source); ok && keyword == "auto" {
+			return true
+		}
+		token, ok := singleCSSNumber(source)
+		return ok && token.Integer
 	default:
 		return false
 	}
@@ -405,6 +432,10 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 		if parsed, ok := parseLength(source, style.fontSize, style.fontSize, context.viewport); ok && nonNegativeLength(parsed) {
 			style.height = parsed
 		}
+	case propertyInset:
+		if parsed, ok := parseLength(source, style.fontSize, style.fontSize, context.viewport); ok {
+			*definition.boxLength(style) = parsed
+		}
 	case propertyLineHeight:
 		if keyword, ok := singleCSSKeyword(source); ok && keyword == "normal" {
 			style.lineHeight = computedLineHeight{value: 1.2, normal: true}
@@ -452,6 +483,18 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 		if parsed, ok := parseLength(source, style.fontSize, style.fontSize, context.viewport); ok && parsed.unit != lengthAuto && nonNegativeLength(parsed) {
 			*definition.boxLength(style) = parsed
 		}
+	case propertyPosition:
+		keyword, _ := singleCSSKeyword(source)
+		switch keyword {
+		case "relative":
+			style.position = PositionRelative
+		case "absolute":
+			style.position = PositionAbsolute
+		case "fixed":
+			style.position = PositionFixed
+		default:
+			style.position = PositionStatic
+		}
 	case propertyTextAlign:
 		keyword, _ := singleCSSKeyword(source)
 		switch keyword {
@@ -480,6 +523,12 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 		if parsed, ok := parseLength(source, style.fontSize, style.fontSize, context.viewport); ok && nonNegativeLength(parsed) {
 			style.width = parsed
 		}
+	case propertyZIndex:
+		if keyword, ok := singleCSSKeyword(source); ok && keyword == "auto" {
+			style.zIndex = ZIndex{auto: true}
+		} else if token, ok := singleCSSNumber(source); ok && token.Integer {
+			style.zIndex = ZIndex{value: int(token.Number)}
+		}
 	}
 }
 
@@ -503,6 +552,8 @@ func (definition propertyDefinition) serialize(computed ComputedStyle) string {
 		return strconv.Itoa(computed.fontWeightValue)
 	case propertyHeight:
 		return serializeComputedLength(computed.height)
+	case propertyInset:
+		return serializeComputedLength(*definition.boxLength(&computed))
 	case propertyLineHeight:
 		if computed.lineHeight.normal {
 			return "normal"
@@ -529,6 +580,17 @@ func (definition propertyDefinition) serialize(computed ComputedStyle) string {
 		return serializeOverflowMode(computed.overflowX)
 	case propertyOverflowY:
 		return serializeOverflowMode(computed.overflowY)
+	case propertyPosition:
+		switch computed.position {
+		case PositionRelative:
+			return "relative"
+		case PositionAbsolute:
+			return "absolute"
+		case PositionFixed:
+			return "fixed"
+		default:
+			return "static"
+		}
 	case propertyTextAlign:
 		return serializeComputedTextAlignment(computed.textAlign)
 	case propertyTextDecorationLine:
@@ -538,6 +600,11 @@ func (definition propertyDefinition) serialize(computed ComputedStyle) string {
 		return "none"
 	case propertyWidth:
 		return serializeComputedLength(computed.width)
+	case propertyZIndex:
+		if computed.zIndex.auto {
+			return "auto"
+		}
+		return strconv.Itoa(computed.zIndex.value)
 	default:
 		return ""
 	}
@@ -560,6 +627,17 @@ func (definition propertyDefinition) borderSide(style *computedStyle) *borderSid
 
 func (definition propertyDefinition) boxLength(style *computedStyle) *length {
 	switch definition.kind {
+	case propertyInset:
+		switch definition.edge {
+		case propertyTop:
+			return &style.top
+		case propertyRight:
+			return &style.right
+		case propertyBottom:
+			return &style.bottom
+		case propertyLeft:
+			return &style.left
+		}
 	case propertyMargin:
 		switch definition.edge {
 		case propertyTop:

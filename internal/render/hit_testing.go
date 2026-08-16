@@ -41,7 +41,16 @@ func hitTestVisualBox(box *Box, x, y float64, transforms map[*dom.Node]VisualTra
 	if boxTransform.HasClip && !containsPoint(boxTransform.Clip, x, y) {
 		return nil
 	}
+	negative, nonNegative := positionedPaintChildren(box)
+	for index := len(nonNegative) - 1; index >= 0; index-- {
+		if node := hitTestVisualBox(nonNegative[index], x, y, transforms); node != nil {
+			return node
+		}
+	}
 	for index := len(box.Children) - 1; index >= 0; index-- {
+		if box.Children[index].positioned {
+			continue
+		}
 		if node := hitTestVisualBox(box.Children[index], x, y, transforms); node != nil {
 			return node
 		}
@@ -62,6 +71,11 @@ func hitTestVisualBox(box *Box, x, y float64, transforms map[*dom.Node]VisualTra
 			}
 		}
 	}
+	for index := len(negative) - 1; index >= 0; index-- {
+		if node := hitTestVisualBox(negative[index], x, y, transforms); node != nil {
+			return node
+		}
+	}
 	if containsPoint(translatedRect(box.Bounds, boxTransform), x, y) {
 		return box.Node
 	}
@@ -78,7 +92,16 @@ func hitTestBox(box *Box, x, y float64) *dom.Node {
 	if box == nil {
 		return nil
 	}
+	negative, nonNegative := positionedPaintChildren(box)
+	for index := len(nonNegative) - 1; index >= 0; index-- {
+		if node := hitTestBox(nonNegative[index], x, y); node != nil {
+			return node
+		}
+	}
 	for index := len(box.Children) - 1; index >= 0; index-- {
+		if box.Children[index].positioned {
+			continue
+		}
 		if node := hitTestBox(box.Children[index], x, y); node != nil {
 			return node
 		}
@@ -100,6 +123,11 @@ func hitTestBox(box *Box, x, y float64) *dom.Node {
 			if containsPoint(bounds, x, y) {
 				return fragment.Text.Node
 			}
+		}
+	}
+	for index := len(negative) - 1; index >= 0; index-- {
+		if node := hitTestBox(negative[index], x, y); node != nil {
+			return node
 		}
 	}
 	if containsPoint(box.Bounds, x, y) {

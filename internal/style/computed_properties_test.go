@@ -69,11 +69,13 @@ func TestComputedPropertyValueSerializesEverySupportedLonghand(t *testing.T) {
 		"border-top-color":     "rgb(255, 0, 0)",
 		"border-top-style":     "solid",
 		"border-top-width":     "1px",
+		"bottom":               "auto",
 		"color":                "rgb(18, 52, 86)",
 		"display":              "block",
 		"font-size":            "18.5px",
 		"font-weight":          "725",
 		"height":               "12px",
+		"left":                 "auto",
 		"line-height":          "21.25px",
 		"list-style-type":      "square",
 		"margin-bottom":        "2vh",
@@ -87,9 +89,13 @@ func TestComputedPropertyValueSerializesEverySupportedLonghand(t *testing.T) {
 		"padding-left":         "1.25px",
 		"padding-right":        "3vw",
 		"padding-top":          "4vh",
+		"position":             "static",
+		"right":                "auto",
 		"text-align":           "right",
 		"text-decoration-line": "underline",
+		"top":                  "auto",
 		"width":                "auto",
+		"z-index":              "0",
 	}
 
 	for property, expected := range want {

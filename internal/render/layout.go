@@ -83,6 +83,9 @@ func layoutDocument(root *styledNode, viewport Viewport, images map[*dom.Node]im
 		htmlBox.Bounds.Height = bodyBottom
 		htmlBox.ContentBounds.Height = bodyBottom
 	}
+	if err := context.layoutPositionedDescendants(root, documentBox); err != nil {
+		return nil, nil, err
+	}
 	return documentBox, context.styles, nil
 }
 
@@ -117,7 +120,7 @@ func (context *layoutContext) layoutBlock(node *styledNode, containingX, content
 				Padding:       padding,
 				Border:        border,
 			}
-			return context.finalizeBlock(node, box)
+			return context.finalizeBlock(node, box, availableWidth)
 		}
 		outerWidth := imageWidth + padding.Left + padding.Right + border.Left + border.Right
 		remaining := availableWidth - outerWidth - left - right
@@ -142,7 +145,7 @@ func (context *layoutContext) layoutBlock(node *styledNode, containingX, content
 			Fragments:     []InlineFragment{fragment},
 			flow:          []flowItem{{fragment: fragment}},
 		}
-		return context.finalizeBlock(node, box)
+		return context.finalizeBlock(node, box, availableWidth)
 	}
 
 	width := availableWidth - left - right - padding.Left - padding.Right - border.Left - border.Right
@@ -183,6 +186,10 @@ func (context *layoutContext) layoutBlock(node *styledNode, containingX, content
 			index++
 			continue
 		}
+		if isOutOfFlow(child.style.Position()) {
+			index++
+			continue
+		}
 		if isBlockLevel(child.style.Display()) {
 			topMargin := resolveLength(child.style.MarginTop(), width, context.viewport, 0)
 			gap := math.Max(previousBottomMargin, topMargin)
@@ -205,7 +212,9 @@ func (context *layoutContext) layoutBlock(node *styledNode, containingX, content
 		}
 
 		end := index
-		for end < len(node.children) && !isBlockLevel(node.children[end].style.Display()) {
+		for end < len(node.children) &&
+			!isBlockLevel(node.children[end].style.Display()) &&
+			!isOutOfFlow(node.children[end].style.Position()) {
 			end++
 		}
 		fragments, height, err := context.layoutInline(node.children[index:end], box.ContentBounds.X, cursorY, width, node.style.TextAlignment())
@@ -250,16 +259,160 @@ func (context *layoutContext) layoutBlock(node *styledNode, containingX, content
 	}
 	box.ContentBounds.Height = contentHeight
 	box.Bounds.Height = border.Top + padding.Top + box.ContentBounds.Height + padding.Bottom + border.Bottom
-	return context.finalizeBlock(node, box)
+	return context.finalizeBlock(node, box, availableWidth)
 }
 
-func (context *layoutContext) finalizeBlock(node *styledNode, box *Box) (*Box, error) {
+func (context *layoutContext) finalizeBlock(node *styledNode, box *Box, containingWidth float64) (*Box, error) {
 	if node.style.Display() == displayListItem && node.style.ListStyleType() != listStyleNone {
 		if err := context.addListMarker(node, box); err != nil {
 			return nil, err
 		}
 	}
+	if node.style.Position() == positionRelative {
+		deltaX := relativePositionOffset(node.style.Left(), node.style.Right(), containingWidth, context.viewport)
+		deltaY := relativePositionOffset(node.style.Top(), node.style.Bottom(), box.Bounds.Height, context.viewport)
+		translateLayoutBox(box, deltaX, deltaY)
+	}
 	return box, nil
+}
+
+func relativePositionOffset(primary, opposite length, percentageBase float64, viewport Viewport) float64 {
+	if primary.Unit() != lengthAuto {
+		return resolveLength(primary, percentageBase, viewport, 0)
+	}
+	if opposite.Unit() != lengthAuto {
+		return -resolveLength(opposite, percentageBase, viewport, 0)
+	}
+	return 0
+}
+
+func translateLayoutBox(box *Box, deltaX, deltaY float64) {
+	if box == nil || (deltaX == 0 && deltaY == 0) {
+		return
+	}
+	box.Bounds.X += deltaX
+	box.Bounds.Y += deltaY
+	box.ContentBounds.X += deltaX
+	box.ContentBounds.Y += deltaY
+	for index := range box.Fragments {
+		translateInlineFragment(&box.Fragments[index], deltaX, deltaY)
+	}
+	for index := range box.Text {
+		box.Text[index].X += deltaX
+		box.Text[index].BaselineY += deltaY
+	}
+	for index := range box.flow {
+		if box.flow[index].box == nil {
+			translateInlineFragment(&box.flow[index].fragment, deltaX, deltaY)
+		}
+	}
+	for _, child := range box.Children {
+		translateLayoutBox(child, deltaX, deltaY)
+	}
+}
+
+func translateInlineFragment(fragment *InlineFragment, deltaX, deltaY float64) {
+	if fragment == nil {
+		return
+	}
+	switch fragment.Kind {
+	case TextFragmentKind:
+		fragment.Text.X += deltaX
+		fragment.Text.BaselineY += deltaY
+	case ImageFragmentKind:
+		fragment.Image.Bounds.X += deltaX
+		fragment.Image.Bounds.Y += deltaY
+	}
+}
+
+func indexLayoutBoxes(box *Box, boxes map[*dom.Node]*Box) {
+	if box == nil {
+		return
+	}
+	if box.Node != nil {
+		boxes[box.Node] = box
+	}
+	for _, child := range box.Children {
+		indexLayoutBoxes(child, boxes)
+	}
+}
+
+// layoutPositionedDescendants adds out-of-flow boxes after normal flow has
+// established every possible containing block. The boxes stay attached to
+// their nearest represented DOM ancestor for geometry and input traversal,
+// while their used coordinates come from the nearest positioned ancestor (or
+// the viewport for fixed positioning).
+func (context *layoutContext) layoutPositionedDescendants(root *styledNode, rootBox *Box) error {
+	boxes := make(map[*dom.Node]*Box)
+	indexLayoutBoxes(rootBox, boxes)
+	viewport := Rect{Width: float64(context.viewport.Width), Height: float64(context.viewport.Height)}
+
+	var visit func(*styledNode, *Box, Rect) error
+	visit = func(node *styledNode, parentBox *Box, containingBlock Rect) error {
+		if node == nil || node.style.Display() == displayNone {
+			return nil
+		}
+		currentBox := boxes[node.node]
+		if isOutOfFlow(node.style.Position()) {
+			if parentBox == nil {
+				parentBox = rootBox
+			}
+			usedContainingBlock := containingBlock
+			if node.style.Position() == positionFixed {
+				usedContainingBlock = viewport
+			}
+			staticY := usedContainingBlock.Y + resolveLength(node.style.MarginTop(), usedContainingBlock.Width, context.viewport, 0)
+			positioned, err := context.layoutBlock(node, usedContainingBlock.X, staticY, usedContainingBlock.Width)
+			if err != nil {
+				return err
+			}
+			positionOutOfFlowBox(positioned, node.style, usedContainingBlock, context.viewport)
+			positioned.positioned = true
+			positioned.zIndex = node.style.ZIndex().Value()
+			positioned.zIndexAuto = node.style.ZIndex().IsAuto()
+			parentBox.Children = append(parentBox.Children, positioned)
+			indexLayoutBoxes(positioned, boxes)
+			currentBox = positioned
+		}
+		if currentBox == nil {
+			currentBox = parentBox
+		}
+		nextContainingBlock := containingBlock
+		if currentBox != nil && node.style.Position() != positionStatic {
+			nextContainingBlock = boxClientBounds(currentBox)
+		}
+		for _, child := range node.children {
+			if err := visit(child, currentBox, nextContainingBlock); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	return visit(root, rootBox, viewport)
+}
+
+func positionOutOfFlowBox(box *Box, style computedStyle, containingBlock Rect, viewport Viewport) {
+	if box == nil {
+		return
+	}
+	desiredX := box.Bounds.X
+	desiredY := box.Bounds.Y
+	marginLeft := resolveLength(style.MarginLeft(), containingBlock.Width, viewport, 0)
+	marginRight := resolveLength(style.MarginRight(), containingBlock.Width, viewport, 0)
+	marginTop := resolveLength(style.MarginTop(), containingBlock.Width, viewport, 0)
+	marginBottom := resolveLength(style.MarginBottom(), containingBlock.Width, viewport, 0)
+	if style.Left().Unit() != lengthAuto {
+		desiredX = containingBlock.X + resolveLength(style.Left(), containingBlock.Width, viewport, 0) + marginLeft
+	} else if style.Right().Unit() != lengthAuto {
+		desiredX = containingBlock.X + containingBlock.Width - resolveLength(style.Right(), containingBlock.Width, viewport, 0) - marginRight - box.Bounds.Width
+	}
+	if style.Top().Unit() != lengthAuto {
+		desiredY = containingBlock.Y + resolveLength(style.Top(), containingBlock.Height, viewport, 0) + marginTop
+	} else if style.Bottom().Unit() != lengthAuto {
+		desiredY = containingBlock.Y + containingBlock.Height - resolveLength(style.Bottom(), containingBlock.Height, viewport, 0) - marginBottom - box.Bounds.Height
+	}
+	translateLayoutBox(box, desiredX-box.Bounds.X, desiredY-box.Bounds.Y)
 }
 
 func (context *layoutContext) addListMarker(node *styledNode, box *Box) error {

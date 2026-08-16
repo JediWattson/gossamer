@@ -264,6 +264,29 @@ const (
 	OverflowClip
 )
 
+// PositionMode is the computed positioning scheme used by layout. Relative
+// boxes remain in normal flow, absolute boxes use their nearest positioned
+// ancestor, and fixed boxes use the viewport.
+type PositionMode uint8
+
+const (
+	PositionStatic PositionMode = iota
+	PositionRelative
+	PositionAbsolute
+	PositionFixed
+)
+
+// ZIndex preserves the distinction between the initial auto value and an
+// explicit integer, including zero. Layout uses that distinction to decide
+// whether a positioned box establishes an isolated stacking context.
+type ZIndex struct {
+	value int
+	auto  bool
+}
+
+func (index ZIndex) Value() int   { return index.value }
+func (index ZIndex) IsAuto() bool { return index.auto }
+
 // ComputedStyle is the typed, layout-independent result of cascade,
 // inheritance, and computed-value resolution for one DOM node. Snapshot
 // lookups return it by value, so callers cannot mutate stored styles.
@@ -283,6 +306,12 @@ type ComputedStyle struct {
 	opacity           float64
 	overflowX         OverflowMode
 	overflowY         OverflowMode
+	position          PositionMode
+	top               Length
+	right             Length
+	bottom            Length
+	left              Length
+	zIndex            ZIndex
 	width             Length
 	height            Length
 	minWidth          Length
@@ -325,6 +354,12 @@ func (computed ComputedStyle) ListStyleType() ListStyleType           { return c
 func (computed ComputedStyle) Opacity() float64                       { return computed.opacity }
 func (computed ComputedStyle) OverflowX() OverflowMode                { return computed.overflowX }
 func (computed ComputedStyle) OverflowY() OverflowMode                { return computed.overflowY }
+func (computed ComputedStyle) Position() PositionMode                 { return computed.position }
+func (computed ComputedStyle) Top() Length                            { return computed.top }
+func (computed ComputedStyle) Right() Length                          { return computed.right }
+func (computed ComputedStyle) Bottom() Length                         { return computed.bottom }
+func (computed ComputedStyle) Left() Length                           { return computed.left }
+func (computed ComputedStyle) ZIndex() ZIndex                         { return computed.zIndex }
 func (computed ComputedStyle) Width() Length                          { return computed.width }
 func (computed ComputedStyle) Height() Length                         { return computed.height }
 func (computed ComputedStyle) MinWidth() Length                       { return computed.minWidth }
@@ -651,6 +686,12 @@ func cssInitialStyle(viewport Viewport) computedStyle {
 		lineHeight:      computedLineHeight{value: 1.2, normal: true},
 		textAlign:       alignStart,
 		opacity:         1,
+		position:        PositionStatic,
+		top:             length{unit: lengthAuto},
+		right:           length{unit: lengthAuto},
+		bottom:          length{unit: lengthAuto},
+		left:            length{unit: lengthAuto},
+		zIndex:          ZIndex{auto: true},
 		width:           length{unit: lengthAuto},
 		height:          length{unit: lengthAuto},
 		minWidth:        px(0),

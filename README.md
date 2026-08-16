@@ -163,6 +163,9 @@ frame clock; callback mutations and microtasks publish at most one later frame.
 `ResizeObserver` and viewport-root `IntersectionObserver` sample that same
 native layout at an explicit checkpoint, retain canonical wrappers while
 registered, and release their native claims on disconnect or Realm teardown.
+Block positioned layout now supports relative, absolute, and fixed boxes,
+physical insets, integer `z-index`, and one shared local order for display-list
+paint and hit testing; fixed geometry remains stable through root scrolling.
 Browser input currently covers click, pointer, keyboard, input, focus, and
 change event families. Profiling covers heap totals, sampled allocations,
 GC callbacks, weak-wrapper collection, wrapper-root region sweeps, callback
@@ -253,8 +256,8 @@ The following are intentionally still outside the current milestone:
   navigation globals, scrollbar UI, and a windowed UI
 - Full HTML error recovery, including table foster parenting, formatting
   element reconstruction, templates, SVG/MathML, and encoding sniffing
-- Flexbox, Grid, table layout, floats, positioned layout, and retained inline
-  boxes
+- Flexbox, Grid, table layout, floats, sticky and full inline positioned
+  layout, and retained inline boxes
 - The remaining CSS math grammar beyond the current bounded length
   `calc()`/`min()`/`max()`/`clamp()` slice, plus gradients, background images,
   border radii, shadows, transforms, and generated content

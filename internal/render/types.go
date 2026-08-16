@@ -68,6 +68,9 @@ type Box struct {
 	Fragments     []InlineFragment
 	Text          []TextFragment
 	flow          []flowItem
+	positioned    bool
+	zIndex        int
+	zIndexAuto    bool
 }
 
 type flowItem struct {
