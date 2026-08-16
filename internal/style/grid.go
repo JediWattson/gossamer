@@ -11,6 +11,7 @@ import (
 const (
 	maxGridTrackListEntries = 1024
 	maxGridLineNames        = 8192
+	maxGridTemplateCells    = 1_000_000
 )
 
 // GridTrackKind identifies one computed track-breadth form.
@@ -61,6 +62,61 @@ type GridTrackList struct {
 	tracks        []GridTrackSize
 	lineNames     [][]string
 	serialization string
+}
+
+// GridNamedArea is one rectangular region in a computed
+// grid-template-areas value. End coordinates are exclusive grid lines.
+type GridNamedArea struct {
+	name                   string
+	rowStart, rowEnd       int
+	columnStart, columnEnd int
+}
+
+func (area GridNamedArea) Name() string     { return area.name }
+func (area GridNamedArea) RowStart() int    { return area.rowStart }
+func (area GridNamedArea) RowEnd() int      { return area.rowEnd }
+func (area GridNamedArea) ColumnStart() int { return area.columnStart }
+func (area GridNamedArea) ColumnEnd() int   { return area.columnEnd }
+
+// GridTemplateAreas is an immutable rectangular named-area matrix. Empty
+// strings in rows represent null cells.
+type GridTemplateAreas struct {
+	rows            [][]string
+	columns         int
+	areas           map[string]GridNamedArea
+	areaOrder       []string
+	columnLineNames [][]string
+	rowLineNames    [][]string
+	serialization   string
+}
+
+func (template GridTemplateAreas) Rows() int    { return len(template.rows) }
+func (template GridTemplateAreas) Columns() int { return template.columns }
+
+func (template GridTemplateAreas) Row(index int) []string {
+	if index < 0 || index >= len(template.rows) {
+		return nil
+	}
+	return append([]string(nil), template.rows[index]...)
+}
+
+func (template GridTemplateAreas) Area(name string) (GridNamedArea, bool) {
+	area, ok := template.areas[name]
+	return area, ok
+}
+
+func (template GridTemplateAreas) ColumnLineNames(line int) []string {
+	if line < 0 || line >= len(template.columnLineNames) {
+		return nil
+	}
+	return append([]string(nil), template.columnLineNames[line]...)
+}
+
+func (template GridTemplateAreas) RowLineNames(line int) []string {
+	if line < 0 || line >= len(template.rowLineNames) {
+		return nil
+	}
+	return append([]string(nil), template.rowLineNames[line]...)
 }
 
 func (list GridTrackList) Len() int { return len(list.tracks) }
@@ -454,6 +510,143 @@ func nonWhitespaceComponents(values []css.ComponentValue) []css.ComponentValue {
 	return result
 }
 
+func parseGridTemplateAreas(source string) (GridTemplateAreas, bool) {
+	value, ok := parsePropertyValue(source)
+	if !ok || len(value.terms) == 0 {
+		return GridTemplateAreas{}, false
+	}
+	if len(value.terms) == 1 {
+		if keyword, keywordOK := componentKeyword(value.terms[0]); keywordOK && keyword == "none" {
+			return GridTemplateAreas{serialization: "none"}, true
+		}
+	}
+	if len(value.terms) > maxGridTrackListEntries {
+		return GridTemplateAreas{}, false
+	}
+	template := GridTemplateAreas{
+		rows:  make([][]string, 0, len(value.terms)),
+		areas: make(map[string]GridNamedArea),
+	}
+	serializedRows := make([]string, 0, len(value.terms))
+	for rowIndex, term := range value.terms {
+		token, tokenOK := componentToken(term)
+		if !tokenOK || token.Kind != css.TokenString || token.Incomplete {
+			return GridTemplateAreas{}, false
+		}
+		row, rowOK := parseGridTemplateAreaRow(token.Value)
+		if !rowOK || len(row) > maxGridTrackListEntries ||
+			template.columns != 0 && len(row) != template.columns {
+			return GridTemplateAreas{}, false
+		}
+		if template.columns == 0 {
+			template.columns = len(row)
+		}
+		if template.columns > maxGridTemplateCells/(len(template.rows)+1) {
+			return GridTemplateAreas{}, false
+		}
+		template.rows = append(template.rows, row)
+		serializedRows = append(serializedRows, serializeGridTemplateAreaRow(row))
+		for columnIndex, name := range row {
+			if name == "" {
+				continue
+			}
+			area, exists := template.areas[name]
+			if !exists {
+				area = GridNamedArea{
+					name: name, rowStart: rowIndex, rowEnd: rowIndex + 1,
+					columnStart: columnIndex, columnEnd: columnIndex + 1,
+				}
+				template.areaOrder = append(template.areaOrder, name)
+			} else {
+				area.rowStart = min(area.rowStart, rowIndex)
+				area.rowEnd = max(area.rowEnd, rowIndex+1)
+				area.columnStart = min(area.columnStart, columnIndex)
+				area.columnEnd = max(area.columnEnd, columnIndex+1)
+			}
+			template.areas[name] = area
+		}
+	}
+	for name, area := range template.areas {
+		for row := area.rowStart; row < area.rowEnd; row++ {
+			for column := area.columnStart; column < area.columnEnd; column++ {
+				if template.rows[row][column] != name {
+					return GridTemplateAreas{}, false
+				}
+			}
+		}
+	}
+	if len(template.areaOrder) > maxGridLineNames/4 {
+		return GridTemplateAreas{}, false
+	}
+	template.columnLineNames = make([][]string, template.columns+1)
+	template.rowLineNames = make([][]string, len(template.rows)+1)
+	for _, name := range template.areaOrder {
+		area := template.areas[name]
+		template.columnLineNames[area.columnStart] = append(template.columnLineNames[area.columnStart], name+"-start")
+		template.columnLineNames[area.columnEnd] = append(template.columnLineNames[area.columnEnd], name+"-end")
+		template.rowLineNames[area.rowStart] = append(template.rowLineNames[area.rowStart], name+"-start")
+		template.rowLineNames[area.rowEnd] = append(template.rowLineNames[area.rowEnd], name+"-end")
+	}
+	template.serialization = strings.Join(serializedRows, " ")
+	return template, true
+}
+
+func parseGridTemplateAreaRow(source string) ([]string, bool) {
+	runes := []rune(source)
+	row := make([]string, 0, len(runes))
+	for position := 0; position < len(runes); {
+		candidate := runes[position]
+		switch {
+		case gridAreaWhitespace(candidate):
+			position++
+		case candidate == '.':
+			for position < len(runes) && runes[position] == '.' {
+				position++
+			}
+			row = append(row, "")
+		case gridAreaIdentCodePoint(candidate):
+			start := position
+			for position < len(runes) && gridAreaIdentCodePoint(runes[position]) {
+				position++
+			}
+			row = append(row, string(runes[start:position]))
+		default:
+			return nil, false
+		}
+		if len(row) > maxGridTrackListEntries {
+			return nil, false
+		}
+	}
+	return row, len(row) != 0
+}
+
+func gridAreaWhitespace(candidate rune) bool {
+	return candidate == '\t' || candidate == '\n' || candidate == '\f' || candidate == '\r' || candidate == ' '
+}
+
+func gridAreaIdentCodePoint(candidate rune) bool {
+	return candidate >= 'a' && candidate <= 'z' || candidate >= 'A' && candidate <= 'Z' ||
+		candidate >= '0' && candidate <= '9' || candidate == '-' || candidate == '_' || candidate >= 0x80
+}
+
+func serializeGridTemplateAreaRow(row []string) string {
+	serialized := make([]string, len(row))
+	for index, name := range row {
+		serialized[index] = name
+		if name == "" {
+			serialized[index] = "."
+		}
+	}
+	return `"` + strings.Join(serialized, " ") + `"`
+}
+
+func serializeGridTemplateAreas(template GridTemplateAreas) string {
+	if template.serialization != "" {
+		return template.serialization
+	}
+	return "none"
+}
+
 func parseGridAutoFlow(source string) (GridAutoFlow, bool) {
 	value, ok := parsePropertyValue(source)
 	if !ok || len(value.terms) < 1 || len(value.terms) > 2 {
@@ -591,6 +784,60 @@ func parseGridLineShorthand(source string) (GridLine, GridLine, bool) {
 	start, startOK := parseGridLineTerms(value.terms[:slash])
 	end, endOK := parseGridLineTerms(value.terms[slash+1:])
 	return start, end, startOK && endOK
+}
+
+func parseGridAreaShorthand(source string) (GridLine, GridLine, GridLine, GridLine, bool) {
+	value, ok := parsePropertyValue(source)
+	if !ok || len(value.terms) == 0 {
+		return GridLine{}, GridLine{}, GridLine{}, GridLine{}, false
+	}
+	segments := make([][]css.ComponentValue, 1, 4)
+	for _, term := range value.terms {
+		token, tokenOK := componentToken(term)
+		if tokenOK && token.Kind == css.TokenDelim && token.Value == "/" {
+			if len(segments[len(segments)-1]) == 0 || len(segments) == 4 {
+				return GridLine{}, GridLine{}, GridLine{}, GridLine{}, false
+			}
+			segments = append(segments, nil)
+			continue
+		}
+		segments[len(segments)-1] = append(segments[len(segments)-1], term)
+	}
+	if len(segments[len(segments)-1]) == 0 {
+		return GridLine{}, GridLine{}, GridLine{}, GridLine{}, false
+	}
+	parsed := make([]GridLine, len(segments))
+	for index := range segments {
+		parsed[index], ok = parseGridLineTerms(segments[index])
+		if !ok {
+			return GridLine{}, GridLine{}, GridLine{}, GridLine{}, false
+		}
+	}
+	automatic := GridLine{kind: GridLineAuto}
+	rowStart := parsed[0]
+	columnStart := automatic
+	if len(parsed) > 1 {
+		columnStart = parsed[1]
+	} else if gridLineIsCustomIdent(rowStart) {
+		columnStart = rowStart
+	}
+	rowEnd := automatic
+	if len(parsed) > 2 {
+		rowEnd = parsed[2]
+	} else if gridLineIsCustomIdent(rowStart) {
+		rowEnd = rowStart
+	}
+	columnEnd := automatic
+	if len(parsed) > 3 {
+		columnEnd = parsed[3]
+	} else if gridLineIsCustomIdent(columnStart) {
+		columnEnd = columnStart
+	}
+	return rowStart, columnStart, rowEnd, columnEnd, true
+}
+
+func gridLineIsCustomIdent(line GridLine) bool {
+	return line.kind == GridLineNumber && line.name != "" && !line.numberExplicit
 }
 
 func serializeGridTrackSize(track GridTrackSize) string {

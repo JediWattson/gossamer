@@ -112,6 +112,52 @@ func TestGridNamedLinesPlaceItemsAndSurviveUsedGeometry(t *testing.T) {
 	}
 }
 
+func TestGridTemplateAreasCreateExplicitTracksAndPlaceNamedItems(t *testing.T) {
+	t.Parallel()
+
+	document, err := htmlparser.Parse(strings.NewReader(`<!doctype html><html><body style="margin:0">
+		<section id=grid style='display:grid;width:200px;grid-template-areas:"head head" "nav main" "foot .";grid-auto-columns:80px 120px;grid-auto-rows:20px 40px 30px'>
+			<header id=head style="grid-area:head"></header>
+			<nav id=nav style="grid-area:nav"></nav>
+			<main id=main style="grid-area:main"></main>
+			<footer id=foot style="grid-area:foot"></footer>
+		</section>
+	</body></html>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame, err := render.Render(document, render.Viewport{Width: 240, Height: 200})
+	if err != nil {
+		t.Fatal(err)
+	}
+	geometry := func(id string) render.LayoutGeometry {
+		t.Helper()
+		value, ok := frame.Layout.Geometry(findStaticPageElementByID(document, id))
+		if !ok {
+			t.Fatalf("%s has no geometry", id)
+		}
+		return value
+	}
+	grid := geometry("grid")
+	head := geometry("head")
+	navigation := geometry("nav")
+	main := geometry("main")
+	foot := geometry("foot")
+	assertNear(t, "area-created grid width", grid.ContentBounds.Width, 200)
+	assertNear(t, "head area width", head.Bounds.Width, 200)
+	assertNear(t, "head area height", head.Bounds.Height, 20)
+	assertNear(t, "nav column", navigation.Bounds.X, grid.ContentBounds.X)
+	assertNear(t, "nav row", navigation.Bounds.Y, grid.ContentBounds.Y+20)
+	assertNear(t, "nav width", navigation.Bounds.Width, 80)
+	assertNear(t, "main column", main.Bounds.X, grid.ContentBounds.X+80)
+	assertNear(t, "main width", main.Bounds.Width, 120)
+	assertNear(t, "foot row", foot.Bounds.Y, grid.ContentBounds.Y+60)
+	assertNear(t, "foot width", foot.Bounds.Width, 80)
+	if got := grid.GridColumnLineNames(); len(got) != 3 || len(got[0]) != 0 || len(got[1]) != 0 || len(got[2]) != 0 {
+		t.Fatalf("implicit area line names leaked into CSSOM geometry: %v", got)
+	}
+}
+
 func TestGridDenseAutoPlacementBackfillsEarlierHole(t *testing.T) {
 	t.Parallel()
 

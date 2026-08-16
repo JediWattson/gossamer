@@ -55,6 +55,7 @@ const (
 	propertyGridColumnStart
 	propertyGridRowEnd
 	propertyGridRowStart
+	propertyGridTemplateAreas
 	propertyGridTemplateColumns
 	propertyGridTemplateRows
 	propertyHeight
@@ -157,6 +158,7 @@ var propertyDefinitions = [...]propertyDefinition{
 	{name: "grid-column-start", kind: propertyGridColumnStart, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "grid-row-end", kind: propertyGridRowEnd, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "grid-row-start", kind: propertyGridRowStart, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
+	{name: "grid-template-areas", kind: propertyGridTemplateAreas, invalidation: propertyInvalidatesLayout},
 	{name: "grid-template-columns", kind: propertyGridTemplateColumns, invalidation: propertyInvalidatesLayout},
 	{name: "grid-template-rows", kind: propertyGridTemplateRows, invalidation: propertyInvalidatesLayout},
 	{name: "height", kind: propertyHeight, invalidation: propertyInvalidatesLayout},
@@ -229,6 +231,7 @@ var shorthandTargets = map[string][]string{
 	"font":            {"font-family", "font-size", "font-style", "font-weight", "line-height"},
 	"gap":             {"row-gap", "column-gap"},
 	"grid-column":     {"grid-column-start", "grid-column-end"},
+	"grid-area":       {"grid-row-start", "grid-column-start", "grid-row-end", "grid-column-end"},
 	"grid-row":        {"grid-row-start", "grid-row-end"},
 	"list-style":      {"list-style-type"},
 	"margin":          {"margin-top", "margin-right", "margin-bottom", "margin-left"},
@@ -341,6 +344,8 @@ func (definition propertyDefinition) copy(destination *computedStyle, source com
 		destination.gridRowEnd = source.gridRowEnd
 	case propertyGridRowStart:
 		destination.gridRowStart = source.gridRowStart
+	case propertyGridTemplateAreas:
+		destination.gridTemplateAreas = source.gridTemplateAreas
 	case propertyGridTemplateColumns:
 		destination.gridTemplateCols = source.gridTemplateCols
 	case propertyGridTemplateRows:
@@ -500,6 +505,9 @@ func (definition propertyDefinition) valid(source string, viewport Viewport) boo
 		return ok
 	case propertyGridColumnEnd, propertyGridColumnStart, propertyGridRowEnd, propertyGridRowStart:
 		_, ok := parseGridLine(source)
+		return ok
+	case propertyGridTemplateAreas:
+		_, ok := parseGridTemplateAreas(source)
 		return ok
 	case propertyGridTemplateColumns, propertyGridTemplateRows:
 		_, ok := parseGridTrackList(source, 1, viewport)
@@ -804,6 +812,10 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 		if parsed, ok := parseGridLine(source); ok {
 			style.gridRowStart = parsed
 		}
+	case propertyGridTemplateAreas:
+		if parsed, ok := parseGridTemplateAreas(source); ok {
+			style.gridTemplateAreas = parsed
+		}
 	case propertyGridTemplateColumns:
 		if parsed, ok := parseGridTrackList(source, style.fontSize, context.viewport); ok {
 			style.gridTemplateCols = parsed
@@ -1098,6 +1110,8 @@ func (definition propertyDefinition) serialize(computed ComputedStyle) string {
 		return serializeGridLine(computed.gridRowEnd)
 	case propertyGridRowStart:
 		return serializeGridLine(computed.gridRowStart)
+	case propertyGridTemplateAreas:
+		return serializeGridTemplateAreas(computed.gridTemplateAreas)
 	case propertyGridTemplateColumns:
 		return serializeGridTrackList(computed.gridTemplateCols)
 	case propertyGridTemplateRows:
@@ -1331,6 +1345,9 @@ func validComputedDeclaration(declaration css.Declaration, viewport Viewport) bo
 	case "grid-column", "grid-row":
 		_, _, ok := parseGridLineShorthand(declaration.Value)
 		return ok
+	case "grid-area":
+		_, _, _, _, ok := parseGridAreaShorthand(declaration.Value)
+		return ok
 	case "background":
 		_, ok := parseFirstComputedColor(declaration.Value)
 		return ok
@@ -1487,6 +1504,11 @@ func applyDeclaration(style *computedStyle, property, source string, context pro
 	case "grid-row":
 		if start, end, ok := parseGridLineShorthand(source); ok {
 			style.gridRowStart, style.gridRowEnd = start, end
+		}
+	case "grid-area":
+		if rowStart, columnStart, rowEnd, columnEnd, ok := parseGridAreaShorthand(source); ok {
+			style.gridRowStart, style.gridColumnStart = rowStart, columnStart
+			style.gridRowEnd, style.gridColumnEnd = rowEnd, columnEnd
 		}
 	case "border":
 		if parsed, ok := parseBorderShorthand(source, style.fontSize, context.viewport); ok {

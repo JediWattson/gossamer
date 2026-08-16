@@ -28,7 +28,7 @@ func TestResolveGridAxisHandlesLinesSpansAndReversedAreas(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got := resolveGridAxis(test.start, test.end, computedGridTrackListForTest(test.explicit))
+			got := resolveGridAxis(test.start, test.end, gridAxisDefinitionFromTemplate(computedGridTrackListForTest(test.explicit)))
 			if got.definite != test.wantDefinite || got.start != test.wantStart || got.span != test.wantSpan {
 				t.Fatalf("resolveGridAxis() = %#v, want definite=%t start=%d span=%d", got, test.wantDefinite, test.wantStart, test.wantSpan)
 			}
@@ -40,6 +40,7 @@ func TestResolveGridAxisHandlesNamedOccurrencesAreasAndSpans(t *testing.T) {
 	t.Parallel()
 
 	template := computedGridTrackListFromCSS("[outer area-start x] 10px [x] 10px [x area-end] 10px [outer]")
+	definition := gridAxisDefinitionFromTemplate(template)
 	tests := []struct {
 		name       string
 		start, end string
@@ -64,24 +65,24 @@ func TestResolveGridAxisHandlesNamedOccurrencesAreasAndSpans(t *testing.T) {
 			if test.end != "" {
 				end = computedGridLineFromCSS(test.end)
 			}
-			got := resolveGridAxis(start, end, template)
+			got := resolveGridAxis(start, end, definition)
 			if !got.definite || got.start != test.wantStart || got.span != test.wantSpan {
 				t.Fatalf("resolveGridAxis(%q,%q) = %#v, want start=%d span=%d", test.start, test.end, got, test.wantStart, test.wantSpan)
 			}
 		})
 	}
 
-	autoSpan := resolveGridAxis(computed.GridLine{}, computedGridLineFromCSS("span 2 x"), template)
-	model := gridLayoutModel{columnTracks: template}
+	autoSpan := resolveGridAxis(computed.GridLine{}, computedGridLineFromCSS("span 2 x"), definition)
+	model := gridLayoutModel{columnAxis: definition}
 	_, gotSpan := model.itemSpansAt(gridLayoutItem{column: autoSpan, row: gridAxisPlacement{span: 1}}, 0, 0)
 	if gotSpan != 1 {
 		t.Fatalf("unanchored named span = %d, want conflict-resolved span 1", gotSpan)
 	}
-	twoSpans := resolveGridAxis(computedGridLineFromCSS("span 3"), computedGridLineFromCSS("span 2"), template)
+	twoSpans := resolveGridAxis(computedGridLineFromCSS("span 3"), computedGridLineFromCSS("span 2"), definition)
 	if twoSpans.definite || twoSpans.span != 3 {
 		t.Fatalf("two spans = %#v, want end span discarded and start span 3", twoSpans)
 	}
-	twoNamedSpans := resolveGridAxis(computedGridLineFromCSS("span 3 x"), computedGridLineFromCSS("span 2 x"), template)
+	twoNamedSpans := resolveGridAxis(computedGridLineFromCSS("span 3 x"), computedGridLineFromCSS("span 2 x"), definition)
 	if twoNamedSpans.definite || twoNamedSpans.span != 1 {
 		t.Fatalf("two named spans = %#v, want end discarded then named-only span 1", twoNamedSpans)
 	}

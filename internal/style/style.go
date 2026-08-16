@@ -603,6 +603,7 @@ type ComputedStyle struct {
 	gridColumnStart   GridLine
 	gridRowEnd        GridLine
 	gridRowStart      GridLine
+	gridTemplateAreas GridTemplateAreas
 	gridTemplateCols  GridTrackList
 	gridTemplateRows  GridTrackList
 	color             color.NRGBA
@@ -708,6 +709,9 @@ func (computed ComputedStyle) GridColumnEnd() GridLine        { return computed.
 func (computed ComputedStyle) GridColumnStart() GridLine      { return computed.gridColumnStart }
 func (computed ComputedStyle) GridRowEnd() GridLine           { return computed.gridRowEnd }
 func (computed ComputedStyle) GridRowStart() GridLine         { return computed.gridRowStart }
+func (computed ComputedStyle) GridTemplateAreas() GridTemplateAreas {
+	return computed.gridTemplateAreas
+}
 func (computed ComputedStyle) GridTemplateColumns() GridTrackList {
 	return computed.gridTemplateCols
 }

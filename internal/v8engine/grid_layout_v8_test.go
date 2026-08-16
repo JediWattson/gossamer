@@ -83,6 +83,21 @@ func TestStockV8GridComputedStyleAndGeometryStayLive(t *testing.T) {
 				if (retained["grid-template-columns"] !== "[slot] 150px [edge slot] 150px [edge]") {
 					throw new Error("repeated named lines: " + retained["grid-template-columns"]);
 				}
+				grid.style.cssText = 'display:grid;width:300px;grid-template-areas:"head head" "nav main";grid-auto-columns:100px 200px;grid-auto-rows:20px 40px';
+				first.style.cssText = "grid-area:main";
+				const areaStyle = getComputedStyle(first);
+				const areaRect = first.getBoundingClientRect();
+				if (retained.gridTemplateAreas !== '"head head" "nav main"' ||
+					areaStyle.gridRowStart !== "main" || areaStyle.gridColumnStart !== "main" ||
+					areaStyle.gridRowEnd !== "main" || areaStyle.gridColumnEnd !== "main" ||
+					areaRect.left !== 100 || areaRect.top !== 20 || areaRect.width !== 200 || areaRect.height !== 40) {
+					throw new Error("named grid areas: " + [retained.gridTemplateAreas, areaStyle.gridRowStart, areaStyle.gridColumnStart, areaStyle.gridRowEnd, areaStyle.gridColumnEnd, areaRect.left, areaRect.top, areaRect.width, areaRect.height]);
+				}
+				grid.style["grid-template-areas"] = '"head main" "head main"';
+				const movedArea = first.getBoundingClientRect();
+				if (retained["grid-template-areas"] !== '"head main" "head main"' || movedArea.left !== 100 || movedArea.top !== 0 || movedArea.width !== 200 || movedArea.height !== 60) {
+					throw new Error("live named grid areas: " + [retained["grid-template-areas"], movedArea.left, movedArea.top, movedArea.width, movedArea.height]);
+				}
 			})();
 		`,
 	}); err != nil {

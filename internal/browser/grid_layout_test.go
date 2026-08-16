@@ -117,6 +117,53 @@ func TestComputedGridTemplateRetainsNamedLinesAndNamedPlacement(t *testing.T) {
 	}
 }
 
+func TestComputedGridTemplateAreasStayLiveAndDriveGeometry(t *testing.T) {
+	t.Parallel()
+
+	engine, page, gridID := computedStyleTestPage(t, `<!doctype html><html><body style="margin:0">
+		<section id=target style='display:grid;width:200px;grid-template-areas:"head head" "nav main";grid-auto-columns:80px 120px;grid-auto-rows:20px 40px'>
+			<header id=head style="grid-area:head"></header><main id=main style="grid-area:main"></main>
+		</section>
+	</body></html>`)
+	defer engine.Close()
+	generation := page.DocumentGeneration()
+	grid := NodeHandle{Document: generation, Node: gridID}
+	head := NodeHandle{Document: generation, Node: mustPageElementID(t, page, "head")}
+	main := NodeHandle{Document: generation, Node: mustPageElementID(t, page, "main")}
+
+	assertResolvedProperty(t, page, grid, "grid-template-areas", `"head head" "nav main"`)
+	assertResolvedProperty(t, page, grid, "grid-template-columns", "80px 120px")
+	for _, property := range []string{"grid-row-start", "grid-column-start", "grid-row-end", "grid-column-end"} {
+		assertResolvedProperty(t, page, main, property, "main")
+	}
+	initial, err := page.ElementGeometry(main)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if initial.Rect.X != 80 || initial.Rect.Y != 20 || initial.Rect.Width != 120 || initial.Rect.Height != 40 {
+		t.Fatalf("initial named area geometry = %#v", initial.Rect)
+	}
+
+	if err := page.document.SetAttribute(gridID, "style", `display:grid;width:200px;grid-template-areas:"head main" "head main";grid-auto-columns:80px 120px;grid-auto-rows:30px 30px`); err != nil {
+		t.Fatal(err)
+	}
+	assertResolvedProperty(t, page, grid, "grid-template-areas", `"head main" "head main"`)
+	mutatedHead, err := page.ElementGeometry(head)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutatedMain, err := page.ElementGeometry(main)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mutatedHead.Rect.Width != 80 || mutatedHead.Rect.Height != 60 || mutatedMain.Rect.X != 80 || mutatedMain.Rect.Height != 60 {
+		t.Fatalf("mutated area geometry head=%#v main=%#v", mutatedHead.Rect, mutatedMain.Rect)
+	}
+	if page.Frame() != nil || !page.Dirty() {
+		t.Fatal("grid-template-areas reads published a frame or cleared dirtiness")
+	}
+}
+
 func TestComputedGridMinMaxTracksResolveAndStayLive(t *testing.T) {
 	t.Parallel()
 

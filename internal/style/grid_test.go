@@ -2,6 +2,8 @@ package style
 
 import (
 	"slices"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/JediWattson/gossamer/internal/css"
@@ -150,6 +152,100 @@ func TestNamedGridLinesComputeExpandRepeatAndStayImmutable(t *testing.T) {
 	}
 }
 
+func TestNamedGridAreasComputeSerializeAndGenerateLines(t *testing.T) {
+	t.Parallel()
+
+	document := dom.NewDocument()
+	html := dom.NewElement("html")
+	body := dom.NewElement("body")
+	grid := dom.NewElement("section", dom.Attribute{Name: "style", Value: `grid-template-areas:"head   head" "nav main" "foot ...."`})
+	named := dom.NewElement("div", dom.Attribute{Name: "style", Value: "grid-area:main"})
+	numeric := dom.NewElement("div", dom.Attribute{Name: "style", Value: `grid-area:\31 st`})
+	explicit := dom.NewElement("div", dom.Attribute{Name: "style", Value: "grid-area:2 / 3 / span 2 / span 3"})
+	grid.AppendChild(named)
+	grid.AppendChild(numeric)
+	grid.AppendChild(explicit)
+	body.AppendChild(grid)
+	html.AppendChild(body)
+	document.AppendChild(html)
+
+	snapshot := Compute(document, Input{Environment: Environment{Width: 800, Height: 600, InitialFontSize: 16}})
+	gridStyle, _ := snapshot.Lookup(grid)
+	if got, found := ComputedPropertyValue(gridStyle, "grid-template-areas"); !found || got != `"head head" "nav main" "foot ."` {
+		t.Fatalf("grid-template-areas = %q, %t", got, found)
+	}
+	template := gridStyle.GridTemplateAreas()
+	if template.Rows() != 3 || template.Columns() != 2 {
+		t.Fatalf("template dimensions = %dx%d, want 3x2", template.Rows(), template.Columns())
+	}
+	main, ok := template.Area("main")
+	if !ok || main.RowStart() != 1 || main.RowEnd() != 2 || main.ColumnStart() != 1 || main.ColumnEnd() != 2 {
+		t.Fatalf("main area = %#v, %t", main, ok)
+	}
+	head, ok := template.Area("head")
+	if !ok || head.RowStart() != 0 || head.RowEnd() != 1 || head.ColumnStart() != 0 || head.ColumnEnd() != 2 {
+		t.Fatalf("head area = %#v, %t", head, ok)
+	}
+	if got, want := template.ColumnLineNames(0), []string{"head-start", "nav-start", "foot-start"}; !slices.Equal(got, want) {
+		t.Fatalf("column line 0 names = %v, want %v", got, want)
+	}
+	if got, want := template.RowLineNames(1), []string{"head-end", "nav-start", "main-start"}; !slices.Equal(got, want) {
+		t.Fatalf("row line 1 names = %v, want %v", got, want)
+	}
+	row := template.Row(1)
+	row[0] = "mutated"
+	if got := template.Row(1)[0]; got != "nav" {
+		t.Fatalf("mutating returned area row changed snapshot: %q", got)
+	}
+
+	namedStyle, _ := snapshot.Lookup(named)
+	for _, property := range []string{"grid-row-start", "grid-column-start", "grid-row-end", "grid-column-end"} {
+		if got, _ := ComputedPropertyValue(namedStyle, property); got != "main" {
+			t.Errorf("named %s = %q, want main", property, got)
+		}
+	}
+	numericStyle, _ := snapshot.Lookup(numeric)
+	for _, property := range []string{"grid-row-start", "grid-column-start", "grid-row-end", "grid-column-end"} {
+		if got, _ := ComputedPropertyValue(numericStyle, property); got != `\31 st` {
+			t.Errorf("numeric %s = %q, want escaped identifier", property, got)
+		}
+	}
+	explicitStyle, _ := snapshot.Lookup(explicit)
+	wantExplicit := map[string]string{
+		"grid-row-start": "2", "grid-column-start": "3",
+		"grid-row-end": "span 2", "grid-column-end": "span 3",
+	}
+	for property, want := range wantExplicit {
+		if got, _ := ComputedPropertyValue(explicitStyle, property); got != want {
+			t.Errorf("explicit %s = %q, want %q", property, got, want)
+		}
+	}
+}
+
+func TestGridTemplateAreasBoundGeneratedLineNames(t *testing.T) {
+	t.Parallel()
+
+	const columns = 683
+	var source strings.Builder
+	for row := range 3 {
+		if row != 0 {
+			source.WriteByte(' ')
+		}
+		source.WriteByte('"')
+		for column := range columns {
+			if column != 0 {
+				source.WriteByte(' ')
+			}
+			source.WriteByte('a')
+			source.WriteString(strconv.Itoa(row*columns + column))
+		}
+		source.WriteByte('"')
+	}
+	if _, ok := parseGridTemplateAreas(source.String()); ok {
+		t.Fatalf("accepted %d unique areas beyond the generated-line-name budget", columns*3)
+	}
+}
+
 func TestGridPropertyGrammarRejectsUnboundedOrUnsupportedTracks(t *testing.T) {
 	t.Parallel()
 
@@ -165,11 +261,15 @@ func TestGridPropertyGrammarRejectsUnboundedOrUnsupportedTracks(t *testing.T) {
 		{Property: "grid-template-columns", Value: "repeat(2, fit-content(10vw))"},
 		{Property: "grid-template-columns", Value: "[first] 20px [middle] repeat(2, [track] 1fr [edge]) [last]"},
 		{Property: "grid-template-columns", Value: "[] 10px []"},
+		{Property: "grid-template-areas", Value: `"head head" "nav main"`},
+		{Property: "grid-template-areas", Value: `"1st 1st"`},
 		{Property: "grid-auto-columns", Value: "fit-content(calc(20px + 5%))"},
 		{Property: "grid-auto-columns", Value: "10px min-content 2fr"},
 		{Property: "grid-auto-flow", Value: "dense row"},
 		{Property: "grid-column", Value: "span 2 / -1"},
 		{Property: "grid-column", Value: "content 2 / span 3 content"},
+		{Property: "grid-area", Value: "main"},
+		{Property: "grid-area", Value: "1 / 2 / span 2 / span 3"},
 		{Property: "grid-row-start", Value: "span row"},
 		{Property: "justify-content", Value: "stretch"},
 		{Property: "justify-items", Value: "start"},
@@ -201,6 +301,11 @@ func TestGridPropertyGrammarRejectsUnboundedOrUnsupportedTracks(t *testing.T) {
 		{Property: "grid-template-columns", Value: "[initial] 10px"},
 		{Property: "grid-template-columns", Value: "[a][b] 10px"},
 		{Property: "grid-template-columns", Value: "[a]"},
+		{Property: "grid-template-areas", Value: `"a a" "a"`},
+		{Property: "grid-template-areas", Value: `"a a" "a ."`},
+		{Property: "grid-template-areas", Value: `"a /"`},
+		{Property: "grid-template-areas", Value: `"   "`},
+		{Property: "grid-template-areas", Value: `none "a"`},
 		{Property: "grid-auto-flow", Value: "row column"},
 		{Property: "grid-column-start", Value: "0"},
 		{Property: "grid-column-end", Value: "span -1"},
@@ -209,6 +314,8 @@ func TestGridPropertyGrammarRejectsUnboundedOrUnsupportedTracks(t *testing.T) {
 		{Property: "grid-column-end", Value: "0 content"},
 		{Property: "grid-column-end", Value: "span 2 first second"},
 		{Property: "grid-row", Value: "1 / 2 / 3"},
+		{Property: "grid-area", Value: "1 / 2 / 3 / 4 / 5"},
+		{Property: "grid-area", Value: "1 / / 2"},
 		{Property: "justify-content", Value: "self-start"},
 		{Property: "justify-items", Value: "space-around"},
 	}

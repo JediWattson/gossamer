@@ -77,7 +77,7 @@ shared tokenizer.
 
 Current foundation: cascade and computed-value calculation live in
 `internal/style`; browser pages cache versioned, stable-ID snapshots; and
-render consumes the exact snapshot retained by each frame. The current 78
+render consumes the exact snapshot retained by each frame. The current 79
 longhands share one registry for inheritance, validation, computation, copying,
 serialization, and invalidation metadata, and `all` participates in the full
 layer/importance cascade without resetting custom properties. User-agent,
@@ -382,6 +382,11 @@ bounded `minmax()` ranges, clamped `fit-content()` maxima, cyclic multi-size
 implicit-track patterns, and bounded integer `repeat()`. Explicit templates
 also retain case-sensitive named line sets; repeat expansion merges adjacent
 boundary sets and resolved CSSOM interleaves those names with used track sizes.
+Rectangular `grid-template-areas` values now retain an immutable bounded cell
+matrix, create their implicit `-start`/`-end` line names without leaking those
+generated names into resolved track serialization, and establish explicit
+auto-sized tracks when no track template is present. The `grid-area` shorthand
+uses those boundaries through the same named-line placement path.
 Implicit patterns
 repeat forwards after the explicit grid and backwards before it. The
 used-value track model retains separate bases, growth limits, intrinsic
@@ -401,8 +406,8 @@ rules, and retained stable-ID geometry exposes resolved explicit and implicit
   edge cases, row/column `visibility: collapse`, table-wrapper separation,
   direction/writing-mode placement, and collapsed-border junctions once the
   wider border-style set exists.
-- Extend Grid with auto-fill/auto-fit, template areas,
-  baseline/safe/unsafe alignment, subgrid, and the remaining
+- Extend Grid with auto-fill/auto-fit, baseline/safe/unsafe alignment,
+  subgrid, and the remaining
   intrinsic/overflow interactions.
 - Add multicolumn and fragmentation only after their block/inline consumers
   are retained and testable.

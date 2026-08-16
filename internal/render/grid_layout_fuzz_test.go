@@ -45,13 +45,14 @@ func FuzzGridLayoutPlacementStaysFinite(f *testing.F) {
 		}
 		contentAlignment := []string{"normal", "start", "end", "center", "space-between", "space-around", "space-evenly"}[int(rawModes)%7]
 		selfAlignment := []string{"normal", "stretch", "start", "end", "center"}[int(rawSpan)%5]
+		areaRow := strings.TrimSpace(strings.Repeat("zone ", columns))
 
 		document := dom.NewDocument()
 		html := dom.NewElement("html")
 		body := dom.NewElement("body", dom.Attribute{Name: "style", Value: "margin:0"})
 		grid := dom.NewElement("section", dom.Attribute{Name: "style", Value: fmt.Sprintf(
-			"display:grid;width:%dpx;height:%dpx;grid-template-columns:repeat(%d,[slot] %s [edge]);grid-template-rows:repeat(%d,[row] auto [row-end]);grid-auto-columns:%s auto;grid-auto-rows:%dpx auto;grid-auto-flow:%s;gap:%dpx;justify-content:%s;align-content:%s;justify-items:%s;align-items:%s",
-			100+int(rawColumns)*2, 80+int(rawRows)*2, columns, track, rows, track, 8+rawModes%12, flow, rawModes%7, contentAlignment, contentAlignment, selfAlignment, selfAlignment,
+			"display:grid;width:%dpx;height:%dpx;grid-template-areas:\"%s\";grid-template-columns:repeat(%d,[slot] %s [edge]);grid-template-rows:repeat(%d,[row] auto [row-end]);grid-auto-columns:%s auto;grid-auto-rows:%dpx auto;grid-auto-flow:%s;gap:%dpx;justify-content:%s;align-content:%s;justify-items:%s;align-items:%s",
+			100+int(rawColumns)*2, 80+int(rawRows)*2, areaRow, columns, track, rows, track, 8+rawModes%12, flow, rawModes%7, contentAlignment, contentAlignment, selfAlignment, selfAlignment,
 		)})
 		for index := range itemCount {
 			placement := ""
@@ -62,6 +63,8 @@ func FuzzGridLayoutPlacementStaysFinite(f *testing.F) {
 				placement = fmt.Sprintf("grid-row:%d row;grid-column-end:span %d edge;", index%rows+1, min(span, columns))
 			case 2:
 				placement = fmt.Sprintf("grid-row-end:span %d row;", min(span, rows))
+			case 3:
+				placement = "grid-area:zone;"
 			}
 			item := dom.NewElement("div", dom.Attribute{Name: "style", Value: placement + fmt.Sprintf("min-width:%dpx;min-height:%dpx;background:#123456;justify-self:%s;align-self:%s", index%13, index%11, selfAlignment, selfAlignment)})
 			item.AppendChild(dom.NewText(strings.Repeat("x", index%9)))

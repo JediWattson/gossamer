@@ -34,14 +34,64 @@ type gridLayoutItem struct {
 	marginLeft    float64
 }
 
+type gridAxisDefinition struct {
+	template       computed.GridTrackList
+	explicitTracks int
+	areaLineNames  [][]string
+}
+
+func gridAxisDefinitionFromTemplate(template computed.GridTrackList) gridAxisDefinition {
+	return gridAxisDefinition{template: template, explicitTracks: template.Len()}
+}
+
+func gridAxisDefinitionWithAreas(template computed.GridTrackList, areas computed.GridTemplateAreas, rows bool) gridAxisDefinition {
+	explicitTracks := areas.Columns()
+	if rows {
+		explicitTracks = areas.Rows()
+	}
+	explicitTracks = max(explicitTracks, template.Len())
+	definition := gridAxisDefinition{
+		template:       template,
+		explicitTracks: explicitTracks,
+		areaLineNames:  make([][]string, explicitTracks+1),
+	}
+	for line := range definition.areaLineNames {
+		if rows {
+			definition.areaLineNames[line] = areas.RowLineNames(line)
+		} else {
+			definition.areaLineNames[line] = areas.ColumnLineNames(line)
+		}
+	}
+	return definition
+}
+
+func (definition gridAxisDefinition) lineHasName(line int, name string) bool {
+	if line < 0 || line > definition.explicitTracks {
+		return false
+	}
+	for _, candidate := range definition.template.LineNames(line) {
+		if candidate == name {
+			return true
+		}
+	}
+	if line < len(definition.areaLineNames) {
+		for _, candidate := range definition.areaLineNames[line] {
+			if candidate == name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 type gridLayoutModel struct {
 	items        []gridLayoutItem
 	columns      int
 	rows         int
 	explicitCols int
 	explicitRows int
-	columnTracks computed.GridTrackList
-	rowTracks    computed.GridTrackList
+	columnAxis   gridAxisDefinition
+	rowAxis      gridAxisDefinition
 	columnOffset int
 	rowOffset    int
 	placementOps int
@@ -96,10 +146,10 @@ func (context *layoutContext) buildGridLayoutModel(container *styledNode) (gridL
 	if len(model.items) > maxGridItems {
 		return gridLayoutModel{}, fmt.Errorf("render: grid exceeds %d items", maxGridItems)
 	}
-	model.explicitCols = container.style.GridTemplateColumns().Len()
-	model.explicitRows = container.style.GridTemplateRows().Len()
-	model.columnTracks = container.style.GridTemplateColumns()
-	model.rowTracks = container.style.GridTemplateRows()
+	model.columnAxis = gridAxisDefinitionWithAreas(container.style.GridTemplateColumns(), container.style.GridTemplateAreas(), false)
+	model.rowAxis = gridAxisDefinitionWithAreas(container.style.GridTemplateRows(), container.style.GridTemplateAreas(), true)
+	model.explicitCols = model.columnAxis.explicitTracks
+	model.explicitRows = model.rowAxis.explicitTracks
 	model.columns = model.explicitCols
 	model.rows = model.explicitRows
 	if len(model.items) != 0 && model.columns == 0 && container.style.GridAutoFlow().Axis() == computed.GridAutoFlowRow {
@@ -112,8 +162,8 @@ func (context *layoutContext) buildGridLayoutModel(container *styledNode) (gridL
 	minColumn, minRow := 0, 0
 	for index := range model.items {
 		item := &model.items[index]
-		item.column = resolveGridAxis(item.node.style.GridColumnStart(), item.node.style.GridColumnEnd(), model.columnTracks)
-		item.row = resolveGridAxis(item.node.style.GridRowStart(), item.node.style.GridRowEnd(), model.rowTracks)
+		item.column = resolveGridAxis(item.node.style.GridColumnStart(), item.node.style.GridColumnEnd(), model.columnAxis)
+		item.row = resolveGridAxis(item.node.style.GridRowStart(), item.node.style.GridRowEnd(), model.rowAxis)
 		if item.column.definite {
 			minColumn = min(minColumn, item.column.start)
 		}
@@ -278,7 +328,7 @@ func (context *layoutContext) gridAnonymousProducesLayout(children []*styledNode
 	return len(builder.tokens) != 0
 }
 
-func resolveGridAxis(startLine, endLine computed.GridLine, template computed.GridTrackList) gridAxisPlacement {
+func resolveGridAxis(startLine, endLine computed.GridLine, definition gridAxisDefinition) gridAxisPlacement {
 	if startLine.Kind() == computed.GridLineSpan && endLine.Kind() == computed.GridLineSpan {
 		endLine = computed.GridLine{}
 	}
@@ -293,8 +343,8 @@ func resolveGridAxis(startLine, endLine computed.GridLine, template computed.Gri
 			span = max(1, endLine.Number())
 		}
 	}
-	start, hasStart := gridLineCoordinate(startLine, template, true)
-	end, hasEnd := gridLineCoordinate(endLine, template, false)
+	start, hasStart := gridLineCoordinate(startLine, definition, true)
+	end, hasEnd := gridLineCoordinate(endLine, definition, false)
 	switch {
 	case hasStart && hasEnd:
 		if end < start {
@@ -305,10 +355,10 @@ func resolveGridAxis(startLine, endLine computed.GridLine, template computed.Gri
 		}
 		return gridAxisPlacement{definite: true, start: start, span: end - start}
 	case hasStart && endLine.Kind() == computed.GridLineSpan:
-		end = gridSpanCoordinate(start, 1, endLine, template)
+		end = gridSpanCoordinate(start, 1, endLine, definition)
 		return gridAxisPlacement{definite: true, start: start, span: max(1, end-start)}
 	case hasEnd && startLine.Kind() == computed.GridLineSpan:
-		start = gridSpanCoordinate(end, -1, startLine, template)
+		start = gridSpanCoordinate(end, -1, startLine, definition)
 		return gridAxisPlacement{definite: true, start: start, span: max(1, end-start)}
 	case hasStart:
 		return gridAxisPlacement{definite: true, start: start, span: span}
@@ -319,11 +369,11 @@ func resolveGridAxis(startLine, endLine computed.GridLine, template computed.Gri
 	}
 }
 
-func gridLineCoordinate(line computed.GridLine, template computed.GridTrackList, startEdge bool) (int, bool) {
+func gridLineCoordinate(line computed.GridLine, definition gridAxisDefinition, startEdge bool) (int, bool) {
 	if line.Kind() != computed.GridLineNumber {
 		return 0, false
 	}
-	explicitTracks := template.Len()
+	explicitTracks := definition.explicitTracks
 	if line.Name() != "" {
 		name := line.Name()
 		if !line.NumberExplicit() {
@@ -331,11 +381,11 @@ func gridLineCoordinate(line computed.GridLine, template computed.GridTrackList,
 			if startEdge {
 				areaName = name + "-start"
 			}
-			if coordinate, ok := explicitNamedGridLine(template, areaName, 1); ok {
+			if coordinate, ok := explicitNamedGridLine(definition, areaName, 1); ok {
 				return coordinate, true
 			}
 		}
-		return namedGridLineCoordinate(template, name, line.Number()), true
+		return namedGridLineCoordinate(definition, name, line.Number()), true
 	}
 	if line.Number() > 0 {
 		return line.Number() - 1, true
@@ -343,13 +393,13 @@ func gridLineCoordinate(line computed.GridLine, template computed.GridTrackList,
 	return explicitTracks + 1 + line.Number(), true
 }
 
-func explicitNamedGridLine(template computed.GridTrackList, name string, occurrence int) (int, bool) {
+func explicitNamedGridLine(definition gridAxisDefinition, name string, occurrence int) (int, bool) {
 	if occurrence == 0 {
 		return 0, false
 	}
 	if occurrence > 0 {
-		for line := 0; line <= template.Len(); line++ {
-			if gridLineHasName(template, line, name) {
+		for line := 0; line <= definition.explicitTracks; line++ {
+			if definition.lineHasName(line, name) {
 				occurrence--
 				if occurrence == 0 {
 					return line, true
@@ -358,8 +408,8 @@ func explicitNamedGridLine(template computed.GridTrackList, name string, occurre
 		}
 		return 0, false
 	}
-	for line := template.Len(); line >= 0; line-- {
-		if gridLineHasName(template, line, name) {
+	for line := definition.explicitTracks; line >= 0; line-- {
+		if definition.lineHasName(line, name) {
 			occurrence++
 			if occurrence == 0 {
 				return line, true
@@ -369,41 +419,41 @@ func explicitNamedGridLine(template computed.GridTrackList, name string, occurre
 	return 0, false
 }
 
-func namedGridLineCoordinate(template computed.GridTrackList, name string, occurrence int) int {
-	if coordinate, ok := explicitNamedGridLine(template, name, occurrence); ok {
+func namedGridLineCoordinate(definition gridAxisDefinition, name string, occurrence int) int {
+	if coordinate, ok := explicitNamedGridLine(definition, name, occurrence); ok {
 		return coordinate
 	}
 	if occurrence > 0 {
 		matches := 0
-		for line := 0; line <= template.Len(); line++ {
-			if gridLineHasName(template, line, name) {
+		for line := 0; line <= definition.explicitTracks; line++ {
+			if definition.lineHasName(line, name) {
 				matches++
 			}
 		}
-		return template.Len() + occurrence - matches
+		return definition.explicitTracks + occurrence - matches
 	}
 	matches := 0
-	for line := template.Len(); line >= 0; line-- {
-		if gridLineHasName(template, line, name) {
+	for line := definition.explicitTracks; line >= 0; line-- {
+		if definition.lineHasName(line, name) {
 			matches++
 		}
 	}
 	return occurrence + matches
 }
 
-func gridSpanCoordinate(opposite, direction int, line computed.GridLine, template computed.GridTrackList) int {
+func gridSpanCoordinate(opposite, direction int, line computed.GridLine, definition gridAxisDefinition) int {
 	occurrence := max(1, line.Number())
-	return namedGridSpanCoordinate(opposite, direction, occurrence, line.Name(), template)
+	return namedGridSpanCoordinate(opposite, direction, occurrence, line.Name(), definition)
 }
 
-func namedGridSpanCoordinate(opposite, direction, occurrence int, name string, template computed.GridTrackList) int {
+func namedGridSpanCoordinate(opposite, direction, occurrence int, name string, definition gridAxisDefinition) int {
 	if name == "" {
 		return opposite + direction*occurrence
 	}
 	remaining := occurrence
 	for candidate := opposite + direction; candidate >= -maxGridTracksPerAxis && candidate <= maxGridTracksPerAxis*2; candidate += direction {
-		implicitMatch := direction > 0 && candidate > template.Len() || direction < 0 && candidate < 0
-		if implicitMatch || candidate >= 0 && candidate <= template.Len() && gridLineHasName(template, candidate, name) {
+		implicitMatch := direction > 0 && candidate > definition.explicitTracks || direction < 0 && candidate < 0
+		if implicitMatch || candidate >= 0 && candidate <= definition.explicitTracks && definition.lineHasName(candidate, name) {
 			remaining--
 			if remaining == 0 {
 				return candidate
@@ -411,15 +461,6 @@ func namedGridSpanCoordinate(opposite, direction, occurrence int, name string, t
 		}
 	}
 	return opposite + direction*occurrence
-}
-
-func gridLineHasName(template computed.GridTrackList, line int, name string) bool {
-	for _, candidate := range template.LineNames(line) {
-		if candidate == name {
-			return true
-		}
-	}
-	return false
 }
 
 func (model *gridLayoutModel) checkBounds() error {
