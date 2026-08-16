@@ -124,6 +124,10 @@ func serializeComputedDisplay(value DisplayMode) string {
 		return "flex"
 	case DisplayInlineFlex:
 		return "inline-flex"
+	case DisplayGrid:
+		return "grid"
+	case DisplayInlineGrid:
+		return "inline-grid"
 	case DisplayTable:
 		return "table"
 	case DisplayInlineTable:

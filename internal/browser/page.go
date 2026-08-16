@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -585,8 +586,9 @@ func (page *Page) ComputedPseudoStyle(handle NodeHandle, pseudo computed.PseudoE
 }
 
 // ComputedStyleProperty synchronously returns one computed-style property and
-// overlays layout-backed used width/height values when the element has a
-// principal box. It does not publish a Frame or clear Page dirtiness.
+// overlays layout-backed used width/height values and Grid's resolved track
+// lists when the element has a principal box. It does not publish a Frame or
+// clear Page dirtiness.
 func (page *Page) ComputedStyleProperty(handle NodeHandle, property string) (string, bool, error) {
 	if page == nil {
 		return "", false, fmt.Errorf("browser: nil page")
@@ -628,7 +630,7 @@ func (page *Page) ComputedStyleProperty(handle NodeHandle, property string) (str
 		}
 
 		canonical := lowerASCIIProperty(property)
-		if canonical != "width" && canonical != "height" {
+		if canonical != "width" && canonical != "height" && canonical != "grid-template-columns" && canonical != "grid-template-rows" {
 			return nil
 		}
 		layout, layoutErr := page.layoutSnapshotForViewLocked(view, resources, styleSnapshot)
@@ -637,6 +639,24 @@ func (page *Page) ComputedStyleProperty(handle NodeHandle, property string) (str
 		}
 		geometry, hasGeometry := layout.GeometryID(handle.Node)
 		if !hasGeometry {
+			return nil
+		}
+		if canonical == "grid-template-columns" || canonical == "grid-template-rows" {
+			if computedStyle.Display().Inside() != computed.DisplayInsideGrid {
+				return nil
+			}
+			tracks := geometry.GridColumnSizes()
+			if canonical == "grid-template-rows" {
+				tracks = geometry.GridRowSizes()
+			}
+			if len(tracks) == 0 {
+				return nil
+			}
+			serialized := make([]string, len(tracks))
+			for index, track := range tracks {
+				serialized[index] = serializeUsedPixels(track)
+			}
+			value = strings.Join(serialized, " ")
 			return nil
 		}
 		if canonical == "height" && computedStyle.Height().DependsOnPercent() && !geometry.PercentHeightResolved {

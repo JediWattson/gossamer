@@ -110,6 +110,8 @@ type Box struct {
 	suppressDecorations bool
 	suppressBorders     bool
 	afterPaint          []boxPaintRect
+	gridColumnSizes     []float64
+	gridRowSizes        []float64
 }
 
 type boxPaintRect struct {

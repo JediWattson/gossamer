@@ -40,11 +40,11 @@ func TestComputeAppliesSupportedGroupRules(t *testing.T) {
 	if !ok {
 		t.Fatal("target has no computed style")
 	}
-	if got, want := computed.Color(), (color.NRGBA{R: 0xff, A: 0xff}); got != want {
+	if got, want := computed.Color(), (color.NRGBA{B: 0xff, A: 0xff}); got != want {
 		t.Fatalf("color = %#v, want %#v", got, want)
 	}
 	got, _ := computed.Background()
-	if want := (color.NRGBA{G: 0x80, A: 0xff}); got != want {
+	if want := (color.NRGBA{A: 0xff}); got != want {
 		t.Fatalf("background = %#v, want %#v", got, want)
 	}
 }

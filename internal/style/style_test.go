@@ -427,6 +427,8 @@ func TestDisplayModePreservesOuterAndInnerRoles(t *testing.T) {
 		{style.DisplayListItem, style.DisplayOutsideBlock, style.DisplayInsideFlow, true},
 		{style.DisplayFlex, style.DisplayOutsideBlock, style.DisplayInsideFlex, true},
 		{style.DisplayInlineFlex, style.DisplayOutsideInline, style.DisplayInsideFlex, true},
+		{style.DisplayGrid, style.DisplayOutsideBlock, style.DisplayInsideGrid, true},
+		{style.DisplayInlineGrid, style.DisplayOutsideInline, style.DisplayInsideGrid, true},
 		{style.DisplayTable, style.DisplayOutsideBlock, style.DisplayInsideTable, true},
 		{style.DisplayInlineTable, style.DisplayOutsideInline, style.DisplayInsideTable, true},
 		{style.DisplayTableRowGroup, style.DisplayOutsideInternal, style.DisplayInsideNone, true},

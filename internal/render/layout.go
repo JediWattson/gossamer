@@ -501,6 +501,19 @@ func (context *layoutContext) layoutBlockSized(node *styledNode, containingX, co
 		box.Bounds.Height = border.Top + padding.Top + contentHeight + padding.Bottom + border.Bottom
 		return context.finalizeBlock(node, box, availableWidth)
 	}
+	if style.Display().Inside() == computed.DisplayInsideGrid {
+		contentHeight, err := context.layoutGridContainer(node, box, width, childContainingHeight)
+		if err != nil {
+			return nil, err
+		}
+		if hasDefiniteHeight {
+			contentHeight = specifiedContentHeight
+		}
+		contentHeight = context.constrainHeight(style, contentHeight, verticalInsets, containingHeight)
+		box.ContentBounds.Height = contentHeight
+		box.Bounds.Height = border.Top + padding.Top + contentHeight + padding.Bottom + border.Bottom
+		return context.finalizeBlock(node, box, availableWidth)
+	}
 	cursorY := box.ContentBounds.Y
 	pendingMargin := marginStrut{}
 	var pendingThroughBoxes []*Box
@@ -1531,6 +1544,9 @@ func (context *layoutContext) intrinsicContentWidthsUncached(node *styledNode, a
 	}
 	if node.style.Display().Inside() == computed.DisplayInsideFlex {
 		return context.intrinsicFlexContentWidths(node, availableWidth)
+	}
+	if node.style.Display().Inside() == computed.DisplayInsideGrid {
+		return context.intrinsicGridContentWidths(node, availableWidth)
 	}
 
 	var result intrinsicWidths

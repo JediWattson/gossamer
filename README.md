@@ -280,6 +280,11 @@ performance budgets; see
   length-percentage `vertical-align` placement for inline runs, replaced
   content, and atomic inline formatting roots, with shifted geometry and hit
   testing
+- Block and inline Grid containers with bounded explicit and implicit tracks,
+  fixed/percentage/`auto`/`fr` breadths, integer `repeat()`, numbered and
+  negative line placement, spans, row/column dense auto-flow, gaps, anonymous
+  text items, order-modified placement and paint, retained track geometry, and
+  live resolved `grid-template-*` CSSOM reads
 - HTML and CSS table display roles with anonymous wrapper fixup, bounded
   intrinsic column sizing, captions, column and row groups, `colspan`/
   `rowspan`, inline-table participation, separated border spacing, fixed
@@ -322,7 +327,8 @@ The following are intentionally still outside the current milestone:
 - Full HTML error recovery beyond the current table insertion modes and foster
   parenting, including formatting-element reconstruction, complete template
   modes, SVG/MathML, and encoding sniffing
-- Flex wrapping and full intrinsic sizing, Grid, remaining table track merging,
+- Flex wrapping and full intrinsic sizing, advanced Grid track functions,
+  named lines and areas, auto-repeat, subgrid, remaining table track merging,
   percentage sizing, visibility-collapse, wrapper, writing-mode, and border
   junction behavior, floats, sticky and full inline positioned layout, and
   retained inline boxes
@@ -337,7 +343,8 @@ The following are intentionally still outside the current milestone:
 - SVG, AVIF, video, canvas, browser controls, and accessibility trees
 
 Outer and inner display roles are retained for `inline`, `block`, `list-item`,
-`inline-block`, `flex`, and `inline-flex`. Inline-block and inline-flex boxes
+`inline-block`, `flex`, `inline-flex`, `grid`, and `inline-grid`. Inline-block,
+inline-flex, and inline-grid boxes
 participate atomically in line layout with shrink-to-fit sizing, baseline
 alignment, box-model paint, geometry, and hit testing. Ordinary inline elements
 still flatten into runs rather than retained inline boxes. Preserved whitespace

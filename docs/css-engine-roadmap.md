@@ -77,7 +77,7 @@ shared tokenizer.
 
 Current foundation: cascade and computed-value calculation live in
 `internal/style`; browser pages cache versioned, stable-ID snapshots; and
-render consumes the exact snapshot retained by each frame. The current 65
+render consumes the exact snapshot retained by each frame. The current 74
 longhands share one registry for inheritance, validation, computation, copying,
 serialization, and invalidation metadata, and `all` participates in the full
 layer/importance cascade without resetting custom properties. User-agent,
@@ -373,14 +373,26 @@ and top/middle/bottom/baseline cell content aligns inside stretched rows.
 Collapsed tables ignore spacing and table padding, harmonize the supported
 none/hidden/solid borders across table, column/group, row/group, and cell
 edges, use half-width layout insets, and paint one bounded winning segment
-grid instead of duplicate cell borders.
+grid instead of duplicate cell borders. The first Grid vertical slice retains
+block and inline Grid formatting contexts, blockifies element and anonymous
+text items without mutating computed snapshots, and bounds placement by item,
+track, occupied-cell, and operation budgets. Explicit and implicit tracks
+accept fixed/percentage/`auto`/`fr` breadths and bounded integer `repeat()`;
+items support numbered and negative lines, spans, stable `order`, row/column
+auto-flow, dense backfill, gaps, and overlap paint/hit order. Definite and
+indefinite flexible tracks follow their distinct fraction sizing rules,
+intrinsic item contributions seed automatic tracks, and retained stable-ID
+geometry exposes resolved explicit and implicit `grid-template-*` tracks to
+live CSSOM reads.
 
 - Complete table track merging/missing-cell fixup, percentage/intrinsic sizing
   edge cases, row/column `visibility: collapse`, table-wrapper separation,
   direction/writing-mode placement, and collapsed-border junctions once the
   wider border-style set exists.
-- Add Grid track sizing and placement, followed by intrinsic sizing and
-  alignment.
+- Extend Grid with `minmax()` and intrinsic track keywords, line names,
+  auto-fill/auto-fit, template areas, multi-value auto-track patterns,
+  justify/align properties, subgrid, and the remaining intrinsic/overflow
+  interactions.
 - Add multicolumn and fragmentation only after their block/inline consumers
   are retained and testable.
 - Keep each formatting context as an independent computed-to-used vertical

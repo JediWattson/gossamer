@@ -22,6 +22,20 @@ type LayoutGeometry struct {
 	// height had a definite containing-block base. When false, CSSOM retains
 	// the computed percentage rather than exposing content-derived geometry.
 	PercentHeightResolved bool
+	gridColumnSizes       []float64
+	gridRowSizes          []float64
+}
+
+// GridColumnSizes returns the used explicit and implicit column track sizes
+// for a principal grid container box. The returned slice is a copy.
+func (geometry LayoutGeometry) GridColumnSizes() []float64 {
+	return append([]float64(nil), geometry.gridColumnSizes...)
+}
+
+// GridRowSizes returns the used explicit and implicit row track sizes for a
+// principal grid container box. The returned slice is a copy.
+func (geometry LayoutGeometry) GridRowSizes() []float64 {
+	return append([]float64(nil), geometry.gridRowSizes...)
 }
 
 // LayoutSnapshot is an immutable layout result that can be queried before it
@@ -214,6 +228,8 @@ func boxGeometry(box *Box, extent layoutExtent) LayoutGeometry {
 		ScrollWidth:           scrollWidth,
 		ScrollHeight:          scrollHeight,
 		PercentHeightResolved: box.percentHeightResolved,
+		gridColumnSizes:       append([]float64(nil), box.gridColumnSizes...),
+		gridRowSizes:          append([]float64(nil), box.gridRowSizes...),
 	}
 }
 

@@ -85,6 +85,8 @@ const (
 	DisplayListItem
 	DisplayFlex
 	DisplayInlineFlex
+	DisplayGrid
+	DisplayInlineGrid
 	DisplayTable
 	DisplayInlineTable
 	DisplayTableRowGroup
@@ -119,15 +121,16 @@ const (
 	DisplayInsideFlow
 	DisplayInsideFlowRoot
 	DisplayInsideFlex
+	DisplayInsideGrid
 	DisplayInsideTable
 )
 
 // Outside returns the computed outer display role.
 func (display DisplayMode) Outside() DisplayOutside {
 	switch display {
-	case DisplayInline, DisplayInlineBlock, DisplayInlineFlex, DisplayInlineTable:
+	case DisplayInline, DisplayInlineBlock, DisplayInlineFlex, DisplayInlineGrid, DisplayInlineTable:
 		return DisplayOutsideInline
-	case DisplayBlock, DisplayListItem, DisplayFlex, DisplayTable:
+	case DisplayBlock, DisplayListItem, DisplayFlex, DisplayGrid, DisplayTable:
 		return DisplayOutsideBlock
 	case DisplayTableRowGroup, DisplayTableHeaderGroup, DisplayTableFooterGroup,
 		DisplayTableRow, DisplayTableCell, DisplayTableColumnGroup, DisplayTableColumn,
@@ -147,6 +150,8 @@ func (display DisplayMode) Inside() DisplayInside {
 		return DisplayInsideFlowRoot
 	case DisplayFlex, DisplayInlineFlex:
 		return DisplayInsideFlex
+	case DisplayGrid, DisplayInlineGrid:
+		return DisplayInsideGrid
 	case DisplayTable, DisplayInlineTable:
 		return DisplayInsideTable
 	default:
@@ -169,6 +174,8 @@ const (
 	displayListItem    = DisplayListItem
 	displayFlex        = DisplayFlex
 	displayInlineFlex  = DisplayInlineFlex
+	displayGrid        = DisplayGrid
+	displayInlineGrid  = DisplayInlineGrid
 	displayTable       = DisplayTable
 	displayInlineTable = DisplayInlineTable
 	displayNone        = DisplayNone
@@ -575,6 +582,15 @@ type ComputedStyle struct {
 	flexShrink        float64
 	flexBasis         Length
 	order             int
+	gridAutoColumns   GridTrackSize
+	gridAutoFlow      GridAutoFlow
+	gridAutoRows      GridTrackSize
+	gridColumnEnd     GridLine
+	gridColumnStart   GridLine
+	gridRowEnd        GridLine
+	gridRowStart      GridLine
+	gridTemplateCols  GridTrackList
+	gridTemplateRows  GridTrackList
 	color             color.NRGBA
 	background        color.NRGBA
 	hasBackground     bool
@@ -641,6 +657,18 @@ func (computed ComputedStyle) WithAnonymousDisplay(display DisplayMode) Computed
 	computed.display = display
 	return computed
 }
+
+// WithAnonymousGridItem returns the inherited style basis for an anonymous
+// grid item while resetting non-inherited placement and ordering state.
+func (computed ComputedStyle) WithAnonymousGridItem() ComputedStyle {
+	computed.display = DisplayBlock
+	computed.order = 0
+	computed.gridColumnStart = GridLine{kind: GridLineAuto}
+	computed.gridColumnEnd = GridLine{kind: GridLineAuto}
+	computed.gridRowStart = GridLine{kind: GridLineAuto}
+	computed.gridRowEnd = GridLine{kind: GridLineAuto}
+	return computed
+}
 func (computed ComputedStyle) FlexDirection() FlexDirection {
 	return computed.flexDirection
 }
@@ -653,7 +681,18 @@ func (computed ComputedStyle) FlexGrow() float64              { return computed.
 func (computed ComputedStyle) FlexShrink() float64            { return computed.flexShrink }
 func (computed ComputedStyle) FlexBasis() Length              { return computed.flexBasis }
 func (computed ComputedStyle) Order() int                     { return computed.order }
-func (computed ComputedStyle) Color() color.NRGBA             { return computed.color }
+func (computed ComputedStyle) GridAutoColumns() GridTrackSize { return computed.gridAutoColumns }
+func (computed ComputedStyle) GridAutoFlow() GridAutoFlow     { return computed.gridAutoFlow }
+func (computed ComputedStyle) GridAutoRows() GridTrackSize    { return computed.gridAutoRows }
+func (computed ComputedStyle) GridColumnEnd() GridLine        { return computed.gridColumnEnd }
+func (computed ComputedStyle) GridColumnStart() GridLine      { return computed.gridColumnStart }
+func (computed ComputedStyle) GridRowEnd() GridLine           { return computed.gridRowEnd }
+func (computed ComputedStyle) GridRowStart() GridLine         { return computed.gridRowStart }
+func (computed ComputedStyle) GridTemplateColumns() GridTrackList {
+	return computed.gridTemplateCols
+}
+func (computed ComputedStyle) GridTemplateRows() GridTrackList { return computed.gridTemplateRows }
+func (computed ComputedStyle) Color() color.NRGBA              { return computed.color }
 func (computed ComputedStyle) Background() (color.NRGBA, bool) {
 	if computed.backgroundCurrent {
 		return computed.color, computed.color.A != 0
@@ -1219,6 +1258,13 @@ func cssInitialStyle(viewport Viewport) computedStyle {
 		content:         ContentValue{kind: contentNormal},
 		flexShrink:      1,
 		flexBasis:       length{unit: lengthAuto},
+		gridAutoColumns: GridTrackSize{kind: GridTrackAuto},
+		gridAutoFlow:    GridAutoFlow{axis: GridAutoFlowRow},
+		gridAutoRows:    GridTrackSize{kind: GridTrackAuto},
+		gridColumnEnd:   GridLine{kind: GridLineAuto},
+		gridColumnStart: GridLine{kind: GridLineAuto},
+		gridRowEnd:      GridLine{kind: GridLineAuto},
+		gridRowStart:    GridLine{kind: GridLineAuto},
 		color:           color.NRGBA{A: 0xff},
 		fontSize:        environmentInitialFontSize(viewport),
 		fontFamily:      FontFamilySerif,

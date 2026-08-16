@@ -18,6 +18,8 @@ const (
 	displayListItem    = computed.DisplayListItem
 	displayFlex        = computed.DisplayFlex
 	displayInlineFlex  = computed.DisplayInlineFlex
+	displayGrid        = computed.DisplayGrid
+	displayInlineGrid  = computed.DisplayInlineGrid
 	displayTable       = computed.DisplayTable
 	displayInlineTable = computed.DisplayInlineTable
 	displayRowGroup    = computed.DisplayTableRowGroup

@@ -23,7 +23,7 @@ func TestLoadStylesheetWithImportsFlattensOrderContextAndCycles(t *testing.T) {
 			"https://imports.test/root.css": `
 				@import "base.css";
 				@import "theme.css" layer(theme) supports((display: block) and selector(.theme)) screen and (min-width: 700px);
-				@import "unsupported.css" supports((display: grid) or selector(div::marker));
+				@import "unsupported.css" supports((display: masonry) or selector(div::marker));
 				@import "cycle.css";
 				.root { color: black }
 			`,

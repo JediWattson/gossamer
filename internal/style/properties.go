@@ -46,6 +46,15 @@ const (
 	propertyFontSize
 	propertyFontStyle
 	propertyFontWeight
+	propertyGridAutoColumns
+	propertyGridAutoFlow
+	propertyGridAutoRows
+	propertyGridColumnEnd
+	propertyGridColumnStart
+	propertyGridRowEnd
+	propertyGridRowStart
+	propertyGridTemplateColumns
+	propertyGridTemplateRows
 	propertyHeight
 	propertyInset
 	propertyJustifyContent
@@ -135,6 +144,15 @@ var propertyDefinitions = [...]propertyDefinition{
 	{name: "font-size", kind: propertyFontSize, inherited: true, computeEarly: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "font-style", kind: propertyFontStyle, inherited: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "font-weight", kind: propertyFontWeight, inherited: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
+	{name: "grid-auto-columns", kind: propertyGridAutoColumns, invalidation: propertyInvalidatesLayout},
+	{name: "grid-auto-flow", kind: propertyGridAutoFlow, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
+	{name: "grid-auto-rows", kind: propertyGridAutoRows, invalidation: propertyInvalidatesLayout},
+	{name: "grid-column-end", kind: propertyGridColumnEnd, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
+	{name: "grid-column-start", kind: propertyGridColumnStart, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
+	{name: "grid-row-end", kind: propertyGridRowEnd, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
+	{name: "grid-row-start", kind: propertyGridRowStart, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
+	{name: "grid-template-columns", kind: propertyGridTemplateColumns, invalidation: propertyInvalidatesLayout},
+	{name: "grid-template-rows", kind: propertyGridTemplateRows, invalidation: propertyInvalidatesLayout},
 	{name: "height", kind: propertyHeight, invalidation: propertyInvalidatesLayout},
 	{name: "justify-content", kind: propertyJustifyContent, invalidation: propertyInvalidatesLayout},
 	{name: "left", kind: propertyInset, edge: propertyLeft, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
@@ -202,6 +220,8 @@ var shorthandTargets = map[string][]string{
 	"flex":            {"flex-grow", "flex-shrink", "flex-basis"},
 	"font":            {"font-family", "font-size", "font-style", "font-weight", "line-height"},
 	"gap":             {"row-gap", "column-gap"},
+	"grid-column":     {"grid-column-start", "grid-column-end"},
+	"grid-row":        {"grid-row-start", "grid-row-end"},
 	"list-style":      {"list-style-type"},
 	"margin":          {"margin-top", "margin-right", "margin-bottom", "margin-left"},
 	"overflow":        {"overflow-x", "overflow-y"},
@@ -295,6 +315,24 @@ func (definition propertyDefinition) copy(destination *computedStyle, source com
 		destination.fontStyle = source.fontStyle
 	case propertyFontWeight:
 		destination.fontWeightValue = source.fontWeightValue
+	case propertyGridAutoColumns:
+		destination.gridAutoColumns = source.gridAutoColumns
+	case propertyGridAutoFlow:
+		destination.gridAutoFlow = source.gridAutoFlow
+	case propertyGridAutoRows:
+		destination.gridAutoRows = source.gridAutoRows
+	case propertyGridColumnEnd:
+		destination.gridColumnEnd = source.gridColumnEnd
+	case propertyGridColumnStart:
+		destination.gridColumnStart = source.gridColumnStart
+	case propertyGridRowEnd:
+		destination.gridRowEnd = source.gridRowEnd
+	case propertyGridRowStart:
+		destination.gridRowStart = source.gridRowStart
+	case propertyGridTemplateColumns:
+		destination.gridTemplateCols = source.gridTemplateCols
+	case propertyGridTemplateRows:
+		destination.gridTemplateRows = source.gridTemplateRows
 	case propertyHeight:
 		destination.height = source.height
 	case propertyInset:
@@ -394,7 +432,7 @@ func (definition propertyDefinition) valid(source string, viewport Viewport) boo
 			return false
 		}
 		switch keyword {
-		case "none", "block", "list-item", "inline", "inline-block", "flex", "inline-flex",
+		case "none", "block", "list-item", "inline", "inline-block", "flex", "inline-flex", "grid", "inline-grid",
 			"table", "inline-table", "table-row-group", "table-header-group", "table-footer-group",
 			"table-row", "table-cell", "table-column-group", "table-column", "table-caption":
 			return true
@@ -432,6 +470,18 @@ func (definition propertyDefinition) valid(source string, viewport Viewport) boo
 		}
 		token, ok := singleCSSNumber(source)
 		return ok && token.Integer && token.Number >= 1 && token.Number <= 1000
+	case propertyGridAutoColumns, propertyGridAutoRows:
+		_, ok := parseGridAutoTrack(source, 1, viewport)
+		return ok
+	case propertyGridAutoFlow:
+		_, ok := parseGridAutoFlow(source)
+		return ok
+	case propertyGridColumnEnd, propertyGridColumnStart, propertyGridRowEnd, propertyGridRowStart:
+		_, ok := parseGridLine(source)
+		return ok
+	case propertyGridTemplateColumns, propertyGridTemplateRows:
+		_, ok := parseGridTrackList(source, 1, viewport)
+		return ok
 	case propertyHeight, propertyMinHeight, propertyMinWidth, propertyWidth:
 		parsed, ok := parseLength(source, 1, 1, viewport)
 		return ok && nonNegativeLength(parsed)
@@ -610,6 +660,10 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 			style.display = displayFlex
 		case "inline-flex":
 			style.display = displayInlineFlex
+		case "grid":
+			style.display = displayGrid
+		case "inline-grid":
+			style.display = displayInlineGrid
 		case "inline":
 			style.display = displayInline
 		case "inline-block":
@@ -702,6 +756,42 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 			if token, ok := singleCSSNumber(source); ok && token.Integer && token.Number >= 1 && token.Number <= 1000 {
 				style.fontWeightValue = int(token.Number)
 			}
+		}
+	case propertyGridAutoColumns:
+		if parsed, ok := parseGridAutoTrack(source, style.fontSize, context.viewport); ok {
+			style.gridAutoColumns = parsed
+		}
+	case propertyGridAutoFlow:
+		if parsed, ok := parseGridAutoFlow(source); ok {
+			style.gridAutoFlow = parsed
+		}
+	case propertyGridAutoRows:
+		if parsed, ok := parseGridAutoTrack(source, style.fontSize, context.viewport); ok {
+			style.gridAutoRows = parsed
+		}
+	case propertyGridColumnEnd:
+		if parsed, ok := parseGridLine(source); ok {
+			style.gridColumnEnd = parsed
+		}
+	case propertyGridColumnStart:
+		if parsed, ok := parseGridLine(source); ok {
+			style.gridColumnStart = parsed
+		}
+	case propertyGridRowEnd:
+		if parsed, ok := parseGridLine(source); ok {
+			style.gridRowEnd = parsed
+		}
+	case propertyGridRowStart:
+		if parsed, ok := parseGridLine(source); ok {
+			style.gridRowStart = parsed
+		}
+	case propertyGridTemplateColumns:
+		if parsed, ok := parseGridTrackList(source, style.fontSize, context.viewport); ok {
+			style.gridTemplateCols = parsed
+		}
+	case propertyGridTemplateRows:
+		if parsed, ok := parseGridTrackList(source, style.fontSize, context.viewport); ok {
+			style.gridTemplateRows = parsed
 		}
 	case propertyHeight:
 		if parsed, ok := parseLength(source, style.fontSize, style.fontSize, context.viewport); ok && nonNegativeLength(parsed) {
@@ -984,6 +1074,24 @@ func (definition propertyDefinition) serialize(computed ComputedStyle) string {
 		return "normal"
 	case propertyFontWeight:
 		return strconv.Itoa(computed.fontWeightValue)
+	case propertyGridAutoColumns:
+		return serializeGridTrackSize(computed.gridAutoColumns)
+	case propertyGridAutoFlow:
+		return serializeGridAutoFlow(computed.gridAutoFlow)
+	case propertyGridAutoRows:
+		return serializeGridTrackSize(computed.gridAutoRows)
+	case propertyGridColumnEnd:
+		return serializeGridLine(computed.gridColumnEnd)
+	case propertyGridColumnStart:
+		return serializeGridLine(computed.gridColumnStart)
+	case propertyGridRowEnd:
+		return serializeGridLine(computed.gridRowEnd)
+	case propertyGridRowStart:
+		return serializeGridLine(computed.gridRowStart)
+	case propertyGridTemplateColumns:
+		return serializeGridTrackList(computed.gridTemplateCols)
+	case propertyGridTemplateRows:
+		return serializeGridTrackList(computed.gridTemplateRows)
 	case propertyHeight:
 		return serializeComputedLength(computed.height)
 	case propertyInset:
@@ -1219,6 +1327,9 @@ func validComputedDeclaration(declaration css.Declaration, viewport Viewport) bo
 	case "gap":
 		_, _, ok := parseGapShorthand(declaration.Value, 1, viewport)
 		return ok
+	case "grid-column", "grid-row":
+		_, _, ok := parseGridLineShorthand(declaration.Value)
+		return ok
 	case "background":
 		_, ok := parseFirstComputedColor(declaration.Value)
 		return ok
@@ -1367,6 +1478,14 @@ func applyDeclaration(style *computedStyle, property, source string, context pro
 	case "gap":
 		if row, column, ok := parseGapShorthand(source, style.fontSize, context.viewport); ok {
 			style.rowGap, style.columnGap = row, column
+		}
+	case "grid-column":
+		if start, end, ok := parseGridLineShorthand(source); ok {
+			style.gridColumnStart, style.gridColumnEnd = start, end
+		}
+	case "grid-row":
+		if start, end, ok := parseGridLineShorthand(source); ok {
+			style.gridRowStart, style.gridRowEnd = start, end
 		}
 	case "border":
 		if parsed, ok := parseBorderShorthand(source, style.fontSize, context.viewport); ok {
