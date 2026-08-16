@@ -262,7 +262,10 @@ performance budgets; see
 - Versioned, immutable computed-style snapshots and a live, read-only
   `getComputedStyle()` subset for the currently supported longhands and custom
   properties, including inherited `direction` kept outside the `all` shorthand
-  and inherited `writing-mode` values which participate in `all`
+  and inherited `writing-mode`/`text-orientation` values which participate in
+  `all`; vertical text uses generated Unicode 17 UAX #29 grapheme boundaries
+  and UAX #50 mixed-orientation runs, explicit upright/sideways modes,
+  synthesized vertical advances, and bounded raster work
 - Inherited custom properties and nested `var()` fallbacks with cycle
   invalidation
 - Screen media queries for viewport width, height, orientation, media types,
@@ -335,7 +338,7 @@ performance budgets; see
   spacing, physical box edges, collapsed borders, hit testing, and live CSSOM
   geometry; nested horizontal/opposite-vertical table roots preserve their own
   row/column progression inside vertical Grid and table trees, with bounded
-  sideways Latin paint and upright replaced content
+  UAX #50 mixed/upright/sideways text paint and upright replaced content
 - Inherited `visibility` plus normal, nowrap, pre, pre-wrap, pre-line, and
   break-spaces text whitespace behavior
 - Bundled Go sans and monospace families with regular, bold, italic, and
@@ -374,7 +377,7 @@ The following are intentionally still outside the current milestone:
   modes, SVG/MathML, and encoding sniffing
 - Flex wrapping and full intrinsic sizing, remaining advanced Grid
   intrinsic/overflow interactions, remaining advanced table intrinsic sizing,
-  and full vertical-script text orientation,
+  font-provided vertical metrics and OpenType vertical glyph substitution,
   floats, sticky and full inline positioned layout, and retained inline boxes
 - The remaining CSS math grammar beyond the current bounded length
   `calc()`/`min()`/`max()`/`clamp()` slice, plus gradients, background images,

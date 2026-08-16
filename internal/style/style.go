@@ -200,6 +200,17 @@ const (
 	WritingModeVerticalLR
 )
 
+// TextOrientation controls the orientation of typographic character units in
+// vertical writing modes. It is retained in horizontal writing modes for
+// inheritance and CSSOM, but has no layout effect there.
+type TextOrientation uint8
+
+const (
+	TextOrientationMixed TextOrientation = iota
+	TextOrientationUpright
+	TextOrientationSideways
+)
+
 type FlexDirection uint8
 
 const (
@@ -627,6 +638,7 @@ type ComputedStyle struct {
 	display           DisplayMode
 	direction         Direction
 	writingMode       WritingMode
+	textOrientation   TextOrientation
 	borderCollapse    BorderCollapse
 	borderSpacing     BorderSpacing
 	captionSide       CaptionSide
@@ -715,14 +727,15 @@ type ComputedStyle struct {
 
 type computedStyle = ComputedStyle
 
-func (computed ComputedStyle) Display() DisplayMode           { return computed.display }
-func (computed ComputedStyle) Direction() Direction           { return computed.direction }
-func (computed ComputedStyle) WritingMode() WritingMode       { return computed.writingMode }
-func (computed ComputedStyle) BorderCollapse() BorderCollapse { return computed.borderCollapse }
-func (computed ComputedStyle) BorderSpacing() BorderSpacing   { return computed.borderSpacing }
-func (computed ComputedStyle) CaptionSide() CaptionSide       { return computed.captionSide }
-func (computed ComputedStyle) EmptyCells() EmptyCells         { return computed.emptyCells }
-func (computed ComputedStyle) TableLayout() TableLayout       { return computed.tableLayout }
+func (computed ComputedStyle) Display() DisplayMode             { return computed.display }
+func (computed ComputedStyle) Direction() Direction             { return computed.direction }
+func (computed ComputedStyle) WritingMode() WritingMode         { return computed.writingMode }
+func (computed ComputedStyle) TextOrientation() TextOrientation { return computed.textOrientation }
+func (computed ComputedStyle) BorderCollapse() BorderCollapse   { return computed.borderCollapse }
+func (computed ComputedStyle) BorderSpacing() BorderSpacing     { return computed.borderSpacing }
+func (computed ComputedStyle) CaptionSide() CaptionSide         { return computed.captionSide }
+func (computed ComputedStyle) EmptyCells() EmptyCells           { return computed.emptyCells }
+func (computed ComputedStyle) TableLayout() TableLayout         { return computed.tableLayout }
 
 // WithAnonymousDisplay returns the initial style of a renderer-generated
 // anonymous formatting box with inherited values copied from computed and the
@@ -1384,6 +1397,7 @@ func cssInitialStyle(viewport Viewport) computedStyle {
 		display:         displayInline,
 		direction:       DirectionLTR,
 		writingMode:     WritingModeHorizontalTB,
+		textOrientation: TextOrientationMixed,
 		borderCollapse:  BorderCollapseSeparate,
 		borderSpacing:   BorderSpacing{horizontal: px(0), vertical: px(0)},
 		captionSide:     CaptionSideTop,

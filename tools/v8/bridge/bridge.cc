@@ -1022,7 +1022,8 @@ bool IsSupportedDashedStylePropertyName(const std::string &name) {
            "flex-shrink",         "font-family",         "font-size",
            "font-style",          "font-weight",
            "line-height",         "text-decoration",     "text-decoration-line",
-           "text-align",          "vertical-align",      "white-space",
+           "text-align",          "text-orientation",    "vertical-align",
+           "white-space",
            "writing-mode",
            "min-height",          "min-width",           "max-height",
            "max-width",           "table-layout",
@@ -11852,7 +11853,7 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
            "borderCollapse",   "borderSpacing",     "captionSide",
            "emptyCells",       "tableLayout",        "listStyle",
            "listStyleType",    "visibility",         "whiteSpace",
-           "writingMode",
+           "textOrientation", "writingMode",
            "cssFloat"}) {
     for (v8::Local<v8::ObjectTemplate> surface : {style_prototype,
                                                    style_instance}) {

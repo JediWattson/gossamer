@@ -193,11 +193,12 @@ type TextFragment struct {
 	// Vertical table layout is performed once in logical coordinates. These
 	// private fields retain the original horizontal glyph run while exposing a
 	// transformed physical bounds rectangle to hit testing and painting.
-	paintOrientation textPaintOrientation
-	paintBounds      Rect
-	logicalWidth     float64
-	logicalHeight    float64
-	logicalBaseline  float64
+	verticalOrientation textPaintOrientation
+	paintOrientation    textPaintOrientation
+	paintBounds         Rect
+	logicalWidth        float64
+	logicalHeight       float64
+	logicalBaseline     float64
 }
 
 func textFragmentBounds(fragment TextFragment) Rect {
@@ -275,6 +276,7 @@ type textPaintOrientation uint8
 const (
 	textPaintHorizontal textPaintOrientation = iota
 	textPaintSidewaysRight
+	textPaintUpright
 )
 
 // VisualTransform projects one node-owned command into viewport space.

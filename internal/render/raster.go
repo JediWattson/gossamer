@@ -29,7 +29,8 @@ func rasterize(displayList DisplayList, fonts *fontBook) (*image.RGBA, error) {
 
 	bounds := image.Rect(0, 0, displayList.Viewport.Width, displayList.Viewport.Height)
 	layers := []rasterLayer{{canvas: image.NewRGBA(bounds), opacity: 1}}
-	sidewaysTextPixels := 0
+	verticalTextPixels := 0
+	verticalTextUnits := 0
 	for _, command := range displayList.Commands {
 		canvas := layers[len(layers)-1].canvas
 		switch command.Kind {
@@ -69,11 +70,26 @@ func rasterize(displayList DisplayList, fonts *fontBook) (*image.RGBA, error) {
 				var width, height int
 				width, height, err = sidewaysTextDimensions(command)
 				if err == nil {
-					sidewaysTextPixels += width * height
-					if sidewaysTextPixels > maxSidewaysTextTotalPixels {
-						err = fmt.Errorf("render: sideways text exceeds %d total pixels", maxSidewaysTextTotalPixels)
+					verticalTextPixels += width * height
+					if verticalTextPixels > maxVerticalTextTotalPixels {
+						err = fmt.Errorf("render: vertical text exceeds %d total pixels", maxVerticalTextTotalPixels)
 					} else {
 						err = drawSidewaysText(target, fonts, command, width, height)
+					}
+				}
+			} else if command.textOrientation == textPaintUpright {
+				var units int
+				var pixels int
+				units, pixels, err = uprightTextCost(command)
+				if err == nil {
+					verticalTextUnits += units
+					verticalTextPixels += pixels
+					if verticalTextUnits > maxVerticalTextTotalUnits {
+						err = fmt.Errorf("render: upright text exceeds %d total units", maxVerticalTextTotalUnits)
+					} else if verticalTextPixels > maxVerticalTextTotalPixels {
+						err = fmt.Errorf("render: vertical text exceeds %d total pixels", maxVerticalTextTotalPixels)
+					} else {
+						err = drawUprightText(target, fonts, command)
 					}
 				}
 			} else {
@@ -163,7 +179,9 @@ func rasterize(displayList DisplayList, fonts *fontBook) (*image.RGBA, error) {
 
 const (
 	maxSidewaysTextPixels      = 4 * 1024 * 1024
-	maxSidewaysTextTotalPixels = 32 * 1024 * 1024
+	maxVerticalTextTotalPixels = 32 * 1024 * 1024
+	maxUprightTextUnits        = 4096
+	maxVerticalTextTotalUnits  = 65536
 )
 
 func sidewaysTextDimensions(command Command) (int, int, error) {
@@ -203,6 +221,50 @@ func drawSidewaysText(destination *image.RGBA, fonts *fontBook, command Command,
 		return nil
 	}
 	draw.Draw(destination, destinationRect, rotated, destinationRect.Min.Sub(destinationPoint), draw.Over)
+	return nil
+}
+
+func uprightTextCost(command Command) (int, int, error) {
+	units := len(splitVerticalTextUnits(command.Text))
+	if units == 0 {
+		return 0, 0, nil
+	}
+	if units > maxUprightTextUnits {
+		return 0, 0, fmt.Errorf("render: upright text exceeds %d units", maxUprightTextUnits)
+	}
+	width := math.Ceil(math.Max(1, command.textBounds.Width))
+	height := math.Ceil(math.Max(1, command.textBounds.Height))
+	if !isFinite(width) || !isFinite(height) || width > maxSidewaysTextPixels || height > maxSidewaysTextPixels || width*height > maxSidewaysTextPixels {
+		return 0, 0, fmt.Errorf("render: upright text exceeds %d pixels", maxSidewaysTextPixels)
+	}
+	return units, int(width * height), nil
+}
+
+func drawUprightText(destination *image.RGBA, fonts *fontBook, command Command) error {
+	units := splitVerticalTextUnits(command.Text)
+	if len(units) == 0 {
+		return nil
+	}
+	advance := command.textBounds.Height / float64(len(units))
+	if !isFinite(advance) || advance <= 0 {
+		return fmt.Errorf("render: invalid upright text advance %g", advance)
+	}
+	for index, unit := range units {
+		metrics, err := fonts.metrics(unit, command.FontSize, command.FontWeight, command.FontStyle, command.FontFamily)
+		if err != nil {
+			return err
+		}
+		cellTop := command.textBounds.Y + float64(index)*advance
+		glyphHeight := metrics.ascent + metrics.descent
+		baseline := cellTop + math.Max(0, (advance-glyphHeight)/2) + metrics.ascent
+		x := command.textBounds.X + (command.textBounds.Width-metrics.width)/2
+		if err := fonts.draw(
+			destination, unit, x, baseline,
+			command.FontSize, command.FontWeight, command.FontStyle, command.FontFamily, command.Color,
+		); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

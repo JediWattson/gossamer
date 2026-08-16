@@ -99,6 +99,12 @@ type inlinePiece struct {
 	baseline              float64
 	metrics               textMetrics
 	verticalAlign         verticalAlignment
+	orientation           textPaintOrientation
+}
+
+type measuredVerticalTextRun struct {
+	verticalTextRun
+	metrics textMetrics
 }
 
 type inlineLayout struct {
@@ -367,11 +373,12 @@ type blockLayoutOverrides struct {
 
 func (context *layoutContext) layoutBlockSizedWithSubgrid(node *styledNode, containingX, contentY, availableWidth float64, containingHeight, forcedContentWidth *float64, independentFormattingContext bool, subgrid *gridSubgridContext, overrides blockLayoutOverrides) (*Box, error) {
 	style := node.style
-	verticalFlow := style.Display().Inside() == computed.DisplayInsideFlow &&
+	flowContainer := style.Display().Inside() == computed.DisplayInsideFlow || style.Display().Inside() == computed.DisplayInsideFlowRoot
+	verticalFlow := flowContainer &&
 		!style.verticalLayout() && style.WritingMode() != writingModeHorizontalTB
-	horizontalFlowInVertical := style.Display().Inside() == computed.DisplayInsideFlow &&
+	horizontalFlowInVertical := flowContainer &&
 		style.verticalLayout() && style.WritingMode() == writingModeHorizontalTB
-	reversedVerticalFlow := style.Display().Inside() == computed.DisplayInsideFlow &&
+	reversedVerticalFlow := flowContainer &&
 		style.verticalLayout() && style.WritingMode() != writingModeHorizontalTB && style.WritingMode() != style.layoutAxes
 	horizontalTableInVertical := style.Display().Inside() == computed.DisplayInsideTable &&
 		style.verticalLayout() && style.WritingMode() == writingModeHorizontalTB
@@ -1408,6 +1415,16 @@ func (context *layoutContext) addListMarker(node *styledNode, box *Box) error {
 	if err != nil {
 		return err
 	}
+	markerOrientation := textPaintHorizontal
+	if node.style.verticalLayout() {
+		runs := verticalTextRuns(markerText, node.style.TextOrientation())
+		if len(runs) != 0 {
+			markerOrientation = runs[0].orientation
+			if markerOrientation == textPaintUpright {
+				metrics.width = float64(runs[0].units) * node.style.FontSize()
+			}
+		}
+	}
 	markerLineHeight := math.Max(node.style.LineHeight().Pixels(node.style.FontSize()), metrics.ascent+metrics.descent)
 	markerLeading := math.Max(0, markerLineHeight-metrics.ascent-metrics.descent)
 	baselineOffset := markerLeading/2 + metrics.ascent
@@ -1420,21 +1437,22 @@ func (context *layoutContext) addListMarker(node *styledNode, box *Box) error {
 		}
 	}
 	marker := TextFragment{
-		Node:           node.node,
-		Pseudo:         node.pseudo,
-		Text:           markerText,
-		X:              box.Bounds.X - node.style.FontSize()*.5 - metrics.width,
-		BaselineY:      baseline,
-		BaselineOffset: baselineOffset,
-		Width:          metrics.width,
-		Height:         markerLineHeight,
-		FontSize:       node.style.FontSize(),
-		FontFamily:     node.style.FontFamily(),
-		FontWeight:     node.style.FontWeight(),
-		FontStyle:      node.style.FontStyle(),
-		Color:          node.style.Color(),
-		Visible:        node.style.Visibility() == visibilityVisible,
-		Underline:      node.style.Underline(),
+		Node:                node.node,
+		Pseudo:              node.pseudo,
+		Text:                markerText,
+		X:                   box.Bounds.X - node.style.FontSize()*.5 - metrics.width,
+		BaselineY:           baseline,
+		BaselineOffset:      baselineOffset,
+		Width:               metrics.width,
+		Height:              markerLineHeight,
+		FontSize:            node.style.FontSize(),
+		FontFamily:          node.style.FontFamily(),
+		FontWeight:          node.style.FontWeight(),
+		FontStyle:           node.style.FontStyle(),
+		Color:               node.style.Color(),
+		Visible:             node.style.Visibility() == visibilityVisible,
+		Underline:           node.style.Underline(),
+		verticalOrientation: markerOrientation,
 	}
 	fragment := InlineFragment{Kind: TextFragmentKind, Text: marker}
 	box.flow = append([]flowItem{{fragment: fragment}}, box.flow...)
@@ -1563,6 +1581,11 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 	}
 	alignment := containerStyle.TextAlignment()
 	inlineDirection := containerStyle.Direction()
+	if containerStyle.verticalLayout() && containerStyle.TextOrientation() == computed.TextOrientationUpright {
+		// CSS Writing Modes forces the used direction to ltr for upright text.
+		// The computed direction remains unchanged and is still exposed by CSSOM.
+		inlineDirection = directionLTR
+	}
 
 	var result inlineLayout
 	var line []inlinePiece
@@ -1584,6 +1607,7 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 					previous.Text.FontWeight == text.FontWeight &&
 					previous.Text.FontStyle == text.FontStyle &&
 					previous.Text.Color == text.Color &&
+					previous.Text.verticalOrientation == text.verticalOrientation &&
 					previous.Text.X+previous.Text.Width == text.X {
 					previous.Text.Text += text.Text
 					previous.Text.Width += text.Width
@@ -1692,21 +1716,22 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 			textColor := piece.style.Color()
 			textColor.A = uint8(math.Round(float64(textColor.A) * clamp(piece.opacity, 0, 1)))
 			text := TextFragment{
-				Node:           piece.node,
-				Pseudo:         piece.pseudo,
-				Text:           piece.text,
-				X:              x + lineOffset + piece.x + justifiedOffset,
-				BaselineY:      targetY + piece.baseline,
-				BaselineOffset: piece.baseline,
-				Width:          piece.width,
-				Height:         piece.height,
-				FontSize:       piece.style.FontSize(),
-				FontFamily:     piece.style.FontFamily(),
-				FontWeight:     piece.style.FontWeight(),
-				FontStyle:      piece.style.FontStyle(),
-				Color:          textColor,
-				Visible:        piece.style.Visibility() == visibilityVisible,
-				Underline:      piece.style.Underline(),
+				Node:                piece.node,
+				Pseudo:              piece.pseudo,
+				Text:                piece.text,
+				X:                   x + lineOffset + piece.x + justifiedOffset,
+				BaselineY:           targetY + piece.baseline,
+				BaselineOffset:      piece.baseline,
+				Width:               piece.width,
+				Height:              piece.height,
+				FontSize:            piece.style.FontSize(),
+				FontFamily:          piece.style.FontFamily(),
+				FontWeight:          piece.style.FontWeight(),
+				FontStyle:           piece.style.FontStyle(),
+				Color:               textColor,
+				Visible:             piece.style.Visibility() == visibilityVisible,
+				Underline:           piece.style.Underline(),
+				verticalOrientation: piece.orientation,
 			}
 			appendFragment(InlineFragment{Kind: TextFragmentKind, Text: text})
 		}
@@ -1717,6 +1742,7 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 
 	lastWasBreak := false
 	var lastBreakStyle computedStyle
+	verticalTextLayout := containerStyle.verticalLayout()
 	for _, token := range builder.tokens {
 		if token.lineBreak {
 			if len(line) == 0 {
@@ -1735,6 +1761,7 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 		atomicBaseline := 0.0
 		imageWidth := 0.0
 		imageHeight := 0.0
+		var measuredRuns []measuredVerticalTextRun
 		if token.atomic != nil {
 			var err error
 			_, direct := directChildren[token.atomic]
@@ -1751,6 +1778,12 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 				continue
 			}
 			wordMetrics = textMetrics{width: imageWidth, ascent: imageHeight}
+		} else if verticalTextLayout {
+			var err error
+			measuredRuns, wordMetrics, err = context.measureVerticalTextRuns(token)
+			if err != nil {
+				return inlineLayout{}, err
+			}
 		} else {
 			var err error
 			wordMetrics, err = context.fonts.metrics(token.text, token.style.FontSize(), token.style.FontWeight(), token.style.FontStyle(), token.style.FontFamily())
@@ -1809,6 +1842,29 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 			lineWidth += prefixWidth + wordMetrics.width
 			continue
 		}
+		if verticalTextLayout {
+			if prefix != "" {
+				spaceMetrics, err := context.fonts.metrics(" ", token.style.FontSize(), token.style.FontWeight(), token.style.FontStyle(), token.style.FontFamily())
+				if err != nil {
+					return inlineLayout{}, err
+				}
+				line = append(line, inlinePiece{
+					text: " ", node: token.node, pseudo: token.pseudo, style: token.style,
+					opacity: token.opacity, x: lineWidth, width: prefixWidth, metrics: spaceMetrics,
+					justifyBefore: true, verticalAlign: token.verticalAlign, orientation: textPaintSidewaysRight,
+				})
+				lineWidth += prefixWidth
+			}
+			for _, run := range measuredRuns {
+				line = append(line, inlinePiece{
+					text: run.text, node: token.node, pseudo: token.pseudo, style: token.style,
+					opacity: token.opacity, x: lineWidth, width: run.metrics.width, metrics: run.metrics,
+					verticalAlign: token.verticalAlign, orientation: run.orientation,
+				})
+				lineWidth += run.metrics.width
+			}
+			continue
+		}
 		pieceText := prefix + token.text
 		pieceMetrics, err := context.fonts.metrics(pieceText, token.style.FontSize(), token.style.FontWeight(), token.style.FontStyle(), token.style.FontFamily())
 		if err != nil {
@@ -1824,6 +1880,30 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 	}
 	result.height = cursorY - y
 	return result, nil
+}
+
+func (context *layoutContext) measureVerticalTextRuns(token inlineToken) ([]measuredVerticalTextRun, textMetrics, error) {
+	runs := verticalTextRuns(token.text, token.style.TextOrientation())
+	measured := make([]measuredVerticalTextRun, 0, len(runs))
+	combined := textMetrics{}
+	for _, run := range runs {
+		metrics, err := context.fonts.metrics(run.text, token.style.FontSize(), token.style.FontWeight(), token.style.FontStyle(), token.style.FontFamily())
+		if err != nil {
+			return nil, textMetrics{}, err
+		}
+		if run.orientation == textPaintUpright {
+			// Go's bundled font API exposes horizontal metrics only. CSS permits
+			// synthesizing vertical metrics; use one em advance per typographic
+			// character unit and retain the face's ascent/descent cross metrics.
+			metrics.width = float64(run.units) * token.style.FontSize()
+		}
+		combined.width += metrics.width
+		combined.height = math.Max(combined.height, metrics.height)
+		combined.ascent = math.Max(combined.ascent, metrics.ascent)
+		combined.descent = math.Max(combined.descent, metrics.descent)
+		measured = append(measured, measuredVerticalTextRun{verticalTextRun: run, metrics: metrics})
+	}
+	return measured, combined, nil
 }
 
 func (context *layoutContext) inlineVerticalRaise(piece inlinePiece, parentAscent, parentDescent, parentXHeight, parentFontSize float64) float64 {
@@ -1874,7 +1954,8 @@ func (context *layoutContext) layoutAtomicInline(node *styledNode, availableWidt
 	if tableCellFirstPass && tableCellFirstPassZeroHeight(node) {
 		overrides.forceZeroContentHeight = true
 	}
-	if style.Width().Unit() == lengthAuto {
+	orthogonalVerticalRoot := !style.verticalLayout() && style.WritingMode() != writingModeHorizontalTB
+	if style.Width().Unit() == lengthAuto && !orthogonalVerticalRoot {
 		padding := context.resolvePadding(style, availableWidth)
 		border := context.resolveBorder(style, availableWidth)
 		horizontalInsets := padding.Left + padding.Right + border.Left + border.Right
@@ -1926,6 +2007,13 @@ func (context *layoutContext) intrinsicContentWidthsUncached(node *styledNode, a
 		return intrinsicWidths{}, nil
 	}
 	if node.generated {
+		if node.style.verticalLayout() || node.style.WritingMode() != writingModeHorizontalTB {
+			_, metrics, err := context.measureVerticalTextRuns(inlineToken{text: node.generatedText, style: node.style})
+			if err != nil {
+				return intrinsicWidths{}, err
+			}
+			return intrinsicWidths{minimum: metrics.width, preferred: metrics.width}, nil
+		}
 		metrics, err := context.fonts.metrics(node.generatedText, node.style.FontSize(), node.style.FontWeight(), node.style.FontStyle(), node.style.FontFamily())
 		if err != nil {
 			return intrinsicWidths{}, err
@@ -2062,11 +2150,19 @@ func (context *layoutContext) intrinsicInlineWidths(nodes []*styledNode, availab
 			}
 			measured = intrinsicWidths{minimum: width, preferred: width}
 		default:
-			metrics, err := context.fonts.metrics(token.text, token.style.FontSize(), token.style.FontWeight(), token.style.FontStyle(), token.style.FontFamily())
-			if err != nil {
-				return intrinsicWidths{}, err
+			if token.style.verticalLayout() || token.style.WritingMode() != writingModeHorizontalTB {
+				_, metrics, err := context.measureVerticalTextRuns(token)
+				if err != nil {
+					return intrinsicWidths{}, err
+				}
+				measured = intrinsicWidths{minimum: metrics.width, preferred: metrics.width}
+			} else {
+				metrics, err := context.fonts.metrics(token.text, token.style.FontSize(), token.style.FontWeight(), token.style.FontStyle(), token.style.FontFamily())
+				if err != nil {
+					return intrinsicWidths{}, err
+				}
+				measured = intrinsicWidths{minimum: metrics.width, preferred: metrics.width}
 			}
-			measured = intrinsicWidths{minimum: metrics.width, preferred: metrics.width}
 		}
 		spaceWidth := 0.0
 		if token.leadingSpace && lineWidth != 0 {

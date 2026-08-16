@@ -81,6 +81,7 @@ const (
 	propertyTableLayout
 	propertyTextAlign
 	propertyTextDecorationLine
+	propertyTextOrientation
 	propertyVerticalAlign
 	propertyVisibility
 	propertyWhiteSpace
@@ -192,6 +193,7 @@ var propertyDefinitions = [...]propertyDefinition{
 	{name: "table-layout", kind: propertyTableLayout, invalidation: propertyInvalidatesLayout},
 	{name: "text-align", kind: propertyTextAlign, inherited: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "text-decoration-line", kind: propertyTextDecorationLine, invalidation: propertyInvalidatesPaint},
+	{name: "text-orientation", kind: propertyTextOrientation, inherited: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "top", kind: propertyInset, edge: propertyTop, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "vertical-align", kind: propertyVerticalAlign, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	// collapse changes table row/column geometry; treating every visibility
@@ -321,6 +323,8 @@ func (definition propertyDefinition) copy(destination *computedStyle, source com
 		destination.direction = source.direction
 	case propertyWritingMode:
 		destination.writingMode = source.writingMode
+	case propertyTextOrientation:
+		destination.textOrientation = source.textOrientation
 	case propertyDisplay:
 		destination.display = source.display
 	case propertyEmptyCells:
@@ -482,6 +486,9 @@ func (definition propertyDefinition) valid(source string, viewport Viewport) boo
 	case propertyWritingMode:
 		keyword, ok := singleCSSKeyword(source)
 		return ok && (keyword == "horizontal-tb" || keyword == "vertical-rl" || keyword == "vertical-lr")
+	case propertyTextOrientation:
+		keyword, ok := singleCSSKeyword(source)
+		return ok && (keyword == "mixed" || keyword == "upright" || keyword == "sideways")
 	case propertyDisplay:
 		keyword, ok := singleCSSKeyword(source)
 		if !ok {
@@ -722,6 +729,16 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 			style.writingMode = WritingModeVerticalLR
 		default:
 			style.writingMode = WritingModeHorizontalTB
+		}
+	case propertyTextOrientation:
+		keyword, _ := singleCSSKeyword(source)
+		switch keyword {
+		case "upright":
+			style.textOrientation = TextOrientationUpright
+		case "sideways":
+			style.textOrientation = TextOrientationSideways
+		default:
+			style.textOrientation = TextOrientationMixed
 		}
 	case propertyDisplay:
 		keyword, _ := singleCSSKeyword(source)
@@ -1128,6 +1145,15 @@ func (definition propertyDefinition) serialize(computed ComputedStyle) string {
 			return "vertical-lr"
 		default:
 			return "horizontal-tb"
+		}
+	case propertyTextOrientation:
+		switch computed.textOrientation {
+		case TextOrientationUpright:
+			return "upright"
+		case TextOrientationSideways:
+			return "sideways"
+		default:
+			return "mixed"
 		}
 	case propertyDisplay:
 		return serializeComputedDisplay(computed.display)

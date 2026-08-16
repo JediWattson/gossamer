@@ -406,9 +406,17 @@ the block axis, columns and `direction` use the inline axis, `border-spacing`
 retains its column/row meaning, and captions map to block-start/block-end.
 Physical padding, borders, clips, structural backgrounds, collapsed segments
 and junctions, hit testing, stable CSSOM geometry, and retained live JS reads
-all use that transformed tree. Replaced content stays upright; the current
-bundled horizontal fonts paint bounded sideways Latin runs while complete
-vertical-script orientation and orthogonal descendants remain follow-ups.
+all use that transformed tree. Replaced content stays upright. The inherited
+`text-orientation` property retains `mixed`, `upright`, and `sideways` through
+the registry, `all`, CSSOM, and live JS surface. Vertical inline layout splits
+Unicode 17 extended grapheme units before line breaking using pinned,
+checksum-verified UAX #29 grapheme data and the generated UAX #50
+Vertical_Orientation table: U/Tu runs remain upright while R/Tr runs use the
+bounded clockwise fallback. Combining sequences, emoji ZWJ units, regional
+indicator pairs, Indic conjuncts, and Hangul composition remain intact;
+upright runs synthesize one-em vertical advances and bounded raster work
+because the bundled Go font API does not expose vertical metrics or OpenType
+`vert`/`vrt2` substitution.
 Table rows, row groups, columns, and
 column groups with `visibility: collapse` continue to participate in intrinsic
 and fixed sizing, then suppress their used track geometry and adjacent border
@@ -527,8 +535,9 @@ opposite-vertical block/table roots retain physical edges, captions, cell
 tracks, text orientation, hit geometry, live CSSOM reads, and bounded fuzz
 behavior across vertical Grid and table parents.
 
-- Complete the remaining advanced table intrinsic edge cases and complete
-  vertical-script orientation.
+- Complete the remaining advanced table intrinsic edge cases and add vertical
+  font metrics, OpenType `vert`/`vrt2` substitution, and script shaping on top
+  of the retained UAX #50 orientation runs.
 - Complete the remaining advanced Grid intrinsic/overflow interactions.
 - Add multicolumn and fragmentation only after their block/inline consumers
   are retained and testable.

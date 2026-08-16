@@ -799,7 +799,12 @@ func applyQuarterTurnToTextFragment(fragment *TextFragment, transformedBounds Re
 		fragment.logicalWidth = fragment.Width
 		fragment.logicalHeight = fragment.Height
 		fragment.logicalBaseline = fragment.BaselineOffset
-		fragment.paintOrientation = textPaintSidewaysRight
+		fragment.paintOrientation = fragment.verticalOrientation
+		if fragment.paintOrientation == textPaintHorizontal {
+			// Older/synthetic fragments have no requested orientation. Preserve
+			// the pre-text-orientation vertical behavior for those runs.
+			fragment.paintOrientation = textPaintSidewaysRight
+		}
 		fragment.paintBounds = transformedBounds
 		fragment.X = transformedBounds.X
 		// A sideways baseline runs on the target x axis. Consumers which expose
