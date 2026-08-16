@@ -8,10 +8,10 @@ import (
 	"github.com/JediWattson/gossamer/internal/v8engine"
 )
 
-func TestStockV8InitializesProductionReactBundle(t *testing.T) {
+func TestStockV8CreatesProductionReactRoot(t *testing.T) {
 	engine, err := v8engine.New(v8engine.Config{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	runProductionReactBootstrapParity(t, engine)
+	runProductionReactRootParity(t, engine)
 }
