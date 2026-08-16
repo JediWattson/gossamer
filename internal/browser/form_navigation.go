@@ -26,8 +26,11 @@ type RequestDocumentLoader interface {
 }
 
 type HistoryEntry struct {
-	URL        *url.URL
-	Navigation NavigationID
+	URL                *url.URL
+	Navigation         NavigationID
+	StateJSON          string
+	DocumentSequence   uint64
+	DocumentGeneration DocumentGeneration
 }
 
 func (page *Page) SetFormNavigationLoader(client DocumentLoader) {
@@ -46,7 +49,7 @@ func (page *Page) History() ([]HistoryEntry, int) {
 	page.mutex.RLock()
 	entries := make([]HistoryEntry, len(page.history))
 	for index, entry := range page.history {
-		entries[index] = HistoryEntry{URL: cloneURL(entry.URL), Navigation: entry.Navigation}
+		entries[index] = cloneHistoryEntry(entry)
 	}
 	current := page.historyIndex
 	page.mutex.RUnlock()
@@ -60,7 +63,16 @@ func (page *Page) pushHistoryLocked(location *url.URL, navigation NavigationID) 
 	if page.historyIndex+1 < len(page.history) {
 		page.history = page.history[:page.historyIndex+1]
 	}
-	page.history = append(page.history, HistoryEntry{URL: cloneURL(location), Navigation: navigation})
+	page.nextHistoryDocument++
+	if page.nextHistoryDocument == 0 {
+		page.nextHistoryDocument++
+	}
+	page.historyDocument = page.nextHistoryDocument
+	page.history = append(page.history, HistoryEntry{
+		URL: cloneURL(location), Navigation: navigation, StateJSON: "null",
+		DocumentSequence:   page.historyDocument,
+		DocumentGeneration: page.documentGeneration,
+	})
 	page.historyIndex = len(page.history) - 1
 	page.invalidateStyleLocked()
 }
@@ -69,9 +81,22 @@ func (page *Page) replaceHistoryEntryLocked(index int, location *url.URL, naviga
 	if location == nil || index < 0 || index >= len(page.history) {
 		return
 	}
-	page.history[index] = HistoryEntry{URL: cloneURL(location), Navigation: navigation}
+	entry := page.history[index]
+	entry.URL = cloneURL(location)
+	entry.Navigation = navigation
+	entry.DocumentGeneration = page.documentGeneration
+	if entry.StateJSON == "" {
+		entry.StateJSON = "null"
+	}
+	page.history[index] = entry
+	page.historyDocument = entry.DocumentSequence
 	page.historyIndex = index
 	page.invalidateStyleLocked()
+}
+
+func cloneHistoryEntry(entry HistoryEntry) HistoryEntry {
+	entry.URL = cloneURL(entry.URL)
+	return entry
 }
 
 // QueueRequestSubmit runs validation, invalid/submit event dispatch, and the

@@ -2,6 +2,7 @@ package browser
 
 import (
 	"cmp"
+	"context"
 	"errors"
 	"fmt"
 	"math"
@@ -395,6 +396,7 @@ var _ DOMComputedStyleHost = (*taskHost)(nil)
 var _ DOMMutationObserverHost = (*taskHost)(nil)
 var _ DOMGeometryHost = (*taskHost)(nil)
 var _ AnimationFrameHost = (*taskHost)(nil)
+var _ SessionHistoryHost = (*taskHost)(nil)
 
 func (host *taskHost) GetElementByID(value string) (NodeHandle, bool, error) {
 	host.page.mutex.RLock()
@@ -479,6 +481,44 @@ func (host *taskHost) DocumentReadyState() (string, error) {
 		return "", ErrStaleNodeHandle
 	}
 	return host.page.readyState, nil
+}
+
+func (host *taskHost) SessionHistorySnapshot() (SessionHistorySnapshot, error) {
+	host.page.mutex.RLock()
+	defer host.page.mutex.RUnlock()
+	if host.page.closed {
+		return SessionHistorySnapshot{}, ErrPageClosed
+	}
+	if host.page.documentGeneration != host.generation {
+		return SessionHistorySnapshot{}, ErrStaleNodeHandle
+	}
+	return host.page.sessionHistorySnapshotLocked(), nil
+}
+
+func (host *taskHost) LocationComponent(component LocationComponent) (string, error) {
+	return host.page.LocationComponent(component)
+}
+
+func (host *taskHost) SetLocationComponent(component LocationComponent, value string) error {
+	return host.page.SetLocationComponent(component, value)
+}
+
+func (host *taskHost) UpdateHistoryState(stateJSON, rawURL string, replace bool) (bool, error) {
+	changed, err := host.page.PushState(stateJSON, rawURL, replace)
+	if err == nil && changed {
+		host.styleChanged = true
+	}
+	return changed, err
+}
+
+func (host *taskHost) TraverseHistory(delta int) error {
+	_, err := host.page.Go(context.Background(), delta, nil)
+	return err
+}
+
+func (host *taskHost) NavigateLocation(rawURL string, action LocationNavigationAction) error {
+	_, err := host.page.NavigateLocation(context.Background(), rawURL, action)
+	return err
 }
 
 func (host *taskHost) CreateTextNode(data string) (NodeHandle, error) {
@@ -1734,10 +1774,16 @@ func (host *taskHost) NodeFacadeRef(handle NodeHandle) (memory.Ref, error) {
 }
 
 func (host *taskHost) RetainNodeEventTarget(handle NodeHandle) error {
+	if handle.Document == host.generation && handle.Node == dom.InvalidNodeID {
+		return nil
+	}
 	return host.page.RetainNodeEventTarget(handle)
 }
 
 func (host *taskHost) ReleaseNodeEventTarget(handle NodeHandle) error {
+	if handle.Document == host.generation && handle.Node == dom.InvalidNodeID {
+		return nil
+	}
 	return host.page.ReleaseNodeEventTarget(handle)
 }
 

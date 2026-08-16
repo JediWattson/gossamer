@@ -174,6 +174,7 @@ func (browser *Browser) LoadPage(ctx context.Context, rawURL string, client Docu
 	if err != nil {
 		return nil, err
 	}
+	page.SetNavigationLoader(client)
 	navigation, err := page.Navigate(ctx, rawURL, client)
 	if err != nil {
 		_ = page.Close()

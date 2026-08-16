@@ -19,6 +19,8 @@ const (
 	SyntaxError           ExceptionName = "SyntaxError"
 	InvalidStateError     ExceptionName = "InvalidStateError"
 	IndexSizeError        ExceptionName = "IndexSizeError"
+	SecurityError         ExceptionName = "SecurityError"
+	DataCloneError        ExceptionName = "DataCloneError"
 )
 
 // Exception is a typed DOM failure. Cause preserves the lower-level package

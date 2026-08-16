@@ -431,6 +431,8 @@ struct gossamer_v8_realm {
   v8::Global<v8::FunctionTemplate> text_template;
   v8::Global<v8::FunctionTemplate> document_template;
   v8::Global<v8::FunctionTemplate> document_fragment_template;
+  v8::Global<v8::FunctionTemplate> history_template;
+  v8::Global<v8::FunctionTemplate> location_template;
   v8::Global<v8::FunctionTemplate> event_template;
   v8::Global<v8::FunctionTemplate> mouse_event_template;
   v8::Global<v8::FunctionTemplate> pointer_event_template;
@@ -454,6 +456,8 @@ struct gossamer_v8_realm {
   v8::Global<v8::FunctionTemplate> style_template;
   v8::Global<v8::ObjectTemplate> collection_iterator_template;
   v8::Global<v8::Object> document_wrapper;
+  v8::Global<v8::Object> history_object;
+  v8::Global<v8::Object> location_object;
   v8::Global<v8::Object> selection_object;
   SelectionState *selection_state = nullptr;
   const gossamer_v8_host *active_host = nullptr;
@@ -462,6 +466,7 @@ struct gossamer_v8_realm {
   bool document_bound = false;
   WrapperKey document_key;
   std::string base_uri;
+  std::string scroll_restoration = "auto";
 
   std::unordered_map<WrapperKey, WrapperEntry, WrapperKeyHash> wrappers;
   std::vector<WrapperKey> collected_wrappers;
@@ -7807,6 +7812,18 @@ void EventPropertyGetter(v8::Local<v8::Name> property,
     info.GetReturnValue().Set(state->propagation_stopped);
   } else if (name == "returnValue") {
     info.GetReturnValue().Set(!state->default_prevented);
+  } else if (name == "state") {
+    v8::Local<v8::String> encoded;
+    v8::Local<v8::Value> value;
+    const std::string &json = state->data.empty() ? std::string("null")
+                                                  : state->data;
+    if (!NewUTF8String(isolate, json.data(), json.size(), &encoded) ||
+        !v8::JSON::Parse(isolate->GetCurrentContext(), encoded)
+             .ToLocal(&value)) {
+      ThrowError(isolate, "V8 failed to decode PopStateEvent.state");
+      return;
+    }
+    info.GetReturnValue().Set(value);
   } else if (name == "clientX") {
     info.GetReturnValue().Set(state->client_x);
   } else if (name == "clientY") {
@@ -7832,7 +7849,8 @@ void EventPropertyGetter(v8::Local<v8::Name> property,
   } else if (name == "shiftKey") {
     info.GetReturnValue().Set(state->shift_key);
   } else if (name == "pointerType" || name == "key" || name == "code" ||
-             name == "data" || name == "inputType") {
+             name == "data" || name == "inputType" || name == "oldURL" ||
+             name == "newURL") {
     const std::string *value = &state->pointer_type;
     if (name == "key")
       value = &state->key;
@@ -7842,6 +7860,10 @@ void EventPropertyGetter(v8::Local<v8::Name> property,
       value = &state->data;
     else if (name == "inputType")
       value = &state->input_type;
+    else if (name == "oldURL")
+      value = &state->key;
+    else if (name == "newURL")
+      value = &state->code;
     info.GetReturnValue().Set(
         v8::String::NewFromUtf8(isolate, value->data(),
                                 v8::NewStringType::kNormal,
@@ -7863,6 +7885,11 @@ void EventPropertyGetter(v8::Local<v8::Name> property,
       return;
     }
     gossamer_v8_realm *realm = CurrentRealm(isolate);
+    if (key.node == 0 && realm->document_bound &&
+        key.document == realm->document_key.document) {
+      info.GetReturnValue().Set(isolate->GetCurrentContext()->Global());
+      return;
+    }
     std::string error;
     v8::Local<v8::Object> wrapper;
     if (!GetOrCreateNodeWrapper(realm, isolate->GetCurrentContext(), key,
@@ -7927,6 +7954,17 @@ void EventComposedPath(const v8::FunctionCallbackInfo<v8::Value> &info) {
   if (state->dispatching) {
     gossamer_v8_realm *realm = CurrentRealm(isolate);
     for (size_t index = 0; index < state->path.size(); ++index) {
+      if (state->path[index].node == 0 && realm->document_bound &&
+          state->path[index].document == realm->document_key.document) {
+        if (!result
+                 ->Set(context, static_cast<uint32_t>(index),
+                       context->Global())
+                 .FromMaybe(false)) {
+          ThrowError(isolate, "V8 failed to build composedPath");
+          return;
+        }
+        continue;
+      }
       std::string error;
       v8::Local<v8::Object> wrapper;
       if (!GetOrCreateNodeWrapper(realm, context, state->path[index], &error)
@@ -8008,12 +8046,10 @@ void CleanupRemovedListeners(gossamer_v8_realm *realm) {
   }
 }
 
-void NodeAddEventListener(const v8::FunctionCallbackInfo<v8::Value> &info) {
+void AddEventListenerForTarget(
+    const v8::FunctionCallbackInfo<v8::Value> &info, const WrapperKey &key) {
   v8::Isolate *isolate = info.GetIsolate();
   gossamer_v8_realm *realm = CurrentRealm(isolate);
-  WrapperKey key;
-  if (!ReadReceiverKey(isolate, info.This(), &key))
-    return;
   if (info.Length() < 2 || !info[1]->IsFunction()) {
     ThrowError(isolate, "addEventListener requires an event type and function");
     return;
@@ -8054,12 +8090,27 @@ void NodeAddEventListener(const v8::FunctionCallbackInfo<v8::Value> &info) {
   ++realm->event_listener_count;
 }
 
-void NodeRemoveEventListener(const v8::FunctionCallbackInfo<v8::Value> &info) {
+void NodeAddEventListener(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  WrapperKey key;
+  if (!ReadReceiverKey(info.GetIsolate(), info.This(), &key))
+    return;
+  AddEventListenerForTarget(info, key);
+}
+
+void WindowAddEventListener(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  gossamer_v8_realm *realm = CurrentRealm(info.GetIsolate());
+  if (!realm->document_bound) {
+    ThrowError(info.GetIsolate(), "Window has no bound document");
+    return;
+  }
+  AddEventListenerForTarget(
+      info, WrapperKey{realm->document_key.document, 0});
+}
+
+void RemoveEventListenerForTarget(
+    const v8::FunctionCallbackInfo<v8::Value> &info, const WrapperKey &key) {
   v8::Isolate *isolate = info.GetIsolate();
   gossamer_v8_realm *realm = CurrentRealm(isolate);
-  WrapperKey key;
-  if (!ReadReceiverKey(isolate, info.This(), &key))
-    return;
   if (info.Length() < 2 || !info[1]->IsFunction())
     return;
   std::string event_type;
@@ -8090,6 +8141,22 @@ void NodeRemoveEventListener(const v8::FunctionCallbackInfo<v8::Value> &info) {
     }
   }
   CleanupRemovedListeners(realm);
+}
+
+void NodeRemoveEventListener(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  WrapperKey key;
+  if (!ReadReceiverKey(info.GetIsolate(), info.This(), &key))
+    return;
+  RemoveEventListenerForTarget(info, key);
+}
+
+void WindowRemoveEventListener(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  gossamer_v8_realm *realm = CurrentRealm(info.GetIsolate());
+  if (!realm->document_bound)
+    return;
+  RemoveEventListenerForTarget(
+      info, WrapperKey{realm->document_key.document, 0});
 }
 
 bool ReadEventParent(gossamer_v8_realm *realm, const WrapperKey &key,
@@ -8124,12 +8191,17 @@ bool BuildEventPath(gossamer_v8_realm *realm, const WrapperKey &target,
       return false;
     }
     path->push_back(current);
+    if (current.node == 0)
+      return true;
     WrapperKey parent;
     bool found = false;
     if (!ReadEventParent(realm, current, &parent, &found, error))
       return false;
-    if (!found)
+    if (!found) {
+      if (realm->document_bound && current == realm->document_key)
+        path->push_back(WrapperKey{current.document, 0});
       return true;
+    }
     current = parent;
   }
 }
@@ -8159,8 +8231,11 @@ bool InvokeEventListeners(gossamer_v8_realm *realm,
   state->has_current_target = true;
   std::string wrapper_error;
   v8::Local<v8::Object> current_target;
-  if (!GetOrCreateNodeWrapper(realm, context, target, &wrapper_error)
-           .ToLocal(&current_target)) {
+  if (target.node == 0 && realm->document_bound &&
+      target.document == realm->document_key.document) {
+    current_target = context->Global();
+  } else if (!GetOrCreateNodeWrapper(realm, context, target, &wrapper_error)
+                  .ToLocal(&current_target)) {
     *error = wrapper_error.empty() ? "V8 failed to wrap currentTarget"
                                    : wrapper_error;
     return false;
@@ -8281,6 +8356,32 @@ void EventTargetDispatchEvent(
   std::string error;
   if (!DispatchEventState(realm, isolate->GetCurrentContext(), target,
                           event_object, state, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  info.GetReturnValue().Set(!state->default_prevented);
+}
+
+void WindowDispatchEvent(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  if (!realm->document_bound) {
+    ThrowError(isolate, "Window has no bound document");
+    return;
+  }
+  if (info.Length() == 0 || !info[0]->IsObject()) {
+    ThrowError(isolate, "dispatchEvent requires an Event");
+    return;
+  }
+  v8::Local<v8::Object> event_object = info[0].As<v8::Object>();
+  EventState *state = ReadEventState(isolate, event_object);
+  if (state == nullptr)
+    return;
+  std::string error;
+  if (!DispatchEventState(
+          realm, isolate->GetCurrentContext(),
+          WrapperKey{realm->document_key.document, 0}, event_object, state,
+          &error)) {
     ThrowError(isolate, error);
     return;
   }
@@ -9922,6 +10023,322 @@ void WindowScroll(const v8::FunctionCallbackInfo<v8::Value> &info) {
     ThrowError(isolate, error);
 }
 
+struct SessionHistorySnapshotValue {
+  int32_t length = 0;
+  int32_t index = -1;
+  std::string state_json;
+  std::string url;
+};
+
+bool ReadSessionHistorySnapshot(gossamer_v8_realm *realm,
+                                SessionHistorySnapshotValue *snapshot,
+                                std::string *error) {
+  if (!RequireHost(realm, error))
+    return false;
+  char *state_json = nullptr;
+  size_t state_json_length = 0;
+  char *url = nullptr;
+  size_t url_length = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->session_history_snapshot(
+          realm->active_host->execution_id, &snapshot->length,
+          &snapshot->index, &state_json, &state_json_length, &url,
+          &url_length, &host_error) == 0) {
+    *error = TakeCString(host_error);
+    std::free(state_json);
+    std::free(url);
+    if (error->empty())
+      *error = "reading session history failed";
+    return false;
+  }
+  std::free(host_error);
+  snapshot->state_json.assign(state_json == nullptr ? "" : state_json,
+                              state_json_length);
+  snapshot->url.assign(url == nullptr ? "" : url, url_length);
+  std::free(state_json);
+  std::free(url);
+  return true;
+}
+
+void HistoryPropertyGetter(
+    v8::Local<v8::Name> property,
+    const v8::PropertyCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  std::string name = UTF8Value(isolate, property.As<v8::Value>());
+  if (name == "scrollRestoration") {
+    v8::Local<v8::String> value;
+    if (NewUTF8String(isolate, realm->scroll_restoration.data(),
+                      realm->scroll_restoration.size(), &value))
+      info.GetReturnValue().Set(value);
+    return;
+  }
+  SessionHistorySnapshotValue snapshot;
+  std::string error;
+  if (!ReadSessionHistorySnapshot(realm, &snapshot, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  if (name == "length") {
+    info.GetReturnValue().Set(snapshot.length);
+    return;
+  }
+  v8::Local<v8::String> state_json;
+  v8::Local<v8::Value> state;
+  const std::string &encoded = snapshot.state_json.empty()
+                                   ? std::string("null")
+                                   : snapshot.state_json;
+  if (!NewUTF8String(isolate, encoded.data(), encoded.size(), &state_json) ||
+      !v8::JSON::Parse(isolate->GetCurrentContext(), state_json)
+           .ToLocal(&state)) {
+    ThrowError(isolate, "V8 failed to decode history.state");
+    return;
+  }
+  info.GetReturnValue().Set(state);
+}
+
+void HistoryScrollRestorationSetter(
+    v8::Local<v8::Name>, v8::Local<v8::Value> value,
+    const v8::PropertyCallbackInfo<void> &info) {
+  std::string rendered = UTF8Value(info.GetIsolate(), value);
+  if (rendered == "auto" || rendered == "manual")
+    CurrentRealm(info.GetIsolate())->scroll_restoration = rendered;
+}
+
+void HistoryUpdateState(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  v8::Local<v8::Context> context = isolate->GetCurrentContext();
+  v8::Local<v8::Value> state =
+      info.Length() > 0 ? info[0] : v8::Undefined(isolate);
+  std::string encoded = "null";
+  if (!state->IsUndefined()) {
+    v8::Local<v8::String> json;
+    bool serialized = false;
+    {
+      v8::TryCatch caught(isolate);
+      serialized = v8::JSON::Stringify(context, state).ToLocal(&json);
+      if (!serialized)
+        caught.Reset();
+    }
+    if (!serialized) {
+      ThrowDOMException(isolate, "DataCloneError",
+                        "history state is not JSON serializable");
+      return;
+    }
+    encoded = UTF8Value(isolate, json);
+  }
+  std::string url;
+  if (info.Length() > 2 && !info[2]->IsUndefined()) {
+    v8::Local<v8::String> rendered;
+    if (!info[2]->ToString(context).ToLocal(&rendered))
+      return;
+    url = UTF8Value(isolate, rendered);
+  }
+  bool replace = info.Data()->BooleanValue(isolate);
+  int changed = 0;
+  char *host_error = nullptr;
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  if (realm->active_host->update_history_state(
+          realm->active_host->execution_id, encoded.data(), encoded.size(),
+          url.data(), url.size(), replace ? 1 : 0, &changed,
+          &host_error) == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate, error.empty() ? "updating session history failed"
+                                      : error);
+    return;
+  }
+  std::free(host_error);
+}
+
+void HistoryTraverse(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  int32_t delta = 0;
+  if (info.Data()->IsInt32()) {
+    delta = info.Data().As<v8::Int32>()->Value();
+  } else if (info.Length() > 0) {
+    delta = info[0]
+                ->Int32Value(isolate->GetCurrentContext())
+                .FromMaybe(0);
+  }
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  char *host_error = nullptr;
+  if (realm->active_host->traverse_history(
+          realm->active_host->execution_id, delta, &host_error) == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate, error.empty() ? "traversing session history failed"
+                                      : error);
+    return;
+  }
+  std::free(host_error);
+}
+
+uint8_t LocationComponentFromName(const std::string &name) {
+  if (name == "href")
+    return 1;
+  if (name == "origin")
+    return 2;
+  if (name == "protocol")
+    return 3;
+  if (name == "host")
+    return 4;
+  if (name == "hostname")
+    return 5;
+  if (name == "port")
+    return 6;
+  if (name == "pathname")
+    return 7;
+  if (name == "search")
+    return 8;
+  if (name == "hash")
+    return 9;
+  return 0;
+}
+
+void LocationPropertyGetter(
+    v8::Local<v8::Name> property,
+    const v8::PropertyCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  uint8_t component =
+      LocationComponentFromName(UTF8Value(isolate, property.As<v8::Value>()));
+  std::string error;
+  if (component == 0 || !RequireHost(realm, &error)) {
+    ThrowError(isolate, component == 0 ? "invalid Location property" : error);
+    return;
+  }
+  char *value = nullptr;
+  size_t value_length = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->location_component(
+          realm->active_host->execution_id, component, &value, &value_length,
+          &host_error) == 0) {
+    error = TakeCString(host_error);
+    std::free(value);
+    ThrowError(isolate, error.empty() ? "reading Location failed" : error);
+    return;
+  }
+  std::free(host_error);
+  v8::Local<v8::String> rendered;
+  bool allocated = NewUTF8String(isolate, value == nullptr ? "" : value,
+                                 value_length, &rendered);
+  std::free(value);
+  if (!allocated) {
+    ThrowError(isolate, "V8 failed to allocate Location value");
+    return;
+  }
+  info.GetReturnValue().Set(rendered);
+}
+
+bool SetLocationComponentHost(gossamer_v8_realm *realm, uint8_t component,
+                              const std::string &value,
+                              std::string *error) {
+  if (!RequireHost(realm, error))
+    return false;
+  char *host_error = nullptr;
+  if (realm->active_host->set_location_component(
+          realm->active_host->execution_id, component, value.data(),
+          value.size(), &host_error) == 0) {
+    *error = TakeCString(host_error);
+    if (error->empty())
+      *error = "updating Location failed";
+    return false;
+  }
+  std::free(host_error);
+  return true;
+}
+
+void LocationPropertySetter(
+    v8::Local<v8::Name> property, v8::Local<v8::Value> value,
+    const v8::PropertyCallbackInfo<void> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  uint8_t component =
+      LocationComponentFromName(UTF8Value(isolate, property.As<v8::Value>()));
+  if (component == 2)
+    return;
+  v8::Local<v8::String> rendered;
+  if (!value->ToString(isolate->GetCurrentContext()).ToLocal(&rendered))
+    return;
+  std::string error;
+  if (!SetLocationComponentHost(CurrentRealm(isolate), component,
+                                UTF8Value(isolate, rendered), &error))
+    ThrowError(isolate, error);
+}
+
+void LocationNavigate(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  uint8_t action = static_cast<uint8_t>(info.Data().As<v8::Int32>()->Value());
+  std::string value;
+  if (action != 3) {
+    v8::Local<v8::String> rendered;
+    if (info.Length() == 0 ||
+        !info[0]->ToString(isolate->GetCurrentContext()).ToLocal(&rendered)) {
+      ThrowError(isolate, "Location navigation requires a URL");
+      return;
+    }
+    value = UTF8Value(isolate, rendered);
+  }
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  char *host_error = nullptr;
+  if (realm->active_host->navigate_location(
+          realm->active_host->execution_id, value.data(), value.size(), action,
+          &host_error) == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate, error.empty() ? "Location navigation failed" : error);
+    return;
+  }
+  std::free(host_error);
+}
+
+void LocationToString(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Local<v8::Value> href;
+  if (info.This()
+          ->Get(info.GetIsolate()->GetCurrentContext(),
+                v8::String::NewFromUtf8Literal(info.GetIsolate(), "href"))
+          .ToLocal(&href))
+    info.GetReturnValue().Set(href);
+}
+
+void GlobalLocationGetter(
+    v8::Local<v8::Name>, const v8::PropertyCallbackInfo<v8::Value> &info) {
+  gossamer_v8_realm *realm = CurrentRealm(info.GetIsolate());
+  if (!realm->location_object.IsEmpty())
+    info.GetReturnValue().Set(realm->location_object.Get(info.GetIsolate()));
+}
+
+void GlobalLocationSetter(
+    v8::Local<v8::Name>, v8::Local<v8::Value> value,
+    const v8::PropertyCallbackInfo<void> &info) {
+  v8::Local<v8::String> rendered;
+  if (!value->ToString(info.GetIsolate()->GetCurrentContext())
+           .ToLocal(&rendered))
+    return;
+  std::string error;
+  if (!SetLocationComponentHost(CurrentRealm(info.GetIsolate()), 1,
+                                UTF8Value(info.GetIsolate(), rendered),
+                                &error))
+    ThrowError(info.GetIsolate(), error);
+}
+
+void DocumentLocationGetter(
+    v8::Local<v8::Name>, const v8::PropertyCallbackInfo<v8::Value> &info) {
+  GlobalLocationGetter(v8::Local<v8::Name>(), info);
+}
+
 void IllegalDOMConstructor(
     const v8::FunctionCallbackInfo<v8::Value> &info) {
   ThrowError(info.GetIsolate(), "Illegal constructor");
@@ -9960,6 +10377,10 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   v8::Local<v8::FunctionTemplate> document_template =
       v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
   v8::Local<v8::FunctionTemplate> document_fragment_template =
+      v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
+  v8::Local<v8::FunctionTemplate> history_template =
+      v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
+  v8::Local<v8::FunctionTemplate> location_template =
       v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
   v8::Local<v8::FunctionTemplate> mutation_observer_template =
       v8::FunctionTemplate::New(isolate, MutationObserverConstructor);
@@ -10071,6 +10492,10 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
       v8::String::NewFromUtf8Literal(isolate, "Document"));
   document_fragment_template->SetClassName(
       v8::String::NewFromUtf8Literal(isolate, "DocumentFragment"));
+  history_template->SetClassName(
+      v8::String::NewFromUtf8Literal(isolate, "History"));
+  location_template->SetClassName(
+      v8::String::NewFromUtf8Literal(isolate, "Location"));
   mutation_observer_template->SetClassName(
       v8::String::NewFromUtf8Literal(isolate, "MutationObserver"));
   mutation_record_template->SetClassName(
@@ -10471,12 +10896,73 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
       isolate, "dispatchEvent",
       v8::FunctionTemplate::New(isolate, EventTargetDispatchEvent));
 
+  for (const char *name : {"length", "state"}) {
+    history_template->PrototypeTemplate()->SetNativeDataProperty(
+        v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
+        HistoryPropertyGetter);
+  }
+  history_template->PrototypeTemplate()->SetNativeDataProperty(
+      v8::String::NewFromUtf8Literal(isolate, "scrollRestoration"),
+      HistoryPropertyGetter, HistoryScrollRestorationSetter);
+  history_template->PrototypeTemplate()->Set(
+      isolate, "pushState",
+      v8::FunctionTemplate::New(isolate, HistoryUpdateState,
+                                v8::False(isolate)));
+  history_template->PrototypeTemplate()->Set(
+      isolate, "replaceState",
+      v8::FunctionTemplate::New(isolate, HistoryUpdateState,
+                                v8::True(isolate)));
+  history_template->PrototypeTemplate()->Set(
+      isolate, "go", v8::FunctionTemplate::New(isolate, HistoryTraverse));
+  history_template->PrototypeTemplate()->Set(
+      isolate, "back",
+      v8::FunctionTemplate::New(isolate, HistoryTraverse,
+                                v8::Integer::New(isolate, -1)));
+  history_template->PrototypeTemplate()->Set(
+      isolate, "forward",
+      v8::FunctionTemplate::New(isolate, HistoryTraverse,
+                                v8::Integer::New(isolate, 1)));
+  history_template->PrototypeTemplate()->Set(
+      v8::Symbol::GetToStringTag(isolate),
+      v8::String::NewFromUtf8Literal(isolate, "History"),
+      static_cast<v8::PropertyAttribute>(v8::ReadOnly | v8::DontEnum));
+
+  for (const char *name : {"href", "protocol", "host", "hostname", "port",
+                           "pathname", "search", "hash"}) {
+    location_template->PrototypeTemplate()->SetNativeDataProperty(
+        v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
+        LocationPropertyGetter, LocationPropertySetter);
+  }
+  location_template->PrototypeTemplate()->SetNativeDataProperty(
+      v8::String::NewFromUtf8Literal(isolate, "origin"),
+      LocationPropertyGetter);
+  location_template->PrototypeTemplate()->Set(
+      isolate, "assign",
+      v8::FunctionTemplate::New(isolate, LocationNavigate,
+                                v8::Integer::New(isolate, 1)));
+  location_template->PrototypeTemplate()->Set(
+      isolate, "replace",
+      v8::FunctionTemplate::New(isolate, LocationNavigate,
+                                v8::Integer::New(isolate, 2)));
+  location_template->PrototypeTemplate()->Set(
+      isolate, "reload",
+      v8::FunctionTemplate::New(isolate, LocationNavigate,
+                                v8::Integer::New(isolate, 3)));
+  location_template->PrototypeTemplate()->Set(
+      isolate, "toString",
+      v8::FunctionTemplate::New(isolate, LocationToString));
+  location_template->PrototypeTemplate()->Set(
+      v8::Symbol::GetToStringTag(isolate),
+      v8::String::NewFromUtf8Literal(isolate, "Location"),
+      static_cast<v8::PropertyAttribute>(v8::ReadOnly | v8::DontEnum));
+
   auto install_event_surface =
       [isolate](v8::Local<v8::ObjectTemplate> object) {
         for (const char *name : {"type", "target", "currentTarget",
                                  "eventPhase", "bubbles", "cancelable",
                                  "composed", "defaultPrevented", "isTrusted",
-                                 "timeStamp", "relatedTarget"}) {
+                                 "timeStamp", "relatedTarget", "state",
+                                 "oldURL", "newURL"}) {
           object->SetNativeDataProperty(
               v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
               EventPropertyGetter);
@@ -11196,6 +11682,9 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   document_template->InstanceTemplate()->SetNativeDataProperty(
       v8::String::NewFromUtf8Literal(isolate, "readyState"),
       DocumentReadyStateGetter);
+  document_template->InstanceTemplate()->SetNativeDataProperty(
+      v8::String::NewFromUtf8Literal(isolate, "location"),
+      DocumentLocationGetter);
 
   realm->event_target_template.Reset(isolate, event_target_template);
   realm->node_template.Reset(isolate, node_template);
@@ -11221,6 +11710,8 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   realm->document_template.Reset(isolate, document_template);
   realm->document_fragment_template.Reset(isolate,
                                            document_fragment_template);
+  realm->history_template.Reset(isolate, history_template);
+  realm->location_template.Reset(isolate, location_template);
   realm->event_template.Reset(isolate, event_template);
   realm->mouse_event_template.Reset(isolate, mouse_event_template);
   realm->pointer_event_template.Reset(isolate, pointer_event_template);
@@ -11349,6 +11840,56 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
     return false;
   }
   v8::Local<v8::Object> global = context->Global();
+  v8::Local<v8::Object> history_object;
+  v8::Local<v8::Object> location_object;
+  v8::Local<v8::Function> window_add_event_listener;
+  v8::Local<v8::Function> window_remove_event_listener;
+  v8::Local<v8::Function> window_dispatch_event;
+  if (!history_template->InstanceTemplate()
+           ->NewInstance(context)
+           .ToLocal(&history_object) ||
+      !location_template->InstanceTemplate()
+           ->NewInstance(context)
+           .ToLocal(&location_object) ||
+      !v8::Function::New(context, WindowAddEventListener)
+           .ToLocal(&window_add_event_listener) ||
+      !v8::Function::New(context, WindowRemoveEventListener)
+           .ToLocal(&window_remove_event_listener) ||
+      !v8::Function::New(context, WindowDispatchEvent)
+           .ToLocal(&window_dispatch_event) ||
+      !global
+           ->DefineOwnProperty(
+               context, v8::String::NewFromUtf8Literal(isolate, "history"),
+               history_object,
+               static_cast<v8::PropertyAttribute>(v8::ReadOnly |
+                                                  v8::DontDelete))
+           .FromMaybe(false) ||
+      !global
+           ->SetNativeDataProperty(
+               context, v8::String::NewFromUtf8Literal(isolate, "location"),
+               GlobalLocationGetter, GlobalLocationSetter,
+               v8::Local<v8::Value>(), v8::DontDelete)
+           .FromMaybe(false) ||
+      !global
+           ->Set(context,
+                 v8::String::NewFromUtf8Literal(isolate, "addEventListener"),
+                 window_add_event_listener)
+           .FromMaybe(false) ||
+      !global
+           ->Set(context,
+                 v8::String::NewFromUtf8Literal(isolate,
+                                                "removeEventListener"),
+                 window_remove_event_listener)
+           .FromMaybe(false) ||
+      !global
+           ->Set(context,
+                 v8::String::NewFromUtf8Literal(isolate, "dispatchEvent"),
+                 window_dispatch_event)
+           .FromMaybe(false)) {
+    return false;
+  }
+  realm->history_object.Reset(isolate, history_object);
+  realm->location_object.Reset(isolate, location_object);
   v8::Local<v8::Object> performance = v8::Object::New(isolate);
   v8::Local<v8::Function> performance_now;
   if (!v8::Function::New(context, PerformanceNowCallback)
@@ -11448,6 +11989,8 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
          expose_interface("Text", text_template) &&
          expose_interface("Document", document_template) &&
          expose_interface("DocumentFragment", document_fragment_template) &&
+         expose_interface("History", history_template) &&
+         expose_interface("Location", location_template) &&
          expose_interface("NodeList", node_list_template) &&
          expose_interface("HTMLCollection", html_collection_template) &&
          expose_interface("DOMTokenList", token_list_template) &&
@@ -11668,6 +12211,14 @@ bool ConfigureNativeEvent(const gossamer_v8_input_event *input,
     state->type = "load";
     state->interface = EventInterface::Event;
     break;
+  case 28:
+    state->type = "popstate";
+    state->interface = EventInterface::Event;
+    break;
+  case 29:
+    state->type = "hashchange";
+    state->interface = EventInterface::Event;
+    break;
   default:
     *error = "V8 received an unsupported browser event type";
     return false;
@@ -11829,12 +12380,17 @@ void ClearRealmHandles(gossamer_v8_realm *realm) {
   realm->text_template.Reset();
   realm->document_template.Reset();
   realm->document_fragment_template.Reset();
+  realm->history_template.Reset();
+  realm->location_template.Reset();
   realm->style_template.Reset();
   realm->collection_iterator_template.Reset();
   realm->document_wrapper.Reset();
+  realm->history_object.Reset();
+  realm->location_object.Reset();
   realm->document_bound = false;
   realm->document_key = WrapperKey{};
   realm->base_uri.clear();
+  realm->scroll_restoration = "auto";
 }
 
 } // namespace

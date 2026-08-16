@@ -139,6 +139,14 @@ func documentLifecycleHost(host browser.Host) (browser.DocumentLifecycleHost, er
 	return lifecycle, nil
 }
 
+func sessionHistoryHost(host browser.Host) (browser.SessionHistoryHost, error) {
+	history, ok := host.(browser.SessionHistoryHost)
+	if !ok {
+		return nil, fmt.Errorf("V8 host does not support session history")
+	}
+	return history, nil
+}
+
 func domComputedStyleHost(host browser.Host) (browser.DOMComputedStyleHost, error) {
 	domHost, ok := host.(browser.DOMComputedStyleHost)
 	if !ok {
@@ -202,6 +210,150 @@ func goGossamerV8HostDocumentReadyState(
 			return err
 		}
 		return writeHostString(state, valueOut, valueLengthOut)
+	}, executionID)
+}
+
+//export goGossamerV8HostSessionHistorySnapshot
+func goGossamerV8HostSessionHistorySnapshot(
+	executionID C.uint64_t,
+	lengthOut *C.int32_t,
+	indexOut *C.int32_t,
+	stateJSONOut **C.char,
+	stateJSONLengthOut *C.size_t,
+	urlOut **C.char,
+	urlLengthOut *C.size_t,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		history, err := sessionHistoryHost(host)
+		if err != nil {
+			return err
+		}
+		snapshot, err := history.SessionHistorySnapshot()
+		if err != nil {
+			return err
+		}
+		if lengthOut != nil {
+			*lengthOut = C.int32_t(snapshot.Length)
+		}
+		if indexOut != nil {
+			*indexOut = C.int32_t(snapshot.Index)
+		}
+		if err := writeHostString(snapshot.StateJSON, stateJSONOut, stateJSONLengthOut); err != nil {
+			return err
+		}
+		location := ""
+		if snapshot.URL != nil {
+			location = snapshot.URL.String()
+		}
+		return writeHostString(location, urlOut, urlLengthOut)
+	}, executionID)
+}
+
+//export goGossamerV8HostLocationComponent
+func goGossamerV8HostLocationComponent(
+	executionID C.uint64_t,
+	component C.uint8_t,
+	valueOut **C.char,
+	valueLengthOut *C.size_t,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		history, err := sessionHistoryHost(host)
+		if err != nil {
+			return err
+		}
+		value, err := history.LocationComponent(browser.LocationComponent(component))
+		if err != nil {
+			return err
+		}
+		return writeHostString(value, valueOut, valueLengthOut)
+	}, executionID)
+}
+
+//export goGossamerV8HostSetLocationComponent
+func goGossamerV8HostSetLocationComponent(
+	executionID C.uint64_t,
+	component C.uint8_t,
+	value *C.char,
+	valueLength C.size_t,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		history, err := sessionHistoryHost(host)
+		if err != nil {
+			return err
+		}
+		return history.SetLocationComponent(browser.LocationComponent(component), goString(value, valueLength))
+	}, executionID)
+}
+
+//export goGossamerV8HostUpdateHistoryState
+func goGossamerV8HostUpdateHistoryState(
+	executionID C.uint64_t,
+	stateJSON *C.char,
+	stateJSONLength C.size_t,
+	urlValue *C.char,
+	urlLength C.size_t,
+	replace C.int,
+	urlChangedOut *C.int,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		history, err := sessionHistoryHost(host)
+		if err != nil {
+			return err
+		}
+		changed, err := history.UpdateHistoryState(
+			goString(stateJSON, stateJSONLength), goString(urlValue, urlLength), replace != 0,
+		)
+		if err != nil {
+			return err
+		}
+		if urlChangedOut != nil {
+			if changed {
+				*urlChangedOut = 1
+			} else {
+				*urlChangedOut = 0
+			}
+		}
+		return nil
+	}, executionID)
+}
+
+//export goGossamerV8HostTraverseHistory
+func goGossamerV8HostTraverseHistory(
+	executionID C.uint64_t,
+	delta C.int32_t,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		history, err := sessionHistoryHost(host)
+		if err != nil {
+			return err
+		}
+		return history.TraverseHistory(int(delta))
+	}, executionID)
+}
+
+//export goGossamerV8HostNavigateLocation
+func goGossamerV8HostNavigateLocation(
+	executionID C.uint64_t,
+	urlValue *C.char,
+	urlLength C.size_t,
+	action C.uint8_t,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		history, err := sessionHistoryHost(host)
+		if err != nil {
+			return err
+		}
+		navigationAction := browser.LocationNavigationAction(action)
+		if navigationAction < browser.LocationAssign || navigationAction > browser.LocationReload {
+			return fmt.Errorf("V8 host received invalid location action %d", action)
+		}
+		return history.NavigateLocation(goString(urlValue, urlLength), navigationAction)
 	}, executionID)
 }
 

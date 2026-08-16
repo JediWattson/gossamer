@@ -9,6 +9,26 @@ extern int goGossamerV8HostDocumentMetadata(
 extern int goGossamerV8HostDocumentReadyState(
     uint64_t execution_id, char **value_out, size_t *value_length_out,
     char **error_out);
+extern int goGossamerV8HostSessionHistorySnapshot(
+    uint64_t execution_id, int32_t *length_out, int32_t *index_out,
+    char **state_json_out, size_t *state_json_length_out, char **url_out,
+    size_t *url_length_out, char **error_out);
+extern int goGossamerV8HostLocationComponent(
+    uint64_t execution_id, uint8_t component, char **value_out,
+    size_t *value_length_out, char **error_out);
+extern int goGossamerV8HostSetLocationComponent(
+    uint64_t execution_id, uint8_t component, const char *value,
+    size_t value_length, char **error_out);
+extern int goGossamerV8HostUpdateHistoryState(
+    uint64_t execution_id, const char *state_json, size_t state_json_length,
+    const char *url, size_t url_length, int replace, int *url_changed_out,
+    char **error_out);
+extern int goGossamerV8HostTraverseHistory(uint64_t execution_id,
+                                            int32_t delta,
+                                            char **error_out);
+extern int goGossamerV8HostNavigateLocation(
+    uint64_t execution_id, const char *url, size_t url_length, uint8_t action,
+    char **error_out);
 
 extern int goGossamerV8HostGetElementByID(uint64_t execution_id,
                                           const char *value,
@@ -335,6 +355,12 @@ static gossamer_v8_host gossamer_v8_go_host(uint64_t execution_id) {
       .execution_id = execution_id,
       .document_metadata = goGossamerV8HostDocumentMetadata,
       .document_ready_state = goGossamerV8HostDocumentReadyState,
+      .session_history_snapshot = goGossamerV8HostSessionHistorySnapshot,
+      .location_component = goGossamerV8HostLocationComponent,
+      .set_location_component = goGossamerV8HostSetLocationComponent,
+      .update_history_state = goGossamerV8HostUpdateHistoryState,
+      .traverse_history = goGossamerV8HostTraverseHistory,
+      .navigate_location = goGossamerV8HostNavigateLocation,
       .get_element_by_id = goGossamerV8HostGetElementByID,
       .create_element = goGossamerV8HostCreateElement,
       .create_element_ns = goGossamerV8HostCreateElementNS,

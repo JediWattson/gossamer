@@ -89,6 +89,25 @@ typedef struct gossamer_v8_host {
                            char **error_out);
   int (*document_ready_state)(uint64_t execution_id, char **value_out,
                               size_t *value_length_out, char **error_out);
+  int (*session_history_snapshot)(
+      uint64_t execution_id, int32_t *length_out, int32_t *index_out,
+      char **state_json_out, size_t *state_json_length_out, char **url_out,
+      size_t *url_length_out, char **error_out);
+  int (*location_component)(uint64_t execution_id, uint8_t component,
+                            char **value_out, size_t *value_length_out,
+                            char **error_out);
+  int (*set_location_component)(uint64_t execution_id, uint8_t component,
+                                const char *value, size_t value_length,
+                                char **error_out);
+  int (*update_history_state)(
+      uint64_t execution_id, const char *state_json,
+      size_t state_json_length, const char *url, size_t url_length,
+      int replace, int *url_changed_out, char **error_out);
+  int (*traverse_history)(uint64_t execution_id, int32_t delta,
+                          char **error_out);
+  int (*navigate_location)(uint64_t execution_id, const char *url,
+                           size_t url_length, uint8_t action,
+                           char **error_out);
   int (*get_element_by_id)(uint64_t execution_id, const char *value,
                            size_t value_length, uint64_t *document_out,
                            uint32_t *node_out, int *found_out,

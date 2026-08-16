@@ -41,6 +41,8 @@ const (
 	InputResize
 	InputDOMContentLoaded
 	InputLoad
+	InputPopState
+	InputHashChange
 )
 
 // InputEvent contains browser-normalized input and a generation-safe target.
@@ -123,6 +125,10 @@ func (eventType InputEventType) String() string {
 		return "DOMContentLoaded"
 	case InputLoad:
 		return "load"
+	case InputPopState:
+		return "popstate"
+	case InputHashChange:
+		return "hashchange"
 	default:
 		return ""
 	}
@@ -302,6 +308,18 @@ type DocumentMetadata struct {
 // it as a live document.readyState read instead of caching it in their heap.
 type DocumentLifecycleHost interface {
 	DocumentReadyState() (string, error)
+}
+
+// SessionHistoryHost exposes the Page-owned URL and session-history model to
+// one active script task. State crosses this seam as bounded JSON so engine
+// values never become browser-owned pointers.
+type SessionHistoryHost interface {
+	SessionHistorySnapshot() (SessionHistorySnapshot, error)
+	LocationComponent(LocationComponent) (string, error)
+	SetLocationComponent(LocationComponent, string) error
+	UpdateHistoryState(string, string, bool) (bool, error)
+	TraverseHistory(int) error
+	NavigateLocation(string, LocationNavigationAction) error
 }
 
 // DOMElementHost is an optional extension implemented by browser hosts that

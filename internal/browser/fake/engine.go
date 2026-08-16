@@ -126,7 +126,7 @@ func (realm *Realm) Bind(eventType browser.InputEventType, target browser.NodeHa
 	if realm == nil {
 		return fmt.Errorf("fake engine: nil realm")
 	}
-	if eventType == 0 || target.Document == 0 || target.Node == 0 || callback == 0 {
+	if eventType == 0 || target.Document == 0 || callback == 0 {
 		return fmt.Errorf("fake engine: invalid event binding")
 	}
 	realm.mutex.Lock()

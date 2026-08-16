@@ -27,48 +27,51 @@ type Page struct {
 	browser *Browser
 	script  JSRealm
 
-	mutex              sync.RWMutex
-	document           *dom.Document
-	nodeLifetimes      *nodeLifetimeState
-	documentGeneration DocumentGeneration
-	documentLanguage   string
-	parent             *Page
-	frameOwner         NodeHandle
-	children           map[dom.NodeID]*Page
-	location           *url.URL
-	readyState         string
-	formLoader         DocumentLoader
-	history            []HistoryEntry
-	historyIndex       int
-	resources          pageResources
-	resourceFetcher    resource.Fetcher
-	documentContext    context.Context
-	documentCancel     context.CancelFunc
-	viewport           render.Viewport
-	scrollX            float64
-	scrollY            float64
-	elementScroll      map[dom.NodeID]scrollOffset
-	timeOrigin         time.Time
-	lastFrameTime      float64
-	nextAnimationFrame AnimationFrameID
-	animationFrames    map[AnimationFrameID]*pageAnimationFrame
-	frame              *render.Frame
-	frameGeneration    DocumentGeneration
-	computedStyle      computedStyleState
-	styleRevision      uint64
-	layout             layoutState
-	layoutRevision     uint64
-	dirty              bool
-	renderedVersion    uint64
-	activeElement      dom.NodeID
-	hoveredElement     dom.NodeID
-	pressedElement     dom.NodeID
-	focusVisible       bool
-	nextNavigation     NavigationID
-	navigation         navigationRecord
-	nextTimer          TimerID
-	timers             map[TimerID]*pageTimer
-	closed             bool
+	mutex               sync.RWMutex
+	document            *dom.Document
+	nodeLifetimes       *nodeLifetimeState
+	documentGeneration  DocumentGeneration
+	documentLanguage    string
+	parent              *Page
+	frameOwner          NodeHandle
+	children            map[dom.NodeID]*Page
+	location            *url.URL
+	readyState          string
+	formLoader          DocumentLoader
+	navigationLoader    DocumentLoader
+	history             []HistoryEntry
+	historyIndex        int
+	historyDocument     uint64
+	nextHistoryDocument uint64
+	resources           pageResources
+	resourceFetcher     resource.Fetcher
+	documentContext     context.Context
+	documentCancel      context.CancelFunc
+	viewport            render.Viewport
+	scrollX             float64
+	scrollY             float64
+	elementScroll       map[dom.NodeID]scrollOffset
+	timeOrigin          time.Time
+	lastFrameTime       float64
+	nextAnimationFrame  AnimationFrameID
+	animationFrames     map[AnimationFrameID]*pageAnimationFrame
+	frame               *render.Frame
+	frameGeneration     DocumentGeneration
+	computedStyle       computedStyleState
+	styleRevision       uint64
+	layout              layoutState
+	layoutRevision      uint64
+	dirty               bool
+	renderedVersion     uint64
+	activeElement       dom.NodeID
+	hoveredElement      dom.NodeID
+	pressedElement      dom.NodeID
+	focusVisible        bool
+	nextNavigation      NavigationID
+	navigation          navigationRecord
+	nextTimer           TimerID
+	timers              map[TimerID]*pageTimer
+	closed              bool
 }
 
 // computedStyleState records the browser-owned inputs that make one immutable
@@ -131,7 +134,12 @@ func newPage(
 		historyIndex:       -1,
 	}
 	if location != nil {
-		page.history = append(page.history, HistoryEntry{URL: cloneURL(location)})
+		page.nextHistoryDocument = 1
+		page.historyDocument = 1
+		page.history = append(page.history, HistoryEntry{
+			URL: cloneURL(location), StateJSON: "null", DocumentSequence: 1,
+			DocumentGeneration: generation,
+		})
 		page.historyIndex = 0
 	}
 	return page, nil

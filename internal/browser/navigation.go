@@ -76,6 +76,7 @@ type navigationRecord struct {
 	cancel             context.CancelFunc
 	historySource      int
 	historyTarget      int
+	replaceCurrent     bool
 }
 
 type preparedNavigation struct {
@@ -90,7 +91,7 @@ type preparedNavigation struct {
 // Navigate begins document I/O outside the Realm. Parsed document state is
 // committed only by the browser-owned completion task published afterward.
 func (page *Page) Navigate(ctx context.Context, rawURL string, client DocumentLoader) (NavigationID, error) {
-	return page.beginNavigation(ctx, rawURL, client, -1, -1)
+	return page.beginNavigation(ctx, rawURL, client, -1, -1, false)
 }
 
 // Back begins a document-rebuilding traversal to the preceding session
@@ -112,10 +113,9 @@ func (page *Page) Reload(ctx context.Context, client DocumentLoader) (Navigation
 	return page.Go(ctx, 0, client)
 }
 
-// Go begins a document-rebuilding traversal relative to the current session
-// history index. Gossamer intentionally does not retain a back-forward cache
-// yet: every successful traversal gets a fresh document generation and script
-// Realm through the ordinary navigation replacement path.
+// Go begins a session-history traversal relative to the current entry.
+// Same-document entries retain the active document and Realm; cross-document
+// entries currently rebuild through the ordinary navigation path.
 func (page *Page) Go(ctx context.Context, delta int, client DocumentLoader) (NavigationID, error) {
 	if page == nil {
 		return 0, fmt.Errorf("browser: nil page")
@@ -135,8 +135,13 @@ func (page *Page) Go(ctx context.Context, delta int, client DocumentLoader) (Nav
 		return 0, ErrHistoryTraversalOutOfRange
 	}
 	rawURL := page.history[target].URL.String()
+	sameDocument := delta != 0 && page.history[target].DocumentSequence != 0 &&
+		page.history[target].DocumentSequence == page.historyDocument
 	page.mutex.RUnlock()
-	return page.beginNavigation(ctx, rawURL, client, source, target)
+	if sameDocument {
+		return page.beginSameDocumentTraversal(ctx, source, target)
+	}
+	return page.beginNavigation(ctx, rawURL, client, source, target, false)
 }
 
 func (page *Page) CanGoBack() bool {
@@ -164,6 +169,7 @@ func (page *Page) beginNavigation(
 	client DocumentLoader,
 	historySource int,
 	historyTarget int,
+	replaceCurrent bool,
 ) (NavigationID, error) {
 	if page == nil {
 		return 0, fmt.Errorf("browser: nil page")
@@ -175,9 +181,6 @@ func (page *Page) beginNavigation(
 	if err != nil {
 		return 0, err
 	}
-	if client == nil {
-		client = loader.New(nil)
-	}
 	navigationContext, cancel := context.WithCancel(ctx)
 
 	page.mutex.Lock()
@@ -186,6 +189,13 @@ func (page *Page) beginNavigation(
 		cancel()
 		return 0, ErrPageClosed
 	}
+	if client == nil {
+		client = page.navigationLoader
+	}
+	if client == nil {
+		client = loader.New(nil)
+	}
+	page.navigationLoader = client
 	if historyTarget >= 0 {
 		if page.historyIndex != historySource || historyTarget >= len(page.history) ||
 			page.history[historyTarget].URL == nil || page.history[historyTarget].URL.String() != requestedURL.String() {
@@ -200,13 +210,14 @@ func (page *Page) beginNavigation(
 	page.nextNavigation++
 	id := page.nextNavigation
 	page.navigation = navigationRecord{
-		id:            id,
-		requestedURL:  cloneURL(requestedURL),
-		state:         NavigationLoadingDocument,
-		context:       navigationContext,
-		cancel:        cancel,
-		historySource: historySource,
-		historyTarget: historyTarget,
+		id:             id,
+		requestedURL:   cloneURL(requestedURL),
+		state:          NavigationLoadingDocument,
+		context:        navigationContext,
+		cancel:         cancel,
+		historySource:  historySource,
+		historyTarget:  historyTarget,
+		replaceCurrent: replaceCurrent,
 	}
 	page.mutex.Unlock()
 
@@ -517,7 +528,16 @@ func (page *Page) commitNavigationDocument(
 	page.location = cloneURL(prepared.location)
 	page.readyState = "loading"
 	if page.navigation.historyTarget >= 0 {
+		targetEntry := page.history[page.navigation.historyTarget]
+		page.historyDocument = targetEntry.DocumentSequence
+		for index := range page.history {
+			if page.history[index].DocumentSequence == page.historyDocument {
+				page.history[index].DocumentGeneration = generation
+			}
+		}
 		page.replaceHistoryEntryLocked(page.navigation.historyTarget, prepared.location, id)
+	} else if page.navigation.replaceCurrent && page.historyIndex >= 0 {
+		page.replaceCurrentWithNewDocumentLocked(prepared.location, id, generation)
 	} else {
 		page.pushHistoryLocked(prepared.location, id)
 	}

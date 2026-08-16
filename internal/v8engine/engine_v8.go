@@ -284,11 +284,19 @@ func (realm *Realm) DispatchEvent(host browser.Host, event browser.InputEvent) (
 	}
 	executionID := registerHostExecution(host)
 	defer unregisterHostExecution(executionID)
+	var eventStrings []unsafe.Pointer
+	defer func() {
+		for _, pointer := range eventStrings {
+			C.free(pointer)
+		}
+	}()
 	stringData := func(value string) *C.char {
 		if value == "" {
 			return nil
 		}
-		return (*C.char)(unsafe.Pointer(unsafe.StringData(value)))
+		pointer := C.CBytes([]byte(value))
+		eventStrings = append(eventStrings, pointer)
+		return (*C.char)(pointer)
 	}
 	native := C.gossamer_v8_input_event{
 		_type:               C.uint8_t(event.Type),
