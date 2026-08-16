@@ -289,6 +289,7 @@ func computeReadAccessLayoutWithStyleSnapshotAndFonts(access *dom.ReadAccess, vi
 }
 
 func layoutProjectedStyles(styledRoot *styledNode, viewport Viewport, resources Resources, fonts *fontBook) (*Box, map[*dom.Node]computedStyle, error) {
+	fixupTableFormattingTree(styledRoot)
 	rootBox, styles, err := layoutDocument(styledRoot, viewport, resources.Images, fonts)
 	if err != nil {
 		return nil, nil, fmt.Errorf("render: layout: %w", err)

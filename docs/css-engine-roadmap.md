@@ -357,10 +357,17 @@ caption, column-group, table-body, row, and cell insertion modes. It inserts
 missing `tbody`/`tr` structure, closes implied cells and rows, preserves nested
 tables, foster-parents misnested non-whitespace content before the owning
 table, and uses the matching modes for fragment parsing. CSS table boxes and
-layout remain pending.
+layout now retain every CSS table display role, generate missing table/row/cell
+wrappers without mutating the DOM, and build a bounded row/column grid. The
+automatic-width foundation accounts for intrinsic cell/caption widths,
+explicit columns, `colspan` and row-group-bounded `rowspan`; block and inline
+tables expose stable geometry, hit testing, CSS table background layer order,
+and live CSSOM dimensions. The collapsed-border model, border spacing, fixed
+table layout, caption-side placement, and full table-cell vertical alignment
+remain pending.
 
-- Implement CSS table wrappers, anonymous table boxes, row/column sizing, and
-  the remaining table fixup before exposing table geometry broadly.
+- Complete separated/collapsed borders, fixed layout, caption placement, cell
+  alignment, and the remaining table sizing/fixup edge cases.
 - Add Grid track sizing and placement, followed by intrinsic sizing and
   alignment.
 - Add multicolumn and fragmentation only after their block/inline consumers

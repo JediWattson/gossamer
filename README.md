@@ -280,6 +280,10 @@ performance budgets; see
   length-percentage `vertical-align` placement for inline runs, replaced
   content, and atomic inline formatting roots, with shifted geometry and hit
   testing
+- HTML and CSS table display roles with anonymous wrapper fixup, bounded
+  intrinsic column sizing, captions, column and row groups, `colspan`/
+  `rowspan`, inline-table participation, layered backgrounds, retained
+  geometry, and live CSSOM reads
 - Inherited `visibility` plus normal, nowrap, pre, pre-wrap, pre-line, and
   break-spaces text whitespace behavior
 - Bundled Go sans and monospace families with regular, bold, italic, and
@@ -316,8 +320,9 @@ The following are intentionally still outside the current milestone:
 - Full HTML error recovery beyond the current table insertion modes and foster
   parenting, including formatting-element reconstruction, complete template
   modes, SVG/MathML, and encoding sniffing
-- Flex wrapping and full intrinsic sizing, Grid, table layout, floats, sticky
-  and full inline positioned layout, and retained inline boxes
+- Flex wrapping and full intrinsic sizing, Grid, advanced table border/fixed
+  layout behavior, floats, sticky and full inline positioned layout, and
+  retained inline boxes
 - The remaining CSS math grammar beyond the current bounded length
   `calc()`/`min()`/`max()`/`clamp()` slice, plus gradients, background images,
   border radii, shadows, transforms, counters, quotation marks, and generated

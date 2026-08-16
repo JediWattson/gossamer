@@ -364,7 +364,9 @@ func (definition propertyDefinition) valid(source string, viewport Viewport) boo
 			return false
 		}
 		switch keyword {
-		case "none", "block", "list-item", "inline", "inline-block", "flex", "inline-flex":
+		case "none", "block", "list-item", "inline", "inline-block", "flex", "inline-flex",
+			"table", "inline-table", "table-row-group", "table-header-group", "table-footer-group",
+			"table-row", "table-cell", "table-column-group", "table-column", "table-caption":
 			return true
 		default:
 			return false
@@ -558,6 +560,26 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 			style.display = displayInline
 		case "inline-block":
 			style.display = displayInlineBlock
+		case "table":
+			style.display = DisplayTable
+		case "inline-table":
+			style.display = DisplayInlineTable
+		case "table-row-group":
+			style.display = DisplayTableRowGroup
+		case "table-header-group":
+			style.display = DisplayTableHeaderGroup
+		case "table-footer-group":
+			style.display = DisplayTableFooterGroup
+		case "table-row":
+			style.display = DisplayTableRow
+		case "table-cell":
+			style.display = DisplayTableCell
+		case "table-column-group":
+			style.display = DisplayTableColumnGroup
+		case "table-column":
+			style.display = DisplayTableColumn
+		case "table-caption":
+			style.display = DisplayTableCaption
 		}
 	case propertyFlexBasis:
 		if parsed, ok := parseLength(source, style.fontSize, style.fontSize, context.viewport); ok && nonNegativeLength(parsed) {

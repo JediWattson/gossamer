@@ -85,6 +85,16 @@ const (
 	DisplayListItem
 	DisplayFlex
 	DisplayInlineFlex
+	DisplayTable
+	DisplayInlineTable
+	DisplayTableRowGroup
+	DisplayTableHeaderGroup
+	DisplayTableFooterGroup
+	DisplayTableRow
+	DisplayTableCell
+	DisplayTableColumnGroup
+	DisplayTableColumn
+	DisplayTableCaption
 	DisplayNone
 )
 
@@ -96,6 +106,7 @@ const (
 	DisplayOutsideNone DisplayOutside = iota
 	DisplayOutsideInline
 	DisplayOutsideBlock
+	DisplayOutsideInternal
 )
 
 // DisplayInside identifies the formatting context established for a box's
@@ -108,15 +119,20 @@ const (
 	DisplayInsideFlow
 	DisplayInsideFlowRoot
 	DisplayInsideFlex
+	DisplayInsideTable
 )
 
 // Outside returns the computed outer display role.
 func (display DisplayMode) Outside() DisplayOutside {
 	switch display {
-	case DisplayInline, DisplayInlineBlock, DisplayInlineFlex:
+	case DisplayInline, DisplayInlineBlock, DisplayInlineFlex, DisplayInlineTable:
 		return DisplayOutsideInline
-	case DisplayBlock, DisplayListItem, DisplayFlex:
+	case DisplayBlock, DisplayListItem, DisplayFlex, DisplayTable:
 		return DisplayOutsideBlock
+	case DisplayTableRowGroup, DisplayTableHeaderGroup, DisplayTableFooterGroup,
+		DisplayTableRow, DisplayTableCell, DisplayTableColumnGroup, DisplayTableColumn,
+		DisplayTableCaption:
+		return DisplayOutsideInternal
 	default:
 		return DisplayOutsideNone
 	}
@@ -131,6 +147,8 @@ func (display DisplayMode) Inside() DisplayInside {
 		return DisplayInsideFlowRoot
 	case DisplayFlex, DisplayInlineFlex:
 		return DisplayInsideFlex
+	case DisplayTable, DisplayInlineTable:
+		return DisplayInsideTable
 	default:
 		return DisplayInsideNone
 	}
@@ -151,6 +169,8 @@ const (
 	displayListItem    = DisplayListItem
 	displayFlex        = DisplayFlex
 	displayInlineFlex  = DisplayInlineFlex
+	displayTable       = DisplayTable
+	displayInlineTable = DisplayInlineTable
 	displayNone        = DisplayNone
 )
 
@@ -557,6 +577,15 @@ type ComputedStyle struct {
 type computedStyle = ComputedStyle
 
 func (computed ComputedStyle) Display() DisplayMode { return computed.display }
+
+// WithAnonymousDisplay returns a copy whose display role is suitable for a
+// renderer-generated anonymous formatting box. The inherited values already
+// carried by computed are intentionally preserved; anonymous boxes are not
+// exposed through CSSOM or retained in the style snapshot.
+func (computed ComputedStyle) WithAnonymousDisplay(display DisplayMode) ComputedStyle {
+	computed.display = display
+	return computed
+}
 func (computed ComputedStyle) FlexDirection() FlexDirection {
 	return computed.flexDirection
 }
@@ -1169,7 +1198,17 @@ func cssInitialStyle(viewport Viewport) computedStyle {
 var builtInUserAgentStylesheet = mustParseBuiltInUserAgentStylesheet(`
 html, body, address, article, aside, blockquote, div, dl, dt, dd,
 fieldset, figcaption, figure, footer, form, header, hgroup, main, nav,
-ol, p, pre, section, table, ul, h1, h2, h3, h4, h5, h6 { display:block }
+ol, p, pre, section, ul, h1, h2, h3, h4, h5, h6 { display:block }
+table { display:table }
+caption { display:table-caption; text-align:center }
+colgroup { display:table-column-group }
+col { display:table-column }
+thead { display:table-header-group }
+tbody { display:table-row-group }
+tfoot { display:table-footer-group }
+tr { display:table-row }
+td, th { display:table-cell }
+th { font-weight:700; text-align:center }
 li { display:list-item }
 pre { white-space:pre }
 /* Gossamer has no scripting engine, so body fallback content remains visible. */

@@ -1,0 +1,81 @@
+package render_test
+
+import (
+	"fmt"
+	"math"
+	"testing"
+
+	"github.com/JediWattson/gossamer/internal/dom"
+	"github.com/JediWattson/gossamer/internal/render"
+)
+
+func FuzzTableLayoutSpansStayFinite(f *testing.F) {
+	f.Add(byte(2), byte(3), byte(1), byte(1))
+	f.Add(byte(4), byte(4), byte(2), byte(3))
+	f.Add(byte(8), byte(8), byte(255), byte(0))
+	f.Fuzz(func(t *testing.T, rawRows, rawColumns, rawColumnSpan, rawRowSpan byte) {
+		rows := int(rawRows%8) + 1
+		columns := int(rawColumns%8) + 1
+		columnSpan := int(rawColumnSpan%8) + 1
+		rowSpan := int(rawRowSpan % 9)
+
+		document := dom.NewDocument()
+		html := dom.NewElement("html")
+		body := dom.NewElement("body", dom.Attribute{Name: "style", Value: "margin:0"})
+		table := dom.NewElement("table")
+		group := dom.NewElement("tbody")
+		for rowIndex := range rows {
+			row := dom.NewElement("tr")
+			for columnIndex := range columns {
+				attributes := []dom.Attribute{{Name: "style", Value: fmt.Sprintf("width:%dpx;padding:%dpx", 4+columnIndex, rowIndex%3)}}
+				if columnIndex == 0 {
+					attributes = append(attributes,
+						dom.Attribute{Name: "colspan", Value: fmt.Sprint(columnSpan)},
+						dom.Attribute{Name: "rowspan", Value: fmt.Sprint(rowSpan)},
+					)
+				}
+				cell := dom.NewElement("td", attributes...)
+				cell.AppendChild(dom.NewText(fmt.Sprintf("%d:%d", rowIndex, columnIndex)))
+				row.AppendChild(cell)
+			}
+			group.AppendChild(row)
+		}
+		table.AppendChild(group)
+		body.AppendChild(table)
+		html.AppendChild(dom.NewElement("head"))
+		html.AppendChild(body)
+		document.AppendChild(html)
+
+		frame, err := render.Render(document, render.Viewport{Width: 320, Height: 240})
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertFiniteTableBoxes(t, frame.Root)
+		tableBox := findBox(frame.Root, table)
+		if tableBox == nil || tableBox.Bounds.Width < 0 || tableBox.Bounds.Height < 0 {
+			t.Fatalf("table box = %#v", tableBox)
+		}
+	})
+}
+
+func assertFiniteTableBoxes(t *testing.T, box *render.Box) {
+	t.Helper()
+	if box == nil {
+		return
+	}
+	values := []float64{
+		box.Bounds.X, box.Bounds.Y, box.Bounds.Width, box.Bounds.Height,
+		box.ContentBounds.X, box.ContentBounds.Y, box.ContentBounds.Width, box.ContentBounds.Height,
+	}
+	for _, value := range values {
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			t.Fatalf("non-finite table geometry in %#v", box)
+		}
+	}
+	if box.Bounds.Width < 0 || box.Bounds.Height < 0 || box.ContentBounds.Width < 0 || box.ContentBounds.Height < 0 {
+		t.Fatalf("negative table geometry in %#v", box)
+	}
+	for _, child := range box.Children {
+		assertFiniteTableBoxes(t, child)
+	}
+}

@@ -427,6 +427,16 @@ func TestDisplayModePreservesOuterAndInnerRoles(t *testing.T) {
 		{style.DisplayListItem, style.DisplayOutsideBlock, style.DisplayInsideFlow, true},
 		{style.DisplayFlex, style.DisplayOutsideBlock, style.DisplayInsideFlex, true},
 		{style.DisplayInlineFlex, style.DisplayOutsideInline, style.DisplayInsideFlex, true},
+		{style.DisplayTable, style.DisplayOutsideBlock, style.DisplayInsideTable, true},
+		{style.DisplayInlineTable, style.DisplayOutsideInline, style.DisplayInsideTable, true},
+		{style.DisplayTableRowGroup, style.DisplayOutsideInternal, style.DisplayInsideNone, true},
+		{style.DisplayTableHeaderGroup, style.DisplayOutsideInternal, style.DisplayInsideNone, true},
+		{style.DisplayTableFooterGroup, style.DisplayOutsideInternal, style.DisplayInsideNone, true},
+		{style.DisplayTableRow, style.DisplayOutsideInternal, style.DisplayInsideNone, true},
+		{style.DisplayTableCell, style.DisplayOutsideInternal, style.DisplayInsideNone, true},
+		{style.DisplayTableColumnGroup, style.DisplayOutsideInternal, style.DisplayInsideNone, true},
+		{style.DisplayTableColumn, style.DisplayOutsideInternal, style.DisplayInsideNone, true},
+		{style.DisplayTableCaption, style.DisplayOutsideInternal, style.DisplayInsideNone, true},
 		{style.DisplayNone, style.DisplayOutsideNone, style.DisplayInsideNone, false},
 	}
 	for _, test := range tests {

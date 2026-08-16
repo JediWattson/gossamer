@@ -355,7 +355,7 @@ func (context *layoutContext) layoutBlockSized(node *styledNode, containingX, co
 	if hasDefiniteHeight {
 		childContainingHeight = &specifiedContentHeight
 	}
-	if node.node.Type == dom.ElementNode && node.node.Data == "img" {
+	if node.node != nil && node.node.Type == dom.ElementNode && node.node.Data == "img" {
 		decoded := context.images[node.node]
 		imageWidth, imageHeight, ok := context.replacedDimensions(style, decoded, availableWidth, containingHeight, horizontalInsets, verticalInsets)
 		if !ok {
@@ -409,6 +409,13 @@ func (context *layoutContext) layoutBlockSized(node *styledNode, containingX, co
 		if style.BoxSizing() == boxSizingBorderBox {
 			width -= horizontalInsets
 		}
+	} else if style.Display().Inside() == computed.DisplayInsideTable {
+		intrinsic, err := context.intrinsicTableContentWidths(node, availableWidth)
+		if err != nil {
+			return nil, err
+		}
+		availableContent := math.Max(0, width)
+		width = math.Min(math.Max(intrinsic.minimum, availableContent), intrinsic.preferred)
 	}
 	width = context.constrainWidth(style, math.Max(0, width), availableWidth, horizontalInsets)
 	outerWidth := width + padding.Left + padding.Right + border.Left + border.Right
@@ -430,13 +437,46 @@ func (context *layoutContext) layoutBlockSized(node *styledNode, containingX, co
 		Padding:               padding,
 		Border:                border,
 		style:                 node.style,
-		hasStyle:              true,
+		hasStyle:              node.node != nil,
 		percentHeightResolved: style.Height().DependsOnPercent() && hasDefiniteHeight,
 	}
 	box.ContentBounds = Rect{
 		X:     box.Bounds.X + border.Left + padding.Left,
 		Y:     box.Bounds.Y + border.Top + padding.Top,
 		Width: width,
+	}
+	if style.Display().Inside() == computed.DisplayInsideTable {
+		contentWidth, contentHeight, err := context.layoutTableContainer(node, box, width, childContainingHeight)
+		if err != nil {
+			return nil, err
+		}
+		if contentWidth > box.ContentBounds.Width {
+			baseLeft, baseRight := left, right
+			if leftAuto {
+				baseLeft = 0
+			}
+			if rightAuto {
+				baseRight = 0
+			}
+			box.ContentBounds.Width = contentWidth
+			box.Bounds.Width = border.Left + padding.Left + contentWidth + padding.Right + border.Right
+			remaining := availableWidth - box.Bounds.Width - baseLeft - baseRight
+			newLeft := baseLeft
+			switch {
+			case leftAuto && rightAuto:
+				newLeft = math.Max(0, remaining/2)
+			case leftAuto:
+				newLeft = math.Max(0, remaining)
+			}
+			translateLayoutBox(box, containingX+newLeft-box.Bounds.X, 0)
+		}
+		if hasDefiniteHeight {
+			contentHeight = specifiedContentHeight
+		}
+		contentHeight = context.constrainHeight(style, contentHeight, verticalInsets, containingHeight)
+		box.ContentBounds.Height = contentHeight
+		box.Bounds.Height = border.Top + padding.Top + contentHeight + padding.Bottom + border.Bottom
+		return context.finalizeBlock(node, box, availableWidth)
 	}
 	if style.Display().Inside() == computed.DisplayInsideFlex {
 		contentHeight, err := context.layoutFlexContainer(node, box, width, childContainingHeight)
@@ -1463,6 +1503,9 @@ func (context *layoutContext) intrinsicContentWidthsUncached(node *styledNode, a
 			return intrinsicWidths{}, err
 		}
 		return intrinsicWidths{minimum: metrics.width, preferred: metrics.width}, nil
+	}
+	if node.style.Display().Inside() == computed.DisplayInsideTable {
+		return context.intrinsicTableContentWidths(node, availableWidth)
 	}
 	if node.style.Display().Inside() == computed.DisplayInsideFlex {
 		return context.intrinsicFlexContentWidths(node, availableWidth)

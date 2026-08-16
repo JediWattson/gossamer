@@ -124,6 +124,26 @@ func serializeComputedDisplay(value DisplayMode) string {
 		return "flex"
 	case DisplayInlineFlex:
 		return "inline-flex"
+	case DisplayTable:
+		return "table"
+	case DisplayInlineTable:
+		return "inline-table"
+	case DisplayTableRowGroup:
+		return "table-row-group"
+	case DisplayTableHeaderGroup:
+		return "table-header-group"
+	case DisplayTableFooterGroup:
+		return "table-footer-group"
+	case DisplayTableRow:
+		return "table-row"
+	case DisplayTableCell:
+		return "table-cell"
+	case DisplayTableColumnGroup:
+		return "table-column-group"
+	case DisplayTableColumn:
+		return "table-column"
+	case DisplayTableCaption:
+		return "table-caption"
 	case DisplayNone:
 		return "none"
 	default:
