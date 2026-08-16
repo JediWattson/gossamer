@@ -229,6 +229,58 @@ func (interpreter *Interpreter) runFrame(context *TaskContext, frame *Frame) (me
 				return memory.Value{}, err
 			}
 			frame.push(lengthValue)
+		case OpLoadBinding:
+			environment, name, err := bindingOperands(frame, instruction.A)
+			if err != nil {
+				return memory.Value{}, err
+			}
+			value, found, err := context.ResolveBinding(environment, name)
+			if err != nil {
+				return memory.Value{}, err
+			}
+			if !found {
+				return memory.Value{}, fmt.Errorf("%w: constant %d", memory.ErrBindingNotFound, instruction.A)
+			}
+			frame.push(value)
+		case OpDeclareBinding:
+			if instruction.B > 1 {
+				return memory.Value{}, fmt.Errorf("%w: DeclareBinding mutability %d", ErrInvalidBytecode, instruction.B)
+			}
+			environment, name, err := bindingOperands(frame, instruction.A)
+			if err != nil {
+				return memory.Value{}, err
+			}
+			if err := context.DeclareBinding(environment, name, instruction.B == 1); err != nil {
+				return memory.Value{}, err
+			}
+		case OpInitializeBinding:
+			value, err := frame.pop()
+			if err != nil {
+				return memory.Value{}, err
+			}
+			environment, name, err := bindingOperands(frame, instruction.A)
+			if err != nil {
+				return memory.Value{}, err
+			}
+			if err := context.InitializeBinding(environment, name, value); err != nil {
+				return memory.Value{}, err
+			}
+			frame.push(value)
+		case OpStoreBinding:
+			value, err := frame.pop()
+			if err != nil {
+				return memory.Value{}, err
+			}
+			environment, name, err := bindingOperands(frame, instruction.A)
+			if err != nil {
+				return memory.Value{}, err
+			}
+			if err := context.SetBinding(environment, name, value); err != nil {
+				return memory.Value{}, err
+			}
+			frame.push(value)
+		case OpLoadThis:
+			frame.push(frame.This)
 		default:
 			return memory.Value{}, fmt.Errorf("%w: unimplemented %s", ErrInvalidBytecode, instruction.Op)
 		}
@@ -294,4 +346,23 @@ func requireUint32(value memory.Value, label string, allowMaximum bool) (uint32,
 		return 0, fmt.Errorf("%w: %s %v is outside uint32 range", ErrOperandType, label, number)
 	}
 	return uint32(number), nil
+}
+
+func bindingOperands(frame *Frame, constant uint32) (memory.Ref, memory.Ref, error) {
+	environment, err := requireRef(frame.Environment, "Function environment Context")
+	if err != nil {
+		return memory.Ref{}, memory.Ref{}, err
+	}
+	name, err := constantRef(frame, constant, "binding name")
+	if err != nil {
+		return memory.Ref{}, memory.Ref{}, err
+	}
+	return environment, name, nil
+}
+
+func constantRef(frame *Frame, index uint32, label string) (memory.Ref, error) {
+	if frame == nil || uint64(index) >= uint64(len(frame.function.Constants)) {
+		return memory.Ref{}, fmt.Errorf("%w: %d", ErrConstantBounds, index)
+	}
+	return requireRef(frame.function.Constants[index], label)
 }

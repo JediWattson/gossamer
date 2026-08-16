@@ -26,6 +26,11 @@ const (
 	OpDeleteElement
 	OpGetLength
 	OpSetLength
+	OpLoadBinding
+	OpDeclareBinding
+	OpInitializeBinding
+	OpStoreBinding
+	OpLoadThis
 )
 
 func (opcode Opcode) String() string {
@@ -68,11 +73,21 @@ func (opcode Opcode) String() string {
 		return "GetLength"
 	case OpSetLength:
 		return "SetLength"
+	case OpLoadBinding:
+		return "LoadBinding"
+	case OpDeclareBinding:
+		return "DeclareBinding"
+	case OpInitializeBinding:
+		return "InitializeBinding"
+	case OpStoreBinding:
+		return "StoreBinding"
+	case OpLoadThis:
+		return "LoadThis"
 	default:
 		return fmt.Sprintf("Opcode(%d)", opcode)
 	}
 }
 
 func (opcode Opcode) valid() bool {
-	return opcode >= OpConstant && opcode <= OpSetLength
+	return opcode >= OpConstant && opcode <= OpLoadThis
 }

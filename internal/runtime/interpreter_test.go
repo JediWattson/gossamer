@@ -238,6 +238,106 @@ func TestInterpreterObjectAndArrayVerbsUseRegionStore(t *testing.T) {
 	}
 }
 
+func TestInterpreterBindingVerbsUseCapturedContexts(t *testing.T) {
+	t.Parallel()
+
+	realm, err := browserruntime.NewRealm(703, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer realm.Close()
+	interpreter := browserruntime.NewInterpreter(browserruntime.InterpreterConfig{})
+	var result memory.Value
+	_, err = realm.EnqueueTask(func(task *browserruntime.TaskContext) error {
+		x, err := task.NewString("x")
+		if err != nil {
+			return err
+		}
+		y, err := task.NewString("y")
+		if err != nil {
+			return err
+		}
+		parent, err := task.NewContext(memory.NullValue())
+		if err != nil {
+			return err
+		}
+		if err := task.DeclareBinding(parent, x, false); err != nil {
+			return err
+		}
+		if err := task.InitializeBinding(parent, x, memory.NumberValue(11)); err != nil {
+			return err
+		}
+		child, err := task.NewContext(memory.RefValue(parent))
+		if err != nil {
+			return err
+		}
+		function, err := task.NewBytecodeFunction(
+			memory.NullValue(), memory.RefValue(child), 0,
+			browserruntime.Assemble(
+				browserruntime.Instruction{Op: browserruntime.OpLoadBinding, A: 0},
+				browserruntime.Instruction{Op: browserruntime.OpPop},
+				browserruntime.Instruction{Op: browserruntime.OpDeclareBinding, A: 1, B: 1},
+				browserruntime.Instruction{Op: browserruntime.OpConstant, A: 2},
+				browserruntime.Instruction{Op: browserruntime.OpInitializeBinding, A: 1},
+				browserruntime.Instruction{Op: browserruntime.OpPop},
+				browserruntime.Instruction{Op: browserruntime.OpConstant, A: 3},
+				browserruntime.Instruction{Op: browserruntime.OpStoreBinding, A: 1},
+				browserruntime.Instruction{Op: browserruntime.OpPop},
+				browserruntime.Instruction{Op: browserruntime.OpLoadBinding, A: 1},
+				browserruntime.Instruction{Op: browserruntime.OpReturn},
+			),
+			[]memory.Value{memory.RefValue(x), memory.RefValue(y), memory.NumberValue(5), memory.NumberValue(8)},
+		)
+		if err != nil {
+			return err
+		}
+		result, err = interpreter.Execute(task, function)
+		if err != nil {
+			return err
+		}
+
+		immutableStore, err := task.NewBytecodeFunction(
+			memory.NullValue(), memory.RefValue(child), 0,
+			browserruntime.Assemble(
+				browserruntime.Instruction{Op: browserruntime.OpConstant, A: 1},
+				browserruntime.Instruction{Op: browserruntime.OpStoreBinding, A: 0},
+				browserruntime.Instruction{Op: browserruntime.OpReturn},
+			),
+			[]memory.Value{memory.RefValue(x), memory.NumberValue(12)},
+		)
+		if err != nil {
+			return err
+		}
+		if _, err := interpreter.Execute(task, immutableStore); !errors.Is(err, memory.ErrImmutableBinding) {
+			t.Fatalf("immutable binding store = %v, want ErrImmutableBinding", err)
+		}
+
+		thisFunction, err := task.NewBytecodeFunction(
+			memory.NullValue(), memory.NullValue(), 0,
+			browserruntime.Assemble(
+				browserruntime.Instruction{Op: browserruntime.OpLoadThis},
+				browserruntime.Instruction{Op: browserruntime.OpReturn},
+			), nil,
+		)
+		if err != nil {
+			return err
+		}
+		if this, err := interpreter.Execute(task, thisFunction); err != nil || this.Kind() != memory.ValueUndefined {
+			t.Fatalf("top-level this = %#v, %v", this, err)
+		}
+		return task.Realm.Store().CheckInvariants()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if result.Kind() != memory.ValueNumber || result.Number() != 8 {
+		t.Fatalf("binding result = %#v, want 8", result)
+	}
+}
+
 func TestFrameVisitsBorrowedRefsWithoutCreatingOwnership(t *testing.T) {
 	t.Parallel()
 
