@@ -293,6 +293,18 @@ const (
 	FontStyleOblique
 )
 
+// FontFamily is the bundled face family selected after walking the computed
+// font-family fallback list. The original normalized list is retained
+// separately for CSSOM serialization.
+type FontFamily uint8
+
+const (
+	FontFamilySerif FontFamily = iota
+	FontFamilySansSerif
+	FontFamilyMonospace
+	FontFamilySystemUI
+)
+
 type TextDecorationLine uint8
 
 const (
@@ -383,6 +395,8 @@ type ComputedStyle struct {
 	hasBackground     bool
 	backgroundCurrent bool
 	fontSize          float64
+	fontFamily        FontFamily
+	fontFamilyValue   string
 	fontWeightValue   int
 	fontStyle         FontStyle
 	lineHeight        LineHeight
@@ -446,6 +460,9 @@ func (computed ComputedStyle) Background() (color.NRGBA, bool) {
 	return computed.background, computed.hasBackground
 }
 func (computed ComputedStyle) FontSize() float64 { return computed.fontSize }
+func (computed ComputedStyle) FontFamily() FontFamily {
+	return computed.fontFamily
+}
 func (computed ComputedStyle) FontWeight() FontWeight {
 	if computed.fontWeightValue >= 600 {
 		return FontWeightBold
@@ -802,6 +819,8 @@ func cssInitialStyle(viewport Viewport) computedStyle {
 		flexBasis:       length{unit: lengthAuto},
 		color:           color.NRGBA{A: 0xff},
 		fontSize:        environmentInitialFontSize(viewport),
+		fontFamily:      FontFamilySerif,
+		fontFamilyValue: "serif",
 		fontWeightValue: 400,
 		lineHeight:      computedLineHeight{value: 1.2, normal: true},
 		textAlign:       alignStart,
@@ -1400,11 +1419,13 @@ func applyTargetDeclaration(style *computedStyle, parent *styledNode, target str
 		viewport:         viewport,
 	}
 	if declaration.Property == "font" {
-		size, lineHeight, weight, fontStyle, _, ok := parseFontShorthand(declaration.Value, viewport)
+		size, lineHeight, weight, fontStyle, family, ok := parseFontShorthand(declaration.Value, viewport)
 		if !ok {
 			return
 		}
 		switch target {
+		case "font-family":
+			declaration = css.Declaration{Property: target, Value: family, Important: declaration.Important}
 		case "font-size":
 			declaration = css.Declaration{Property: target, Value: size, Important: declaration.Important}
 		case "font-weight":
@@ -1527,9 +1548,146 @@ func parseFontShorthand(source string, viewport Viewport) (size, lineHeight, wei
 			familyParts = append(familyParts, value.raw(familyTerm))
 		}
 		family = strings.Join(familyParts, " ")
+		if _, _, validFamily := parseFontFamily(family); !validFamily {
+			return "", "", "", "", "", false
+		}
 		return size, lineHeight, weight, fontStyle, family, true
 	}
 	return "", "", "", "", "", false
+}
+
+func parseFontFamily(source string) (serialized string, selected FontFamily, ok bool) {
+	values, err := css.ParseComponentValues(source)
+	if err != nil {
+		return "", 0, false
+	}
+	groups := make([][]css.ComponentValue, 1)
+	for _, value := range values {
+		if token, tokenOK := componentToken(value); tokenOK && token.Kind == css.TokenComma {
+			groups = append(groups, nil)
+			continue
+		}
+		groups[len(groups)-1] = append(groups[len(groups)-1], value)
+	}
+	serializedGroups := make([]string, 0, len(groups))
+	selected = FontFamilySerif
+	selectedAvailable := false
+	for _, group := range groups {
+		group = trimValueWhitespace(group)
+		if len(group) == 0 {
+			return "", 0, false
+		}
+		name, generic, groupOK := parseFontFamilyGroup(group)
+		if !groupOK {
+			return "", 0, false
+		}
+		if generic {
+			serializedGroups = append(serializedGroups, lowerASCIIValue(name))
+		} else {
+			serializedGroups = append(serializedGroups, quoteCSSString(name))
+		}
+		if !selectedAvailable {
+			if family, available := availableFontFamily(name, generic); available {
+				selected, selectedAvailable = family, true
+			}
+		}
+	}
+	return strings.Join(serializedGroups, ", "), selected, true
+}
+
+func parseFontFamilyGroup(values []css.ComponentValue) (name string, generic bool, ok bool) {
+	if len(values) == 1 {
+		token, tokenOK := componentToken(values[0])
+		if !tokenOK || token.Incomplete {
+			return "", false, false
+		}
+		switch token.Kind {
+		case css.TokenString:
+			return token.Value, false, token.Value != ""
+		case css.TokenIdent:
+			name = token.Value
+			return name, isGenericFontFamily(lowerASCIIValue(name)), true
+		default:
+			return "", false, false
+		}
+	}
+
+	parts := make([]string, 0, len(values))
+	for _, value := range values {
+		if valueWhitespace(value) {
+			continue
+		}
+		token, tokenOK := componentToken(value)
+		if !tokenOK || token.Kind != css.TokenIdent || token.Incomplete {
+			return "", false, false
+		}
+		if isGenericFontFamily(lowerASCIIValue(token.Value)) {
+			return "", false, false
+		}
+		parts = append(parts, token.Value)
+	}
+	if len(parts) == 0 {
+		return "", false, false
+	}
+	return strings.Join(parts, " "), false, true
+}
+
+func isGenericFontFamily(name string) bool {
+	switch name {
+	case "serif", "sans-serif", "monospace", "cursive", "fantasy", "system-ui", "ui-serif", "ui-sans-serif", "ui-monospace", "ui-rounded", "math", "fangsong":
+		return true
+	default:
+		return false
+	}
+}
+
+func availableFontFamily(name string, generic bool) (FontFamily, bool) {
+	lower := lowerASCIIValue(name)
+	if !generic {
+		switch lower {
+		case "go mono":
+			return FontFamilyMonospace, true
+		case "go", "go sans":
+			return FontFamilySansSerif, true
+		default:
+			return 0, false
+		}
+	}
+	switch lower {
+	case "monospace", "ui-monospace":
+		return FontFamilyMonospace, true
+	case "sans-serif", "ui-sans-serif":
+		return FontFamilySansSerif, true
+	case "system-ui":
+		return FontFamilySystemUI, true
+	case "serif", "ui-serif":
+		return FontFamilySerif, true
+	default:
+		return 0, false
+	}
+}
+
+func quoteCSSString(value string) string {
+	var result strings.Builder
+	result.Grow(len(value) + 2)
+	result.WriteByte('"')
+	for _, current := range value {
+		switch current {
+		case '\\', '"':
+			result.WriteByte('\\')
+			result.WriteRune(current)
+		case '\n':
+			result.WriteString("\\a ")
+		case '\r':
+			result.WriteString("\\d ")
+		case '\f':
+			result.WriteString("\\c ")
+		default:
+			result.WriteRune(current)
+		}
+	}
+	result.WriteByte('"')
+	return result.String()
 }
 
 func parseFontPrefixComponent(component css.ComponentValue, weight, fontStyle *string) bool {

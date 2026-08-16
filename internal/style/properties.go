@@ -36,6 +36,7 @@ const (
 	propertyFlexDirection
 	propertyFlexGrow
 	propertyFlexShrink
+	propertyFontFamily
 	propertyFontSize
 	propertyFontStyle
 	propertyFontWeight
@@ -117,6 +118,7 @@ var propertyDefinitions = [...]propertyDefinition{
 	{name: "flex-direction", kind: propertyFlexDirection, invalidation: propertyInvalidatesLayout},
 	{name: "flex-grow", kind: propertyFlexGrow, invalidation: propertyInvalidatesLayout},
 	{name: "flex-shrink", kind: propertyFlexShrink, invalidation: propertyInvalidatesLayout},
+	{name: "font-family", kind: propertyFontFamily, inherited: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "font-size", kind: propertyFontSize, inherited: true, computeEarly: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "font-style", kind: propertyFontStyle, inherited: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "font-weight", kind: propertyFontWeight, inherited: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
@@ -183,7 +185,7 @@ var shorthandTargets = map[string][]string{
 	"border-top":      {"border-top-width", "border-top-style", "border-top-color"},
 	"border-width":    {"border-top-width", "border-right-width", "border-bottom-width", "border-left-width"},
 	"flex":            {"flex-grow", "flex-shrink", "flex-basis"},
-	"font":            {"font-size", "font-style", "font-weight", "line-height"},
+	"font":            {"font-family", "font-size", "font-style", "font-weight", "line-height"},
 	"gap":             {"row-gap", "column-gap"},
 	"list-style":      {"list-style-type"},
 	"margin":          {"margin-top", "margin-right", "margin-bottom", "margin-left"},
@@ -259,6 +261,9 @@ func (definition propertyDefinition) copy(destination *computedStyle, source com
 		destination.flexGrow = source.flexGrow
 	case propertyFlexShrink:
 		destination.flexShrink = source.flexShrink
+	case propertyFontFamily:
+		destination.fontFamily = source.fontFamily
+		destination.fontFamilyValue = source.fontFamilyValue
 	case propertyFontSize:
 		destination.fontSize = source.fontSize
 	case propertyFontStyle:
@@ -362,6 +367,9 @@ func (definition propertyDefinition) valid(source string, viewport Viewport) boo
 	case propertyFlexGrow, propertyFlexShrink:
 		token, ok := singleCSSNumber(source)
 		return ok && token.Number >= 0
+	case propertyFontFamily:
+		_, _, ok := parseFontFamily(source)
+		return ok
 	case propertyFontSize:
 		parsed, ok := parseLength(source, 1, 1, viewport)
 		if !ok || parsed.unit == lengthAuto {
@@ -550,6 +558,11 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 	case propertyFlexShrink:
 		if token, ok := singleCSSNumber(source); ok && token.Number >= 0 {
 			style.flexShrink = token.Number
+		}
+	case propertyFontFamily:
+		if serialized, selected, ok := parseFontFamily(source); ok {
+			style.fontFamilyValue = serialized
+			style.fontFamily = selected
 		}
 	case propertyFontSize:
 		if parsed, ok := parseLength(source, context.parentFontSize, context.parentFontSize, context.viewport); ok && parsed.unit != lengthAuto {
@@ -796,6 +809,8 @@ func (definition propertyDefinition) serialize(computed ComputedStyle) string {
 		return serializeComputedNumber(computed.flexGrow)
 	case propertyFlexShrink:
 		return serializeComputedNumber(computed.flexShrink)
+	case propertyFontFamily:
+		return computed.fontFamilyValue
 	case propertyFontSize:
 		return serializeComputedNumber(computed.fontSize) + "px"
 	case propertyFontStyle:

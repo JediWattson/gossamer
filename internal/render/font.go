@@ -11,6 +11,10 @@ import (
 	"golang.org/x/image/font/gofont/gobold"
 	"golang.org/x/image/font/gofont/gobolditalic"
 	"golang.org/x/image/font/gofont/goitalic"
+	"golang.org/x/image/font/gofont/gomono"
+	"golang.org/x/image/font/gofont/gomonobold"
+	"golang.org/x/image/font/gofont/gomonobolditalic"
+	"golang.org/x/image/font/gofont/gomonoitalic"
 	"golang.org/x/image/font/gofont/goregular"
 	"golang.org/x/image/font/opentype"
 	"golang.org/x/image/math/fixed"
@@ -20,14 +24,19 @@ type faceKey struct {
 	size   int
 	weight FontWeight
 	style  FontStyle
+	family FontFamily
 }
 
 type fontBook struct {
-	regular    *opentype.Font
-	bold       *opentype.Font
-	italic     *opentype.Font
-	boldItalic *opentype.Font
-	faces      map[faceKey]font.Face
+	regular        *opentype.Font
+	bold           *opentype.Font
+	italic         *opentype.Font
+	boldItalic     *opentype.Font
+	monoRegular    *opentype.Font
+	monoBold       *opentype.Font
+	monoItalic     *opentype.Font
+	monoBoldItalic *opentype.Font
+	faces          map[faceKey]font.Face
 }
 
 type textMetrics struct {
@@ -54,13 +63,33 @@ func newFontBook() (*fontBook, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse Go Bold Italic font: %w", err)
 	}
+	monoRegular, err := opentype.Parse(gomono.TTF)
+	if err != nil {
+		return nil, fmt.Errorf("parse Go Mono font: %w", err)
+	}
+	monoBold, err := opentype.Parse(gomonobold.TTF)
+	if err != nil {
+		return nil, fmt.Errorf("parse Go Mono Bold font: %w", err)
+	}
+	monoItalic, err := opentype.Parse(gomonoitalic.TTF)
+	if err != nil {
+		return nil, fmt.Errorf("parse Go Mono Italic font: %w", err)
+	}
+	monoBoldItalic, err := opentype.Parse(gomonobolditalic.TTF)
+	if err != nil {
+		return nil, fmt.Errorf("parse Go Mono Bold Italic font: %w", err)
+	}
 
 	return &fontBook{
-		regular:    regular,
-		bold:       bold,
-		italic:     italic,
-		boldItalic: boldItalic,
-		faces:      make(map[faceKey]font.Face),
+		regular:        regular,
+		bold:           bold,
+		italic:         italic,
+		boldItalic:     boldItalic,
+		monoRegular:    monoRegular,
+		monoBold:       monoBold,
+		monoItalic:     monoItalic,
+		monoBoldItalic: monoBoldItalic,
+		faces:          make(map[faceKey]font.Face),
 	}, nil
 }
 
@@ -79,8 +108,8 @@ func (book *fontBook) Close() error {
 	return firstError
 }
 
-func (book *fontBook) metrics(text string, size float64, weight FontWeight, style FontStyle) (textMetrics, error) {
-	face, err := book.face(size, weight, style)
+func (book *fontBook) metrics(text string, size float64, weight FontWeight, style FontStyle, family FontFamily) (textMetrics, error) {
+	face, err := book.face(size, weight, style, family)
 	if err != nil {
 		return textMetrics{}, err
 	}
@@ -101,9 +130,10 @@ func (book *fontBook) draw(
 	size float64,
 	weight FontWeight,
 	style FontStyle,
+	family FontFamily,
 	textColor color.NRGBA,
 ) error {
-	face, err := book.face(size, weight, style)
+	face, err := book.face(size, weight, style, family)
 	if err != nil {
 		return err
 	}
@@ -121,7 +151,7 @@ func (book *fontBook) draw(
 	return nil
 }
 
-func (book *fontBook) face(size float64, weight FontWeight, style FontStyle) (font.Face, error) {
+func (book *fontBook) face(size float64, weight FontWeight, style FontStyle, family FontFamily) (font.Face, error) {
 	if size <= 0 {
 		size = 16
 	}
@@ -131,19 +161,37 @@ func (book *fontBook) face(size float64, weight FontWeight, style FontStyle) (fo
 	if style == FontStyleOblique {
 		style = FontStyleItalic
 	}
-	key := faceKey{size: int(math.Round(size * 64)), weight: weight, style: style}
+	if family != FontFamilyMonospace {
+		family = FontFamilySansSerif
+	}
+	key := faceKey{size: int(math.Round(size * 64)), weight: weight, style: style, family: family}
 	if face := book.faces[key]; face != nil {
 		return face, nil
 	}
 
 	parsedFont := book.regular
+	if family == FontFamilyMonospace {
+		parsedFont = book.monoRegular
+	}
 	if style == FontStyleItalic {
-		parsedFont = book.italic
+		if family == FontFamilyMonospace {
+			parsedFont = book.monoItalic
+		} else {
+			parsedFont = book.italic
+		}
 	}
 	if weight == FontWeightBold && style == FontStyleItalic {
-		parsedFont = book.boldItalic
+		if family == FontFamilyMonospace {
+			parsedFont = book.monoBoldItalic
+		} else {
+			parsedFont = book.boldItalic
+		}
 	} else if weight == FontWeightBold {
-		parsedFont = book.bold
+		if family == FontFamilyMonospace {
+			parsedFont = book.monoBold
+		} else {
+			parsedFont = book.bold
+		}
 	}
 	face, err := opentype.NewFace(parsedFont, &opentype.FaceOptions{
 		Size:    size,

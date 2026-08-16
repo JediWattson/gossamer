@@ -65,6 +65,15 @@ const (
 	FontStyleOblique = computed.FontStyleOblique
 )
 
+type FontFamily = computed.FontFamily
+
+const (
+	FontFamilySerif     = computed.FontFamilySerif
+	FontFamilySansSerif = computed.FontFamilySansSerif
+	FontFamilyMonospace = computed.FontFamilyMonospace
+	FontFamilySystemUI  = computed.FontFamilySystemUI
+)
+
 // Box is retained layout geometry for painting and future hit testing.
 type Box struct {
 	Node          *dom.Node
@@ -111,6 +120,7 @@ type TextFragment struct {
 	Width      float64
 	Height     float64
 	FontSize   float64
+	FontFamily FontFamily
 	FontWeight FontWeight
 	FontStyle  FontStyle
 	Color      color.NRGBA
@@ -150,6 +160,7 @@ type Command struct {
 	X          float64
 	BaselineY  float64
 	FontSize   float64
+	FontFamily FontFamily
 	FontWeight FontWeight
 	FontStyle  FontStyle
 	Opacity    float64

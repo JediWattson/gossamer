@@ -501,8 +501,8 @@ func paintTextFragment(list *DisplayList, fragment TextFragment, styles map[*dom
 	list.Commands = append(list.Commands, Command{
 		Kind: DrawTextCommand, Node: fragment.Node, Color: fragment.Color, Text: fragment.Text,
 		X: fragment.X, BaselineY: fragment.BaselineY,
-		FontSize: fragment.FontSize, FontWeight: fragment.FontWeight,
-		FontStyle: fragment.FontStyle,
+		FontSize: fragment.FontSize, FontFamily: fragment.FontFamily,
+		FontWeight: fragment.FontWeight, FontStyle: fragment.FontStyle,
 	})
 	if fragmentStyle, ok := styles[fragment.Node]; ok && fragmentStyle.Underline() {
 		list.Commands = append(list.Commands, Command{

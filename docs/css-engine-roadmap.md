@@ -131,6 +131,10 @@ Inherited `font-style` now remains typed through computed style, layout,
 display-list commands, and rasterization. The bundled Go font family selects
 real italic and bold-italic faces; `oblique` deliberately shares the italic
 fallback until angle-aware synthesis or a dedicated face is added.
+Inherited `font-family` keeps a normalized CSSOM fallback list and selects the
+first bundled family it can satisfy. Sans/system/serif fall back to the Go sans
+faces, while `monospace` and `Go Mono` select distinct regular, bold, italic,
+and bold-italic faces for both measurement and rasterization.
 
 - Extend CSS math beyond the current length-percentage subset as number,
   angle, time, resolution, transform, and color consumers arrive.

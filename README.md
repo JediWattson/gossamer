@@ -258,7 +258,8 @@ performance budgets; see
   margins, padding, solid borders, backgrounds, opacity, and text alignment
 - Inherited `visibility` plus normal, nowrap, pre, pre-wrap, pre-line, and
   break-spaces text whitespace behavior
-- Regular, bold, italic, and bold-italic bundled fonts; font sizing, style,
+- Bundled Go sans and monospace families with regular, bold, italic, and
+  bold-italic faces; inherited font-family fallback lists, sizing, style,
   weight, line height, underline, and the represented portions of the `font`
   shorthand (`oblique` currently falls back to the italic face)
 - Disc, circle, square, and decimal list markers
