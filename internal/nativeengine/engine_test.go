@@ -251,3 +251,119 @@ if (timerValue !== 43) {
 		t.Fatal(err)
 	}
 }
+
+func TestNativeRealmDispatchesGoDOMEventsToPersistentListeners(t *testing.T) {
+	t.Parallel()
+
+	root, err := htmlparser.Parse(strings.NewReader(`
+<!doctype html><html><body><section id="outer"><button id="target">go</button></section></body></html>
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	scriptEngine := nativeengine.New(nativeengine.Config{})
+	browserRuntime, err := browser.NewWithEngine(scriptEngine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer browserRuntime.Close()
+	location, _ := url.Parse("https://gossamer.test/native-events/")
+	page, err := browserRuntime.NewPage(root, location)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer page.Close()
+
+	if _, err := page.QueueScript(browser.ScriptSource{URL: "listeners.js", Source: `
+let order = "";
+let microtasks = 0;
+let passiveCanceled = true;
+let lastEvent = null;
+let target = document.getElementById("target");
+let outer = document.getElementById("outer");
+window.addEventListener("click", function (event) {
+  if (this !== window || event.eventPhase !== 1) throw new Error("window capture receiver or phase");
+  order = order + "w";
+}, true);
+document.addEventListener("click", function (event) {
+  if (this !== document || event.eventPhase !== 1) throw new Error("document capture receiver or phase");
+  order = order + "d";
+}, true);
+outer.addEventListener("click", function () { order = order + "o"; }, {capture: true});
+target.addEventListener("click", function (event) {
+  if (this !== target || event.target !== target || event.currentTarget !== target || event.eventPhase !== 2) {
+    throw new Error("target capture identity or phase");
+  }
+  order = order + "c";
+}, true);
+target.addEventListener("click", function (event) {
+
+  event.preventDefault();
+  passiveCanceled = event.defaultPrevented;
+}, {passive: true});
+target.addEventListener("click", function (event) {
+  event.preventDefault();
+  if (!event.defaultPrevented) throw new Error("preventDefault did not update the Event");
+  lastEvent = event;
+  order = order + "t";
+  queueMicrotask(function () { microtasks = microtasks + 1; });
+});
+outer.addEventListener("click", function () { order = order + "b"; }, {once: true});
+window.addEventListener("click", function (event) {
+  if (event.eventPhase !== 3) throw new Error("window bubble phase");
+  order = order + "W";
+});
+function removed() { throw new Error("removed listener ran"); }
+target.addEventListener("click", removed);
+target.removeEventListener("click", removed);
+target.addEventListener("keydown", function (event) {
+  order = order + "k";
+  lastEvent = event;
+  event.stopPropagation();
+});
+target.addEventListener("keydown", function () { order = order + "s"; });
+outer.addEventListener("keydown", function () { throw new Error("stopped event reached ancestor"); });
+`}); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	targetID, found := page.Document().ElementByID("target")
+	if !found {
+		t.Fatal("target node is missing")
+	}
+	target := browser.NodeHandle{Document: page.DocumentGeneration(), Node: targetID}
+	for index := 0; index < 2; index++ {
+		if _, err := page.QueueInputEvent(browser.InputEvent{Type: browser.InputClick, Target: target}); err != nil {
+			t.Fatal(err)
+		}
+		if err := page.Realm.RunOne(context.Background()); err != nil {
+			t.Fatalf("dispatch click %d: %v", index+1, err)
+		}
+	}
+	if _, err := page.QueueInputEvent(browser.InputEvent{Type: browser.InputKeyDown, Target: target, Key: "Enter", Code: "Enter"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("dispatch keydown: %v", err)
+	}
+
+	if _, err := page.QueueScript(browser.ScriptSource{URL: "verify-events.js", Source: `
+if (order !== "wdoctbWwdoctWks") throw new Error("event propagation order: " + order);
+if (microtasks !== 2) throw new Error("listener microtasks did not drain");
+if (passiveCanceled) throw new Error("passive listener canceled an event");
+if (lastEvent.currentTarget !== null || lastEvent.eventPhase !== 0) {
+  throw new Error("completed Event retained dispatch-only state");
+}
+`}); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.Realm.Store().CheckInvariants(); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -57,6 +57,7 @@ const (
 	bindingNodePrototype     = "\x00gossamer.node.prototype"
 	bindingElementPrototype  = "\x00gossamer.element.prototype"
 	bindingTextPrototype     = "\x00gossamer.text.prototype"
+	bindingEventPrototype    = "\x00gossamer.event.prototype"
 	bindingWrapperCache      = "\x00gossamer.wrapper.cache"
 	bindingCallbackCache     = "\x00gossamer.callback.cache"
 	bindingWindow            = "window"
@@ -71,6 +72,7 @@ type browserBindings struct {
 	nodePrototype     memory.Ref
 	elementPrototype  memory.Ref
 	textPrototype     memory.Ref
+	eventPrototype    memory.Ref
 	wrapperCache      memory.Ref
 	callbackCache     memory.Ref
 	window            memory.Ref
@@ -119,6 +121,11 @@ func (realm *Realm) installBrowserNatives() error {
 		{nativeElementClosest, realm.elementClosest},
 		{nativeGlobalSetTimeout, realm.globalSetTimeout},
 		{nativeGlobalClearTimeout, realm.globalClearTimeout},
+		{nativeEventTargetAdd, realm.eventTargetAdd},
+		{nativeEventTargetRemove, realm.eventTargetRemove},
+		{nativeEventPreventDefault, realm.eventPreventDefault},
+		{nativeEventStopPropagation, realm.eventStopPropagation},
+		{nativeEventStopImmediatePropagation, realm.eventStopImmediatePropagation},
 	}
 	for _, registration := range registrations {
 		if err := realm.interpreter.RegisterNative(registration.id, registration.callback); err != nil {
@@ -145,6 +152,7 @@ func (realm *Realm) prepareBrowserBindingsLocked(context *browserruntime.TaskCon
 			{bindingNodePrototype, &bindings.nodePrototype},
 			{bindingElementPrototype, &bindings.elementPrototype},
 			{bindingTextPrototype, &bindings.textPrototype},
+			{bindingEventPrototype, &bindings.eventPrototype},
 			{bindingWrapperCache, &bindings.wrapperCache},
 			{bindingCallbackCache, &bindings.callbackCache},
 		} {
@@ -179,6 +187,7 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		&bindings.documentPrototype,
 		&bindings.elementPrototype,
 		&bindings.textPrototype,
+		&bindings.eventPrototype,
 	} {
 		*destination, err = context.NewHeapObject()
 		if err != nil {
@@ -252,6 +261,7 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{bindingNodePrototype, bindings.nodePrototype, false},
 		{bindingElementPrototype, bindings.elementPrototype, false},
 		{bindingTextPrototype, bindings.textPrototype, false},
+		{bindingEventPrototype, bindings.eventPrototype, false},
 		{bindingWrapperCache, bindings.wrapperCache, false},
 		{bindingCallbackCache, bindings.callbackCache, false},
 		{bindingWindow, bindings.window, false},
@@ -292,6 +302,13 @@ func (realm *Realm) installDOMPrototypeProperties(context *browserruntime.TaskCo
 		{realm.bindings.elementPrototype, "querySelectorAll", 1, nativeElementQuerySelectorAll},
 		{realm.bindings.elementPrototype, "matches", 1, nativeElementMatches},
 		{realm.bindings.elementPrototype, "closest", 1, nativeElementClosest},
+		{realm.bindings.nodePrototype, "addEventListener", 2, nativeEventTargetAdd},
+		{realm.bindings.nodePrototype, "removeEventListener", 2, nativeEventTargetRemove},
+		{realm.bindings.windowPrototype, "addEventListener", 2, nativeEventTargetAdd},
+		{realm.bindings.windowPrototype, "removeEventListener", 2, nativeEventTargetRemove},
+		{realm.bindings.eventPrototype, "preventDefault", 0, nativeEventPreventDefault},
+		{realm.bindings.eventPrototype, "stopPropagation", 0, nativeEventStopPropagation},
+		{realm.bindings.eventPrototype, "stopImmediatePropagation", 0, nativeEventStopImmediatePropagation},
 	}
 	for _, method := range methods {
 		name, err := newString(context, method.name)

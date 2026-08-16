@@ -71,6 +71,9 @@ type Realm struct {
 	host             browser.Host
 	nextCallback     browser.ValueHandle
 	timerCallbacks   map[browser.TimerID]browser.ValueHandle
+	listeners        map[eventListenerKey][]eventListener
+	listenerTargets  map[eventTargetID]uint64
+	activeEvent      *eventState
 
 	evaluations uint64
 	checkpoints uint64
@@ -92,9 +95,11 @@ func (engine *Engine) NewRealm() (browser.JSRealm, error) {
 		return nil, ErrEngineClosed
 	}
 	realm := &Realm{
-		engine:         engine,
-		interpreter:    browserruntime.NewInterpreter(engine.config.Interpreter),
-		timerCallbacks: make(map[browser.TimerID]browser.ValueHandle),
+		engine:          engine,
+		interpreter:     browserruntime.NewInterpreter(engine.config.Interpreter),
+		timerCallbacks:  make(map[browser.TimerID]browser.ValueHandle),
+		listeners:       make(map[eventListenerKey][]eventListener),
+		listenerTargets: make(map[eventTargetID]uint64),
 	}
 	if err := realm.installBrowserNatives(); err != nil {
 		return nil, err
@@ -246,7 +251,7 @@ func (realm *Realm) DrainMicrotasks(host browser.Host) error {
 	return errors.Join(jobErr, persistErr)
 }
 
-func (realm *Realm) DispatchEvent(browser.Host, browser.InputEvent) (browser.EventDispatchResult, error) {
+func (realm *Realm) DispatchEvent(host browser.Host, event browser.InputEvent) (browser.EventDispatchResult, error) {
 	if realm == nil {
 		return browser.EventDispatchResult{}, ErrRealmClosed
 	}
@@ -255,9 +260,17 @@ func (realm *Realm) DispatchEvent(browser.Host, browser.InputEvent) (browser.Eve
 	if realm.closed {
 		return browser.EventDispatchResult{}, ErrRealmClosed
 	}
-	// Native DOM Event objects and listeners are a later adapter rung. Keeping
-	// this a successful no-op lets Pages use the native source evaluator now.
-	return browser.EventDispatchResult{}, nil
+	realm.host = host
+	defer func() { realm.host = nil }()
+	task, err := runtimeTask(host)
+	if err != nil {
+		return browser.EventDispatchResult{}, err
+	}
+	scope, err := realm.beginTaskLocked(task)
+	if err != nil {
+		return browser.EventDispatchResult{}, err
+	}
+	return realm.dispatchEventLocked(scope, event)
 }
 
 func (realm *Realm) Invoke(host browser.Host, handle browser.ValueHandle) error {
@@ -323,6 +336,9 @@ func (realm *Realm) Close() error {
 	realm.persistent = nil
 	realm.persistentRegion = 0
 	realm.timerCallbacks = nil
+	realm.listeners = nil
+	realm.listenerTargets = nil
+	realm.activeEvent = nil
 	realm.clearActiveLocked()
 	realm.mutex.Unlock()
 

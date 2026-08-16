@@ -140,6 +140,13 @@ func (interpreter *Interpreter) Execute(context *TaskContext, function memory.Re
 // queueMicrotask jobs pending. Browser embedders use this form so the existing
 // JSRealm.DrainMicrotasks boundary remains the one observable checkpoint.
 func (interpreter *Interpreter) ExecuteWithoutCheckpoint(context *TaskContext, function memory.Ref, arguments ...memory.Value) (memory.Value, error) {
+	return interpreter.CallWithoutCheckpoint(context, function, memory.UndefinedValue(), arguments...)
+}
+
+// CallWithoutCheckpoint invokes one Function with an explicit this value and
+// leaves native Promise and queueMicrotask jobs pending. Host adapters use it
+// for browser callbacks whose receiver is observable, such as event listeners.
+func (interpreter *Interpreter) CallWithoutCheckpoint(context *TaskContext, function memory.Ref, this memory.Value, arguments ...memory.Value) (memory.Value, error) {
 	if interpreter == nil {
 		return memory.Value{}, fmt.Errorf("runtime: nil interpreter")
 	}
@@ -147,7 +154,7 @@ func (interpreter *Interpreter) ExecuteWithoutCheckpoint(context *TaskContext, f
 		return memory.Value{}, fmt.Errorf("runtime: nil task context")
 	}
 	execution := &execution{interpreter: interpreter, context: context}
-	return execution.call(function, memory.UndefinedValue(), arguments, callAny)
+	return execution.call(function, this, arguments, callAny)
 }
 
 // DrainJobs runs the current task's queued native microtasks in FIFO order.
