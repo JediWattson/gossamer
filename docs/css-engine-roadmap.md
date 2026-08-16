@@ -8,9 +8,12 @@ bytes -> tokens/component values -> rules and declarations -> selector match
       -> cascade -> computed values -> formatting contexts -> display list
 ```
 
-The renderer can continue rebuilding the whole style tree while the model is
-young. Correct invalidation boundaries matter now; incremental restyling does
-not.
+Style, layout, and paint remain immutable snapshot boundaries, but the browser
+no longer rebuilds all three for every mutation. It now reuses style snapshots
+for proven-neutral changes, restyles bounded selector-affected subtrees, and
+reuses layout for paint-only changes. Every fast path remains guarded by a full
+rebuild oracle and fails closed when its dependency or mutation history is not
+precise enough.
 
 ## Boundaries
 
@@ -18,8 +21,9 @@ not.
   declaration lists, and reusable component-value operations.
 - `internal/style` owns typed computed values, inheritance, and the immutable
   snapshots produced by the current cascade. Its central property registry
-  drives the supported longhands through cascade and CSSOM; provenance and the
-  remaining origins continue to move into it.
+  drives the supported longhands through cascade and CSSOM; provenance and all
+  currently implemented origins live there. Future animation and transition
+  origins must enter through the same candidate model.
 - `internal/render` owns used-value resolution that depends on containing-block
   geometry, immutable layout snapshots, display-list construction, and paint.
 - `internal/browser` owns stylesheet sets, viewport/environment changes,
@@ -33,17 +37,43 @@ rather than maintaining a V8 or C++ sidecar. Keep the syntax parser's raw,
 ordered declarations (including duplicates) distinct from the CSSOM declaration
 block view, which resolves duplicate priorities and serialization rules.
 
+## Status snapshot
+
+As of 2026-08-16, the roadmap is well past the original URL-to-pixels vertical
+slice. "Foundation landed" means the stated architecture is implemented and
+tested for Gossamer's supported subset, not that the corresponding web standard
+is complete.
+
+| Milestone | State | Current frontier |
+| --- | --- | --- |
+| 1. Values and variables | Foundation landed | Preserve token streams and provenance as stylesheet rules become script-visible. |
+| 2. CSS Syntax | Foundation landed | Grow recovery/conformance coverage with each new grammar. |
+| 3. Cascade and computed style | Foundation landed | Add new longhands and future origins through the registry and candidate model. |
+| 4. Values and units | Broad partial support | Add non-length math, richer colors, images, effects, and transforms. |
+| 5. Rules and stylesheet graph | Broad partial support | Retain imported rule identities and add `@font-face`, keyframes, and full nesting. |
+| 6. Selectors and state | Broad partial support | Add remaining pseudo-elements/state and profile bounded relational matching. |
+| 7. Formatting contexts | Broad partial support | Retain inline boxes; deepen Flex, positioning, overflow, floats, bidi, shaping, and line breaking. |
+| 8. CSSOM and invalidation | Partial, with live inline/computed style | Expose stylesheet/rule objects and broaden resolved-value serialization. |
+| 9. Tables, Grid, and writing modes | Broad partial support | Finish advanced intrinsic/overflow cases and real vertical font shaping. |
+| 10. Incremental performance | Active | Tighten mutation/property damage and connect retained damage to partial raster work when profiles justify it. |
+
 ## Milestones
 
 ### 1. Token-aware values and variables
 
-- Parse standalone declaration lists for `style` attributes.
-- Cascade case-sensitive custom properties with normal importance, layer,
-  specificity, and source-order rules.
-- Resolve inherited custom properties, nested `var()` fallbacks, and cycles
-  before validating ordinary property values and expanding shorthands.
-- Bound nesting and expansion so hostile CSS cannot consume unbounded stack or
-  memory.
+Current foundation: standalone declaration lists use the shared token and
+component-value layer, and inline declarations are cached by stable element
+identity and exact source. Case-sensitive custom properties participate in the
+same origin, importance, layer, specificity, and source-order cascade as
+ordinary properties. Inheritance, nested `var()` fallback, CSS-wide keywords,
+cycles, substitution size, and nesting depth are resolved under explicit
+bounds before ordinary values and shorthands are validated. Invalid winning
+substitutions compute as `unset`; they do not revive a losing declaration.
+
+- Preserve custom-property token streams, source spans, and winner provenance
+  when stylesheet declarations become script-visible.
+- Extend the same bounded substitution path to every new value grammar rather
+  than adding property-local string substitution.
 
 Acceptance: variables affect the existing color, font, box-model, and display
 properties; invalid winning substitutions compute as `unset` instead of
@@ -63,11 +93,11 @@ their keywords, numbers, dimensions, colors, and lists from the same decoded
 component values. Legacy whitespace- and suffix-based property scanners have
 been removed.
 
-- Migrate selectors, media queries, and property-value grammars onto the shared
-  representation, adding grammar-specific escaped identifiers as each moves.
 - Preserve declaration spans through future stylesheet identity and caching
   work so diagnostics never rely on transient DOM or source pointers.
-- Expand recovery fixtures and fuzz corpora as each grammar migrates.
+- Expand recovery fixtures and fuzz corpora as new grammars are added.
+- Keep future at-rules, values, and selectors on the shared representation;
+  do not reintroduce whitespace- or suffix-based scanners.
 
 Acceptance: parser recovery and serialization are covered by conformance
 fixtures and fuzzing, and existing selectors retain their behavior through the
@@ -77,7 +107,7 @@ shared tokenizer.
 
 Current foundation: cascade and computed-value calculation live in
 `internal/style`; browser pages cache versioned, stable-ID snapshots; and
-render consumes the exact snapshot retained by each frame. The current 80
+render consumes the exact snapshot retained by each frame. The current 82
 longhands share one registry for inheritance, validation, computation, copying,
 serialization, and invalidation metadata, and `all` participates in the full
 layer/importance cascade without resetting custom properties. User-agent,
@@ -92,7 +122,6 @@ stable element identity and exact source. Repeated computed-style,
 geometry, and render reads therefore do not reparse unchanged `style`
 attributes; reconnecting or changing an element replaces only that entry.
 
-- Move cascade and computed-value ownership out of `internal/render`.
 - Extend CSS-wide handling and the central property registry with every new
   longhand while preserving `all` exclusions such as `direction`,
   `unicode-bidi`, and custom properties.
@@ -182,8 +211,8 @@ through nested media, supports, and layer groups.
   selector placements such as `:is(&)`.
 - Retain imported-sheet identities and source spans instead of only the current
   flattened immutable renderer view.
-- Track stylesheet identity and generations so dynamic `<style>` and `<link>`
-  changes cannot reuse stale resources.
+- Expose generation-checked stylesheet and rule identities without allowing
+  stale script handles to observe replacement resources.
 
 Acceptance: the browser owns an ordered stylesheet graph and can replace one
 sheet without losing source provenance. The ownership and loading half is now
@@ -271,8 +300,9 @@ retaining the originating element for geometry, paint ownership, and hit
 testing.
 
 - Finish the remaining pseudo-elements and stateful selector grammar.
-- Add memoization and selector/property dependency indexes after profiling the
-  now-bounded combinator backtracking paths.
+- Profile the now-bounded combinator and relational paths before adding
+  selector-result memoization; conservative candidate and invalidation indexes
+  are already in place.
 - Extend generated content to counters, quotation marks, images, and retained
   empty inline boxes only with matching layout consumers.
 
@@ -338,13 +368,19 @@ box-dependent resolved-value serialization remains pending. `::before` and
 `::after` use sparse stable-ID style and layout slots, so retained computed
 declarations observe generated content changes without publishing an early
 frame; other pseudo-elements remain empty.
+The native mutation journal records character-data, attribute, child-list, and
+control-state changes with mutation-time connectedness. The Page can reuse a
+style snapshot for proven-neutral records, restyle bounded affected subtrees,
+and retain layout for paint-only damage; journal gaps, global selector
+dependencies, stylesheet-owner changes, tree edits, and geometry damage retain
+conservative full-rebuild fallbacks.
 
 - Expose stylesheet, rule, declaration, and computed-style APIs through stable
   numeric browser handles.
-- Classify effective DOM mutations as character-data, attribute, or child-list
-  changes and record whether they touch the connected tree.
-- Initially map every connected mutation to global style/layout/paint
-  invalidation, coalesced at the Page task boundary.
+- Broaden box-dependent resolved-value serialization beyond the current
+  width/height and generated-pseudo geometry slice.
+- Keep tightening mutation-to-selector and property-to-damage classification
+  against the full style/layout/display-list oracles in milestone 10.
 
 Acceptance: `setAttribute`, `className`, `element.style`, stylesheet text, and
 tree mutations are immediately visible to JavaScript and publish at most one
