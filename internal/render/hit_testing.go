@@ -22,6 +22,58 @@ func HitTestDocument(frame *Frame, x, y float64) *dom.Node {
 	return hitTestBox(frame.Root, x, y)
 }
 
+// HitTestVisual resolves a point against boxes and fragments after applying
+// the same Page-owned scroll transforms and nested scrollport clips used by
+// paint. Layout remains in immutable document coordinates.
+func HitTestVisual(frame *Frame, x, y float64, transforms map[*dom.Node]VisualTransform) *dom.Node {
+	if frame == nil || frame.Root == nil || x < 0 || y < 0 ||
+		x >= float64(frame.Viewport.Width) || y >= float64(frame.Viewport.Height) {
+		return nil
+	}
+	return hitTestVisualBox(frame.Root, x, y, transforms)
+}
+
+func hitTestVisualBox(box *Box, x, y float64, transforms map[*dom.Node]VisualTransform) *dom.Node {
+	if box == nil {
+		return nil
+	}
+	boxTransform := transforms[box.Node]
+	if boxTransform.HasClip && !containsPoint(boxTransform.Clip, x, y) {
+		return nil
+	}
+	for index := len(box.Children) - 1; index >= 0; index-- {
+		if node := hitTestVisualBox(box.Children[index], x, y, transforms); node != nil {
+			return node
+		}
+	}
+	for index := len(box.Fragments) - 1; index >= 0; index-- {
+		fragment := box.Fragments[index]
+		switch fragment.Kind {
+		case ImageFragmentKind:
+			transform := transforms[fragment.Image.Node]
+			if (!transform.HasClip || containsPoint(transform.Clip, x, y)) && containsPoint(translatedRect(fragment.Image.Bounds, transform), x, y) {
+				return fragment.Image.Node
+			}
+		case TextFragmentKind:
+			transform := transforms[fragment.Text.Node]
+			bounds := Rect{X: fragment.Text.X, Y: fragment.Text.BaselineY - fragment.Text.Height, Width: fragment.Text.Width, Height: fragment.Text.Height}
+			if (!transform.HasClip || containsPoint(transform.Clip, x, y)) && containsPoint(translatedRect(bounds, transform), x, y) {
+				return fragment.Text.Node
+			}
+		}
+	}
+	if containsPoint(translatedRect(box.Bounds, boxTransform), x, y) {
+		return box.Node
+	}
+	return nil
+}
+
+func translatedRect(rectangle Rect, transform VisualTransform) Rect {
+	rectangle.X -= transform.OffsetX
+	rectangle.Y -= transform.OffsetY
+	return rectangle
+}
+
 func hitTestBox(box *Box, x, y float64) *dom.Node {
 	if box == nil {
 		return nil

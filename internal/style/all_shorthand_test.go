@@ -35,6 +35,8 @@ var allInitialComputedValues = map[string]string{
 	"max-width":            "none",
 	"min-width":            "0px",
 	"opacity":              "1",
+	"overflow-x":           "visible",
+	"overflow-y":           "visible",
 	"padding-bottom":       "0px",
 	"padding-left":         "0px",
 	"padding-right":        "0px",
@@ -69,6 +71,7 @@ const allNonInitialDeclarations = `
 	line-height: 1.5;
 	list-style-type: square;
 	opacity: 0.4;
+	overflow: auto scroll;
 	width: 101px;
 	height: 102px;
 	min-width: 3px;

@@ -150,6 +150,12 @@ unknown state never silently matches.
 
 ### 7. Formatting contexts
 
+Current foundation: block overflow containers now use typed `overflow-x` and
+`overflow-y` computed values. Page-owned stable-ID offsets project immutable
+layout through nested scrollport clips for geometry, paint, and hit testing.
+Scrollbar layout, inline fragmentation, anchoring, snapping, and advanced
+formatting contexts remain pending.
+
 - Complete inline formatting with retained inline boxes, whitespace, bidi,
   shaping, line breaking, and vertical alignment.
 - Add floats, positioning, stacking contexts, overflow and scrolling, tables,

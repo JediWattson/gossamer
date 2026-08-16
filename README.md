@@ -153,6 +153,10 @@ The first CSSOM View slice adds fresh `DOMRect` values, live element and
 viewport dimensions, root scrolling, `scrollIntoView()`, translated paint and
 hit testing, and coalesced asynchronous scroll events while reusing the same
 immutable Go layout snapshot.
+Element overflow scrolling extends that projection with typed `overflow`,
+stable-ID element offsets, nested scrollport clipping, ancestor-aware
+`scrollIntoView()`, and per-target asynchronous scroll delivery without
+rebuilding layout.
 Browser input currently covers click, pointer, keyboard, input, focus, and
 change event families. Profiling covers heap totals, sampled allocations,
 GC callbacks, weak-wrapper collection, wrapper-root region sweeps, callback
@@ -240,8 +244,7 @@ performance budgets; see
 The following are intentionally still outside the current milestone:
 
 - General Web APIs beyond the current V8 DOM slice, history traversal and
-  navigation globals, per-element overflow scrolling, animation frames, and a
-  windowed UI
+  navigation globals, animation frames, scrollbar UI, and a windowed UI
 - Full HTML error recovery, including table foster parenting, formatting
   element reconstruction, templates, SVG/MathML, and encoding sniffing
 - Flexbox, Grid, table layout, floats, positioned layout, and retained inline

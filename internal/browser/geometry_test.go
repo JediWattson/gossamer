@@ -64,19 +64,46 @@ func TestPageGeometryAndRootScrollReuseLayoutAndTranslateHitTesting(t *testing.T
 	}
 }
 
-func TestNonRootElementsRemainNonScrollableUntilOverflowFormattingLands(t *testing.T) {
-	engine, page, targetID := computedStyleTestPage(t, `<!doctype html><html><body><div id="target" style="height:20px"><div style="height:80px"></div></div></body></html>`)
+func TestElementOverflowScrollTranslatesClipsAndHitTestsWithoutRelayout(t *testing.T) {
+	engine, page, targetID := computedStyleTestPage(t, `<!doctype html><html><body style="margin:0"><div id="target" style="display:block;height:40px;overflow:auto"><div style="display:block;height:60px"></div><button id="button" style="display:block;height:30px">button</button></div><div style="height:80px"></div></body></html>`)
 	defer engine.Close()
 	handle := NodeHandle{Document: page.DocumentGeneration(), Node: targetID}
-	changed, err := page.ScrollElement(handle, 0, 20)
-	if err != nil || changed {
-		t.Fatalf("ScrollElement = %t, %v; want false, nil", changed, err)
+	buttonID, ok := page.document.ElementByID("button")
+	if !ok {
+		t.Fatal("button id missing")
 	}
-	geometry, err := page.ElementGeometry(handle)
+	buttonHandle := NodeHandle{Document: page.DocumentGeneration(), Node: buttonID}
+	containerBefore, err := page.ElementGeometry(handle)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if geometry.ScrollLeft != 0 || geometry.ScrollTop != 0 {
-		t.Fatalf("non-root scroll offset = %g,%g", geometry.ScrollLeft, geometry.ScrollTop)
+	buttonBefore, err := page.ElementGeometry(buttonHandle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if containerBefore.ClientHeight != 40 || containerBefore.ScrollHeight < 90 || buttonBefore.Rect.Y < 60 {
+		t.Fatalf("initial container/button geometry = %#v / %#v", containerBefore, buttonBefore)
+	}
+	layout := page.layout.snapshot
+	changed, err := page.ScrollElement(handle, 0, 60)
+	if err != nil || !changed {
+		t.Fatalf("ScrollElement = %t, %v; want true, nil", changed, err)
+	}
+	containerAfter, _ := page.ElementGeometry(handle)
+	buttonAfter, _ := page.ElementGeometry(buttonHandle)
+	if containerAfter.ScrollTop != 50 || buttonAfter.Rect.Y != buttonBefore.Rect.Y-50 {
+		t.Fatalf("scrolled container/button geometry = %#v / %#v", containerAfter, buttonAfter)
+	}
+	if page.layout.snapshot != layout {
+		t.Fatal("element scroll rebuilt immutable layout")
+	}
+	if err := page.Render(); err != nil {
+		t.Fatal(err)
+	}
+	if hit, ok := page.HitTest(10, 20); !ok || hit != buttonHandle {
+		t.Fatalf("nested-scrolled HitTest = %#v, %t; want %#v", hit, ok, buttonHandle)
+	}
+	if hit, ok := page.HitTest(10, 45); ok && hit == buttonHandle {
+		t.Fatal("hit testing escaped the overflow clip")
 	}
 }

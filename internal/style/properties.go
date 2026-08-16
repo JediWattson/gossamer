@@ -38,6 +38,8 @@ const (
 	propertyMaxWidth
 	propertyMinWidth
 	propertyOpacity
+	propertyOverflowX
+	propertyOverflowY
 	propertyPadding
 	propertyTextAlign
 	propertyTextDecorationLine
@@ -101,6 +103,8 @@ var propertyDefinitions = [...]propertyDefinition{
 	{name: "max-width", kind: propertyMaxWidth, invalidation: propertyInvalidatesLayout},
 	{name: "min-width", kind: propertyMinWidth, invalidation: propertyInvalidatesLayout},
 	{name: "opacity", kind: propertyOpacity, invalidation: propertyInvalidatesPaint},
+	{name: "overflow-x", kind: propertyOverflowX, invalidation: propertyInvalidatesPaint},
+	{name: "overflow-y", kind: propertyOverflowY, invalidation: propertyInvalidatesPaint},
 	{name: "padding-bottom", kind: propertyPadding, edge: propertyBottom, invalidation: propertyInvalidatesLayout},
 	{name: "padding-left", kind: propertyPadding, edge: propertyLeft, invalidation: propertyInvalidatesLayout},
 	{name: "padding-right", kind: propertyPadding, edge: propertyRight, invalidation: propertyInvalidatesLayout},
@@ -142,6 +146,7 @@ var shorthandTargets = map[string][]string{
 	"font":            {"font-size", "font-weight", "line-height"},
 	"list-style":      {"list-style-type"},
 	"margin":          {"margin-top", "margin-right", "margin-bottom", "margin-left"},
+	"overflow":        {"overflow-x", "overflow-y"},
 	"padding":         {"padding-top", "padding-right", "padding-bottom", "padding-left"},
 	"text-decoration": {"text-decoration-line"},
 }
@@ -217,6 +222,10 @@ func (definition propertyDefinition) copy(destination *computedStyle, source com
 		destination.minWidth = source.minWidth
 	case propertyOpacity:
 		destination.opacity = source.opacity
+	case propertyOverflowX:
+		destination.overflowX = source.overflowX
+	case propertyOverflowY:
+		destination.overflowY = source.overflowY
 	case propertyPadding:
 		*definition.boxLength(destination) = *definition.boxLength(&source)
 	case propertyTextAlign:
@@ -305,6 +314,9 @@ func (definition propertyDefinition) valid(source string, viewport Viewport) boo
 	case propertyOpacity:
 		_, ok := singleCSSNumber(source)
 		return ok
+	case propertyOverflowX, propertyOverflowY:
+		keyword, ok := singleCSSKeyword(source)
+		return ok && validOverflowKeyword(keyword)
 	case propertyPadding:
 		parsed, ok := parseLength(source, 1, 1, viewport)
 		return ok && parsed.unit != lengthAuto && nonNegativeLength(parsed)
@@ -428,6 +440,14 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 		if token, ok := singleCSSNumber(source); ok {
 			style.opacity = clamp(token.Number, 0, 1)
 		}
+	case propertyOverflowX:
+		if keyword, ok := singleCSSKeyword(source); ok {
+			style.overflowX = parseOverflowMode(keyword)
+		}
+	case propertyOverflowY:
+		if keyword, ok := singleCSSKeyword(source); ok {
+			style.overflowY = parseOverflowMode(keyword)
+		}
 	case propertyPadding:
 		if parsed, ok := parseLength(source, style.fontSize, style.fontSize, context.viewport); ok && parsed.unit != lengthAuto && nonNegativeLength(parsed) {
 			*definition.boxLength(style) = parsed
@@ -505,6 +525,10 @@ func (definition propertyDefinition) serialize(computed ComputedStyle) string {
 		return serializeComputedLength(computed.minWidth)
 	case propertyOpacity:
 		return serializeComputedNumber(computed.opacity)
+	case propertyOverflowX:
+		return serializeOverflowMode(computed.overflowX)
+	case propertyOverflowY:
+		return serializeOverflowMode(computed.overflowY)
 	case propertyTextAlign:
 		return serializeComputedTextAlignment(computed.textAlign)
 	case propertyTextDecorationLine:
@@ -623,6 +647,9 @@ func validComputedDeclaration(declaration css.Declaration, viewport Viewport) bo
 	case "margin":
 		_, ok := parseBoxLengths(declaration.Value, 1, viewport)
 		return ok
+	case "overflow":
+		_, _, ok := parseOverflowShorthand(declaration.Value)
+		return ok
 	default:
 		return false
 	}
@@ -692,5 +719,68 @@ func applyDeclaration(style *computedStyle, property, source string, context pro
 		if values, ok := parseBoxLengths(source, style.fontSize, context.viewport); ok {
 			style.marginTop, style.marginRight, style.marginBottom, style.marginLeft = values[0], values[1], values[2], values[3]
 		}
+	case "overflow":
+		if x, y, ok := parseOverflowShorthand(source); ok {
+			style.overflowX = x
+			style.overflowY = y
+		}
+	}
+}
+
+func validOverflowKeyword(keyword string) bool {
+	switch keyword {
+	case "visible", "hidden", "scroll", "auto", "clip":
+		return true
+	default:
+		return false
+	}
+}
+
+func parseOverflowShorthand(source string) (OverflowMode, OverflowMode, bool) {
+	value, ok := parsePropertyValue(source)
+	if !ok || len(value.terms) < 1 || len(value.terms) > 2 {
+		return OverflowVisible, OverflowVisible, false
+	}
+	first, ok := componentKeyword(value.terms[0])
+	if !ok || !validOverflowKeyword(first) {
+		return OverflowVisible, OverflowVisible, false
+	}
+	second := first
+	if len(value.terms) == 2 {
+		second, ok = componentKeyword(value.terms[1])
+		if !ok || !validOverflowKeyword(second) {
+			return OverflowVisible, OverflowVisible, false
+		}
+	}
+	return parseOverflowMode(first), parseOverflowMode(second), true
+}
+
+func parseOverflowMode(keyword string) OverflowMode {
+	switch keyword {
+	case "hidden":
+		return OverflowHidden
+	case "scroll":
+		return OverflowScroll
+	case "auto":
+		return OverflowAuto
+	case "clip":
+		return OverflowClip
+	default:
+		return OverflowVisible
+	}
+}
+
+func serializeOverflowMode(mode OverflowMode) string {
+	switch mode {
+	case OverflowHidden:
+		return "hidden"
+	case OverflowScroll:
+		return "scroll"
+	case OverflowAuto:
+		return "auto"
+	case OverflowClip:
+		return "clip"
+	default:
+		return "visible"
 	}
 }

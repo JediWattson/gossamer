@@ -378,6 +378,7 @@ func paintBox(list *DisplayList, box *Box, styles map[*dom.Node]computedStyle) {
 	if hasStyle && hasBackground && box.Bounds.Width > 0 && box.Bounds.Height > 0 {
 		list.Commands = append(list.Commands, Command{
 			Kind:  FillRectCommand,
+			Node:  box.Node,
 			Rect:  box.Bounds,
 			Color: background,
 		})
@@ -419,17 +420,17 @@ func paintBoxBorders(list *DisplayList, box *Box, style computedStyle) {
 	// Physical sides are painted in top/right/bottom/left order. Uniform solid
 	// borders are exact; diagonal corner splitting for differently colored
 	// adjacent sides is deferred with the remaining advanced border geometry.
-	paintBorderEdge(list, Rect{X: bounds.X, Y: bounds.Y, Width: bounds.Width, Height: borders.Top}, borderPaintColor(style.BorderTop(), style.Color()))
-	paintBorderEdge(list, Rect{X: bounds.X + bounds.Width - borders.Right, Y: bounds.Y, Width: borders.Right, Height: bounds.Height}, borderPaintColor(style.BorderRight(), style.Color()))
-	paintBorderEdge(list, Rect{X: bounds.X, Y: bounds.Y + bounds.Height - borders.Bottom, Width: bounds.Width, Height: borders.Bottom}, borderPaintColor(style.BorderBottom(), style.Color()))
-	paintBorderEdge(list, Rect{X: bounds.X, Y: bounds.Y, Width: borders.Left, Height: bounds.Height}, borderPaintColor(style.BorderLeft(), style.Color()))
+	paintBorderEdge(list, box.Node, Rect{X: bounds.X, Y: bounds.Y, Width: bounds.Width, Height: borders.Top}, borderPaintColor(style.BorderTop(), style.Color()))
+	paintBorderEdge(list, box.Node, Rect{X: bounds.X + bounds.Width - borders.Right, Y: bounds.Y, Width: borders.Right, Height: bounds.Height}, borderPaintColor(style.BorderRight(), style.Color()))
+	paintBorderEdge(list, box.Node, Rect{X: bounds.X, Y: bounds.Y + bounds.Height - borders.Bottom, Width: bounds.Width, Height: borders.Bottom}, borderPaintColor(style.BorderBottom(), style.Color()))
+	paintBorderEdge(list, box.Node, Rect{X: bounds.X, Y: bounds.Y, Width: borders.Left, Height: bounds.Height}, borderPaintColor(style.BorderLeft(), style.Color()))
 }
 
-func paintBorderEdge(list *DisplayList, rectangle Rect, edgeColor color.NRGBA) {
+func paintBorderEdge(list *DisplayList, node *dom.Node, rectangle Rect, edgeColor color.NRGBA) {
 	if rectangle.Width <= 0 || rectangle.Height <= 0 || edgeColor.A == 0 {
 		return
 	}
-	list.Commands = append(list.Commands, Command{Kind: FillRectCommand, Rect: rectangle, Color: edgeColor})
+	list.Commands = append(list.Commands, Command{Kind: FillRectCommand, Node: node, Rect: rectangle, Color: edgeColor})
 }
 
 func borderPaintColor(side borderSide, currentColor color.NRGBA) color.NRGBA {
@@ -453,13 +454,14 @@ func paintInlineFragment(list *DisplayList, fragment InlineFragment, styles map[
 
 func paintTextFragment(list *DisplayList, fragment TextFragment, styles map[*dom.Node]computedStyle) {
 	list.Commands = append(list.Commands, Command{
-		Kind: DrawTextCommand, Color: fragment.Color, Text: fragment.Text,
+		Kind: DrawTextCommand, Node: fragment.Node, Color: fragment.Color, Text: fragment.Text,
 		X: fragment.X, BaselineY: fragment.BaselineY,
 		FontSize: fragment.FontSize, FontWeight: fragment.FontWeight,
 	})
 	if fragmentStyle, ok := styles[fragment.Node]; ok && fragmentStyle.Underline() {
 		list.Commands = append(list.Commands, Command{
 			Kind:  FillRectCommand,
+			Node:  fragment.Node,
 			Rect:  Rect{X: fragment.X, Y: fragment.BaselineY + math.Max(1, fragment.FontSize/16), Width: fragment.Width, Height: math.Max(1, fragment.FontSize/16)},
 			Color: fragment.Color,
 		})
@@ -470,7 +472,7 @@ func paintImageFragment(list *DisplayList, fragment ImageFragment) {
 	if fragment.Image == nil || fragment.Bounds.Width <= 0 || fragment.Bounds.Height <= 0 {
 		return
 	}
-	list.Commands = append(list.Commands, Command{Kind: DrawImageCommand, Rect: fragment.Bounds, Image: fragment.Image, Opacity: fragment.Opacity})
+	list.Commands = append(list.Commands, Command{Kind: DrawImageCommand, Node: fragment.Node, Rect: fragment.Bounds, Image: fragment.Image, Opacity: fragment.Opacity})
 }
 
 func findElement(root *dom.Node, name string) *dom.Node {

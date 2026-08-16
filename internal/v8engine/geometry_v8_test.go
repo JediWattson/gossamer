@@ -123,6 +123,42 @@ func TestStockV8CSSOMViewRootScrollAndReactMeasurement(t *testing.T) {
 			throw new Error("coalesced scroll delivery or retained DOMRect failed");
 		}
 	`)
+	queueScript("nested-scroll", `
+		(() => {
+			const scroller = document.createElement("div");
+			scroller.id = "nested-scroller";
+			scroller.setAttribute("style", "display:block;height:40px;overflow:auto");
+			const spacer = document.createElement("div");
+			spacer.setAttribute("style", "display:block;height:60px");
+			const target = document.createElement("button");
+			target.id = "nested-target";
+			target.setAttribute("style", "display:block;height:30px");
+			target.textContent = "nested";
+			scroller.append(spacer, target);
+			document.body.appendChild(scroller);
+			globalThis.__nestedScrollEvents = 0;
+			globalThis.__nestedScroller = scroller;
+			globalThis.__nestedTarget = target;
+			scroller.addEventListener("scroll", event => {
+				if (event.target !== scroller || event.bubbles || event.cancelable) {
+					throw new Error("element scroll event shape diverged");
+				}
+				__nestedScrollEvents++;
+			});
+			const before = target.getBoundingClientRect().y;
+			scroller.scrollTop = 60;
+			if (scroller.scrollTop !== 50 || target.getBoundingClientRect().y !== before - 50 ||
+				scroller.clientHeight !== 40 || scroller.scrollHeight < 90 || __nestedScrollEvents !== 0) {
+				throw new Error("synchronous element scrolling failed");
+			}
+		})();
+	`)
+	drain("element scroll event and render")
+	queueScript("nested-assert", `
+		if (__nestedScrollEvents !== 1 || __nestedScroller.scrollTop !== 50) {
+			throw new Error("element scroll delivery was not coalesced");
+		}
+	`)
 	if err := realm.CollectGarbage(page); err != nil {
 		t.Fatalf("CollectGarbage with retained DOMRect: %v", err)
 	}
@@ -133,6 +169,9 @@ func TestStockV8CSSOMViewRootScrollAndReactMeasurement(t *testing.T) {
 		document.documentElement.removeEventListener("scroll", __scrollListener);
 		globalThis.__scrollListener = undefined;
 		globalThis.__heldGeometryRect = undefined;
+		globalThis.__nestedScroller.remove();
+		globalThis.__nestedScroller = undefined;
+		globalThis.__nestedTarget = undefined;
 		ReactDOM.flushSync(() => __geometryRoot.unmount());
 		globalThis.__geometryRoot = undefined;
 	`)

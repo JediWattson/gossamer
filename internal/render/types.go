@@ -126,6 +126,10 @@ const (
 // Command is a backend-neutral paint operation.
 type Command struct {
 	Kind CommandKind
+	// Node identifies the DOM owner of this paint operation. It is retained
+	// only with the Frame and lets Page project immutable document-space paint
+	// through mutable scroll offsets without rebuilding layout.
+	Node *dom.Node
 
 	Rect  Rect
 	Color color.NRGBA
@@ -137,6 +141,19 @@ type Command struct {
 	FontWeight FontWeight
 	Opacity    float64
 	Image      image.Image
+	HasClip    bool
+	Clip       Rect
+}
+
+// VisualTransform projects one node-owned command into viewport space.
+// Offsets are subtracted from document coordinates. Clip is already expressed
+// in viewport coordinates and represents the intersection of scrollports that
+// contain the command.
+type VisualTransform struct {
+	OffsetX float64
+	OffsetY float64
+	HasClip bool
+	Clip    Rect
 }
 
 // DisplayList is an ordered set of paint operations for a viewport.
@@ -174,6 +191,36 @@ func ScrollDisplayList(frame *Frame, x, y float64) *Frame {
 			command.X -= x
 			command.BaselineY -= y
 		}
+	}
+	return &result
+}
+
+// TransformDisplayList returns a shallow Frame copy with node-owned paint
+// commands projected through Page-owned root and element scrolling state.
+// Layout, boxes, and stable geometry remain immutable document-space data.
+func TransformDisplayList(frame *Frame, transforms map[*dom.Node]VisualTransform) *Frame {
+	if frame == nil || len(transforms) == 0 {
+		return frame
+	}
+	result := *frame
+	result.DisplayList = frame.DisplayList
+	result.DisplayList.Commands = append([]Command(nil), frame.DisplayList.Commands...)
+	for index := range result.DisplayList.Commands {
+		command := &result.DisplayList.Commands[index]
+		transform, ok := transforms[command.Node]
+		if !ok || command.Node == nil {
+			continue
+		}
+		switch command.Kind {
+		case FillRectCommand, DrawImageCommand:
+			command.Rect.X -= transform.OffsetX
+			command.Rect.Y -= transform.OffsetY
+		case DrawTextCommand:
+			command.X -= transform.OffsetX
+			command.BaselineY -= transform.OffsetY
+		}
+		command.HasClip = transform.HasClip
+		command.Clip = transform.Clip
 	}
 	return &result
 }

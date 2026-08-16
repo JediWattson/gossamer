@@ -211,6 +211,19 @@ const (
 	TextDecorationUnderline
 )
 
+// OverflowMode is the computed overflow behavior used by scroll-container
+// layout, paint clipping, and CSSOM View. Auto, scroll, and hidden all create
+// a programmatically scrollable clipping container in the current slice.
+type OverflowMode uint8
+
+const (
+	OverflowVisible OverflowMode = iota
+	OverflowHidden
+	OverflowScroll
+	OverflowAuto
+	OverflowClip
+)
+
 // ComputedStyle is the typed, layout-independent result of cascade,
 // inheritance, and computed-value resolution for one DOM node. Snapshot
 // lookups return it by value, so callers cannot mutate stored styles.
@@ -228,6 +241,8 @@ type ComputedStyle struct {
 	textAlign         TextAlignment
 	listStyleType     ListStyleType
 	opacity           float64
+	overflowX         OverflowMode
+	overflowY         OverflowMode
 	width             Length
 	height            Length
 	minWidth          Length
@@ -268,6 +283,8 @@ func (computed ComputedStyle) Underline() bool                        { return c
 func (computed ComputedStyle) TextAlignment() TextAlignment           { return computed.textAlign }
 func (computed ComputedStyle) ListStyleType() ListStyleType           { return computed.listStyleType }
 func (computed ComputedStyle) Opacity() float64                       { return computed.opacity }
+func (computed ComputedStyle) OverflowX() OverflowMode                { return computed.overflowX }
+func (computed ComputedStyle) OverflowY() OverflowMode                { return computed.overflowY }
 func (computed ComputedStyle) Width() Length                          { return computed.width }
 func (computed ComputedStyle) Height() Length                         { return computed.height }
 func (computed ComputedStyle) MinWidth() Length                       { return computed.minWidth }

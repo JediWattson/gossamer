@@ -1,9 +1,11 @@
 package browser
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 	"time"
 
@@ -34,9 +36,9 @@ func (page *Page) hitTestLocked(x, y float64) (NodeHandle, bool) {
 	if x < 0 || y < 0 || x >= float64(page.frame.Viewport.Width) || y >= float64(page.frame.Viewport.Height) {
 		return NodeHandle{}, false
 	}
-	// Retained layout stays in document coordinates. External input arrives in
-	// viewport coordinates, so root scrolling is applied exactly once here.
-	node := render.HitTestDocument(page.frame, x+page.scrollX, y+page.scrollY)
+	// Retained layout stays in document coordinates. Paint and external input
+	// share the same Page-owned root/nested-scroll visual projection.
+	node := render.HitTestVisual(page.frame, x, y, page.visualTransformsLocked(page.frame))
 	if node == nil {
 		return NodeHandle{}, false
 	}
@@ -287,12 +289,13 @@ func (page *Page) evaluateScript(
 }
 
 type taskHost struct {
-	page       *Page
-	task       *browserruntime.TaskContext
-	generation DocumentGeneration
-	mutated    bool
-	scrolled   bool
-	autoRender bool
+	page          *Page
+	task          *browserruntime.TaskContext
+	generation    DocumentGeneration
+	mutated       bool
+	scrolled      bool
+	scrollTargets map[NodeHandle]struct{}
+	autoRender    bool
 }
 
 var _ DOMComputedStyleHost = (*taskHost)(nil)
@@ -1275,7 +1278,7 @@ func (host *taskHost) ViewportGeometry() (DOMViewportGeometry, error) {
 func (host *taskHost) ScrollElement(handle NodeHandle, x, y float64) (bool, error) {
 	changed, err := host.page.ScrollElement(handle, x, y)
 	if changed {
-		host.scrolled = true
+		host.markScrolled(handle)
 	}
 	return changed, err
 }
@@ -1283,7 +1286,7 @@ func (host *taskHost) ScrollElement(handle NodeHandle, x, y float64) (bool, erro
 func (host *taskHost) ScrollViewport(x, y float64) (bool, error) {
 	changed, err := host.page.ScrollViewport(x, y)
 	if changed {
-		host.scrolled = true
+		host.markScrolled(host.rootScrollTarget())
 	}
 	return changed, err
 }
@@ -1291,9 +1294,33 @@ func (host *taskHost) ScrollViewport(x, y float64) (bool, error) {
 func (host *taskHost) ScrollIntoView(handle NodeHandle) (bool, error) {
 	changed, err := host.page.ScrollIntoView(handle)
 	if changed {
-		host.scrolled = true
+		// The root remains the compatibility target for scrollIntoView. Direct
+		// element scrolling records the element itself below; ancestor-specific
+		// delivery can be expanded when scrollIntoView options land.
+		host.markScrolled(host.rootScrollTarget())
 	}
 	return changed, err
+}
+
+func (host *taskHost) markScrolled(target NodeHandle) {
+	if target.Node == dom.InvalidNodeID {
+		return
+	}
+	host.scrolled = true
+	if host.scrollTargets == nil {
+		host.scrollTargets = make(map[NodeHandle]struct{})
+	}
+	host.scrollTargets[target] = struct{}{}
+}
+
+func (host *taskHost) rootScrollTarget() NodeHandle {
+	host.page.mutex.RLock()
+	defer host.page.mutex.RUnlock()
+	root, found, _ := host.page.document.RelatedNode(host.page.document.RootID(), dom.DocumentElement)
+	if !found {
+		return NodeHandle{}
+	}
+	return NodeHandle{Document: host.generation, Node: root}
 }
 
 func (host *taskHost) setInlineStyleLocked(node dom.NodeID, declarations []css.Declaration) error {
@@ -1471,17 +1498,22 @@ func (host *taskHost) ReleaseNodeEventTarget(handle NodeHandle) error {
 	return host.page.ReleaseNodeEventTarget(handle)
 }
 
-func (page *Page) queueScrollEventFromTask(context *browserruntime.TaskContext) error {
+func (page *Page) queueScrollEventsFromTask(context *browserruntime.TaskContext, targets map[NodeHandle]struct{}) error {
 	page.mutex.RLock()
 	generation := page.documentGeneration
-	root, found, rootErr := page.document.RelatedNode(page.document.RootID(), dom.DocumentElement)
 	page.mutex.RUnlock()
-	if rootErr != nil {
-		return rootErr
-	}
-	if !found {
+	if len(targets) == 0 {
 		return nil
 	}
+	ordered := make([]NodeHandle, 0, len(targets))
+	for target := range targets {
+		if target.Document == generation {
+			ordered = append(ordered, target)
+		}
+	}
+	slices.SortFunc(ordered, func(left, right NodeHandle) int {
+		return cmp.Compare(left.Node, right.Node)
+	})
 	invalidation, err := context.NewObject()
 	if err != nil {
 		return err
@@ -1497,9 +1529,12 @@ func (page *Page) queueScrollEventFromTask(context *browserruntime.TaskContext) 
 		if script == nil {
 			return nil
 		}
-		target := NodeHandle{Document: generation, Node: root}
 		eventHost := &taskHost{page: page, task: next, generation: generation, autoRender: true}
-		_, dispatchErr := script.DispatchEvent(eventHost, InputEvent{Type: InputScroll, Target: target})
+		var dispatchErr error
+		for _, target := range ordered {
+			_, eventErr := script.DispatchEvent(eventHost, InputEvent{Type: InputScroll, Target: target})
+			dispatchErr = errors.Join(dispatchErr, eventErr)
+		}
 		microtaskErr := script.DrainMicrotasks(eventHost)
 		return errors.Join(dispatchErr, microtaskErr, eventHost.finish())
 	}, invalidation)
@@ -1512,7 +1547,7 @@ func (host *taskHost) finish() error {
 	}
 	var err error
 	if host.scrolled {
-		err = host.page.queueScrollEventFromTask(host.task)
+		err = host.page.queueScrollEventsFromTask(host.task, host.scrollTargets)
 	}
 	if host.mutated {
 		err = errors.Join(err, host.page.syncAndLoadStylesheets())

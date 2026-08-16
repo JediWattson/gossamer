@@ -43,6 +43,7 @@ type Page struct {
 	viewport           render.Viewport
 	scrollX            float64
 	scrollY            float64
+	elementScroll      map[dom.NodeID]scrollOffset
 	frame              *render.Frame
 	frameGeneration    DocumentGeneration
 	computedStyle      computedStyleState
@@ -108,6 +109,7 @@ func newPage(
 		documentContext:    documentContext,
 		documentCancel:     documentCancel,
 		viewport:           render.DefaultViewport,
+		elementScroll:      make(map[dom.NodeID]scrollOffset),
 		styleRevision:      1,
 		layoutRevision:     1,
 		timers:             make(map[TimerID]*pageTimer),
@@ -395,6 +397,7 @@ func (page *Page) Close() error {
 	page.frame = nil
 	page.scrollX = 0
 	page.scrollY = 0
+	page.elementScroll = nil
 	page.computedStyle = computedStyleState{}
 	page.layout = layoutState{}
 	timers := page.takeTimersLocked()
@@ -464,10 +467,7 @@ func (page *Page) renderLocked(onlyIfDirty bool) error {
 	if err != nil {
 		return err
 	}
-	page.frame = frame
-	if page.scrollX != 0 || page.scrollY != 0 {
-		page.frame = render.ScrollDisplayList(frame, page.scrollX, page.scrollY)
-	}
+	page.frame = render.TransformDisplayList(frame, page.visualTransformsLocked(frame))
 	page.frameGeneration = page.documentGeneration
 	page.renderedVersion = renderedVersion
 	page.dirty = false

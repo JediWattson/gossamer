@@ -37,15 +37,19 @@ func rasterize(displayList DisplayList, fonts *fontBook) (*image.RGBA, error) {
 				int(math.Floor(command.Rect.Y)),
 				int(math.Ceil(command.Rect.X+command.Rect.Width)),
 				int(math.Ceil(command.Rect.Y+command.Rect.Height)),
-			).Intersect(canvas.Bounds())
+			).Intersect(canvas.Bounds()).Intersect(commandClip(command, canvas.Bounds()))
 			if rectangle.Empty() {
 				continue
 			}
 			draw.Draw(canvas, rectangle, image.NewUniform(command.Color), image.Point{}, draw.Over)
 
 		case DrawTextCommand:
+			target := canvas
+			if command.HasClip {
+				target = image.NewRGBA(canvas.Bounds())
+			}
 			if err := fonts.draw(
-				canvas,
+				target,
 				command.Text,
 				command.X,
 				command.BaselineY,
@@ -54,6 +58,10 @@ func rasterize(displayList DisplayList, fonts *fontBook) (*image.RGBA, error) {
 				command.Color,
 			); err != nil {
 				return nil, err
+			}
+			if command.HasClip {
+				clip := commandClip(command, canvas.Bounds())
+				draw.Draw(canvas, clip, target, clip.Min, draw.Over)
 			}
 
 		case DrawImageCommand:
@@ -76,7 +84,14 @@ func rasterize(displayList DisplayList, fonts *fontBook) (*image.RGBA, error) {
 			if opacity < 1 {
 				options = &xdraw.Options{SrcMask: image.NewUniform(color.Alpha{A: uint8(math.Round(opacity * 255))})}
 			}
-			xdraw.ApproxBiLinear.Scale(canvas, destination, command.Image, command.Image.Bounds(), draw.Over, options)
+			if command.HasClip {
+				target := image.NewRGBA(canvas.Bounds())
+				xdraw.ApproxBiLinear.Scale(target, destination, command.Image, command.Image.Bounds(), draw.Over, options)
+				clip := commandClip(command, canvas.Bounds())
+				draw.Draw(canvas, clip, target, clip.Min, draw.Over)
+			} else {
+				xdraw.ApproxBiLinear.Scale(canvas, destination, command.Image, command.Image.Bounds(), draw.Over, options)
+			}
 
 		case BeginOpacityCommand:
 			layers = append(layers, rasterLayer{
@@ -111,6 +126,18 @@ func rasterize(displayList DisplayList, fonts *fontBook) (*image.RGBA, error) {
 	}
 
 	return layers[0].canvas, nil
+}
+
+func commandClip(command Command, bounds image.Rectangle) image.Rectangle {
+	if !command.HasClip {
+		return bounds
+	}
+	return image.Rect(
+		int(math.Floor(command.Clip.X)),
+		int(math.Floor(command.Clip.Y)),
+		int(math.Ceil(command.Clip.X+command.Clip.Width)),
+		int(math.Ceil(command.Clip.Y+command.Clip.Height)),
+	).Intersect(bounds)
 }
 
 func encodePNG(writer io.Writer, canvas image.Image) error {

@@ -392,6 +392,7 @@ func (page *Page) commitNavigationDocument(
 	page.activeElement = dom.InvalidNodeID
 	page.scrollX = 0
 	page.scrollY = 0
+	page.elementScroll = make(map[dom.NodeID]scrollOffset)
 	page.computedStyle = computedStyleState{}
 	page.layout = layoutState{}
 	page.styleRevision++
