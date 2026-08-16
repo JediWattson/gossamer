@@ -76,6 +76,13 @@ func (context *TaskContext) DerefString(ref memory.Ref) (string, error) {
 	return context.Realm.store.DerefString(context.Owner, ref)
 }
 
+func (context *TaskContext) HeapKind(ref memory.Ref) (memory.HeapKind, error) {
+	if context == nil || context.Realm == nil {
+		return memory.HeapInvalid, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.Kind(context.Owner, ref)
+}
+
 // NewHeapObject allocates an empty native object. NewObject remains the
 // ownership-ledger test helper and intentionally returns a shadow ObjectID.
 func (context *TaskContext) NewHeapObject() (memory.Ref, error) {

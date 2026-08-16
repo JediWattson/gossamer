@@ -31,6 +31,32 @@ const (
 	OpInitializeBinding
 	OpStoreBinding
 	OpLoadThis
+	OpAdd
+	OpSubtract
+	OpMultiply
+	OpDivide
+	OpRemainder
+	OpNegate
+	OpIncrement
+	OpDecrement
+	OpBitwiseAnd
+	OpBitwiseOr
+	OpBitwiseXor
+	OpShiftLeft
+	OpShiftRight
+	OpUnsignedShiftRight
+	OpLogicalNot
+	OpTypeOf
+	OpStrictEqual
+	OpStrictNotEqual
+	OpLessThan
+	OpLessThanOrEqual
+	OpGreaterThan
+	OpGreaterThanOrEqual
+	OpJump
+	OpJumpIfTrue
+	OpJumpIfFalse
+	OpJumpIfNullish
 )
 
 func (opcode Opcode) String() string {
@@ -83,11 +109,63 @@ func (opcode Opcode) String() string {
 		return "StoreBinding"
 	case OpLoadThis:
 		return "LoadThis"
+	case OpAdd:
+		return "Add"
+	case OpSubtract:
+		return "Subtract"
+	case OpMultiply:
+		return "Multiply"
+	case OpDivide:
+		return "Divide"
+	case OpRemainder:
+		return "Remainder"
+	case OpNegate:
+		return "Negate"
+	case OpIncrement:
+		return "Increment"
+	case OpDecrement:
+		return "Decrement"
+	case OpBitwiseAnd:
+		return "BitwiseAnd"
+	case OpBitwiseOr:
+		return "BitwiseOr"
+	case OpBitwiseXor:
+		return "BitwiseXor"
+	case OpShiftLeft:
+		return "ShiftLeft"
+	case OpShiftRight:
+		return "ShiftRight"
+	case OpUnsignedShiftRight:
+		return "UnsignedShiftRight"
+	case OpLogicalNot:
+		return "LogicalNot"
+	case OpTypeOf:
+		return "TypeOf"
+	case OpStrictEqual:
+		return "StrictEqual"
+	case OpStrictNotEqual:
+		return "StrictNotEqual"
+	case OpLessThan:
+		return "LessThan"
+	case OpLessThanOrEqual:
+		return "LessThanOrEqual"
+	case OpGreaterThan:
+		return "GreaterThan"
+	case OpGreaterThanOrEqual:
+		return "GreaterThanOrEqual"
+	case OpJump:
+		return "Jump"
+	case OpJumpIfTrue:
+		return "JumpIfTrue"
+	case OpJumpIfFalse:
+		return "JumpIfFalse"
+	case OpJumpIfNullish:
+		return "JumpIfNullish"
 	default:
 		return fmt.Sprintf("Opcode(%d)", opcode)
 	}
 }
 
 func (opcode Opcode) valid() bool {
-	return opcode >= OpConstant && opcode <= OpLoadThis
+	return opcode >= OpConstant && opcode <= OpJumpIfNullish
 }

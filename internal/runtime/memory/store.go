@@ -733,6 +733,21 @@ func (store *Store) Stats() Stats {
 	return store.stats
 }
 
+// Kind returns the concrete payload kind after applying ordinary Ref access
+// checks. It lets execution layers dispatch without probing every typed deref.
+func (store *Store) Kind(owner ownership.OwnerID, ref Ref) (HeapKind, error) {
+	if store == nil {
+		return HeapInvalid, fmt.Errorf("memory: nil store")
+	}
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+	_, slot, err := store.readSlotLocked(owner, ref)
+	if err != nil {
+		return HeapInvalid, err
+	}
+	return slot.Kind, nil
+}
+
 func (store *Store) recordKindAllocationLocked(kind HeapKind, bytes uint64) {
 	switch kind {
 	case HeapCell:

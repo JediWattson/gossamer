@@ -99,6 +99,7 @@ func TestInterpreterRejectsMalformedAndUnsafePrograms(t *testing.T) {
 			{name: "stack underflow", vm: browserruntime.NewInterpreter(browserruntime.InterpreterConfig{}), code: browserruntime.Assemble(browserruntime.Instruction{Op: browserruntime.OpPop}, browserruntime.Instruction{Op: browserruntime.OpReturn}), want: browserruntime.ErrStackUnderflow},
 			{name: "missing return", vm: browserruntime.NewInterpreter(browserruntime.InterpreterConfig{}), code: browserruntime.Assemble(browserruntime.Instruction{Op: browserruntime.OpUndefined}), want: browserruntime.ErrInvalidBytecode},
 			{name: "instruction limit", vm: browserruntime.NewInterpreter(browserruntime.InterpreterConfig{MaxInstructions: 1}), code: browserruntime.Assemble(browserruntime.Instruction{Op: browserruntime.OpUndefined}, browserruntime.Instruction{Op: browserruntime.OpReturn}), want: browserruntime.ErrInstructionLimit},
+			{name: "jump bounds", vm: browserruntime.NewInterpreter(browserruntime.InterpreterConfig{}), code: browserruntime.Assemble(browserruntime.Instruction{Op: browserruntime.OpJump, A: 9}, browserruntime.Instruction{Op: browserruntime.OpReturn}), want: browserruntime.ErrInvalidBytecode},
 		}
 		for _, test := range tests {
 			function, allocErr := task.NewBytecodeFunction(memory.NullValue(), memory.NullValue(), 0, test.code, nil)
@@ -335,6 +336,246 @@ func TestInterpreterBindingVerbsUseCapturedContexts(t *testing.T) {
 	}
 	if result.Kind() != memory.ValueNumber || result.Number() != 8 {
 		t.Fatalf("binding result = %#v, want 8", result)
+	}
+}
+
+func TestInterpreterOperatorsAndControlFlow(t *testing.T) {
+	t.Parallel()
+
+	realm, err := browserruntime.NewRealm(704, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer realm.Close()
+	interpreter := browserruntime.NewInterpreter(browserruntime.InterpreterConfig{})
+	_, err = realm.EnqueueTask(func(task *browserruntime.TaskContext) error {
+		numeric := []struct {
+			op    browserruntime.Opcode
+			left  float64
+			right float64
+			want  float64
+		}{
+			{browserruntime.OpAdd, 8, 3, 11},
+			{browserruntime.OpSubtract, 8, 3, 5},
+			{browserruntime.OpMultiply, 8, 3, 24},
+			{browserruntime.OpDivide, 8, 2, 4},
+			{browserruntime.OpRemainder, 8, 3, 2},
+			{browserruntime.OpBitwiseAnd, 6, 3, 2},
+			{browserruntime.OpBitwiseOr, 6, 3, 7},
+			{browserruntime.OpBitwiseXor, 6, 3, 5},
+			{browserruntime.OpShiftLeft, 3, 2, 12},
+			{browserruntime.OpShiftRight, -8, 1, -4},
+			{browserruntime.OpUnsignedShiftRight, -1, 1, 2147483647},
+		}
+		for _, test := range numeric {
+			function, err := task.NewBytecodeFunction(
+				memory.NullValue(), memory.NullValue(), 0,
+				browserruntime.Assemble(
+					browserruntime.Instruction{Op: browserruntime.OpConstant, A: 0},
+					browserruntime.Instruction{Op: browserruntime.OpConstant, A: 1},
+					browserruntime.Instruction{Op: test.op},
+					browserruntime.Instruction{Op: browserruntime.OpReturn},
+				),
+				[]memory.Value{memory.NumberValue(test.left), memory.NumberValue(test.right)},
+			)
+			if err != nil {
+				return err
+			}
+			result, err := interpreter.Execute(task, function)
+			if err != nil || result.Kind() != memory.ValueNumber || result.Number() != test.want {
+				t.Fatalf("%s(%v, %v) = %#v, %v; want %v", test.op, test.left, test.right, result, err, test.want)
+			}
+		}
+
+		comparisons := []struct {
+			op    browserruntime.Opcode
+			left  float64
+			right float64
+			want  bool
+		}{
+			{browserruntime.OpStrictEqual, 3, 3, true},
+			{browserruntime.OpStrictNotEqual, 3, 4, true},
+			{browserruntime.OpLessThan, 3, 4, true},
+			{browserruntime.OpLessThanOrEqual, 3, 3, true},
+			{browserruntime.OpGreaterThan, 4, 3, true},
+			{browserruntime.OpGreaterThanOrEqual, 4, 4, true},
+		}
+		for _, test := range comparisons {
+			function, err := task.NewBytecodeFunction(
+				memory.NullValue(), memory.NullValue(), 0,
+				browserruntime.Assemble(
+					browserruntime.Instruction{Op: browserruntime.OpConstant, A: 0},
+					browserruntime.Instruction{Op: browserruntime.OpConstant, A: 1},
+					browserruntime.Instruction{Op: test.op},
+					browserruntime.Instruction{Op: browserruntime.OpReturn},
+				),
+				[]memory.Value{memory.NumberValue(test.left), memory.NumberValue(test.right)},
+			)
+			if err != nil {
+				return err
+			}
+			result, err := interpreter.Execute(task, function)
+			if err != nil || result.Kind() != memory.ValueBool || result.Bool() != test.want {
+				t.Fatalf("%s(%v, %v) = %#v, %v; want %t", test.op, test.left, test.right, result, err, test.want)
+			}
+		}
+
+		unary := []struct {
+			op    browserruntime.Opcode
+			value float64
+			want  float64
+		}{
+			{browserruntime.OpNegate, 3, -3},
+			{browserruntime.OpIncrement, 3, 4},
+			{browserruntime.OpDecrement, 3, 2},
+		}
+		for _, test := range unary {
+			function, err := task.NewBytecodeFunction(
+				memory.NullValue(), memory.NullValue(), 0,
+				browserruntime.Assemble(
+					browserruntime.Instruction{Op: browserruntime.OpConstant, A: 0},
+					browserruntime.Instruction{Op: test.op},
+					browserruntime.Instruction{Op: browserruntime.OpReturn},
+				), []memory.Value{memory.NumberValue(test.value)},
+			)
+			if err != nil {
+				return err
+			}
+			result, err := interpreter.Execute(task, function)
+			if err != nil || result.Number() != test.want {
+				t.Fatalf("%s(%v) = %#v, %v; want %v", test.op, test.value, result, err, test.want)
+			}
+		}
+
+		branches := []struct {
+			op        browserruntime.Opcode
+			condition memory.Value
+		}{
+			{browserruntime.OpJumpIfTrue, memory.BoolValue(true)},
+			{browserruntime.OpJumpIfFalse, memory.BoolValue(false)},
+			{browserruntime.OpJumpIfNullish, memory.NullValue()},
+		}
+		for _, test := range branches {
+			function, err := task.NewBytecodeFunction(
+				memory.NullValue(), memory.NullValue(), 0,
+				browserruntime.Assemble(
+					browserruntime.Instruction{Op: browserruntime.OpConstant, A: 0},
+					browserruntime.Instruction{Op: test.op, A: 4},
+					browserruntime.Instruction{Op: browserruntime.OpConstant, A: 1},
+					browserruntime.Instruction{Op: browserruntime.OpJump, A: 5},
+					browserruntime.Instruction{Op: browserruntime.OpConstant, A: 2},
+					browserruntime.Instruction{Op: browserruntime.OpReturn},
+				), []memory.Value{test.condition, memory.NumberValue(0), memory.NumberValue(1)},
+			)
+			if err != nil {
+				return err
+			}
+			result, err := interpreter.Execute(task, function)
+			if err != nil || result.Number() != 1 {
+				t.Fatalf("%s branch = %#v, %v; want 1", test.op, result, err)
+			}
+		}
+
+		logicalNot, err := task.NewBytecodeFunction(
+			memory.NullValue(), memory.NullValue(), 0,
+			browserruntime.Assemble(
+				browserruntime.Instruction{Op: browserruntime.OpFalse},
+				browserruntime.Instruction{Op: browserruntime.OpLogicalNot},
+				browserruntime.Instruction{Op: browserruntime.OpReturn},
+			), nil,
+		)
+		if err != nil {
+			return err
+		}
+		if result, err := interpreter.Execute(task, logicalNot); err != nil || !result.Bool() {
+			t.Fatalf("LogicalNot(false) = %#v, %v", result, err)
+		}
+
+		left, err := task.NewString("gos")
+		if err != nil {
+			return err
+		}
+		right, err := task.NewString("samer")
+		if err != nil {
+			return err
+		}
+		stringFunction, err := task.NewBytecodeFunction(
+			memory.NullValue(), memory.NullValue(), 0,
+			browserruntime.Assemble(
+				browserruntime.Instruction{Op: browserruntime.OpConstant, A: 0},
+				browserruntime.Instruction{Op: browserruntime.OpConstant, A: 1},
+				browserruntime.Instruction{Op: browserruntime.OpAdd},
+				browserruntime.Instruction{Op: browserruntime.OpTypeOf},
+				browserruntime.Instruction{Op: browserruntime.OpReturn},
+			), []memory.Value{memory.RefValue(left), memory.RefValue(right)},
+		)
+		if err != nil {
+			return err
+		}
+		typeValue, err := interpreter.Execute(task, stringFunction)
+		if err != nil {
+			return err
+		}
+		if got, err := task.DerefString(typeValue.Ref()); err != nil || got != "string" {
+			t.Fatalf("typeof concatenated String = %q, %v", got, err)
+		}
+
+		iName, err := task.NewString("i")
+		if err != nil {
+			return err
+		}
+		sumName, err := task.NewString("sum")
+		if err != nil {
+			return err
+		}
+		environment, err := task.NewContext(memory.NullValue())
+		if err != nil {
+			return err
+		}
+		loop, err := task.NewBytecodeFunction(
+			memory.NullValue(), memory.RefValue(environment), 0,
+			browserruntime.Assemble(
+				browserruntime.Instruction{Op: browserruntime.OpDeclareBinding, A: 0, B: 1},
+				browserruntime.Instruction{Op: browserruntime.OpConstant, A: 2},
+				browserruntime.Instruction{Op: browserruntime.OpInitializeBinding, A: 0},
+				browserruntime.Instruction{Op: browserruntime.OpPop},
+				browserruntime.Instruction{Op: browserruntime.OpDeclareBinding, A: 1, B: 1},
+				browserruntime.Instruction{Op: browserruntime.OpConstant, A: 2},
+				browserruntime.Instruction{Op: browserruntime.OpInitializeBinding, A: 1},
+				browserruntime.Instruction{Op: browserruntime.OpPop},
+				browserruntime.Instruction{Op: browserruntime.OpLoadBinding, A: 0},
+				browserruntime.Instruction{Op: browserruntime.OpConstant, A: 3},
+				browserruntime.Instruction{Op: browserruntime.OpLessThan},
+				browserruntime.Instruction{Op: browserruntime.OpJumpIfFalse, A: 22},
+				browserruntime.Instruction{Op: browserruntime.OpLoadBinding, A: 1},
+				browserruntime.Instruction{Op: browserruntime.OpLoadBinding, A: 0},
+				browserruntime.Instruction{Op: browserruntime.OpAdd},
+				browserruntime.Instruction{Op: browserruntime.OpStoreBinding, A: 1},
+				browserruntime.Instruction{Op: browserruntime.OpPop},
+				browserruntime.Instruction{Op: browserruntime.OpLoadBinding, A: 0},
+				browserruntime.Instruction{Op: browserruntime.OpIncrement},
+				browserruntime.Instruction{Op: browserruntime.OpStoreBinding, A: 0},
+				browserruntime.Instruction{Op: browserruntime.OpPop},
+				browserruntime.Instruction{Op: browserruntime.OpJump, A: 8},
+				browserruntime.Instruction{Op: browserruntime.OpLoadBinding, A: 1},
+				browserruntime.Instruction{Op: browserruntime.OpReturn},
+			),
+			[]memory.Value{memory.RefValue(iName), memory.RefValue(sumName), memory.NumberValue(0), memory.NumberValue(5)},
+		)
+		if err != nil {
+			return err
+		}
+		loopResult, err := interpreter.Execute(task, loop)
+		if err != nil || loopResult.Number() != 10 {
+			t.Fatalf("loop result = %#v, %v; want 10", loopResult, err)
+		}
+		return task.Realm.Store().CheckInvariants()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 }
 
