@@ -65,11 +65,13 @@ tools/v8/build.sh
 tools/v8/window.sh https://example.com
 ```
 
-The window currently presents copied RGBA frames and routes resize, mouse,
-wheel, keyboard, focus, and blur input through the Page queue. It is an engine
-milestone rather than a general-purpose browser shell: there is no URL bar,
-tab model, scrollbar chrome, clipboard, IME, or accessibility integration yet.
-See [`docs/window-backend.md`](docs/window-backend.md).
+The native launcher now opens the first functional Graphite browser shell: a
+single tab, editable address field, reload command, content viewport, and a
+collapsible engine/kernel telemetry rail. Resize, mouse, wheel, keyboard,
+focus, and blur input still cross the ordered Page queue. Multiple tabs,
+history traversal controls, scrollbar chrome, clipboard, IME, and accessibility
+integration remain future work. See [`docs/graphite-shell.md`](docs/graphite-shell.md)
+and [`docs/window-backend.md`](docs/window-backend.md).
 
 ## How it works
 
@@ -193,6 +195,12 @@ into a native-owned AppKit front buffer. Cocoa events are normalized into
 value-only records and published through the same ordered Page queue used by
 tests and stock V8; native code never receives a DOM node, V8 handle, or Go
 pointer.
+The Graphite shell is composited in Go around that frame. Its chrome consumes
+or translates native events before document hit testing, and its telemetry rail
+reads the same Realm profile used by the ownership gates. Stock V8 remains the
+active compatibility/reference engine in this checkout; the socket is kept
+engine-neutral for Strand to replace it without moving DOM or GUI ownership out
+of Go.
 Browser input currently covers click, pointer, keyboard, input, focus, and
 change event families. Profiling covers heap totals, sampled allocations,
 GC callbacks, weak-wrapper collection, wrapper-root region sweeps, callback
@@ -284,15 +292,15 @@ performance budgets; see
 | `internal/render` | Used-value resolution, layout, display lists, and PNG painting |
 | `internal/runtime` | Realms, task and microtask queues, actor scheduling, and shadow ownership telemetry |
 | `internal/browser` | Browser/Page ownership, loading, stable-ID mutation scheduling, and frame invalidation |
-| `internal/window` | Backend-neutral interactive loop, copied frame presentation, and normalized native input |
-| `cmd/gossamer-window` | Stock-V8 AppKit browser milestone launcher |
+| `internal/window` | Graphite browser shell, backend-neutral interactive loop, copied frame presentation, and normalized native input |
+| `cmd/gossamer-window` | Stock-V8 reference launcher for the Graphite AppKit shell |
 
 ## Current limitations
 
 The following are intentionally still outside the current milestone:
 
 - General Web APIs beyond the current V8 DOM slice, history traversal and
-  navigation globals, browser chrome, scrollbar UI, clipboard/IME input, and
+  navigation globals, multiple tabs, scrollbar UI, clipboard/IME input, and
   non-macOS interactive backends
 - Full HTML error recovery, including table foster parenting, formatting
   element reconstruction, templates, SVG/MathML, and encoding sniffing
@@ -346,10 +354,10 @@ go test ./internal/css -run '^$' -fuzz=FuzzParseDoesNotPanic
 ## Roadmap
 
 The next broad milestones are richer CSS values and formatting contexts, deeper
-HTML tree-builder coverage, browser navigation/chrome, and expanding the first
-interactive backend beyond its macOS mouse/keyboard/scroll slice. The existing
-renderer is structured so each capability can extend the pipeline instead of
-replacing it.
+HTML tree-builder coverage, history traversal and a real tab model, and
+expanding the first interactive backend beyond its macOS
+mouse/keyboard/scroll slice. The existing renderer is structured so each
+capability can extend the pipeline instead of replacing it.
 
 The staged CSS architecture and its V8/DOM invalidation boundary are tracked in
 [`docs/css-engine-roadmap.md`](docs/css-engine-roadmap.md).

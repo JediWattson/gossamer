@@ -133,6 +133,97 @@ func TestRunRoutesNativeEventsThroughPageQueueAndPresentsFrames(t *testing.T) {
 	}
 }
 
+func TestRunBrowserOffsetsGraphiteChromeFromDOMViewportAndInput(t *testing.T) {
+	t.Parallel()
+
+	fakeEngine := fake.New()
+	browserRuntime, err := browser.NewWithEngine(fakeEngine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer browserRuntime.Close()
+	location, _ := url.Parse("https://graphite.gossamer.test/")
+	client := windowDocumentLoader{response: &loader.Response{
+		URL: location, StatusCode: 200,
+		Body: io.NopCloser(strings.NewReader(`<!doctype html><html><body style="margin:0">
+			<button id="target" style="display:block;width:100px;height:30px">target</button>
+		</body></html>`)),
+	}}
+	page, err := browserRuntime.LoadPage(context.Background(), location.String(), client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputID, found := page.Document().ElementByID("target")
+	if !found {
+		t.Fatal("button has no stable node identity")
+	}
+	rootID, found, err := page.Document().RelatedNode(page.Document().RootID(), dom.DocumentElement)
+	if err != nil || !found {
+		t.Fatalf("document element: found=%t err=%v", found, err)
+	}
+	generation := page.DocumentGeneration()
+	target := browser.NodeHandle{Document: generation, Node: inputID}
+	root := browser.NodeHandle{Document: generation, Node: rootID}
+	realm, ok := fakeEngine.LatestRealm()
+	if !ok {
+		t.Fatal("fake engine did not create a document realm")
+	}
+	var dispatched []browser.InputEventType
+	bind := func(eventType browser.InputEventType, handle browser.NodeHandle) {
+		t.Helper()
+		callback, callbackErr := realm.RegisterCallback(func(browser.Host) error {
+			dispatched = append(dispatched, eventType)
+			return nil
+		})
+		if callbackErr != nil {
+			t.Fatal(callbackErr)
+		}
+		if bindErr := realm.Bind(eventType, handle, callback); bindErr != nil {
+			t.Fatal(bindErr)
+		}
+	}
+	bind(browser.InputResize, root)
+	bind(browser.InputPointerDown, target)
+	bind(browser.InputPointerUp, target)
+	bind(browser.InputClick, target)
+
+	backend := window.NewMemoryBackend(
+		window.Event{Kind: window.EventResize, Width: 368, Height: 324},
+		window.Event{Kind: window.EventPointerDown, X: 5, Y: 89, Button: 0, Buttons: 1},
+		window.Event{Kind: window.EventPointerUp, X: 5, Y: 89, Button: 0},
+		window.Event{Kind: window.EventClose},
+	)
+	if err := window.RunBrowser(context.Background(), page, backend, window.ShellConfig{
+		Title: "Gossamer Graphite test", Loader: client,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	wantEvents := []browser.InputEventType{
+		browser.InputResize, browser.InputPointerDown, browser.InputPointerUp, browser.InputClick,
+	}
+	if !reflect.DeepEqual(dispatched, wantEvents) {
+		t.Fatalf("Graphite-dispatched events = %v, want %v", dispatched, wantEvents)
+	}
+	viewport, err := page.ViewportGeometry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if viewport.InnerWidth != 320 || viewport.InnerHeight != 240 {
+		t.Fatalf("Graphite content viewport = %#v, want 320x240", viewport)
+	}
+	if got := backend.Config(); got.Width != 848 || got.Height != 684 || got.Title != "Gossamer Graphite test" {
+		t.Fatalf("initial Graphite config = %#v", got)
+	}
+	frames := backend.Frames()
+	if len(frames) < 2 {
+		t.Fatalf("Graphite backend presented %d frames, want initial and resized frames", len(frames))
+	}
+	if bounds := frames[len(frames)-1].Bounds(); bounds.Dx() != 368 || bounds.Dy() != 324 {
+		t.Fatalf("last Graphite frame = %v, want 368x324", bounds)
+	}
+}
+
 type windowDocumentLoader struct {
 	response *loader.Response
 }

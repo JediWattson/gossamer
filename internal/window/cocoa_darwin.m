@@ -105,7 +105,10 @@ static void gossamer_copy_string(char *destination, size_t capacity,
 
 - (void)drawRect:(NSRect)dirtyRect {
   (void)dirtyRect;
-  [[NSColor whiteColor] setFill];
+  [[NSColor colorWithSRGBRed:(8.0 / 255.0)
+                       green:(12.0 / 255.0)
+                        blue:(17.0 / 255.0)
+                       alpha:1.0] setFill];
   NSRectFill([self bounds]);
   if (_pixels == NULL || _width == 0 || _height == 0)
     return;
@@ -195,6 +198,14 @@ gossamer_cocoa_window *gossamer_cocoa_open(const char *title, int width,
     state->delegate->_state = state;
     [state->window setDelegate:state->delegate];
     [state->window setReleasedWhenClosed:NO];
+    [state->window setAppearance:
+        [NSAppearance appearanceNamed:NSAppearanceNameDarkAqua] ];
+    [state->window setBackgroundColor:
+        [NSColor colorWithSRGBRed:(8.0 / 255.0)
+                           green:(12.0 / 255.0)
+                            blue:(17.0 / 255.0)
+                           alpha:1.0]];
+    [state->window setTitlebarAppearsTransparent:YES];
     [state->window setContentView:state->view];
     [state->window setAcceptsMouseMovedEvents:YES];
     NSString *windowTitle = title == NULL

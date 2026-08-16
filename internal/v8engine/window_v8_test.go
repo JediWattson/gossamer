@@ -10,7 +10,7 @@ import (
 	"github.com/JediWattson/gossamer/internal/window"
 )
 
-func TestStockV8InteractiveWindowRoutesNativeInputAndTeardown(t *testing.T) {
+func TestStockV8GraphiteShellRoutesNativeInputAndTeardown(t *testing.T) {
 	engine := newTestEngine(t)
 	browserRuntime, err := browser.NewWithEngine(engine)
 	if err != nil {
@@ -61,11 +61,11 @@ func TestStockV8InteractiveWindowRoutesNativeInputAndTeardown(t *testing.T) {
 	`)
 
 	backend := window.NewMemoryBackend(
-		window.Event{Kind: window.EventResize, Width: 320, Height: 240},
-		window.Event{Kind: window.EventPointerDown, X: 5, Y: 5, Button: 0, Buttons: 1},
-		window.Event{Kind: window.EventPointerUp, X: 5, Y: 5, Button: 0},
-		window.Event{Kind: window.EventPointerDown, X: 5, Y: 5, Button: 0, Buttons: 1},
-		window.Event{Kind: window.EventPointerUp, X: 150, Y: 50, Button: 0},
+		window.Event{Kind: window.EventResize, Width: 368, Height: 324},
+		window.Event{Kind: window.EventPointerDown, X: 5, Y: 89, Button: 0, Buttons: 1},
+		window.Event{Kind: window.EventPointerUp, X: 5, Y: 89, Button: 0},
+		window.Event{Kind: window.EventPointerDown, X: 5, Y: 89, Button: 0, Buttons: 1},
+		window.Event{Kind: window.EventPointerUp, X: 150, Y: 134, Button: 0},
 		window.Event{Kind: window.EventFocus},
 		window.Event{Kind: window.EventKeyDown, Key: "a", Code: "KeyA", Text: "a"},
 		window.Event{Kind: window.EventKeyUp, Key: "a", Code: "KeyA"},
@@ -73,7 +73,9 @@ func TestStockV8InteractiveWindowRoutesNativeInputAndTeardown(t *testing.T) {
 		window.Event{Kind: window.EventBlur},
 		window.Event{Kind: window.EventClose},
 	)
-	if err := window.Run(context.Background(), page, backend, "Gossamer V8 window test"); err != nil {
+	if err := window.RunBrowser(context.Background(), page, backend, window.ShellConfig{
+		Title: "Gossamer V8 Graphite test",
+	}); err != nil {
 		t.Fatal(err)
 	}
 	queue("assert", `
@@ -91,7 +93,11 @@ func TestStockV8InteractiveWindowRoutesNativeInputAndTeardown(t *testing.T) {
 		globalThis.__windowEvents = undefined;
 	`)
 	if len(backend.Frames()) < 3 {
-		t.Fatalf("interactive backend presented %d frames, want at least 3", len(backend.Frames()))
+		t.Fatalf("Graphite backend presented %d frames, want at least 3", len(backend.Frames()))
+	}
+	lastFrame := backend.Frames()[len(backend.Frames())-1].Bounds()
+	if lastFrame.Dx() != 368 || lastFrame.Dy() != 324 {
+		t.Fatalf("Graphite frame = %v, want 368x324", lastFrame)
 	}
 	if realm, ok := engine.LatestRealm(); ok {
 		if err := realm.CollectGarbage(page); err != nil {

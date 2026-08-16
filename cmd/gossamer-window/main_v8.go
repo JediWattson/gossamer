@@ -44,15 +44,20 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	page, err := browserRuntime.LoadPage(ctx, rawURL, loader.New(nil))
+	documentLoader := loader.New(nil)
+	page, err := browserRuntime.LoadPage(ctx, rawURL, documentLoader)
 	if err != nil {
 		fatalf("load page: %v", err)
 	}
+	page.SetFormNavigationLoader(documentLoader)
 	windowTitle := strings.TrimSpace(*title)
 	if windowTitle == "" {
 		windowTitle = "Gossamer — " + rawURL
 	}
-	if err := window.Run(ctx, page, window.NewNativeBackend(), windowTitle); err != nil {
+	if err := window.RunBrowser(ctx, page, window.NewNativeBackend(), window.ShellConfig{
+		Title:  windowTitle,
+		Loader: documentLoader,
+	}); err != nil {
 		fatalf("run interactive window: %v", err)
 	}
 }

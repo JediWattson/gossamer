@@ -19,9 +19,9 @@ The gate has three layers:
 2. the same ownership-critical Go slices run under the race detector; and
 3. stock V8 runs focused WPT-aligned DOM/EventTarget/collection/form behavior,
    the real React 19.2.7 compatibility gate, the HTTP-loaded Vite-shaped
-   production boot/module/lifecycle gate, a deterministic interactive
-   window/input session, forced GC, form-to-navigation teardown, and the
-   replacement stress test.
+   production boot/module/lifecycle gate, a deterministic Graphite
+   shell/input/viewport session, forced GC, form-to-navigation teardown, and
+   the replacement stress test.
 
 The local Web Platform subset is deliberately narrow. It exercises supported
 behavior using testharness-style assertions, but it does not claim that the
