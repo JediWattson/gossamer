@@ -482,6 +482,8 @@ struct gossamer_v8_realm {
   std::unordered_map<uint64_t, uint64_t> callback_timers;
   std::unordered_map<uint64_t, uint64_t> animation_frame_callbacks;
   std::unordered_map<uint64_t, uint64_t> callback_animation_frames;
+  std::unordered_map<std::string, v8::Global<v8::Module>> modules;
+  std::unordered_map<std::string, std::string> module_resolutions;
 
   std::atomic<uint64_t> evaluations{0};
   std::atomic<uint64_t> evaluation_nanos{0};
@@ -754,6 +756,35 @@ void ThrowError(v8::Isolate *isolate, const std::string &message) {
 void ThrowDOMException(v8::Isolate *isolate, const std::string &name,
                        const std::string &message) {
   ThrowError(isolate, std::string(kDOMExceptionPrefix) + name + ":" + message);
+}
+
+std::string ModuleResolutionKey(const std::string &referrer,
+                                const std::string &specifier) {
+  return std::to_string(referrer.size()) + ":" + referrer + specifier;
+}
+
+v8::MaybeLocal<v8::Module>
+ResolveModule(v8::Local<v8::Context> context,
+              v8::Local<v8::String> specifier, v8::Local<v8::FixedArray>,
+              v8::Local<v8::Module> referrer) {
+  v8::Isolate *isolate = v8::Isolate::GetCurrent();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  std::string referrer_url = UTF8Value(isolate, referrer->GetResourceName());
+  std::string requested = UTF8Value(isolate, specifier);
+  auto resolution = realm->module_resolutions.find(
+      ModuleResolutionKey(referrer_url, requested));
+  if (resolution == realm->module_resolutions.end()) {
+    ThrowError(isolate, "unresolved module specifier \"" + requested +
+                            "\" from \"" + referrer_url + "\"");
+    return {};
+  }
+  auto module = realm->modules.find(resolution->second);
+  if (module == realm->modules.end()) {
+    ThrowError(isolate, "module source was not compiled for \"" +
+                            resolution->second + "\"");
+    return {};
+  }
+  return module->second.Get(isolate);
 }
 
 void ThrowTypeError(v8::Isolate *isolate, const std::string &message) {
@@ -2039,6 +2070,39 @@ void NodeBaseURIGetter(v8::Local<v8::Name>,
   if (!NewUTF8String(isolate, realm->base_uri.data(), realm->base_uri.size(),
                      &value)) {
     ThrowError(isolate, "V8 failed to allocate baseURI");
+    return;
+  }
+  info.GetReturnValue().Set(value);
+}
+
+void DocumentReadyStateGetter(
+    v8::Local<v8::Name>, const v8::PropertyCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  char *state = nullptr;
+  size_t state_length = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->document_ready_state(
+          realm->active_host->execution_id, &state, &state_length,
+          &host_error) == 0) {
+    error = TakeCString(host_error);
+    std::free(state);
+    ThrowError(isolate, error.empty() ? "reading document.readyState failed"
+                                      : error);
+    return;
+  }
+  std::free(host_error);
+  v8::Local<v8::String> value;
+  bool allocated = NewUTF8String(isolate, state == nullptr ? "" : state,
+                                 state_length, &value);
+  std::free(state);
+  if (!allocated) {
+    ThrowError(isolate, "V8 failed to allocate document.readyState");
     return;
   }
   info.GetReturnValue().Set(value);
@@ -10921,6 +10985,9 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   document_template->InstanceTemplate()->SetNativeDataProperty(
       v8::String::NewFromUtf8Literal(isolate, "activeElement"),
       DocumentActiveElementGetter);
+  document_template->InstanceTemplate()->SetNativeDataProperty(
+      v8::String::NewFromUtf8Literal(isolate, "readyState"),
+      DocumentReadyStateGetter);
 
   realm->event_target_template.Reset(isolate, event_target_template);
   realm->node_template.Reset(isolate, node_template);
@@ -11371,6 +11438,14 @@ bool ConfigureNativeEvent(const gossamer_v8_input_event *input,
 	state->type = "resize";
 	state->interface = EventInterface::Event;
 	break;
+  case 26:
+    state->type = "DOMContentLoaded";
+    state->interface = EventInterface::Event;
+    break;
+  case 27:
+    state->type = "load";
+    state->interface = EventInterface::Event;
+    break;
   default:
     *error = "V8 received an unsupported browser event type";
     return false;
@@ -11492,6 +11567,10 @@ void ClearRealmHandles(gossamer_v8_realm *realm) {
   realm->callback_timers.clear();
   realm->animation_frame_callbacks.clear();
   realm->callback_animation_frames.clear();
+  for (auto &module : realm->modules)
+    module.second.Reset();
+  realm->modules.clear();
+  realm->module_resolutions.clear();
   realm->event_target_template.Reset();
   realm->event_template.Reset();
   realm->mouse_event_template.Reset();
@@ -11684,6 +11763,142 @@ gossamer_v8_realm_evaluate(gossamer_v8_realm *realm,
   bool ok =
       v8::Script::Compile(context, source_string, &origin).ToLocal(&script) &&
       script->Run(context).ToLocal(&result);
+  realm->evaluation_nanos.fetch_add(MonotonicNanos() - started,
+                                    std::memory_order_relaxed);
+  if (!ok) {
+    SetError(error_out, DescribeException(realm->isolate, context, caught));
+    return 0;
+  }
+  return 1;
+}
+
+extern "C" int gossamer_v8_realm_evaluate_module(
+    gossamer_v8_realm *realm, const gossamer_v8_host *host,
+    const char *root_url, size_t root_url_length,
+    const gossamer_v8_module_source *sources, size_t source_count,
+    const gossamer_v8_module_resolution *resolutions, size_t resolution_count,
+    char **error_out) {
+  if (!RequireRealm(realm, error_out))
+    return 0;
+  if (root_url == nullptr || root_url_length == 0 || sources == nullptr ||
+      source_count == 0) {
+    SetError(error_out, "V8 module graph has no root or sources");
+    return 0;
+  }
+  auto valid_string = [](const char *data, size_t length) {
+    return (data != nullptr || length == 0) &&
+           length <= static_cast<size_t>(std::numeric_limits<int>::max());
+  };
+  if (!valid_string(root_url, root_url_length)) {
+    SetError(error_out, "V8 module root URL exceeds the supported length");
+    return 0;
+  }
+  for (size_t index = 0; index < source_count; ++index) {
+    if (!valid_string(sources[index].url, sources[index].url_length) ||
+        !valid_string(sources[index].source, sources[index].source_length)) {
+      SetError(error_out,
+               "V8 module source or URL exceeds the supported length");
+      return 0;
+    }
+  }
+  for (size_t index = 0; index < resolution_count; ++index) {
+    if (!valid_string(resolutions[index].referrer,
+                      resolutions[index].referrer_length) ||
+        !valid_string(resolutions[index].specifier,
+                      resolutions[index].specifier_length) ||
+        !valid_string(resolutions[index].url, resolutions[index].url_length)) {
+      SetError(error_out, "V8 module resolution exceeds the supported length");
+      return 0;
+    }
+  }
+
+  std::lock_guard<std::mutex> guard(realm->mutex);
+  if (!RequireRealm(realm, error_out))
+    return 0;
+  uint64_t started = MonotonicNanos();
+  realm->evaluations.fetch_add(1, std::memory_order_relaxed);
+  v8::Locker locker(realm->isolate);
+  v8::Isolate::Scope isolate_scope(realm->isolate);
+  v8::HandleScope handle_scope(realm->isolate);
+  v8::Local<v8::Context> context = realm->context.Get(realm->isolate);
+  v8::Context::Scope context_scope(context);
+  HostScope host_scope(realm, host);
+  std::string binding_error;
+  if (!EnsureDocumentBinding(realm, context, &binding_error)) {
+    realm->evaluation_nanos.fetch_add(MonotonicNanos() - started,
+                                      std::memory_order_relaxed);
+    SetError(error_out, binding_error);
+    return 0;
+  }
+  v8::TryCatch caught(realm->isolate);
+
+  for (size_t index = 0; index < resolution_count; ++index) {
+    const auto &edge = resolutions[index];
+    std::string referrer(edge.referrer == nullptr ? "" : edge.referrer,
+                         edge.referrer_length);
+    std::string specifier(edge.specifier == nullptr ? "" : edge.specifier,
+                          edge.specifier_length);
+    std::string target(edge.url == nullptr ? "" : edge.url, edge.url_length);
+    realm->module_resolutions[ModuleResolutionKey(referrer, specifier)] =
+        std::move(target);
+  }
+
+  for (size_t index = 0; index < source_count; ++index) {
+    const auto &entry = sources[index];
+    std::string url(entry.url == nullptr ? "" : entry.url, entry.url_length);
+    if (realm->modules.find(url) != realm->modules.end())
+      continue;
+    v8::Local<v8::String> source_string;
+    v8::Local<v8::String> url_string;
+    if (!v8::String::NewFromUtf8(
+             realm->isolate, entry.source == nullptr ? "" : entry.source,
+             v8::NewStringType::kNormal,
+             static_cast<int>(entry.source_length))
+             .ToLocal(&source_string) ||
+        !v8::String::NewFromUtf8(realm->isolate, url.data(),
+                                 v8::NewStringType::kNormal,
+                                 static_cast<int>(url.size()))
+             .ToLocal(&url_string)) {
+      realm->evaluation_nanos.fetch_add(MonotonicNanos() - started,
+                                        std::memory_order_relaxed);
+      SetError(error_out, "V8 failed to allocate a module source or URL");
+      return 0;
+    }
+    v8::ScriptOrigin origin(url_string, 0, 0, false, -1,
+                            v8::Local<v8::Value>(), false, false, true);
+    v8::ScriptCompiler::Source compiler_source(source_string, origin);
+    v8::Local<v8::Module> module;
+    if (!v8::ScriptCompiler::CompileModule(realm->isolate, &compiler_source)
+             .ToLocal(&module)) {
+      realm->evaluation_nanos.fetch_add(MonotonicNanos() - started,
+                                        std::memory_order_relaxed);
+      SetError(error_out, DescribeException(realm->isolate, context, caught));
+      return 0;
+    }
+    realm->modules.emplace(url,
+                           v8::Global<v8::Module>(realm->isolate, module));
+  }
+
+  std::string root(root_url, root_url_length);
+  auto root_entry = realm->modules.find(root);
+  if (root_entry == realm->modules.end()) {
+    realm->evaluation_nanos.fetch_add(MonotonicNanos() - started,
+                                      std::memory_order_relaxed);
+    SetError(error_out, "V8 module root source was not supplied");
+    return 0;
+  }
+  v8::Local<v8::Module> module = root_entry->second.Get(realm->isolate);
+  bool ok = true;
+  if (module->GetStatus() == v8::Module::kUninstantiated)
+    ok = module->InstantiateModule(context, ResolveModule).FromMaybe(false);
+  if (ok && module->GetStatus() == v8::Module::kInstantiated) {
+    v8::Local<v8::Value> result;
+    ok = module->Evaluate(context).ToLocal(&result);
+  }
+  if (ok && module->GetStatus() == v8::Module::kErrored) {
+    realm->isolate->ThrowException(module->GetException());
+    ok = false;
+  }
   realm->evaluation_nanos.fetch_add(MonotonicNanos() - started,
                                     std::memory_order_relaxed);
   if (!ok) {

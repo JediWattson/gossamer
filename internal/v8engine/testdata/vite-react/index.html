@@ -1,0 +1,24 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gossamer React production boot</title>
+    <script src="/assets/react-19.2.7.production.js"></script>
+    <script>
+      globalThis.__gossamerBootOrder = ["inline:" + document.readyState];
+      document.addEventListener("DOMContentLoaded", () => {
+        __gossamerBootOrder.push("DOMContentLoaded:" + document.readyState);
+      });
+      document.addEventListener("load", () => {
+        __gossamerBootOrder.push("load:" + document.readyState);
+      });
+    </script>
+    <script defer src="/src/defer.js"></script>
+    <script type="module" src="/src/main.js"></script>
+    <script type="module" src="/src/main.js"></script>
+  </head>
+  <body>
+    <main id="root"></main>
+  </body>
+</html>

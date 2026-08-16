@@ -405,6 +405,7 @@ func (page *Page) commitNavigationDocument(
 	page.styleRevision++
 	page.layoutRevision++
 	page.location = cloneURL(prepared.location)
+	page.readyState = "loading"
 	page.pushHistoryLocked(prepared.location, id)
 	page.resources = replacementResources
 	page.resources.stylesheets.markRequested(prepared.requests)
@@ -457,18 +458,12 @@ func (page *Page) commitNavigationDocument(
 			page.mutex.Unlock()
 			return nil
 		}
-		if len(page.navigation.scripts) != 0 {
-			page.navigation.state = NavigationLoadingScripts
-			scripts := append([]navigationScript(nil), page.navigation.scripts...)
-			fetcher := page.navigation.fetcher
-			page.mutex.Unlock()
-			go page.loadNavigationScripts(navigationContext, id, generation, fetcher, scripts)
-			return nil
-		}
-		page.navigation.state = NavigationRendering
-		err := page.queueNavigationRenderLocked(task, id, generation)
+		page.navigation.state = NavigationLoadingScripts
+		scripts := append([]navigationScript(nil), page.navigation.scripts...)
+		fetcher := page.navigation.fetcher
 		page.mutex.Unlock()
-		return err
+		go page.loadNavigationScripts(navigationContext, id, generation, fetcher, scripts)
+		return nil
 	}
 
 	page.mutex.Lock()
@@ -519,19 +514,13 @@ func (page *Page) applyNavigationResource(
 		page.mutex.Unlock()
 		return nil
 	}
-	if len(page.navigation.scripts) != 0 {
-		page.navigation.state = NavigationLoadingScripts
-		scripts := append([]navigationScript(nil), page.navigation.scripts...)
-		fetcher := page.navigation.fetcher
-		navigationContext := page.navigation.context
-		page.mutex.Unlock()
-		go page.loadNavigationScripts(navigationContext, id, generation, fetcher, scripts)
-		return nil
-	}
-	page.navigation.state = NavigationRendering
-	err := page.queueNavigationRenderLocked(task, id, generation)
+	page.navigation.state = NavigationLoadingScripts
+	scripts := append([]navigationScript(nil), page.navigation.scripts...)
+	fetcher := page.navigation.fetcher
+	navigationContext := page.navigation.context
 	page.mutex.Unlock()
-	return err
+	go page.loadNavigationScripts(navigationContext, id, generation, fetcher, scripts)
+	return nil
 }
 
 func (page *Page) queueNavigationRenderLocked(

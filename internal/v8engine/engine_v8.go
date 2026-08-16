@@ -179,6 +179,97 @@ func (realm *Realm) Evaluate(host browser.Host, source browser.ScriptSource) err
 	return errors.Join(operationErr, realm.drainCollectedWrappersLocked(host))
 }
 
+func (realm *Realm) EvaluateModule(host browser.Host, graph browser.ModuleGraph) error {
+	if realm == nil {
+		return ErrRealmClosed
+	}
+	if graph.RootURL == "" || len(graph.Sources) == 0 {
+		return fmt.Errorf("v8engine: module graph has no root or sources")
+	}
+	realm.mutex.Lock()
+	defer realm.mutex.Unlock()
+	if realm.isClosed || realm.pointer == nil {
+		return ErrRealmClosed
+	}
+	if err := realm.drainCollectedWrappersLocked(host); err != nil {
+		return err
+	}
+
+	var allocations []unsafe.Pointer
+	copyString := func(value string) *C.char {
+		if value == "" {
+			return nil
+		}
+		pointer := C.CBytes([]byte(value))
+		allocations = append(allocations, pointer)
+		return (*C.char)(pointer)
+	}
+	defer func() {
+		for _, pointer := range allocations {
+			C.free(pointer)
+		}
+	}()
+
+	sourceMemory := C.malloc(C.size_t(len(graph.Sources)) * C.size_t(C.sizeof_gossamer_v8_module_source))
+	if sourceMemory == nil {
+		return fmt.Errorf("v8engine: allocating module source bridge")
+	}
+	allocations = append(allocations, sourceMemory)
+	nativeSources := unsafe.Slice((*C.gossamer_v8_module_source)(sourceMemory), len(graph.Sources))
+	for index, source := range graph.Sources {
+		nativeSources[index] = C.gossamer_v8_module_source{
+			url:           copyString(source.URL),
+			url_length:    C.size_t(len(source.URL)),
+			source:        copyString(source.Source),
+			source_length: C.size_t(len(source.Source)),
+		}
+	}
+
+	var resolutionMemory unsafe.Pointer
+	var nativeResolutions []C.gossamer_v8_module_resolution
+	if len(graph.Resolutions) != 0 {
+		resolutionMemory = C.malloc(C.size_t(len(graph.Resolutions)) * C.size_t(C.sizeof_gossamer_v8_module_resolution))
+		if resolutionMemory == nil {
+			return fmt.Errorf("v8engine: allocating module resolution bridge")
+		}
+		allocations = append(allocations, resolutionMemory)
+		nativeResolutions = unsafe.Slice((*C.gossamer_v8_module_resolution)(resolutionMemory), len(graph.Resolutions))
+		for index, resolution := range graph.Resolutions {
+			nativeResolutions[index] = C.gossamer_v8_module_resolution{
+				referrer:         copyString(resolution.Referrer),
+				referrer_length:  C.size_t(len(resolution.Referrer)),
+				specifier:        copyString(resolution.Specifier),
+				specifier_length: C.size_t(len(resolution.Specifier)),
+				url:              copyString(resolution.URL),
+				url_length:       C.size_t(len(resolution.URL)),
+			}
+		}
+	}
+
+	executionID := registerHostExecution(host)
+	defer unregisterHostExecution(executionID)
+	var failure *C.char
+	var resolutionPointer *C.gossamer_v8_module_resolution
+	if len(nativeResolutions) != 0 {
+		resolutionPointer = &nativeResolutions[0]
+	}
+	var operationErr error
+	if C.gossamer_v8_go_realm_evaluate_module(
+		realm.pointer,
+		C.uint64_t(executionID),
+		copyString(graph.RootURL),
+		C.size_t(len(graph.RootURL)),
+		&nativeSources[0],
+		C.size_t(len(nativeSources)),
+		resolutionPointer,
+		C.size_t(len(nativeResolutions)),
+		&failure,
+	) == 0 {
+		operationErr = takeError(failure)
+	}
+	return errors.Join(operationErr, realm.drainCollectedWrappersLocked(host))
+}
+
 func (realm *Realm) DispatchEvent(host browser.Host, event browser.InputEvent) (browser.EventDispatchResult, error) {
 	if realm == nil {
 		return browser.EventDispatchResult{}, ErrRealmClosed

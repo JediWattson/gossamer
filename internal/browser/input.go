@@ -455,6 +455,18 @@ func (host *taskHost) DocumentMetadata() (DocumentMetadata, error) {
 	}, nil
 }
 
+func (host *taskHost) DocumentReadyState() (string, error) {
+	host.page.mutex.RLock()
+	defer host.page.mutex.RUnlock()
+	if host.page.closed {
+		return "", ErrPageClosed
+	}
+	if host.page.documentGeneration != host.generation {
+		return "", ErrStaleNodeHandle
+	}
+	return host.page.readyState, nil
+}
+
 func (host *taskHost) CreateTextNode(data string) (NodeHandle, error) {
 	host.page.mutex.Lock()
 	defer host.page.mutex.Unlock()

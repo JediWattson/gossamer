@@ -19,6 +19,8 @@ stock adapter subsequently added behind this boundary.
 - `JSRealm` evaluates `ScriptSource`, dispatches normalized input, invokes
   opaque `ValueHandle` callbacks, and performs an explicit microtask
   checkpoint.
+- Optional `JSModuleRealm` evaluates a complete browser-resolved `ModuleGraph`;
+  the engine never performs network I/O or URL resolution while entered.
 - `Host` is valid only for the current Page task. It reads or changes text
   through `NodeHandle`, queues callbacks or Realm microtasks, and creates or
   clears timers.
@@ -42,9 +44,14 @@ fetch + parse + index document off-Realm
   -> publish document completion task
   -> load rendered stylesheets/images off-Realm in DOM order
   -> publish each resource completion task
-  -> load inline/external classic scripts off-Realm in DOM order
-  -> publish one evaluation task per script
-  -> JSRealm.Evaluate
+  -> start async script fetches off-Realm
+  -> run blocking classic scripts
+  -> set readyState=interactive
+  -> run defer and module scripts in document order
+  -> dispatch DOMContentLoaded
+  -> run remaining async scripts as their fetches complete
+  -> set readyState=complete and dispatch load
+  -> JSRealm.Evaluate or JSModuleRealm.EvaluateModule
   -> JSRealm.DrainMicrotasks
   -> queue final navigation render
   -> publish Frame and complete navigation
@@ -55,11 +62,12 @@ supported JavaScript MIME type. Script transport, MIME, or evaluation failures
 increment navigation telemetry but do not prevent sibling scripts or the Page
 from rendering.
 
-This first sequence intentionally executes supported classic scripts after
-parse and initial rendered-resource loading. Parser-blocking execution,
-`async`, `defer`, modules, dynamic script insertion, and full HTML scripting
-semantics remain later browser features; the engine scheduling boundary does
-not depend on them.
+This sequence intentionally executes initial scripts after parse and initial
+rendered-resource loading. It supports blocking classic scripts, `defer`,
+`async`, and static HTTP(S) module graphs. Streaming parser-blocking execution,
+import maps, bare module specifiers, dynamic `import()`, dynamic script
+insertion, and full HTML scripting semantics remain later browser features;
+the engine scheduling boundary does not depend on them.
 
 With no Engine, Page preserves the existing no-JavaScript behavior and does
 not fetch script resources.

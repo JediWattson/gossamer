@@ -11,6 +11,7 @@ Page's ordered task queue.
 Idle
   -> LoadingDocument
   -> LoadingResources
+  -> LoadingScripts
   -> Rendering
   -> Complete
 
@@ -26,9 +27,10 @@ runs and verifies that the `NavigationID` is still current.
 The document completion task installs the indexed document, final redirected
 URL, empty stable resource store, and a new `DocumentGeneration` atomically.
 Rendered resource requests then run off-Realm in DOM order. Each stylesheet or
-image result is published back as another Page task. The last result queues one
-render task; only that task may replace `Page.Frame` and mark the navigation
-complete.
+image result is published back as another Page task. Initial scripts and
+document lifecycle checkpoints run next; only the final lifecycle checkpoint
+queues the render task that may replace `Page.Frame` and mark navigation
+complete. See [`production-page-boot.md`](production-page-boot.md).
 
 Resource transport or decode failures remain isolated to their resource. A
 navigation-context cancellation terminates the navigation and does not replace

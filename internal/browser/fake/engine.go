@@ -90,15 +90,17 @@ func (engine *Engine) Close() error {
 }
 
 type Realm struct {
-	mutex        sync.Mutex
-	nextCallback browser.ValueHandle
-	callbacks    map[browser.ValueHandle]Callback
-	handlers     map[eventTarget]browser.ValueHandle
-	evaluator    CallbackEvaluator
-	closed       bool
+	mutex           sync.Mutex
+	nextCallback    browser.ValueHandle
+	callbacks       map[browser.ValueHandle]Callback
+	handlers        map[eventTarget]browser.ValueHandle
+	evaluator       CallbackEvaluator
+	moduleEvaluator ModuleEvaluator
+	closed          bool
 }
 
 type CallbackEvaluator func(browser.Host, browser.ScriptSource) error
+type ModuleEvaluator func(browser.Host, browser.ModuleGraph) error
 
 type eventTarget struct {
 	typeID browser.InputEventType
@@ -152,6 +154,19 @@ func (realm *Realm) SetEvaluator(evaluator CallbackEvaluator) error {
 	return nil
 }
 
+func (realm *Realm) SetModuleEvaluator(evaluator ModuleEvaluator) error {
+	if realm == nil || evaluator == nil {
+		return fmt.Errorf("fake engine: nil realm or module evaluator")
+	}
+	realm.mutex.Lock()
+	defer realm.mutex.Unlock()
+	if realm.closed {
+		return ErrRealmClosed
+	}
+	realm.moduleEvaluator = evaluator
+	return nil
+}
+
 func (realm *Realm) Evaluate(host browser.Host, source browser.ScriptSource) error {
 	if host == nil {
 		return fmt.Errorf("fake engine: nil host")
@@ -167,6 +182,23 @@ func (realm *Realm) Evaluate(host browser.Host, source browser.ScriptSource) err
 		return nil
 	}
 	return evaluator(host, source)
+}
+
+func (realm *Realm) EvaluateModule(host browser.Host, graph browser.ModuleGraph) error {
+	if host == nil {
+		return fmt.Errorf("fake engine: nil host")
+	}
+	realm.mutex.Lock()
+	if realm.closed {
+		realm.mutex.Unlock()
+		return ErrRealmClosed
+	}
+	evaluator := realm.moduleEvaluator
+	realm.mutex.Unlock()
+	if evaluator == nil {
+		return nil
+	}
+	return evaluator(host, graph)
 }
 
 func (realm *Realm) DispatchEvent(host browser.Host, event browser.InputEvent) (browser.EventDispatchResult, error) {
@@ -221,6 +253,7 @@ func (realm *Realm) Close() error {
 	realm.callbacks = nil
 	realm.handlers = nil
 	realm.evaluator = nil
+	realm.moduleEvaluator = nil
 	realm.mutex.Unlock()
 	return nil
 }

@@ -1,4 +1,4 @@
-# Conformance, leak, and performance gate
+# Conformance, production boot, leak, and performance gate
 
 Milestone 26 turns the browser/runtime boundary into one repeatable release
 gate. It combines focused Web Platform behavior, the pinned production React
@@ -18,7 +18,8 @@ The gate has three layers:
    and stale document generations;
 2. the same ownership-critical Go slices run under the race detector; and
 3. stock V8 runs focused WPT-aligned DOM/EventTarget/collection/form behavior,
-   the real React 19.2.7 compatibility gate, a deterministic interactive
+   the real React 19.2.7 compatibility gate, the HTTP-loaded Vite-shaped
+   production boot/module/lifecycle gate, a deterministic interactive
    window/input session, forced GC, form-to-navigation teardown, and the
    replacement stress test.
 

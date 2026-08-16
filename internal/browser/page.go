@@ -34,6 +34,7 @@ type Page struct {
 	frameOwner         NodeHandle
 	children           map[dom.NodeID]*Page
 	location           *url.URL
+	readyState         string
 	formLoader         DocumentLoader
 	history            []HistoryEntry
 	historyIndex       int
@@ -113,6 +114,7 @@ func newPage(
 		documentGeneration: generation,
 		children:           make(map[dom.NodeID]*Page),
 		location:           cloneURL(location),
+		readyState:         "complete",
 		resources:          newPageResources(),
 		documentContext:    documentContext,
 		documentCancel:     documentCancel,

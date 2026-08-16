@@ -150,7 +150,8 @@ queues rendering. The screenshot CLI uses this same path. See
 [`docs/phase-1-navigation.md`](docs/phase-1-navigation.md) for the sequence.
 
 The pre-V8 browser socket is also complete: Page tasks own input hit testing,
-timers, classic-script evaluation, explicit engine microtask checkpoints,
+timers, classic and module-script evaluation, document lifecycle scheduling,
+explicit engine microtask checkpoints,
 opaque callback scheduling, and render invalidation. A replaceable fake engine
 proves the full click-to-paint flow without a JavaScript parser. See
 [`docs/pre-v8-engine-boundary.md`](docs/pre-v8-engine-boundary.md).
@@ -220,6 +221,8 @@ performance budgets; see
 - Resolution against the final document URL and the first `<base href>`
 - Eligible external stylesheet and `<img src>` discovery in DOM order
 - Navigation-scoped resource caching and independent subresource failures
+- Live `document.readyState`, blocking/defer/async initial script scheduling,
+  `DOMContentLoaded`/`load`, and browser-resolved HTTP(S) ES-module graphs
 - PNG, JPEG, GIF, and WebP decoding with per-image and per-page pixel budgets
 - Atomic screenshot replacement, preserving an existing output file's mode
 
@@ -231,7 +234,7 @@ performance budgets; see
 - Common implied elements and implied end tags
 - Deterministic DOM dumps for parser development
 - Stable `NodeID` lookup in both directions through an indexed `Document`
-- Optional stock-V8 classic-script execution and first-slice DOM wrappers on
+- Optional stock-V8 classic and ES-module execution plus first-slice DOM wrappers on
   Apple Silicon, including delegated DOM event dispatch, live `NodeList` and
   `HTMLCollection` views, `classList`, and `dataset`; default builds still
   render body `<noscript>` fallback

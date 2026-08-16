@@ -15,12 +15,41 @@ import (
 )
 
 type navigationScript struct {
+	kind     navigationScriptKind
+	mode     navigationScriptMode
 	source   ScriptSource
 	external *resource.Reference
 }
 
+type navigationScriptKind uint8
+
+const (
+	navigationClassicScript navigationScriptKind = iota + 1
+	navigationModuleScript
+)
+
+type navigationScriptMode uint8
+
+const (
+	navigationBlockingScript navigationScriptMode = iota + 1
+	navigationDeferredScript
+	navigationAsyncScript
+)
+
+type navigationScriptResultKind uint8
+
+const (
+	navigationScriptExecution navigationScriptResultKind = iota + 1
+	navigationReadyInteractive
+	navigationDOMContentLoaded
+	navigationReadyComplete
+)
+
 type navigationScriptResult struct {
+	kind   navigationScriptResultKind
+	script navigationScript
 	source ScriptSource
+	module ModuleGraph
 	err    error
 }
 
@@ -43,20 +72,33 @@ func discoverNavigationScripts(document *dom.Document, location *url.URL) ([]nav
 		if node == nil {
 			return
 		}
-		if node.Type == dom.ElementNode && strings.EqualFold(node.Data, "script") && classicScript(node) {
+		if node.Type == dom.ElementNode && strings.EqualFold(node.Data, "script") {
+			kind, supported := scriptKind(node)
+			if !supported {
+				for _, child := range node.Children {
+					visit(child)
+				}
+				return
+			}
+			if kind == navigationClassicScript {
+				if _, noModule := nodeAttribute(node, "nomodule"); noModule {
+					return
+				}
+			}
+			script := navigationScript{kind: kind, mode: scriptMode(node, kind)}
 			if reference, ok := external[node]; ok {
 				copy := reference
 				copy.URL = cloneURL(reference.URL)
-				scripts = append(scripts, navigationScript{
-					source:   ScriptSource{URL: copy.URL.String()},
-					external: &copy,
-				})
+				script.source = ScriptSource{URL: copy.URL.String()}
+				script.external = &copy
+				scripts = append(scripts, script)
 			} else if _, hasSource := nodeAttribute(node, "src"); !hasSource {
 				inlineIndex++
-				scripts = append(scripts, navigationScript{source: ScriptSource{
+				script.source = ScriptSource{
 					URL:    inlineScriptURL(location, inlineIndex),
 					Source: scriptText(node),
-				}})
+				}
+				scripts = append(scripts, script)
 			}
 		}
 		for _, child := range node.Children {
@@ -67,12 +109,32 @@ func discoverNavigationScripts(document *dom.Document, location *url.URL) ([]nav
 	return scripts, nil
 }
 
-func classicScript(node *dom.Node) bool {
+func scriptKind(node *dom.Node) (navigationScriptKind, bool) {
 	typeValue, _ := nodeAttribute(node, "type")
 	typeValue = strings.ToLower(strings.TrimSpace(typeValue))
-	return typeValue == "" || typeValue == "text/javascript" ||
+	if typeValue == "module" {
+		return navigationModuleScript, true
+	}
+	if typeValue == "" || typeValue == "text/javascript" ||
 		typeValue == "application/javascript" || typeValue == "text/ecmascript" ||
-		typeValue == "application/ecmascript"
+		typeValue == "application/ecmascript" {
+		return navigationClassicScript, true
+	}
+	return 0, false
+}
+
+func scriptMode(node *dom.Node, kind navigationScriptKind) navigationScriptMode {
+	_, external := nodeAttribute(node, "src")
+	if _, async := nodeAttribute(node, "async"); async && (external || kind == navigationModuleScript) {
+		return navigationAsyncScript
+	}
+	if kind == navigationModuleScript {
+		return navigationDeferredScript
+	}
+	if _, deferred := nodeAttribute(node, "defer"); deferred && external {
+		return navigationDeferredScript
+	}
+	return navigationBlockingScript
 }
 
 func scriptText(node *dom.Node) string {
@@ -102,12 +164,13 @@ func (page *Page) loadNavigationScripts(
 	if fetcher != nil {
 		pipeline = resource.NewPipeline(fetcher, resource.PipelineOptions{})
 	}
-	err := loadNavigationScriptSequence(ctx, pipeline, scripts, func(result navigationScriptResult) error {
+	deliver := func(result navigationScriptResult) error {
 		_, _, enqueueErr := page.browser.scheduler.EnqueueExternalTask(page.Realm, func(task *browserruntime.TaskContext) error {
 			return page.applyNavigationScript(task, id, generation, result)
 		})
 		return enqueueErr
-	})
+	}
+	err := loadNavigationScriptSequence(ctx, pipeline, scripts, deliver)
 	if err == nil {
 		return
 	}
@@ -124,41 +187,91 @@ func loadNavigationScriptSequence(
 	scripts []navigationScript,
 	deliver func(navigationScriptResult) error,
 ) error {
+	blocking := make([]navigationScript, 0, len(scripts))
+	deferred := make([]navigationScript, 0, len(scripts))
+	asyncScripts := make([]navigationScript, 0, len(scripts))
 	for _, script := range scripts {
+		switch script.mode {
+		case navigationAsyncScript:
+			asyncScripts = append(asyncScripts, script)
+		case navigationDeferredScript:
+			deferred = append(deferred, script)
+		default:
+			blocking = append(blocking, script)
+		}
+	}
+
+	asyncDone := make(chan error, len(asyncScripts))
+	for _, script := range asyncScripts {
+		script := script
+		go func() {
+			asyncDone <- deliver(loadNavigationScript(ctx, pipeline, script))
+		}()
+	}
+	for _, script := range blocking {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		result := navigationScriptResult{source: script.source}
-		if script.external != nil {
-			if pipeline == nil {
-				result.err = ErrResourceLoaderUnavailable
-				if err := deliver(result); err != nil {
-					return err
-				}
-				continue
-			}
-			asset, err := pipeline.Fetch(ctx, *script.external)
-			if err != nil {
-				if ctxErr := ctx.Err(); ctxErr != nil {
-					return ctxErr
-				}
-				result.err = err
-			} else if !usableAsset(asset) {
-				result.err = fmt.Errorf("browser: unusable script response status %d", asset.StatusCode)
-			} else if !isJavaScriptAsset(asset) {
-				result.err = fmt.Errorf("browser: script response has unsupported MIME type")
-			} else {
-				result.source.Source = string(asset.Bytes())
-				if asset.URL != nil {
-					result.source.URL = asset.URL.String()
-				}
-			}
-		}
-		if err := deliver(result); err != nil {
+		if err := deliver(loadNavigationScript(ctx, pipeline, script)); err != nil {
 			return err
 		}
 	}
-	return nil
+	if err := deliver(navigationScriptResult{kind: navigationReadyInteractive}); err != nil {
+		return err
+	}
+	for _, script := range deferred {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := deliver(loadNavigationScript(ctx, pipeline, script)); err != nil {
+			return err
+		}
+	}
+	if err := deliver(navigationScriptResult{kind: navigationDOMContentLoaded}); err != nil {
+		return err
+	}
+	for range asyncScripts {
+		if err := <-asyncDone; err != nil {
+			return err
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return deliver(navigationScriptResult{kind: navigationReadyComplete})
+}
+
+func loadNavigationScript(ctx context.Context, pipeline *resource.Pipeline, script navigationScript) navigationScriptResult {
+	result := navigationScriptResult{kind: navigationScriptExecution, script: script, source: script.source}
+	if script.external != nil {
+		if pipeline == nil {
+			result.err = ErrResourceLoaderUnavailable
+			return result
+		}
+		asset, err := pipeline.Fetch(ctx, *script.external)
+		if err != nil {
+			result.err = err
+			return result
+		}
+		if !usableAsset(asset) {
+			result.err = fmt.Errorf("browser: unusable script response status %d", asset.StatusCode)
+			return result
+		}
+		if !isJavaScriptAsset(asset) {
+			result.err = fmt.Errorf("browser: script response has unsupported MIME type")
+			return result
+		}
+		result.source.Source = string(asset.Bytes())
+		if asset.URL != nil {
+			finalURL := cloneURL(asset.URL)
+			finalURL.Fragment = script.external.URL.Fragment
+			result.source.URL = finalURL.String()
+		}
+	}
+	if script.kind == navigationModuleScript && result.err == nil {
+		result.module, result.err = loadModuleGraph(ctx, pipeline, result.source)
+	}
+	return result
 }
 
 func (page *Page) applyNavigationScript(
@@ -175,14 +288,56 @@ func (page *Page) applyNavigationScript(
 	script := page.script
 	page.mutex.RUnlock()
 
+	switch result.kind {
+	case navigationReadyInteractive:
+		page.mutex.Lock()
+		if page.matchesNavigationLocked(id, generation) && page.navigation.state == NavigationLoadingScripts {
+			page.readyState = "interactive"
+		}
+		page.mutex.Unlock()
+		return nil
+	case navigationDOMContentLoaded:
+		if err := page.dispatchNavigationLifecycleEvent(task, id, generation, InputDOMContentLoaded); err != nil {
+			page.recordNavigationScriptFailure(id, generation)
+		}
+		return nil
+	case navigationReadyComplete:
+		page.mutex.Lock()
+		if !page.matchesNavigationLocked(id, generation) || page.navigation.state != NavigationLoadingScripts {
+			page.mutex.Unlock()
+			return nil
+		}
+		page.readyState = "complete"
+		page.mutex.Unlock()
+		if err := page.dispatchNavigationLifecycleEvent(task, id, generation, InputLoad); err != nil {
+			page.recordNavigationScriptFailure(id, generation)
+		}
+		page.mutex.Lock()
+		defer page.mutex.Unlock()
+		if !page.matchesNavigationLocked(id, generation) || page.navigation.state != NavigationLoadingScripts {
+			return nil
+		}
+		page.navigation.state = NavigationRendering
+		return page.queueNavigationRenderLocked(task, id, generation)
+	case navigationScriptExecution:
+	default:
+		return fmt.Errorf("browser: unknown navigation script result %d", result.kind)
+	}
+
 	scriptErr := result.err
 	if scriptErr == nil && script != nil {
 		host := &taskHost{page: page, task: task, generation: generation, autoRender: false}
-		scriptErr = errors.Join(
-			script.Evaluate(host, result.source),
-			script.DrainMicrotasks(host),
-			host.finish(),
-		)
+		if result.script.kind == navigationModuleScript {
+			moduleRealm, ok := script.(JSModuleRealm)
+			if !ok {
+				scriptErr = ErrModuleScriptsUnsupported
+			} else {
+				scriptErr = moduleRealm.EvaluateModule(host, result.module)
+			}
+		} else {
+			scriptErr = script.Evaluate(host, result.source)
+		}
+		scriptErr = errors.Join(scriptErr, script.DrainMicrotasks(host), host.finish())
 	}
 
 	page.mutex.Lock()
@@ -196,11 +351,37 @@ func (page *Page) applyNavigationScript(
 	if page.navigation.scriptsPending > 0 {
 		page.navigation.scriptsPending--
 	}
-	if page.navigation.scriptsPending != 0 {
+	return nil
+}
+
+func (page *Page) recordNavigationScriptFailure(id NavigationID, generation DocumentGeneration) {
+	page.mutex.Lock()
+	if page.matchesNavigationLocked(id, generation) && page.navigation.state == NavigationLoadingScripts {
+		page.navigation.scriptsFailed++
+	}
+	page.mutex.Unlock()
+}
+
+func (page *Page) dispatchNavigationLifecycleEvent(
+	task *browserruntime.TaskContext,
+	id NavigationID,
+	generation DocumentGeneration,
+	eventType InputEventType,
+) error {
+	page.mutex.RLock()
+	if !page.matchesNavigationLocked(id, generation) || page.navigation.state != NavigationLoadingScripts {
+		page.mutex.RUnlock()
 		return nil
 	}
-	page.navigation.state = NavigationRendering
-	return page.queueNavigationRenderLocked(task, id, generation)
+	script := page.script
+	target := NodeHandle{Document: generation, Node: page.document.RootID()}
+	page.mutex.RUnlock()
+	if script == nil {
+		return nil
+	}
+	host := &taskHost{page: page, task: task, generation: generation, autoRender: false}
+	_, dispatchErr := script.DispatchEvent(host, InputEvent{Type: eventType, Target: target})
+	return errors.Join(dispatchErr, script.DrainMicrotasks(host), host.finish())
 }
 
 func isJavaScriptAsset(asset *resource.Asset) bool {
@@ -215,3 +396,5 @@ func isJavaScriptAsset(asset *resource.Asset) bool {
 		return false
 	}
 }
+
+var ErrModuleScriptsUnsupported = errors.New("browser: JavaScript engine does not support module scripts")

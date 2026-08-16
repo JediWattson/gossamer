@@ -5,7 +5,7 @@ DOM compatibility gate verifies that this split remains observable as one DOM:
 canonical V8 wrappers carry numeric `NodeHandle` values, while Go owns node
 identity, mutation, form state, construction regions, and queue ARC.
 
-## Selected completed milestones 8-33
+## Selected completed milestones 8-34
 
 | Milestone | Native surface | Regression boundary |
 | --- | --- | --- |
@@ -27,6 +27,7 @@ identity, mutation, form state, construction regions, and queue ARC.
 | 31. Positioned layout | Typed `position`, physical insets, integer `z-index`, relative/absolute/fixed block geometry, local stacking order | Absolute boxes leave normal flow; fixed boxes bypass root scrolling; display-list paint and hit testing share the same ordered positioned children; a React layout effect measures the same native geometry used by delegated click routing |
 | 32. Flex formatting | `display:flex`, row/column directions and reversals, grow/shrink/basis, `order`, row/column gaps, justification, cross-axis alignment | Ordered element children share one single-line flex calculation for retained geometry, paint, CSSOM View, and hit testing; React style assignment and `useLayoutEffect` observe the native result; teardown returns ownership to zero |
 | 33. Interactive window and native input | Backend-neutral window loop, AppKit presentation, resize, pointer, wheel, keyboard, focus, blur, text editing, stock-V8 launcher | The backend owns only copied RGBA pixels and value-only events; every DOM/script mutation crosses the Page queue; deterministic and stock-V8 tests assert event order, final state, frame publication, forced GC, and zero ownership after teardown |
+| 34. Production page boot | Live `document.readyState`, blocking/defer/async scheduling, `DOMContentLoaded` and `load`, browser-fetched stock-V8 ES modules, per-Realm module identity | An HTTP-served Vite-shaped module graph boots pinned production React, commits and updates the Go DOM, evaluates a duplicated module once, unmounts, forces GC, and closes with zero native ownership |
 
 Run the gate against the locally built stock V8:
 
@@ -65,6 +66,12 @@ and ownership barriers before a separate render task publishes a frame.
   events. Browser chrome, tabs, scrollbar widgets, clipboard, IME/composition,
   touch, drag-and-drop, accessibility, and non-macOS backends remain future
   work.
+- Initial scripts run after the document and represented render resources are
+  loaded, not from a streaming HTML parser. Static HTTP(S) module imports are
+  supported; import maps, bare package specifiers, dynamic `import()`, module
+  workers, and dynamically inserted scripts remain future work. The initial
+  `load` event is delivered to the canonical document until `Window` becomes a
+  complete `EventTarget`.
 - Range contents now cross nested containers and UTF-16 character data.
   `surroundContents`, contextual fragments, point-comparison helpers, and full
   live boundary adjustment after unrelated DOM mutations remain future work.

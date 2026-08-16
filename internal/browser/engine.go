@@ -39,6 +39,8 @@ const (
 	InputInvalid
 	InputScroll
 	InputResize
+	InputDOMContentLoaded
+	InputLoad
 )
 
 // InputEvent contains browser-normalized input and a generation-safe target.
@@ -117,6 +119,10 @@ func (eventType InputEventType) String() string {
 		return "scroll"
 	case InputResize:
 		return "resize"
+	case InputDOMContentLoaded:
+		return "DOMContentLoaded"
+	case InputLoad:
+		return "load"
 	default:
 		return ""
 	}
@@ -131,6 +137,25 @@ func (eventType InputEventType) pointerTargeted() bool {
 type ScriptSource struct {
 	URL    string
 	Source string
+}
+
+// ModuleResolution is one browser-resolved static import edge. Engines receive
+// canonical URLs and never perform network access or URL resolution while an
+// isolate is entered.
+type ModuleResolution struct {
+	Referrer  string
+	Specifier string
+	URL       string
+}
+
+// ModuleGraph is a complete, pointer-free source graph rooted at RootURL.
+// Sources may be supplied again across root evaluations; an engine-owned
+// per-Realm module cache preserves JavaScript module identity and one-time
+// evaluation.
+type ModuleGraph struct {
+	RootURL     string
+	Sources     []ScriptSource
+	Resolutions []ModuleResolution
 }
 
 // Engine is the engine-neutral factory boundary. A future V8 adapter owns its
@@ -148,6 +173,13 @@ type JSRealm interface {
 	Invoke(Host, ValueHandle) error
 	DrainMicrotasks(Host) error
 	Close() error
+}
+
+// JSModuleRealm is the optional stock-engine extension for browser-fetched ES
+// module graphs. Fetching and resolution stay in Go outside the Realm; compile,
+// instantiate, and evaluation stay inside the engine entry.
+type JSModuleRealm interface {
+	EvaluateModule(Host, ModuleGraph) error
 }
 
 type EventDispatchResult struct {
@@ -264,6 +296,12 @@ type NodeMetadata struct {
 type DocumentMetadata struct {
 	Root    NodeHandle
 	BaseURI string
+}
+
+// DocumentLifecycleHost exposes the Page-owned loading state. Engines surface
+// it as a live document.readyState read instead of caching it in their heap.
+type DocumentLifecycleHost interface {
+	DocumentReadyState() (string, error)
 }
 
 // DOMElementHost is an optional extension implemented by browser hosts that

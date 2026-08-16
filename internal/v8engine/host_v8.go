@@ -131,6 +131,14 @@ func domDocumentHost(host browser.Host) (browser.DOMDocumentHost, bool) {
 	return domHost, ok
 }
 
+func documentLifecycleHost(host browser.Host) (browser.DocumentLifecycleHost, error) {
+	lifecycle, ok := host.(browser.DocumentLifecycleHost)
+	if !ok {
+		return nil, fmt.Errorf("V8 host does not support document lifecycle state")
+	}
+	return lifecycle, nil
+}
+
 func domComputedStyleHost(host browser.Host) (browser.DOMComputedStyleHost, error) {
 	domHost, ok := host.(browser.DOMComputedStyleHost)
 	if !ok {
@@ -174,6 +182,26 @@ func goGossamerV8HostDocumentMetadata(
 			*foundOut = 1
 		}
 		return writeHostString(metadata.BaseURI, baseURIOut, baseURILengthOut)
+	}, executionID)
+}
+
+//export goGossamerV8HostDocumentReadyState
+func goGossamerV8HostDocumentReadyState(
+	executionID C.uint64_t,
+	valueOut **C.char,
+	valueLengthOut *C.size_t,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		lifecycle, err := documentLifecycleHost(host)
+		if err != nil {
+			return err
+		}
+		state, err := lifecycle.DocumentReadyState()
+		if err != nil {
+			return err
+		}
+		return writeHostString(state, valueOut, valueLengthOut)
 	}, executionID)
 }
 

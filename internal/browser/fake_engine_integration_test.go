@@ -184,15 +184,28 @@ func TestFakeEngineEvaluatesSourceInsideGenerationBoundPageTask(t *testing.T) {
 	}
 }
 
-func TestNavigationFetchesAndEvaluatesClassicScriptsInDOMOrder(t *testing.T) {
+func TestNavigationFetchesAndEvaluatesInitialScriptsInScheduledOrder(t *testing.T) {
 	t.Parallel()
 
 	var evaluationMutex sync.Mutex
 	var evaluated []browser.ScriptSource
 	fakeEngine := fake.NewWithInitializer(func(realm *fake.Realm) error {
-		return realm.SetEvaluator(func(_ browser.Host, source browser.ScriptSource) error {
+		if err := realm.SetEvaluator(func(_ browser.Host, source browser.ScriptSource) error {
 			evaluationMutex.Lock()
 			evaluated = append(evaluated, source)
+			evaluationMutex.Unlock()
+			return nil
+		}); err != nil {
+			return err
+		}
+		return realm.SetModuleEvaluator(func(_ browser.Host, graph browser.ModuleGraph) error {
+			evaluationMutex.Lock()
+			for _, source := range graph.Sources {
+				if source.URL == graph.RootURL {
+					evaluated = append(evaluated, source)
+					break
+				}
+			}
 			evaluationMutex.Unlock()
 			return nil
 		})
@@ -205,7 +218,7 @@ func TestNavigationFetchesAndEvaluatesClassicScriptsInDOMOrder(t *testing.T) {
 			_, _ = io.WriteString(writer, `<html><body>
 				<script>inline one</script>
 				<script src="/external.js"></script>
-				<script type="module">module skipped</script>
+				<script type="module">deferred module</script>
 				<script>inline two</script>
 				<p>scripted page</p>
 			</body></html>`)
@@ -231,7 +244,7 @@ func TestNavigationFetchesAndEvaluatesClassicScriptsInDOMOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	snapshot := page.Navigation()
-	if snapshot.State != browser.NavigationComplete || snapshot.ScriptsTotal != 3 ||
+	if snapshot.State != browser.NavigationComplete || snapshot.ScriptsTotal != 4 ||
 		snapshot.ScriptsPending != 0 || snapshot.ScriptsFailed != 0 {
 		t.Fatalf("script navigation = %#v", snapshot)
 	}
@@ -239,11 +252,11 @@ func TestNavigationFetchesAndEvaluatesClassicScriptsInDOMOrder(t *testing.T) {
 	got := append([]browser.ScriptSource(nil), evaluated...)
 	gotAccept := scriptAccept
 	evaluationMutex.Unlock()
-	if len(got) != 3 {
-		t.Fatalf("evaluated scripts = %#v, want three classic scripts", got)
+	if len(got) != 4 {
+		t.Fatalf("evaluated scripts = %#v, want three classic scripts and one module", got)
 	}
 	if strings.TrimSpace(got[0].Source) != "inline one" || got[1].Source != "external script" ||
-		strings.TrimSpace(got[2].Source) != "inline two" {
+		strings.TrimSpace(got[2].Source) != "inline two" || strings.TrimSpace(got[3].Source) != "deferred module" {
 		t.Fatalf("evaluation order = %#v", got)
 	}
 	if got[1].URL != server.URL+"/external.js" {

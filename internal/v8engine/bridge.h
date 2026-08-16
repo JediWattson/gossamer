@@ -16,6 +16,22 @@ extern "C" {
 
 typedef struct gossamer_v8_realm gossamer_v8_realm;
 
+typedef struct gossamer_v8_module_source {
+  const char *url;
+  size_t url_length;
+  const char *source;
+  size_t source_length;
+} gossamer_v8_module_source;
+
+typedef struct gossamer_v8_module_resolution {
+  const char *referrer;
+  size_t referrer_length;
+  const char *specifier;
+  size_t specifier_length;
+  const char *url;
+  size_t url_length;
+} gossamer_v8_module_resolution;
+
 typedef struct gossamer_v8_mutation_record {
   uint64_t sequence;
   uint8_t type;
@@ -71,6 +87,8 @@ typedef struct gossamer_v8_host {
                            uint32_t *node_out, char **base_uri_out,
                            size_t *base_uri_length_out, int *found_out,
                            char **error_out);
+  int (*document_ready_state)(uint64_t execution_id, char **value_out,
+                              size_t *value_length_out, char **error_out);
   int (*get_element_by_id)(uint64_t execution_id, const char *value,
                            size_t value_length, uint64_t *document_out,
                            uint32_t *node_out, int *found_out,
@@ -424,6 +442,12 @@ gossamer_v8_realm_evaluate(gossamer_v8_realm *realm,
                            const gossamer_v8_host *host, const char *source,
                            size_t source_length, const char *source_url,
                            size_t source_url_length, char **error_out);
+GOSSAMER_V8_EXPORT int gossamer_v8_realm_evaluate_module(
+    gossamer_v8_realm *realm, const gossamer_v8_host *host,
+    const char *root_url, size_t root_url_length,
+    const gossamer_v8_module_source *sources, size_t source_count,
+    const gossamer_v8_module_resolution *resolutions,
+    size_t resolution_count, char **error_out);
 GOSSAMER_V8_EXPORT int gossamer_v8_realm_dispatch_event(
     gossamer_v8_realm *realm, const gossamer_v8_host *host,
     const gossamer_v8_input_event *event, int *default_prevented_out,

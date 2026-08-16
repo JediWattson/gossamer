@@ -80,13 +80,13 @@ func TestNavigationSequencesDocumentResourcesAndRenderThroughRealmTasks(t *testi
 		t.Fatal(err)
 	}
 	snapshot = page.Navigation()
-	if snapshot.State != browser.NavigationRendering || snapshot.ResourcesPending != 0 {
+	if snapshot.State != browser.NavigationLoadingScripts || snapshot.ResourcesPending != 0 {
 		t.Fatalf("after image completion = %#v", snapshot)
 	}
-	if got := page.Realm.Tasks.Len(); got != 1 {
-		t.Fatalf("queued tasks after final resource = %d, want one render", got)
+	if page.Frame() != nil {
+		t.Fatal("page rendered before the document lifecycle completed")
 	}
-	if err := page.Realm.RunOne(context.Background()); err != nil {
+	if err := page.WaitNavigation(context.Background(), navigation); err != nil {
 		t.Fatal(err)
 	}
 	snapshot = page.Navigation()

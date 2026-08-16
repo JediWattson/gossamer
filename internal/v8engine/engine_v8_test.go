@@ -307,7 +307,7 @@ func TestStockV8DOMWrapperClickMutatesThroughQueuedCallbackAndPaint(t *testing.T
 	if err != nil {
 		t.Fatalf("Profile after dispatch: %v", err)
 	}
-	if afterDispatch.EventsDispatched != 1 || afterDispatch.CallbacksCreated != 0 ||
+	if afterDispatch.EventsDispatched != 3 || afterDispatch.CallbacksCreated != 0 ||
 		afterDispatch.CallbacksInvoked != 0 || afterDispatch.LiveCallbacks != 0 {
 		t.Fatalf("synchronous event dispatch profile = %#v", afterDispatch)
 	}
@@ -1598,9 +1598,14 @@ func TestStockV8RunsRealReactRenderUpdateEventAndUnmount(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("QueueInputEvent React controlled input: %v", err)
 	}
-	if err := page.Realm.RunOne(context.Background()); err != nil {
-		t.Fatalf("dispatch React controlled input: %v", err)
-	}
+	runUntil("dispatch React controlled input", func() bool {
+		valueID, found := page.Document().ElementByID("name-value")
+		if !found {
+			return false
+		}
+		value, readErr := page.Document().TextContent(valueID)
+		return readErr == nil && value == "AB"
+	})
 	valueID, valueFound := page.Document().ElementByID("name-value")
 	renderedValue := ""
 	if valueFound {
@@ -2057,7 +2062,7 @@ func TestStockV8EventPropagationFamiliesAndReactStyleRootDelegation(t *testing.T
 	if err != nil {
 		t.Fatalf("Profile after events: %v", err)
 	}
-	if profile.EventsDispatched != 12 || profile.CallbacksCreated != 0 ||
+	if profile.EventsDispatched != 14 || profile.CallbacksCreated != 0 ||
 		profile.CallbacksInvoked != 0 || profile.LiveCallbacks != 0 ||
 		profile.EventListeners != 13 {
 		t.Fatalf("event dispatch profile = %#v", profile)
@@ -2220,7 +2225,9 @@ func TestStockV8NodeMutationChurnPreservesOwnershipBoundaries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Profile after churn: %v", err)
 	}
-	const createdWrappers = 1 + 1 + iterations*5 + 1
+	// The document wrapper is established by navigation lifecycle dispatch
+	// before the baseline; churn adds the mount, temporary nodes, and survivor.
+	const createdWrappers = 1 + iterations*5 + 1
 	if got := afterRenderProfile.WrappersCreated - baselineProfile.WrappersCreated; got != createdWrappers {
 		t.Fatalf("wrappers created by churn = %d, want %d", got, createdWrappers)
 	}
@@ -2249,8 +2256,8 @@ func TestStockV8NodeMutationChurnPreservesOwnershipBoundaries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Profile after churn GC: %v", err)
 	}
-	if afterGC.WrappersCollected-baselineProfile.WrappersCollected != createdWrappers-1 ||
-		afterGC.LiveWrappers != baselineProfile.LiveWrappers+1 {
+	if afterGC.WrappersCollected-baselineProfile.WrappersCollected != createdWrappers ||
+		afterGC.LiveWrappers != baselineProfile.LiveWrappers {
 		t.Fatalf("wrapper reclamation after churn = %#v, baseline=%#v", afterGC, baselineProfile)
 	}
 	if native := page.Realm.Profile().Memory; native.LiveHostObjects-baselineNative.LiveHostObjects != uint64(connectedCreatedNodes) {

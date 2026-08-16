@@ -7,6 +7,11 @@ int gossamer_v8_go_realm_evaluate(gossamer_v8_realm *realm,
                                   uint64_t execution_id, const char *source,
                                   size_t source_length, const char *source_url,
                                   size_t source_url_length, char **error_out);
+int gossamer_v8_go_realm_evaluate_module(
+    gossamer_v8_realm *realm, uint64_t execution_id, const char *root_url,
+    size_t root_url_length, const gossamer_v8_module_source *sources,
+    size_t source_count, const gossamer_v8_module_resolution *resolutions,
+    size_t resolution_count, char **error_out);
 int gossamer_v8_go_realm_dispatch_event(gossamer_v8_realm *realm,
                                         uint64_t execution_id,
                                         const gossamer_v8_input_event *event,

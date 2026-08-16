@@ -6,6 +6,9 @@ extern int goGossamerV8HostDocumentMetadata(
     uint64_t execution_id, uint64_t *document_out, uint32_t *node_out,
     char **base_uri_out, size_t *base_uri_length_out, int *found_out,
     char **error_out);
+extern int goGossamerV8HostDocumentReadyState(
+    uint64_t execution_id, char **value_out, size_t *value_length_out,
+    char **error_out);
 
 extern int goGossamerV8HostGetElementByID(uint64_t execution_id,
                                           const char *value,
@@ -316,6 +319,7 @@ static gossamer_v8_host gossamer_v8_go_host(uint64_t execution_id) {
   gossamer_v8_host host = {
       .execution_id = execution_id,
       .document_metadata = goGossamerV8HostDocumentMetadata,
+      .document_ready_state = goGossamerV8HostDocumentReadyState,
       .get_element_by_id = goGossamerV8HostGetElementByID,
       .create_element = goGossamerV8HostCreateElement,
       .create_element_ns = goGossamerV8HostCreateElementNS,
@@ -409,6 +413,17 @@ int gossamer_v8_go_realm_evaluate(gossamer_v8_realm *realm,
   gossamer_v8_host host = gossamer_v8_go_host(execution_id);
   return gossamer_v8_realm_evaluate(realm, &host, source, source_length,
                                     source_url, source_url_length, error_out);
+}
+
+int gossamer_v8_go_realm_evaluate_module(
+    gossamer_v8_realm *realm, uint64_t execution_id, const char *root_url,
+    size_t root_url_length, const gossamer_v8_module_source *sources,
+    size_t source_count, const gossamer_v8_module_resolution *resolutions,
+    size_t resolution_count, char **error_out) {
+  gossamer_v8_host host = gossamer_v8_go_host(execution_id);
+  return gossamer_v8_realm_evaluate_module(
+      realm, &host, root_url, root_url_length, sources, source_count,
+      resolutions, resolution_count, error_out);
 }
 
 int gossamer_v8_go_realm_dispatch_event(gossamer_v8_realm *realm,
