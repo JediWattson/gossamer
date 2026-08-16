@@ -1338,24 +1338,32 @@ func (host *taskHost) SetText(handle NodeHandle, data string) error {
 }
 
 func (host *taskHost) QueueCallback(callback ValueHandle) error {
-	object, err := host.task.NewObject()
+	record, err := host.task.NewHostObject(memory.HostObject{
+		Class:    browserCallbackHostClass,
+		Scope:    uint64(host.generation),
+		Identity: uint64(callback),
+	})
 	if err != nil {
 		return err
 	}
-	_, err = host.task.QueueTask(func(next *browserruntime.TaskContext) error {
-		return host.page.invokeScript(next, host.generation, callback, host.autoRender)
-	}, object)
+	_, err = host.task.Copy(host.page.Realm, func(next *browserruntime.TaskContext) error {
+		return host.page.invokeAsyncScript(next, browserCallbackHostClass, host.generation, uint64(callback), callback, host.autoRender)
+	}, record)
 	return err
 }
 
 func (host *taskHost) QueueMicrotask(callback ValueHandle) error {
-	object, err := host.task.NewObject()
+	record, err := host.task.NewHostObject(memory.HostObject{
+		Class:    browserCallbackHostClass,
+		Scope:    uint64(host.generation),
+		Identity: uint64(callback),
+	})
 	if err != nil {
 		return err
 	}
-	_, err = host.task.QueueMicrotask(func(next *browserruntime.TaskContext) error {
-		return host.page.invokeScript(next, host.generation, callback, host.autoRender)
-	}, object)
+	_, err = host.task.QueueMicrotaskCopy(func(next *browserruntime.TaskContext) error {
+		return host.page.invokeAsyncScript(next, browserCallbackHostClass, host.generation, uint64(callback), callback, host.autoRender)
+	}, record)
 	return err
 }
 

@@ -219,6 +219,13 @@ HostObject. The churn gate checks that live HostObject count rises once per
 created native node, falls with detached wrapper collection, and reaches zero
 at Page teardown.
 
+V8 callback handles remain engine-owned identities, but their waiting lifetime
+is now represented by native HostObjects. `setTimeout` retains a record in the
+Realm until fire or clear; firing transfers it through the Page task queue.
+`queueMicrotask` and host-queued callbacks copy a record directly from the
+producer task into their queue. The consumer validates that record before
+invoking V8, and task release reclaims it.
+
 ## Proven sequence
 
 The tagged tests prove both the isolated adapter and the browser path:

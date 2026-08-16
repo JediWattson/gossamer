@@ -717,6 +717,16 @@ func (context *TaskContext) Copy(target *Realm, run TaskFunc, refs ...memory.Ref
 	return context.enqueueRefs(target, targetQueue(target), memoryCopy, run, refs)
 }
 
+// CopyToRealm deep-copies the reachable native graph into Realm-owned storage.
+// It is the retention boundary for values that must outlive the current task
+// but are not runnable until a later external event fires.
+func (context *TaskContext) CopyToRealm(refs ...memory.Ref) ([]memory.Ref, error) {
+	if context == nil || context.Realm == nil {
+		return nil, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.Copy(context.Owner, context.Realm.owner, refs...)
+}
+
 // QueueMicrotaskSend enqueues already-published refs in this Realm's
 // microtask queue. Private refs fail before the microtask becomes visible.
 func (context *TaskContext) QueueMicrotaskSend(run TaskFunc, refs ...memory.Ref) (TaskID, error) {

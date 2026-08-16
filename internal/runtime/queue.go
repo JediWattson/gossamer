@@ -84,9 +84,8 @@ func (queue *TaskQueue) enqueue(task Task, publisher ownership.OwnerID) error {
 	return nil
 }
 
-// enqueueTransfer moves a persistent publisher claim into the queue instead
-// of retaining both owners. Timers use this when a Realm-owned callback becomes
-// runnable exactly once.
+// enqueueTransfer moves a persistent shadow publisher claim into the queue
+// instead of retaining both owners.
 func (queue *TaskQueue) enqueueTransfer(task Task, publisher ownership.OwnerID) error {
 	if queue == nil {
 		return fmt.Errorf("runtime: nil task queue")

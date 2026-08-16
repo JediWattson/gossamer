@@ -6,7 +6,7 @@ import (
 	"time"
 
 	browserruntime "github.com/JediWattson/gossamer/internal/runtime"
-	"github.com/JediWattson/gossamer/internal/runtime/ownership"
+	"github.com/JediWattson/gossamer/internal/runtime/memory"
 )
 
 type TimerID uint64
@@ -14,7 +14,7 @@ type TimerID uint64
 type pageTimer struct {
 	id         TimerID
 	callback   ValueHandle
-	object     ownership.ObjectID
+	ref        memory.Ref
 	generation DocumentGeneration
 	clock      *time.Timer
 	done       chan struct{}
@@ -31,27 +31,47 @@ func (page *Page) setTimeoutFromTask(
 	if delay < 0 {
 		delay = 0
 	}
-	object, err := task.NewObject()
-	if err != nil {
-		return 0, err
-	}
-	if err := task.PublishToRealm(object); err != nil {
-		return 0, err
-	}
 
 	page.mutex.Lock()
 	if page.closed {
 		page.mutex.Unlock()
-		_ = page.Realm.Ledger().Release(object, page.Realm.Owner())
 		return 0, ErrPageClosed
 	}
 	page.nextTimer++
 	id := page.nextTimer
+	generation := page.documentGeneration
+	page.mutex.Unlock()
+
+	local, err := task.NewHostObject(memory.HostObject{
+		Class:    browserTimerHostClass,
+		Scope:    uint64(generation),
+		Identity: uint64(id),
+	})
+	if err != nil {
+		return 0, err
+	}
+	retained, err := task.CopyToRealm(local)
+	if err != nil {
+		return 0, err
+	}
+	ref := retained[0]
+
+	page.mutex.Lock()
+	if page.closed {
+		page.mutex.Unlock()
+		_ = page.releaseAsyncRef(ref)
+		return 0, ErrPageClosed
+	}
+	if generation != page.documentGeneration {
+		page.mutex.Unlock()
+		_ = page.releaseAsyncRef(ref)
+		return 0, ErrStaleNodeHandle
+	}
 	timer := &pageTimer{
 		id:         id,
 		callback:   callback,
-		object:     object,
-		generation: page.documentGeneration,
+		ref:        ref,
+		generation: generation,
 		clock:      time.NewTimer(delay),
 		done:       make(chan struct{}),
 	}
@@ -83,11 +103,7 @@ func (page *Page) clearTimeout(id TimerID) error {
 	if timer == nil {
 		return nil
 	}
-	err := page.Realm.Ledger().Release(timer.object, page.Realm.Owner())
-	if errors.Is(err, ownership.ErrObjectDestroyed) || errors.Is(err, ownership.ErrNotOwned) {
-		return nil
-	}
-	return err
+	return page.releaseAsyncRef(timer.ref)
 }
 
 func (page *Page) fireTimer(id TimerID) {
@@ -102,14 +118,14 @@ func (page *Page) fireTimer(id TimerID) {
 	page.mutex.Unlock()
 
 	if !current {
-		_ = page.Realm.Ledger().Release(timer.object, page.Realm.Owner())
+		_ = page.releaseAsyncRef(timer.ref)
 		return
 	}
-	_, err := page.Realm.EnqueueRealmTask(func(task *browserruntime.TaskContext) error {
-		return page.invokeScript(task, timer.generation, timer.callback, true)
-	}, timer.object)
+	_, err := page.Realm.EnqueueRealmRefTask(func(task *browserruntime.TaskContext) error {
+		return page.invokeAsyncScript(task, browserTimerHostClass, timer.generation, uint64(timer.id), timer.callback, true)
+	}, timer.ref)
 	if err != nil {
-		_ = page.Realm.Ledger().Release(timer.object, page.Realm.Owner())
+		_ = page.releaseAsyncRef(timer.ref)
 	}
 }
 
@@ -127,11 +143,7 @@ func (page *Page) takeTimersLocked() []*pageTimer {
 func (page *Page) releaseTimers(timers []*pageTimer) error {
 	var result error
 	for _, timer := range timers {
-		err := page.Realm.Ledger().Release(timer.object, page.Realm.Owner())
-		if errors.Is(err, ownership.ErrObjectDestroyed) || errors.Is(err, ownership.ErrNotOwned) {
-			continue
-		}
-		result = errors.Join(result, err)
+		result = errors.Join(result, page.releaseAsyncRef(timer.ref))
 	}
 	return result
 }

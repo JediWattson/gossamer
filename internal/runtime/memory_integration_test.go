@@ -99,6 +99,75 @@ func TestRealmQueueRequiresExplicitTransferForPrivateRefs(t *testing.T) {
 	}
 }
 
+func TestRealmRetainedRefTransfersThroughQueueToFiringTask(t *testing.T) {
+	t.Parallel()
+
+	realm, err := browserruntime.NewRealm(102, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer realm.Close()
+	var retained memory.Ref
+	if _, err := realm.EnqueueTask(func(task *browserruntime.TaskContext) error {
+		local, allocErr := task.NewHostObject(memory.HostObject{Class: 2, Scope: 3, Identity: 4})
+		if allocErr != nil {
+			return allocErr
+		}
+		refs, copyErr := task.CopyToRealm(local)
+		if copyErr != nil {
+			return copyErr
+		}
+		retained = refs[0]
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	region, err := realm.Store().Region(retained.Region)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if region.State != memory.RegionPrivate || region.Owner != realm.Owner() {
+		t.Fatalf("retained region = %#v", region)
+	}
+
+	fired := false
+	if _, err := realm.EnqueueRealmRefTask(func(task *browserruntime.TaskContext) error {
+		if len(task.Refs) != 1 || task.Refs[0] != retained {
+			t.Fatalf("firing refs = %#v, want [%s]", task.Refs, retained)
+		}
+		record, derefErr := task.DerefHostObject(task.Refs[0])
+		if derefErr != nil {
+			return derefErr
+		}
+		if record != (memory.HostObject{Class: 2, Scope: 3, Identity: 4}) {
+			t.Fatalf("firing record = %#v", record)
+		}
+		fired = true
+		return nil
+	}, retained); err != nil {
+		t.Fatal(err)
+	}
+	region, err = realm.Store().Region(retained.Region)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if region.State != memory.RegionInTransit || region.Owner != realm.Tasks.Owner() {
+		t.Fatalf("queued retained region = %#v", region)
+	}
+	if err := realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !fired {
+		t.Fatal("retained ref task did not fire")
+	}
+	if _, err := realm.Store().DerefHostObject(realm.Owner(), retained); !errors.Is(err, memory.ErrStaleRef) {
+		t.Fatalf("retained ref after firing = %v, want ErrStaleRef", err)
+	}
+}
+
 func TestRealmQueuePublishSharesImmutableRegion(t *testing.T) {
 	t.Parallel()
 

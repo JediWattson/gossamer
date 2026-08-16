@@ -153,6 +153,16 @@ func (realm *Realm) EnqueueRealmTask(run TaskFunc, objects ...ownership.ObjectID
 	return id, nil
 }
 
+// EnqueueRealmRefTask transfers Realm-owned native regions into a newly
+// runnable task. The task queue owns the regions until the task is accepted;
+// the task owner then releases them after execution.
+func (realm *Realm) EnqueueRealmRefTask(run TaskFunc, refs ...memory.Ref) (TaskID, error) {
+	if realm == nil {
+		return 0, fmt.Errorf("runtime: nil realm")
+	}
+	return realm.enqueueMemory(realm.Tasks, run, realm.owner, memoryTransfer, refs)
+}
+
 func (realm *Realm) enqueue(queue *TaskQueue, run TaskFunc, publisher ownership.OwnerID, objects []ownership.ObjectID) (TaskID, error) {
 	if realm == nil {
 		return 0, fmt.Errorf("runtime: nil realm")

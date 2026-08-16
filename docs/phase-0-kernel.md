@@ -62,6 +62,8 @@ claim(region, object) is either present or absent
 - Unqualified queue sends accept only published refs. Private refs require an
   explicit Transfer, Publish, or Copy operation.
 - Task and microtask queues use the same explicit Ref-envelope boundary.
+- A task can copy a graph into its Realm for persistent async retention, and a
+  Realm can later transfer that exact private region into its task queue.
 - Transfer moves the complete connected private region component through the
   queue; Copy clones the reachable Cell graph; Publish makes the outgoing
   region graph immutable and shared.
@@ -124,6 +126,13 @@ The browser half of every current `NodeHandle` is now a canonical HostObject in
 the document's RegionStore owner. V8 wrappers remain V8 objects; the native
 record survives and dies with the stable Go node, including detached wrapper
 and listener ownership.
+
+Timers and queued callbacks are also native HostObjects. A timer record is
+Realm-owned while its clock waits, queue-owned after firing, task-owned during
+callback execution, and destroyed at task release. Clear, navigation, and
+teardown destroy records still held by the Realm. Ordinary callbacks and
+microtasks copy their record from the producer task into the appropriate queue
+so no borrowed producer Ref escapes.
 
 The first profile-driven physical optimization is implemented without changing
 the ownership model: short-lived regions use eight-slot buffers sized to the

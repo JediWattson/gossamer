@@ -97,6 +97,13 @@ JavaScript execution semantics and V8 internals. See
 [`docs/native-heap-types.md`](docs/native-heap-types.md) for the typed payload
 contract.
 
+Browser async work now uses that same physical boundary. Timers retain one
+Realm-owned HostObject while waiting, transfer it through the task queue when
+they fire, and release it with the consumer task. Queued callbacks and
+microtasks copy one native callback record directly into their destination
+queue; clearing, navigation replacement, and Page teardown destroy records
+that never fire.
+
 A synchronous native interpreter can now execute hand-assembled Function
 bytecode over those payloads. Its borrowed frames expose Ref roots, all heap
 mutation stays behind TaskContext barriers, and returned private values still

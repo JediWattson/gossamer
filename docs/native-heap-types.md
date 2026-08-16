@@ -225,6 +225,12 @@ numbers. The browser uses class 1 for `DocumentGeneration + NodeID`, giving
 each native node one canonical document-region record without storing a Go or
 C++ pointer in the heap.
 
+Class 2 identifies timer records scoped by document generation and stable
+TimerID. Class 3 identifies queued callback or microtask records scoped by
+document generation and the engine's callback handle. These records make the
+native owner transition observable without asking RegionStore to interpret
+the callback itself.
+
 V8 continues to own and garbage-collect the JavaScript wrapper. The HostObject
 is the Go-owned side of the boundary and follows native node lifetime: it
 survives detachment while a wrapper or listener owns the node, is freed when
