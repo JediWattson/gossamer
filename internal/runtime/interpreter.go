@@ -273,7 +273,7 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 			if err != nil {
 				return memory.Value{}, err
 			}
-			value, present, err := context.getProperty(base, key)
+			value, present, err := execution.getProperty(base, key)
 			if err != nil {
 				return memory.Value{}, err
 			}
@@ -294,7 +294,7 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 			if err != nil {
 				return memory.Value{}, err
 			}
-			if err := context.setPropertyValue(base, key, value); err != nil {
+			if err := execution.setPropertyValue(base, key, value); err != nil {
 				return memory.Value{}, err
 			}
 			frame.push(value)
@@ -493,7 +493,7 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 				if err != nil {
 					return memory.Value{}, err
 				}
-				calleeValue, present, err := context.getProperty(base, key)
+				calleeValue, present, err := execution.getProperty(base, key)
 				if err != nil {
 					return memory.Value{}, err
 				}
@@ -597,7 +597,7 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 			if err != nil {
 				return memory.Value{}, err
 			}
-			old, present, err := context.getProperty(base, key)
+			old, present, err := execution.getProperty(base, key)
 			if err != nil {
 				return memory.Value{}, err
 			}
@@ -609,7 +609,7 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 				delta = -1
 			}
 			updated := memory.NumberValue(old.Number() + delta)
-			if err := context.setPropertyValue(base, key, updated); err != nil {
+			if err := execution.setPropertyValue(base, key, updated); err != nil {
 				return memory.Value{}, err
 			}
 			if instruction.B == 1 {

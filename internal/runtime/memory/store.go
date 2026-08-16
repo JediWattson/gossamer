@@ -30,6 +30,10 @@ var (
 	ErrBindingUninitialized  = errors.New("memory: binding is uninitialized")
 	ErrImmutableBinding      = errors.New("memory: binding is immutable")
 	ErrContextCycle          = errors.New("memory: context parent cycle")
+	ErrPrototypeCycle        = errors.New("memory: object prototype cycle")
+	ErrReadOnlyProperty      = errors.New("memory: property is not writable")
+	ErrNonConfigurable       = errors.New("memory: property is not configurable")
+	ErrAccessorProperty      = errors.New("memory: accessor requires language execution")
 	ErrInvalidFunction       = errors.New("memory: invalid function descriptor")
 	ErrPromiseSettled        = errors.New("memory: promise is already settled")
 	ErrPromisePending        = errors.New("memory: promise is still pending")
@@ -1410,8 +1414,12 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 			}
 			for _, property := range sourceSlot.Object.Properties {
 				name := mapping[property.Name]
-				value := remapValue(property.Value, mapping)
-				if err := store.setPropertyLocked(to, copyRef, name, value, true); err != nil {
+				descriptor := property
+				descriptor.Name = Ref{}
+				descriptor.Value = remapValue(property.Value, mapping)
+				descriptor.Getter = remapValue(property.Getter, mapping)
+				descriptor.Setter = remapValue(property.Setter, mapping)
+				if err := store.definePropertyLocked(to, copyRef, name, descriptor, true); err != nil {
 					_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
 					return nil, err
 				}

@@ -198,6 +198,30 @@ func (store *Store) CheckInvariants() error {
 				}
 				names := make(map[string]struct{}, len(slot.Object.Properties))
 				for propertyIndex, property := range slot.Object.Properties {
+					if property.Kind != PropertyData && property.Kind != PropertyAccessor {
+						return invariantError("Object %s property %d has invalid descriptor kind %d", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, propertyIndex, property.Kind)
+					}
+					if property.Kind == PropertyData && (property.Getter.Kind() != ValueUndefined || property.Setter.Kind() != ValueUndefined) {
+						return invariantError("Object %s data property %d retains accessors", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, propertyIndex)
+					}
+					if property.Kind == PropertyAccessor && (property.Value.Kind() != ValueUndefined || property.Writable) {
+						return invariantError("Object %s accessor property %d retains data state", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, propertyIndex)
+					}
+					if property.Kind == PropertyAccessor {
+						for _, callable := range []Value{property.Getter, property.Setter} {
+							if callable.Kind() == ValueUndefined {
+								continue
+							}
+							callableRegion := store.regions[callable.Ref().Region]
+							if callableRegion == nil || uint64(callable.Ref().Slot) >= uint64(len(callableRegion.Slots)) {
+								return invariantError("Object %s accessor property %d has stale Function %s", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, propertyIndex, callable.Ref())
+							}
+							callableSlot := &callableRegion.Slots[callable.Ref().Slot]
+							if !callableSlot.Occupied || callableSlot.Generation != callable.Ref().Gen || callableSlot.Kind != HeapFunction {
+								return invariantError("Object %s accessor property %d has non-Function %s", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, propertyIndex, callable.Ref())
+							}
+						}
+					}
 					targetRegion := store.regions[property.Name.Region]
 					if targetRegion == nil || targetRegion.State == RegionDestroyed || uint64(property.Name.Slot) >= uint64(len(targetRegion.Slots)) {
 						return invariantError("Object %s property %d has stale name %s", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, propertyIndex, property.Name)

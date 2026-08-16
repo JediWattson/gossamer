@@ -8,7 +8,8 @@ import (
 	"github.com/JediWattson/gossamer/internal/runtime/memory"
 )
 
-func (context *TaskContext) getProperty(base, key memory.Value) (memory.Value, bool, error) {
+func (execution *execution) getProperty(base, key memory.Value) (memory.Value, bool, error) {
+	context := execution.context
 	ref, err := requireRef(base, "property base")
 	if err != nil {
 		return memory.Value{}, false, err
@@ -23,7 +24,22 @@ func (context *TaskContext) getProperty(base, key memory.Value) (memory.Value, b
 		if err != nil {
 			return memory.Value{}, false, err
 		}
-		return context.GetOwnProperty(ref, name)
+		_, descriptor, found, err := resolveObjectProperty(context, ref, name)
+		if err != nil || !found {
+			return memory.Value{}, found, err
+		}
+		if descriptor.Kind == memory.PropertyData {
+			return descriptor.Value, true, nil
+		}
+		if descriptor.Getter.Kind() == memory.ValueUndefined {
+			return memory.UndefinedValue(), true, nil
+		}
+		getter, err := requireRef(descriptor.Getter, "property getter")
+		if err != nil {
+			return memory.Value{}, false, err
+		}
+		value, err := execution.call(getter, base, nil, callAny)
+		return value, true, err
 	case memory.HeapArray:
 		index, length, err := context.arrayPropertyKey(key)
 		if err != nil {
@@ -42,7 +58,8 @@ func (context *TaskContext) getProperty(base, key memory.Value) (memory.Value, b
 	}
 }
 
-func (context *TaskContext) setPropertyValue(base, key, value memory.Value) error {
+func (execution *execution) setPropertyValue(base, key, value memory.Value) error {
+	context := execution.context
 	ref, err := requireRef(base, "property base")
 	if err != nil {
 		return err
@@ -56,6 +73,30 @@ func (context *TaskContext) setPropertyValue(base, key, value memory.Value) erro
 		name, err := context.propertyName(key)
 		if err != nil {
 			return err
+		}
+		holder, descriptor, found, err := resolveObjectProperty(context, ref, name)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return context.SetProperty(ref, name, value)
+		}
+		if descriptor.Kind == memory.PropertyAccessor {
+			if descriptor.Setter.Kind() == memory.ValueUndefined {
+				return memory.ErrReadOnlyProperty
+			}
+			setter, err := requireRef(descriptor.Setter, "property setter")
+			if err != nil {
+				return err
+			}
+			_, err = execution.call(setter, base, []memory.Value{value}, callAny)
+			return err
+		}
+		if !descriptor.Writable {
+			return memory.ErrReadOnlyProperty
+		}
+		if holder != ref {
+			return context.SetProperty(ref, name, value)
 		}
 		return context.SetProperty(ref, name, value)
 	case memory.HeapArray:
@@ -76,6 +117,32 @@ func (context *TaskContext) setPropertyValue(base, key, value memory.Value) erro
 	}
 }
 
+func resolveObjectProperty(context *TaskContext, object, name memory.Ref) (memory.Ref, memory.Property, bool, error) {
+	seen := make(map[memory.Ref]struct{})
+	current := object
+	for {
+		if _, duplicate := seen[current]; duplicate {
+			return memory.Ref{}, memory.Property{}, false, memory.ErrPrototypeCycle
+		}
+		seen[current] = struct{}{}
+		descriptor, found, err := context.GetOwnPropertyDescriptor(current, name)
+		if err != nil {
+			return memory.Ref{}, memory.Property{}, false, err
+		}
+		if found {
+			return current, descriptor, true, nil
+		}
+		snapshot, err := context.DerefObject(current)
+		if err != nil {
+			return memory.Ref{}, memory.Property{}, false, err
+		}
+		if snapshot.Prototype.Kind() == memory.ValueNull {
+			return memory.Ref{}, memory.Property{}, false, nil
+		}
+		current = snapshot.Prototype.Ref()
+	}
+}
+
 func (context *TaskContext) deletePropertyValue(base, key memory.Value) (bool, error) {
 	ref, err := requireRef(base, "property base")
 	if err != nil {
@@ -91,6 +158,11 @@ func (context *TaskContext) deletePropertyValue(base, key memory.Value) (bool, e
 		if err != nil {
 			return false, err
 		}
+		if _, found, err := context.GetOwnPropertyDescriptor(ref, name); err != nil {
+			return false, err
+		} else if !found {
+			return true, nil
+		}
 		return context.DeleteProperty(ref, name)
 	case memory.HeapArray:
 		index, length, err := context.arrayPropertyKey(key)
@@ -100,7 +172,10 @@ func (context *TaskContext) deletePropertyValue(base, key memory.Value) (bool, e
 		if length {
 			return false, nil
 		}
-		return context.DeleteArrayElement(ref, index)
+		if _, err := context.DeleteArrayElement(ref, index); err != nil {
+			return false, err
+		}
+		return true, nil
 	default:
 		return false, fmt.Errorf("%w: HeapKind(%d) has no properties", ErrOperandType, kind)
 	}

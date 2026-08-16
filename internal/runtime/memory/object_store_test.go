@@ -139,3 +139,77 @@ func TestNativeObjectPromotionPreservesGraphAndPropertyOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestNativeObjectDescriptorsOwnTheirAccessorGraph(t *testing.T) {
+	t.Parallel()
+
+	store := memory.NewStore(nil)
+	defer store.Close()
+	owner := realmOwner(23)
+	reader := realmOwner(24)
+	objectRegion := mustRegion(t, store, owner)
+	valueRegion := mustRegion(t, store, owner)
+	object, _ := store.AllocObject(owner, objectRegion)
+	accessorName, _ := store.AllocString(owner, valueRegion, "answer")
+	fixedName, _ := store.AllocString(owner, valueRegion, "fixed")
+	getter, _ := store.AllocNativeFunction(owner, valueRegion, memory.NullValue(), memory.NullValue(), 0, 1)
+	setter, _ := store.AllocNativeFunction(owner, valueRegion, memory.NullValue(), memory.NullValue(), 1, 2)
+	child, _ := store.AllocObject(owner, valueRegion)
+
+	if err := store.DefineProperty(owner, object, accessorName, memory.AccessorProperty(memory.RefValue(getter), memory.RefValue(setter), true, true)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DefineProperty(owner, object, fixedName, memory.DataProperty(memory.RefValue(child), false, false, false)); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.EdgeCount(objectRegion, valueRegion); got != 5 {
+		t.Fatalf("descriptor edge count = %d, want 5", got)
+	}
+	if err := store.SetProperty(owner, object, fixedName, memory.NumberValue(2)); !errors.Is(err, memory.ErrReadOnlyProperty) {
+		t.Fatalf("read-only SetProperty error = %v", err)
+	}
+	if deleted, err := store.DeleteProperty(owner, object, fixedName); err != nil || deleted {
+		t.Fatalf("delete non-configurable = %t, %v", deleted, err)
+	}
+	if err := store.DefineProperty(owner, object, fixedName, memory.DataProperty(memory.RefValue(child), true, false, false)); !errors.Is(err, memory.ErrReadOnlyProperty) {
+		t.Fatalf("reconfigure fixed property error = %v", err)
+	}
+
+	promoted, err := store.Promote(owner, object)
+	if err != nil {
+		t.Fatal(err)
+	}
+	copyObject, err := store.DerefObject(reader, promoted[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(copyObject.Properties) != 2 || copyObject.Properties[0].Kind != memory.PropertyAccessor || copyObject.Properties[1].Writable {
+		t.Fatalf("promoted descriptors = %#v", copyObject.Properties)
+	}
+	if !copyObject.Properties[0].Getter.IsRef() || !copyObject.Properties[0].Setter.IsRef() {
+		t.Fatalf("promoted accessor lost callables: %#v", copyObject.Properties[0])
+	}
+	if err := store.CheckInvariants(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNativeObjectRejectsPrototypeCycles(t *testing.T) {
+	t.Parallel()
+
+	store := memory.NewStore(nil)
+	defer store.Close()
+	owner := realmOwner(25)
+	region := mustRegion(t, store, owner)
+	first, _ := store.AllocObject(owner, region)
+	second, _ := store.AllocObject(owner, region)
+	if err := store.SetPrototype(owner, first, memory.RefValue(second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetPrototype(owner, second, memory.RefValue(first)); !errors.Is(err, memory.ErrPrototypeCycle) {
+		t.Fatalf("prototype cycle error = %v", err)
+	}
+	if err := store.CheckInvariants(); err != nil {
+		t.Fatal(err)
+	}
+}

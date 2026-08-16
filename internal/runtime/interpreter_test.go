@@ -954,6 +954,129 @@ func TestInterpreterUnwindsThrowCatchFinallyAndNativeCalls(t *testing.T) {
 	}
 }
 
+func TestInterpreterResolvesPrototypeDescriptorsAndAccessors(t *testing.T) {
+	t.Parallel()
+
+	realm, err := browserruntime.NewRealm(708, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer realm.Close()
+	interpreter := browserruntime.NewInterpreter(browserruntime.InterpreterConfig{})
+	var child memory.Ref
+	var setterValue memory.Value
+	if err := interpreter.RegisterNative(30, func(_ *browserruntime.TaskContext, this memory.Value, _ []memory.Value) (memory.Value, error) {
+		if !this.IsRef() || this.Ref() != child {
+			t.Fatalf("getter this = %#v, want %s", this, child)
+		}
+		return memory.NumberValue(11), nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := interpreter.RegisterNative(31, func(_ *browserruntime.TaskContext, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+		if !this.IsRef() || this.Ref() != child {
+			t.Fatalf("setter this = %#v, want %s", this, child)
+		}
+		setterValue = arguments[0]
+		return memory.UndefinedValue(), nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = realm.EnqueueTask(func(task *browserruntime.TaskContext) error {
+		prototype, err := task.NewHeapObject()
+		if err != nil {
+			return err
+		}
+		child, err = task.NewHeapObject()
+		if err != nil {
+			return err
+		}
+		if err := task.SetPrototype(child, memory.RefValue(prototype)); err != nil {
+			return err
+		}
+		accessorName, _ := task.NewString("answer")
+		dataName, _ := task.NewString("value")
+		fixedName, _ := task.NewString("fixed")
+		getter, _ := task.NewNativeFunction(memory.NullValue(), memory.NullValue(), 0, 30)
+		setter, _ := task.NewNativeFunction(memory.NullValue(), memory.NullValue(), 1, 31)
+		if err := task.DefineProperty(prototype, accessorName, memory.AccessorProperty(memory.RefValue(getter), memory.RefValue(setter), true, true)); err != nil {
+			return err
+		}
+		if err := task.DefineProperty(prototype, dataName, memory.DataProperty(memory.NumberValue(4), true, true, true)); err != nil {
+			return err
+		}
+		if err := task.DefineProperty(prototype, fixedName, memory.DataProperty(memory.NumberValue(6), false, true, false)); err != nil {
+			return err
+		}
+
+		readAccessor, err := task.NewBytecodeFunction(memory.NullValue(), memory.NullValue(), 0, browserruntime.Assemble(
+			browserruntime.Instruction{Op: browserruntime.OpConstant, A: 0},
+			browserruntime.Instruction{Op: browserruntime.OpConstant, A: 1},
+			browserruntime.Instruction{Op: browserruntime.OpGetProperty},
+			browserruntime.Instruction{Op: browserruntime.OpReturn},
+		), []memory.Value{memory.RefValue(child), memory.RefValue(accessorName)})
+		if err != nil {
+			return err
+		}
+		if result, err := interpreter.Execute(task, readAccessor); err != nil || result.Number() != 11 {
+			t.Fatalf("accessor get = %#v, %v", result, err)
+		}
+
+		writeAccessor, err := task.NewBytecodeFunction(memory.NullValue(), memory.NullValue(), 0, browserruntime.Assemble(
+			browserruntime.Instruction{Op: browserruntime.OpConstant, A: 0},
+			browserruntime.Instruction{Op: browserruntime.OpConstant, A: 1},
+			browserruntime.Instruction{Op: browserruntime.OpConstant, A: 2},
+			browserruntime.Instruction{Op: browserruntime.OpSetProperty},
+			browserruntime.Instruction{Op: browserruntime.OpReturn},
+		), []memory.Value{memory.RefValue(child), memory.RefValue(accessorName), memory.NumberValue(13)})
+		if err != nil {
+			return err
+		}
+		if result, err := interpreter.Execute(task, writeAccessor); err != nil || result.Number() != 13 || setterValue.Number() != 13 {
+			t.Fatalf("accessor set = %#v, setter %#v, %v", result, setterValue, err)
+		}
+
+		writeInherited, err := task.NewBytecodeFunction(memory.NullValue(), memory.NullValue(), 0, browserruntime.Assemble(
+			browserruntime.Instruction{Op: browserruntime.OpConstant, A: 0},
+			browserruntime.Instruction{Op: browserruntime.OpConstant, A: 1},
+			browserruntime.Instruction{Op: browserruntime.OpConstant, A: 2},
+			browserruntime.Instruction{Op: browserruntime.OpSetProperty},
+			browserruntime.Instruction{Op: browserruntime.OpReturn},
+		), []memory.Value{memory.RefValue(child), memory.RefValue(dataName), memory.NumberValue(9)})
+		if err != nil {
+			return err
+		}
+		if _, err := interpreter.Execute(task, writeInherited); err != nil {
+			return err
+		}
+		if value, found, err := task.GetOwnProperty(child, dataName); err != nil || !found || value.Number() != 9 {
+			t.Fatalf("inherited write own property = %#v/%t, %v", value, found, err)
+		}
+
+		writeFixed, err := task.NewBytecodeFunction(memory.NullValue(), memory.NullValue(), 0, browserruntime.Assemble(
+			browserruntime.Instruction{Op: browserruntime.OpConstant, A: 0},
+			browserruntime.Instruction{Op: browserruntime.OpConstant, A: 1},
+			browserruntime.Instruction{Op: browserruntime.OpConstant, A: 2},
+			browserruntime.Instruction{Op: browserruntime.OpSetProperty},
+			browserruntime.Instruction{Op: browserruntime.OpReturn},
+		), []memory.Value{memory.RefValue(child), memory.RefValue(fixedName), memory.NumberValue(7)})
+		if err != nil {
+			return err
+		}
+		if _, err := interpreter.Execute(task, writeFixed); !errors.Is(err, memory.ErrReadOnlyProperty) {
+			t.Fatalf("inherited fixed write error = %v", err)
+		}
+		return task.Realm.Store().CheckInvariants()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestFrameVisitsBorrowedRefsWithoutCreatingOwnership(t *testing.T) {
 	t.Parallel()
 

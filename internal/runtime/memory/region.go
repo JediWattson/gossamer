@@ -138,10 +138,10 @@ func slotReferences(slot *Slot) []Value {
 		return slot.Cell.Fields
 	}
 	if slot.Kind == HeapObject {
-		values := make([]Value, 0, 1+len(slot.Object.Properties)*2)
+		values := make([]Value, 0, 1+len(slot.Object.Properties)*4)
 		values = append(values, slot.Object.Prototype)
 		for _, property := range slot.Object.Properties {
-			values = append(values, RefValue(property.Name), property.Value)
+			values = append(values, RefValue(property.Name), property.Value, property.Getter, property.Setter)
 		}
 		return values
 	}

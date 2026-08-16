@@ -26,6 +26,8 @@ and ordinary task release invalidates every unpromoted loaded Ref.
   Function-scoped `var`;
 - numbers, Strings, booleans, null, objects, sparse arrays, and `this`;
 - dynamic named properties, numeric array elements, and Array `length`;
+- Object prototype-chain lookup plus RegionStore-owned data and accessor
+  descriptors with writable, enumerable, and configurable attributes;
 - assignment, deletion, and prefix/postfix identifier or property updates;
 - numeric, bitwise, strict comparison, logical, nullish, and conditional
   expressions;
@@ -52,11 +54,11 @@ This is not yet an ECMAScript-compatible engine. In particular:
 - Annex B block-Function compatibility and the full global-environment split
   are not implemented; Function declarations use the containing Function or
   script scope;
-- property lookup is still own-property-only, and Arrays support only canonical
-  indices plus `length` rather than arbitrary named properties;
+- Arrays support only canonical indices plus `length` rather than arbitrary
+  named properties or an Array prototype;
 - unary plus and coercive equality are rejected;
-- prototype lookup, descriptors, accessors, coercion, regex and template
-  literals, modules, generators, async Functions, and Promise jobs are absent;
+- coercion, regex and template literals, modules, generators, async Functions,
+  and Promise jobs are absent;
 - source evaluation is not wired into `browser.Engine` or `browser.JSRealm`.
 
 Unsupported constructs fail with source-ranged compiler diagnostics. There is

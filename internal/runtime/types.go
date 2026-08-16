@@ -121,6 +121,20 @@ func (context *TaskContext) GetOwnProperty(object, name memory.Ref) (memory.Valu
 	return context.Realm.store.GetOwnProperty(context.Owner, object, name)
 }
 
+func (context *TaskContext) GetOwnPropertyDescriptor(object, name memory.Ref) (memory.Property, bool, error) {
+	if context == nil || context.Realm == nil {
+		return memory.Property{}, false, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.GetOwnPropertyDescriptor(context.Owner, object, name)
+}
+
+func (context *TaskContext) DefineProperty(object, name memory.Ref, descriptor memory.Property) error {
+	if context == nil || context.Realm == nil {
+		return fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.DefineProperty(context.Owner, object, name, descriptor)
+}
+
 func (context *TaskContext) DeleteProperty(object, name memory.Ref) (bool, error) {
 	if context == nil || context.Realm == nil {
 		return false, fmt.Errorf("runtime: nil task context")
