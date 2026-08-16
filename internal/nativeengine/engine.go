@@ -62,18 +62,21 @@ type Realm struct {
 	interpreter *browserruntime.Interpreter
 	runtime     *browserruntime.Realm
 
-	persistent       *browserruntime.Intrinsics
-	persistentRegion memory.RegionID
-	active           *browserruntime.Intrinsics
-	activeRegion     memory.RegionID
-	activeTask       browserruntime.TaskID
-	bindings         *browserBindings
-	host             browser.Host
-	nextCallback     browser.ValueHandle
-	timerCallbacks   map[browser.TimerID]browser.ValueHandle
-	listeners        map[eventListenerKey][]eventListener
-	listenerTargets  map[eventTargetID]uint64
-	activeEvent      *eventState
+	persistent           *browserruntime.Intrinsics
+	persistentRegion     memory.RegionID
+	active               *browserruntime.Intrinsics
+	activeRegion         memory.RegionID
+	activeTask           browserruntime.TaskID
+	bindings             *browserBindings
+	host                 browser.Host
+	nextCallback         browser.ValueHandle
+	timerCallbacks       map[browser.TimerID]browser.ValueHandle
+	animationCallbacks   map[browser.AnimationFrameID]browser.ValueHandle
+	mutationObservers    map[uint64]*mutationObserverState
+	nextMutationObserver uint64
+	listeners            map[eventListenerKey][]eventListener
+	listenerTargets      map[eventTargetID]uint64
+	activeEvent          *eventState
 
 	evaluations uint64
 	checkpoints uint64
@@ -95,11 +98,13 @@ func (engine *Engine) NewRealm() (browser.JSRealm, error) {
 		return nil, ErrEngineClosed
 	}
 	realm := &Realm{
-		engine:          engine,
-		interpreter:     browserruntime.NewInterpreter(engine.config.Interpreter),
-		timerCallbacks:  make(map[browser.TimerID]browser.ValueHandle),
-		listeners:       make(map[eventListenerKey][]eventListener),
-		listenerTargets: make(map[eventTargetID]uint64),
+		engine:             engine,
+		interpreter:        browserruntime.NewInterpreter(engine.config.Interpreter),
+		timerCallbacks:     make(map[browser.TimerID]browser.ValueHandle),
+		animationCallbacks: make(map[browser.AnimationFrameID]browser.ValueHandle),
+		mutationObservers:  make(map[uint64]*mutationObserverState),
+		listeners:          make(map[eventListenerKey][]eventListener),
+		listenerTargets:    make(map[eventTargetID]uint64),
 	}
 	if err := realm.installBrowserNatives(); err != nil {
 		return nil, err
@@ -246,9 +251,16 @@ func (realm *Realm) DrainMicrotasks(host browser.Host) error {
 		realm.clearActiveLocked()
 		return err
 	}
+	observerErr := realm.deliverMutationObserversLocked(scope)
 	jobErr := realm.interpreter.DrainJobs(scope)
+	if observerErr == nil && jobErr == nil {
+		observerErr = realm.deliverMutationObserversLocked(scope)
+	}
+	if observerErr == nil && jobErr == nil {
+		jobErr = realm.interpreter.DrainJobs(scope)
+	}
 	persistErr := realm.persistLocked(task)
-	return errors.Join(jobErr, persistErr)
+	return errors.Join(jobErr, observerErr, persistErr)
 }
 
 func (realm *Realm) DispatchEvent(host browser.Host, event browser.InputEvent) (browser.EventDispatchResult, error) {
@@ -295,6 +307,34 @@ func (realm *Realm) Invoke(host browser.Host, handle browser.ValueHandle) error 
 	return realm.invokeCallbackLocked(scope, handle)
 }
 
+func (realm *Realm) InvokeAnimationFrame(host browser.Host, handle browser.ValueHandle, timestamp float64) error {
+	if realm == nil {
+		return ErrRealmClosed
+	}
+	realm.mutex.Lock()
+	defer realm.mutex.Unlock()
+	if realm.closed {
+		return ErrRealmClosed
+	}
+	realm.host = host
+	defer func() { realm.host = nil }()
+	task, err := runtimeTask(host)
+	if err != nil {
+		return err
+	}
+	scope, err := realm.beginTaskLocked(task)
+	if err != nil {
+		return err
+	}
+	for frame, callbackHandle := range realm.animationCallbacks {
+		if callbackHandle == handle {
+			delete(realm.animationCallbacks, frame)
+			break
+		}
+	}
+	return realm.invokeCallbackArgumentsLocked(scope, handle, true, memory.UndefinedValue(), memory.NumberValue(timestamp))
+}
+
 func (realm *Realm) Profile() RealmProfile {
 	if realm == nil {
 		return RealmProfile{Closed: true}
@@ -336,6 +376,8 @@ func (realm *Realm) Close() error {
 	realm.persistent = nil
 	realm.persistentRegion = 0
 	realm.timerCallbacks = nil
+	realm.animationCallbacks = nil
+	realm.mutationObservers = nil
 	realm.listeners = nil
 	realm.listenerTargets = nil
 	realm.activeEvent = nil

@@ -137,50 +137,60 @@ const (
 	hostClassDataset
 	hostClassStyle
 	hostClassComputedStyle
+	hostClassMutationObserver
 )
 
 const (
-	bindingWindowPrototype        = "\x00gossamer.window.prototype"
-	bindingDocumentPrototype      = "\x00gossamer.document.prototype"
-	bindingNodePrototype          = "\x00gossamer.node.prototype"
-	bindingElementPrototype       = "\x00gossamer.element.prototype"
-	bindingTextPrototype          = "\x00gossamer.text.prototype"
-	bindingFragmentPrototype      = "\x00gossamer.fragment.prototype"
-	bindingEventPrototype         = "\x00gossamer.event.prototype"
-	bindingClassListPrototype     = "\x00gossamer.class-list.prototype"
-	bindingDatasetPrototype       = "\x00gossamer.dataset.prototype"
-	bindingStylePrototype         = "\x00gossamer.style.prototype"
-	bindingComputedStylePrototype = "\x00gossamer.computed-style.prototype"
-	bindingDOMRectPrototype       = "\x00gossamer.dom-rect.prototype"
-	bindingWrapperCache           = "\x00gossamer.wrapper.cache"
-	bindingCallbackCache          = "\x00gossamer.callback.cache"
-	bindingFacadeCache            = "\x00gossamer.facade.cache"
-	bindingCollectionCache        = "\x00gossamer.collection.cache"
-	bindingWindow                 = "window"
-	bindingSelf                   = "self"
-	bindingDocument               = "document"
-	hostRecordProperty            = "\x00gossamer.host.record"
+	bindingWindowPrototype             = "\x00gossamer.window.prototype"
+	bindingDocumentPrototype           = "\x00gossamer.document.prototype"
+	bindingNodePrototype               = "\x00gossamer.node.prototype"
+	bindingElementPrototype            = "\x00gossamer.element.prototype"
+	bindingTextPrototype               = "\x00gossamer.text.prototype"
+	bindingFragmentPrototype           = "\x00gossamer.fragment.prototype"
+	bindingEventPrototype              = "\x00gossamer.event.prototype"
+	bindingClassListPrototype          = "\x00gossamer.class-list.prototype"
+	bindingDatasetPrototype            = "\x00gossamer.dataset.prototype"
+	bindingStylePrototype              = "\x00gossamer.style.prototype"
+	bindingComputedStylePrototype      = "\x00gossamer.computed-style.prototype"
+	bindingDOMRectPrototype            = "\x00gossamer.dom-rect.prototype"
+	bindingMutationObserverPrototype   = "\x00gossamer.mutation-observer.prototype"
+	bindingMutationObserverConstructor = "\x00gossamer.mutation-observer.constructor"
+	bindingWrapperCache                = "\x00gossamer.wrapper.cache"
+	bindingCallbackCache               = "\x00gossamer.callback.cache"
+	bindingFacadeCache                 = "\x00gossamer.facade.cache"
+	bindingCollectionCache             = "\x00gossamer.collection.cache"
+	bindingObserverCache               = "\x00gossamer.observer.cache"
+	bindingWindow                      = "window"
+	bindingSelf                        = "self"
+	bindingDocument                    = "document"
+	bindingPerformance                 = "performance"
+	bindingMutationObserver            = "MutationObserver"
+	hostRecordProperty                 = "\x00gossamer.host.record"
 )
 
 type browserBindings struct {
-	windowPrototype        memory.Ref
-	documentPrototype      memory.Ref
-	nodePrototype          memory.Ref
-	elementPrototype       memory.Ref
-	textPrototype          memory.Ref
-	fragmentPrototype      memory.Ref
-	eventPrototype         memory.Ref
-	classListPrototype     memory.Ref
-	datasetPrototype       memory.Ref
-	stylePrototype         memory.Ref
-	computedStylePrototype memory.Ref
-	domRectPrototype       memory.Ref
-	wrapperCache           memory.Ref
-	callbackCache          memory.Ref
-	facadeCache            memory.Ref
-	collectionCache        memory.Ref
-	window                 memory.Ref
-	document               memory.Ref
+	windowPrototype             memory.Ref
+	documentPrototype           memory.Ref
+	nodePrototype               memory.Ref
+	elementPrototype            memory.Ref
+	textPrototype               memory.Ref
+	fragmentPrototype           memory.Ref
+	eventPrototype              memory.Ref
+	classListPrototype          memory.Ref
+	datasetPrototype            memory.Ref
+	stylePrototype              memory.Ref
+	computedStylePrototype      memory.Ref
+	domRectPrototype            memory.Ref
+	mutationObserverPrototype   memory.Ref
+	mutationObserverConstructor memory.Ref
+	wrapperCache                memory.Ref
+	callbackCache               memory.Ref
+	facadeCache                 memory.Ref
+	collectionCache             memory.Ref
+	observerCache               memory.Ref
+	window                      memory.Ref
+	document                    memory.Ref
+	performance                 memory.Ref
 }
 
 type nativeRegistration struct {
@@ -308,6 +318,13 @@ func (realm *Realm) installBrowserNatives() error {
 		{nativeDOMRectToJSON, realm.domRectToJSON},
 		{nativeGlobalSetTimeout, realm.globalSetTimeout},
 		{nativeGlobalClearTimeout, realm.globalClearTimeout},
+		{nativeGlobalRequestAnimationFrame, realm.globalRequestAnimationFrame},
+		{nativeGlobalCancelAnimationFrame, realm.globalCancelAnimationFrame},
+		{nativePerformanceNow, realm.performanceNow},
+		{nativeMutationObserverConstructor, realm.mutationObserverConstructor},
+		{nativeMutationObserverObserve, realm.mutationObserverObserve},
+		{nativeMutationObserverDisconnect, realm.mutationObserverDisconnect},
+		{nativeMutationObserverTakeRecords, realm.mutationObserverTakeRecords},
 		{nativeEventTargetAdd, realm.eventTargetAdd},
 		{nativeEventTargetRemove, realm.eventTargetRemove},
 		{nativeEventPreventDefault, realm.eventPreventDefault},
@@ -336,6 +353,7 @@ func (realm *Realm) prepareBrowserBindingsLocked(context *browserruntime.TaskCon
 			destination *memory.Ref
 		}{
 			{bindingDocument, &bindings.document},
+			{bindingPerformance, &bindings.performance},
 			{bindingWindowPrototype, &bindings.windowPrototype},
 			{bindingDocumentPrototype, &bindings.documentPrototype},
 			{bindingNodePrototype, &bindings.nodePrototype},
@@ -348,10 +366,13 @@ func (realm *Realm) prepareBrowserBindingsLocked(context *browserruntime.TaskCon
 			{bindingStylePrototype, &bindings.stylePrototype},
 			{bindingComputedStylePrototype, &bindings.computedStylePrototype},
 			{bindingDOMRectPrototype, &bindings.domRectPrototype},
+			{bindingMutationObserverPrototype, &bindings.mutationObserverPrototype},
+			{bindingMutationObserverConstructor, &bindings.mutationObserverConstructor},
 			{bindingWrapperCache, &bindings.wrapperCache},
 			{bindingCallbackCache, &bindings.callbackCache},
 			{bindingFacadeCache, &bindings.facadeCache},
 			{bindingCollectionCache, &bindings.collectionCache},
+			{bindingObserverCache, &bindings.observerCache},
 		} {
 			ref, exists, lookupErr := globalRef(context, realm.active.Global, item.name)
 			if lookupErr != nil {
@@ -425,6 +446,14 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 	if err != nil {
 		return err
 	}
+	bindings.observerCache, err = context.NewMap()
+	if err != nil {
+		return err
+	}
+	bindings.mutationObserverConstructor, bindings.mutationObserverPrototype, err = realm.newMutationObserverConstructor(context)
+	if err != nil {
+		return err
+	}
 	realm.bindings = bindings
 	if err := realm.installDOMPrototypeProperties(context); err != nil {
 		return err
@@ -450,6 +479,25 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 	if err != nil {
 		return err
 	}
+	requestAnimationFrame, err := realm.newNativeFunction(context, "requestAnimationFrame", 1, nativeGlobalRequestAnimationFrame)
+	if err != nil {
+		return err
+	}
+	cancelAnimationFrame, err := realm.newNativeFunction(context, "cancelAnimationFrame", 1, nativeGlobalCancelAnimationFrame)
+	if err != nil {
+		return err
+	}
+	performanceNow, err := realm.newNativeFunction(context, "now", 0, nativePerformanceNow)
+	if err != nil {
+		return err
+	}
+	bindings.performance, err = context.NewHeapObject()
+	if err != nil {
+		return err
+	}
+	if err := defineData(context, bindings.performance, "now", memory.RefValue(performanceNow), true, false, true); err != nil {
+		return err
+	}
 	getComputedStyle, err := realm.newNativeFunction(context, "getComputedStyle", 1, nativeGlobalGetComputedStyle)
 	if err != nil {
 		return err
@@ -464,6 +512,10 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{"queueMicrotask", memory.RefValue(realm.active.QueueMicrotask)},
 		{"setTimeout", memory.RefValue(setTimeout)},
 		{"clearTimeout", memory.RefValue(clearTimeout)},
+		{"requestAnimationFrame", memory.RefValue(requestAnimationFrame)},
+		{"cancelAnimationFrame", memory.RefValue(cancelAnimationFrame)},
+		{"performance", memory.RefValue(bindings.performance)},
+		{"MutationObserver", memory.RefValue(bindings.mutationObserverConstructor)},
 		{"getComputedStyle", memory.RefValue(getComputedStyle)},
 	} {
 		if err := defineData(context, bindings.window, property.name, property.value, true, false, true); err != nil {
@@ -487,15 +539,22 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{bindingStylePrototype, bindings.stylePrototype, false},
 		{bindingComputedStylePrototype, bindings.computedStylePrototype, false},
 		{bindingDOMRectPrototype, bindings.domRectPrototype, false},
+		{bindingMutationObserverPrototype, bindings.mutationObserverPrototype, false},
+		{bindingMutationObserverConstructor, bindings.mutationObserverConstructor, false},
 		{bindingWrapperCache, bindings.wrapperCache, false},
 		{bindingCallbackCache, bindings.callbackCache, false},
 		{bindingFacadeCache, bindings.facadeCache, false},
 		{bindingCollectionCache, bindings.collectionCache, false},
+		{bindingObserverCache, bindings.observerCache, false},
 		{bindingWindow, bindings.window, false},
 		{bindingSelf, bindings.window, false},
 		{bindingDocument, bindings.document, false},
+		{bindingPerformance, bindings.performance, false},
+		{bindingMutationObserver, bindings.mutationObserverConstructor, false},
 		{"setTimeout", setTimeout, true},
 		{"clearTimeout", clearTimeout, true},
+		{"requestAnimationFrame", requestAnimationFrame, true},
+		{"cancelAnimationFrame", cancelAnimationFrame, true},
 		{"getComputedStyle", getComputedStyle, true},
 	} {
 		if err := declareGlobal(context, realm.active.Global, binding.name, memory.RefValue(binding.value), binding.mutable); err != nil {
@@ -558,6 +617,9 @@ func (realm *Realm) installDOMPrototypeProperties(context *browserruntime.TaskCo
 		{realm.bindings.computedStylePrototype, "getPropertyPriority", 1, nativeComputedStyleGetPropertyPriority},
 		{realm.bindings.computedStylePrototype, "item", 1, nativeComputedStyleItem},
 		{realm.bindings.domRectPrototype, "toJSON", 0, nativeDOMRectToJSON},
+		{realm.bindings.mutationObserverPrototype, "observe", 2, nativeMutationObserverObserve},
+		{realm.bindings.mutationObserverPrototype, "disconnect", 0, nativeMutationObserverDisconnect},
+		{realm.bindings.mutationObserverPrototype, "takeRecords", 0, nativeMutationObserverTakeRecords},
 		{realm.bindings.nodePrototype, "addEventListener", 2, nativeEventTargetAdd},
 		{realm.bindings.nodePrototype, "removeEventListener", 2, nativeEventTargetRemove},
 		{realm.bindings.windowPrototype, "addEventListener", 2, nativeEventTargetAdd},
