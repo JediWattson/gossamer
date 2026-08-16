@@ -61,6 +61,7 @@ constexpr int kIteratorSourceKindField = 2;
 constexpr int kIteratorModeField = 3;
 constexpr int kEventStateField = 0;
 constexpr int kMutationObserverStateField = 0;
+constexpr int kLayoutObserverStateField = 0;
 constexpr int kRangeStateField = 0;
 constexpr int kTraversalStateField = 0;
 constexpr int kSelectionStateField = 0;
@@ -197,6 +198,7 @@ struct EventState {
 struct WrapperWeakData;
 struct EventWeakData;
 struct MutationObserverWeakData;
+struct LayoutObserverWeakData;
 struct RangeWeakData;
 struct TraversalWeakData;
 
@@ -238,6 +240,27 @@ struct MutationObserverState {
   std::vector<MutationObserverRegistration> registrations;
   std::vector<ObserverMutationRecord> records;
   uint64_t cursor = 0;
+};
+
+enum class LayoutObserverKind : uint8_t { Resize, Intersection };
+
+struct LayoutObserverRegistration {
+  WrapperKey target;
+  v8::Global<v8::Object> target_object;
+  bool has_last = false;
+  double last_width = 0;
+  double last_height = 0;
+  double last_ratio = 0;
+  bool last_intersecting = false;
+};
+
+struct LayoutObserverState {
+  gossamer_v8_realm *realm = nullptr;
+  LayoutObserverWeakData *weak = nullptr;
+  LayoutObserverKind kind = LayoutObserverKind::Resize;
+  v8::Global<v8::Function> callback;
+  std::vector<LayoutObserverRegistration> registrations;
+  std::vector<double> thresholds{0};
 };
 
 struct RangeState {
@@ -417,6 +440,8 @@ struct gossamer_v8_realm {
   v8::Global<v8::FunctionTemplate> focus_event_template;
   v8::Global<v8::FunctionTemplate> mutation_observer_template;
   v8::Global<v8::FunctionTemplate> mutation_record_template;
+  v8::Global<v8::FunctionTemplate> resize_observer_template;
+  v8::Global<v8::FunctionTemplate> intersection_observer_template;
   v8::Global<v8::FunctionTemplate> range_template;
   v8::Global<v8::FunctionTemplate> tree_walker_template;
   v8::Global<v8::FunctionTemplate> node_iterator_template;
@@ -445,6 +470,7 @@ struct gossamer_v8_realm {
       listeners;
   std::unordered_set<EventWeakData *> events;
   std::unordered_set<MutationObserverWeakData *> mutation_observers;
+  std::unordered_set<LayoutObserverWeakData *> layout_observers;
   std::unordered_set<RangeWeakData *> ranges;
   std::unordered_set<TraversalWeakData *> traversals;
   uint64_t next_listener = 1;
@@ -491,6 +517,12 @@ struct EventWeakData {
 struct MutationObserverWeakData {
   gossamer_v8_realm *realm;
   MutationObserverState *state;
+  v8::Global<v8::Object> object;
+};
+
+struct LayoutObserverWeakData {
+  gossamer_v8_realm *realm;
+  LayoutObserverState *state;
   v8::Global<v8::Object> object;
 };
 
@@ -8952,6 +8984,406 @@ v8::MaybeLocal<v8::Object> CreateDOMRect(gossamer_v8_realm *realm,
   return object;
 }
 
+LayoutObserverState *ReadLayoutObserverState(
+    v8::Isolate *isolate, v8::Local<v8::Object> receiver) {
+  if (receiver.IsEmpty() ||
+      receiver->InternalFieldCount() <= kLayoutObserverStateField) {
+    ThrowTypeError(isolate, "layout observer receiver is invalid");
+    return nullptr;
+  }
+  v8::Local<v8::Data> data =
+      receiver->GetInternalField(kLayoutObserverStateField);
+  if (!data->IsValue() || !data.As<v8::Value>()->IsExternal()) {
+    ThrowTypeError(isolate, "layout observer lost its native state");
+    return nullptr;
+  }
+  return static_cast<LayoutObserverState *>(
+      data.As<v8::Value>().As<v8::External>()->Value(
+          v8::kExternalPointerTypeTagDefault));
+}
+
+void LayoutObserverCollected(
+    const v8::WeakCallbackInfo<LayoutObserverWeakData> &info) {
+  LayoutObserverWeakData *weak = info.GetParameter();
+  if (weak == nullptr)
+    return;
+  if (weak->realm != nullptr)
+    weak->realm->layout_observers.erase(weak);
+  weak->object.Reset();
+  if (weak->state != nullptr) {
+    weak->state->callback.Reset();
+    weak->state->registrations.clear();
+    delete weak->state;
+  }
+  delete weak;
+}
+
+bool ParseIntersectionThresholds(v8::Local<v8::Context> context,
+                                 v8::Local<v8::Value> options,
+                                 std::vector<double> *thresholds) {
+  if (options->IsUndefined())
+    return true;
+  if (!options->IsObject())
+    return false;
+  v8::Isolate *isolate = v8::Isolate::GetCurrent();
+  v8::Local<v8::Value> value;
+  if (!options.As<v8::Object>()
+           ->Get(context,
+                 v8::String::NewFromUtf8Literal(isolate, "threshold"))
+           .ToLocal(&value))
+    return false;
+  if (value->IsUndefined())
+    return true;
+  thresholds->clear();
+  auto append = [context, thresholds](v8::Local<v8::Value> item) {
+    double threshold = 0;
+    if (!item->NumberValue(context).To(&threshold) ||
+        !std::isfinite(threshold) || threshold < 0 || threshold > 1)
+      return false;
+    thresholds->push_back(threshold);
+    return true;
+  };
+  if (value->IsArray()) {
+    v8::Local<v8::Array> values = value.As<v8::Array>();
+    for (uint32_t index = 0; index < values->Length(); ++index) {
+      v8::Local<v8::Value> item;
+      if (!values->Get(context, index).ToLocal(&item) || !append(item))
+        return false;
+    }
+  } else if (!append(value)) {
+    return false;
+  }
+  if (thresholds->empty())
+    thresholds->push_back(0);
+  std::sort(thresholds->begin(), thresholds->end());
+  thresholds->erase(std::unique(thresholds->begin(), thresholds->end()),
+                    thresholds->end());
+  return true;
+}
+
+void LayoutObserverConstructor(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  v8::Local<v8::Context> context = isolate->GetCurrentContext();
+  if (!info.IsConstructCall() || info.Length() == 0 ||
+      !info[0]->IsFunction()) {
+    ThrowTypeError(isolate, "observer requires a callback");
+    return;
+  }
+  auto state = std::make_unique<LayoutObserverState>();
+  state->realm = CurrentRealm(isolate);
+  state->kind = info.Data()->IsTrue()
+                    ? LayoutObserverKind::Intersection
+                    : LayoutObserverKind::Resize;
+  state->callback.Reset(isolate, info[0].As<v8::Function>());
+  if (state->kind == LayoutObserverKind::Intersection &&
+      !ParseIntersectionThresholds(
+          context,
+          info.Length() > 1 ? info[1] : v8::Undefined(isolate),
+          &state->thresholds)) {
+    ThrowTypeError(isolate, "IntersectionObserver threshold is invalid");
+    return;
+  }
+  auto weak = std::make_unique<LayoutObserverWeakData>();
+  weak->realm = state->realm;
+  weak->state = state.get();
+  weak->object.Reset(isolate, info.This());
+  state->weak = weak.get();
+  info.This()->SetInternalField(
+      kLayoutObserverStateField,
+      v8::External::New(isolate, state.get(),
+                        v8::kExternalPointerTypeTagDefault));
+  if (state->kind == LayoutObserverKind::Intersection) {
+    v8::Local<v8::Array> thresholds =
+        v8::Array::New(isolate, static_cast<int>(state->thresholds.size()));
+    for (uint32_t index = 0; index < state->thresholds.size(); ++index) {
+      if (!thresholds
+               ->Set(context, index,
+                     v8::Number::New(isolate, state->thresholds[index]))
+               .FromMaybe(false)) {
+        ThrowError(isolate, "V8 failed to expose observer thresholds");
+        return;
+      }
+    }
+    constexpr auto read_only =
+        static_cast<v8::PropertyAttribute>(v8::ReadOnly | v8::DontEnum);
+    if (!info.This()
+             ->DefineOwnProperty(
+                 context, v8::String::NewFromUtf8Literal(isolate, "root"),
+                 v8::Null(isolate), read_only)
+             .FromMaybe(false) ||
+        !info.This()
+             ->DefineOwnProperty(
+                 context,
+                 v8::String::NewFromUtf8Literal(isolate, "rootMargin"),
+                 v8::String::NewFromUtf8Literal(isolate, "0px 0px 0px 0px"),
+                 read_only)
+             .FromMaybe(false) ||
+        !info.This()
+             ->DefineOwnProperty(
+                 context,
+                 v8::String::NewFromUtf8Literal(isolate, "thresholds"),
+                 thresholds, read_only)
+             .FromMaybe(false)) {
+      ThrowError(isolate, "V8 failed to expose observer options");
+      return;
+    }
+  }
+  weak->object.SetWeak(weak.get(), LayoutObserverCollected,
+                       v8::WeakCallbackType::kParameter);
+  state->realm->layout_observers.insert(weak.get());
+  state.release();
+  weak.release();
+  info.GetReturnValue().Set(info.This());
+}
+
+void LayoutObserverObserve(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  LayoutObserverState *state =
+      ReadLayoutObserverState(isolate, info.This());
+  WrapperKey target;
+  if (state == nullptr || info.Length() == 0 || !info[0]->IsObject() ||
+      !ReadWrapperKey(info[0].As<v8::Object>(), &target)) {
+    if (state != nullptr)
+      ThrowTypeError(isolate, "observe requires a native Element target");
+    return;
+  }
+  auto existing = std::find_if(
+      state->registrations.begin(), state->registrations.end(),
+      [&target](const LayoutObserverRegistration &registration) {
+        return registration.target == target;
+      });
+  if (existing == state->registrations.end()) {
+    LayoutObserverRegistration registration;
+    registration.target = target;
+    registration.target_object.Reset(isolate, info[0].As<v8::Object>());
+    state->registrations.push_back(std::move(registration));
+  } else {
+    existing->target_object.Reset(isolate, info[0].As<v8::Object>());
+  }
+}
+
+void LayoutObserverUnobserve(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  LayoutObserverState *state =
+      ReadLayoutObserverState(info.GetIsolate(), info.This());
+  WrapperKey target;
+  if (state == nullptr || info.Length() == 0 || !info[0]->IsObject() ||
+      !ReadWrapperKey(info[0].As<v8::Object>(), &target))
+    return;
+  state->registrations.erase(
+      std::remove_if(
+          state->registrations.begin(), state->registrations.end(),
+          [&target](const LayoutObserverRegistration &registration) {
+            return registration.target == target;
+          }),
+      state->registrations.end());
+}
+
+void LayoutObserverDisconnect(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  LayoutObserverState *state =
+      ReadLayoutObserverState(info.GetIsolate(), info.This());
+  if (state != nullptr)
+    state->registrations.clear();
+}
+
+void LayoutObserverTakeRecords(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  info.GetReturnValue().Set(v8::Array::New(info.GetIsolate()));
+}
+
+bool SetObserverEntryProperty(v8::Local<v8::Context> context,
+                              v8::Local<v8::Object> object,
+                              const char *name,
+                              v8::Local<v8::Value> value) {
+  return object
+      ->DefineOwnProperty(
+          context,
+          v8::String::NewFromUtf8(v8::Isolate::GetCurrent(), name)
+              .ToLocalChecked(),
+          value,
+          static_cast<v8::PropertyAttribute>(v8::ReadOnly | v8::DontEnum))
+      .FromMaybe(false);
+}
+
+v8::MaybeLocal<v8::Object> BuildResizeObserverEntry(
+    LayoutObserverState *state, v8::Local<v8::Context> context,
+    LayoutObserverRegistration &registration,
+    const gossamer_v8_element_geometry &geometry) {
+  v8::Isolate *isolate = v8::Isolate::GetCurrent();
+  v8::Local<v8::Object> entry = v8::Object::New(isolate);
+  v8::Local<v8::Object> target = registration.target_object.Get(isolate);
+  gossamer_v8_rect content{0, 0, geometry.client_width,
+                           geometry.client_height};
+  v8::Local<v8::Object> content_rect;
+  if (!CreateDOMRect(state->realm, context, content).ToLocal(&content_rect))
+    return {};
+  v8::Local<v8::Object> size = v8::Object::New(isolate);
+  if (!DefineNumber(context, size, "inlineSize", geometry.client_width) ||
+      !DefineNumber(context, size, "blockSize", geometry.client_height))
+    return {};
+  v8::Local<v8::Array> sizes = v8::Array::New(isolate, 1);
+  if (!sizes->Set(context, 0, size).FromMaybe(false) ||
+      !SetObserverEntryProperty(context, entry, "target", target) ||
+      !SetObserverEntryProperty(context, entry, "contentRect", content_rect) ||
+      !SetObserverEntryProperty(context, entry, "contentBoxSize", sizes) ||
+      !SetObserverEntryProperty(context, entry, "borderBoxSize", sizes) ||
+      !SetObserverEntryProperty(context, entry, "devicePixelContentBoxSize",
+                                sizes))
+    return {};
+  return entry;
+}
+
+gossamer_v8_rect IntersectRects(const gossamer_v8_rect &left,
+                                const gossamer_v8_rect &right) {
+  double x = std::max(left.x, right.x);
+  double y = std::max(left.y, right.y);
+  double end_x = std::min(left.x + left.width, right.x + right.width);
+  double end_y = std::min(left.y + left.height, right.y + right.height);
+  return gossamer_v8_rect{x, y, std::max(0.0, end_x - x),
+                          std::max(0.0, end_y - y)};
+}
+
+bool IntersectionThresholdCrossed(const LayoutObserverState *state,
+                                  double before, double after) {
+  for (double threshold : state->thresholds) {
+    if ((before < threshold && after >= threshold) ||
+        (before >= threshold && after < threshold))
+      return true;
+  }
+  return false;
+}
+
+v8::MaybeLocal<v8::Object> BuildIntersectionObserverEntry(
+    LayoutObserverState *state, v8::Local<v8::Context> context,
+    LayoutObserverRegistration &registration,
+    const gossamer_v8_element_geometry &geometry,
+    const gossamer_v8_rect &root, const gossamer_v8_rect &intersection,
+    double ratio, bool intersecting, double timestamp) {
+  v8::Isolate *isolate = v8::Isolate::GetCurrent();
+  v8::Local<v8::Object> entry = v8::Object::New(isolate);
+  v8::Local<v8::Object> target = registration.target_object.Get(isolate);
+  v8::Local<v8::Object> bounds;
+  v8::Local<v8::Object> root_bounds;
+  v8::Local<v8::Object> intersection_rect;
+  if (!CreateDOMRect(state->realm, context, geometry.rect).ToLocal(&bounds) ||
+      !CreateDOMRect(state->realm, context, root).ToLocal(&root_bounds) ||
+      !CreateDOMRect(state->realm, context, intersection)
+           .ToLocal(&intersection_rect) ||
+      !SetObserverEntryProperty(context, entry, "target", target) ||
+      !SetObserverEntryProperty(context, entry, "boundingClientRect", bounds) ||
+      !SetObserverEntryProperty(context, entry, "rootBounds", root_bounds) ||
+      !SetObserverEntryProperty(context, entry, "intersectionRect",
+                                intersection_rect) ||
+      !SetObserverEntryProperty(context, entry, "isIntersecting",
+                                v8::Boolean::New(isolate, intersecting)) ||
+      !SetObserverEntryProperty(context, entry, "intersectionRatio",
+                                v8::Number::New(isolate, ratio)) ||
+      !SetObserverEntryProperty(context, entry, "time",
+                                v8::Number::New(isolate, timestamp)))
+    return {};
+  return entry;
+}
+
+bool DeliverLayoutObservers(gossamer_v8_realm *realm,
+                            v8::Local<v8::Context> context,
+                            std::string *error) {
+  constexpr size_t kMaximumRounds = 10;
+  for (size_t round = 0; round < kMaximumRounds; ++round) {
+    bool delivered = false;
+    std::vector<LayoutObserverWeakData *> observers(
+        realm->layout_observers.begin(), realm->layout_observers.end());
+    for (LayoutObserverWeakData *weak : observers) {
+      if (weak == nullptr || weak->state == nullptr)
+        continue;
+      LayoutObserverState *state = weak->state;
+      v8::Local<v8::Array> entries = v8::Array::New(realm->isolate);
+      gossamer_v8_viewport_geometry viewport{};
+      if (state->kind == LayoutObserverKind::Intersection &&
+          !ReadViewportGeometry(realm, &viewport, error))
+        return false;
+      double timestamp = 0;
+      if (state->kind == LayoutObserverKind::Intersection) {
+        char *host_error = nullptr;
+        if (realm->active_host->performance_now(
+                realm->active_host->execution_id, &timestamp,
+                &host_error) == 0) {
+          *error = TakeCString(host_error);
+          return false;
+        }
+        std::free(host_error);
+      }
+      for (auto &registration : state->registrations) {
+        gossamer_v8_element_geometry geometry{};
+        if (!ReadElementGeometry(realm, registration.target, &geometry,
+                                 error))
+          return false;
+        v8::Local<v8::Object> entry;
+        bool changed = false;
+        if (state->kind == LayoutObserverKind::Resize) {
+          changed = !registration.has_last ||
+                    registration.last_width != geometry.client_width ||
+                    registration.last_height != geometry.client_height;
+          if (changed &&
+              !BuildResizeObserverEntry(state, context, registration, geometry)
+                   .ToLocal(&entry)) {
+            *error = "V8 failed to build ResizeObserverEntry";
+            return false;
+          }
+          registration.last_width = geometry.client_width;
+          registration.last_height = geometry.client_height;
+        } else {
+          gossamer_v8_rect root{0, 0, viewport.inner_width,
+                                viewport.inner_height};
+          gossamer_v8_rect intersection =
+              IntersectRects(root, geometry.rect);
+          double target_area = geometry.rect.width * geometry.rect.height;
+          double intersection_area = intersection.width * intersection.height;
+          bool intersecting = intersection.width > 0 && intersection.height > 0;
+          double ratio = target_area > 0 ? intersection_area / target_area : 0;
+          changed = !registration.has_last ||
+                    registration.last_intersecting != intersecting ||
+                    IntersectionThresholdCrossed(state,
+                                                 registration.last_ratio,
+                                                 ratio);
+          if (changed && !BuildIntersectionObserverEntry(
+                              state, context, registration, geometry, root,
+                              intersection, ratio, intersecting, timestamp)
+                              .ToLocal(&entry)) {
+            *error = "V8 failed to build IntersectionObserverEntry";
+            return false;
+          }
+          registration.last_ratio = ratio;
+          registration.last_intersecting = intersecting;
+        }
+        registration.has_last = true;
+        if (changed &&
+            !entries->Set(context, entries->Length(), entry).FromMaybe(false)) {
+          *error = "V8 failed to queue layout observer entry";
+          return false;
+        }
+      }
+      if (entries->Length() == 0)
+        continue;
+      delivered = true;
+      v8::Local<v8::Function> callback = state->callback.Get(realm->isolate);
+      v8::Local<v8::Object> observer = weak->object.Get(realm->isolate);
+      v8::Local<v8::Value> arguments[] = {entries, observer};
+      v8::TryCatch caught(realm->isolate);
+      v8::Local<v8::Value> ignored;
+      if (!callback->Call(context, v8::Undefined(realm->isolate), 2, arguments)
+               .ToLocal(&ignored)) {
+        *error = DescribeException(realm->isolate, context, caught);
+        return false;
+      }
+    }
+    if (!delivered)
+      return true;
+  }
+  *error = "ResizeObserver delivery exceeded the loop limit";
+  return false;
+}
+
 void ElementGetBoundingClientRect(
     const v8::FunctionCallbackInfo<v8::Value> &info) {
   v8::Isolate *isolate = info.GetIsolate();
@@ -9266,6 +9698,12 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
       v8::FunctionTemplate::New(isolate, MutationObserverConstructor);
   v8::Local<v8::FunctionTemplate> mutation_record_template =
       v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
+  v8::Local<v8::FunctionTemplate> resize_observer_template =
+      v8::FunctionTemplate::New(isolate, LayoutObserverConstructor,
+                                v8::False(isolate));
+  v8::Local<v8::FunctionTemplate> intersection_observer_template =
+      v8::FunctionTemplate::New(isolate, LayoutObserverConstructor,
+                                v8::True(isolate));
   v8::Local<v8::FunctionTemplate> range_template =
       v8::FunctionTemplate::New(isolate, RangeConstructor);
   v8::Local<v8::FunctionTemplate> tree_walker_template =
@@ -9487,6 +9925,22 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   mutation_observer_template->PrototypeTemplate()->Set(
       isolate, "takeRecords",
       v8::FunctionTemplate::New(isolate, MutationObserverTakeRecords));
+  for (v8::Local<v8::FunctionTemplate> observer_template :
+       {resize_observer_template, intersection_observer_template}) {
+    observer_template->InstanceTemplate()->SetInternalFieldCount(1);
+    observer_template->PrototypeTemplate()->Set(
+        isolate, "observe",
+        v8::FunctionTemplate::New(isolate, LayoutObserverObserve));
+    observer_template->PrototypeTemplate()->Set(
+        isolate, "unobserve",
+        v8::FunctionTemplate::New(isolate, LayoutObserverUnobserve));
+    observer_template->PrototypeTemplate()->Set(
+        isolate, "disconnect",
+        v8::FunctionTemplate::New(isolate, LayoutObserverDisconnect));
+    observer_template->PrototypeTemplate()->Set(
+        isolate, "takeRecords",
+        v8::FunctionTemplate::New(isolate, LayoutObserverTakeRecords));
+  }
   range_template->InstanceTemplate()->SetInternalFieldCount(1);
   for (const auto &property :
        {std::pair<const char *, int>{"startContainer", 1},
@@ -10561,6 +11015,9 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
       StyleNamedGetter, StyleNamedSetter, StyleNamedQuery, nullptr, nullptr,
       v8::Local<v8::Value>(), v8::PropertyHandlerFlags::kOnlyInterceptStrings));
   realm->style_template.Reset(isolate, style_template);
+  realm->resize_observer_template.Reset(isolate, resize_observer_template);
+  realm->intersection_observer_template.Reset(
+      isolate, intersection_observer_template);
 
   v8::Local<v8::Function> queue_microtask;
   v8::Local<v8::Function> set_timeout;
@@ -10667,6 +11124,9 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
          expose_interface("FocusEvent", focus_event_template) &&
          expose_interface("MutationObserver", mutation_observer_template) &&
          expose_interface("MutationRecord", mutation_record_template) &&
+         expose_interface("ResizeObserver", resize_observer_template) &&
+         expose_interface("IntersectionObserver",
+                          intersection_observer_template) &&
          expose_interface("Range", range_template) &&
          expose_interface("TreeWalker", tree_walker_template) &&
          expose_interface("NodeIterator", node_iterator_template) &&
@@ -10972,6 +11432,18 @@ void ClearRealmHandles(gossamer_v8_realm *realm) {
     delete observer;
   }
   realm->mutation_observers.clear();
+  for (LayoutObserverWeakData *observer : realm->layout_observers) {
+    if (observer->object.IsWeak())
+      observer->object.ClearWeak<LayoutObserverWeakData>();
+    observer->object.Reset();
+    if (observer->state != nullptr) {
+      observer->state->callback.Reset();
+      observer->state->registrations.clear();
+      delete observer->state;
+    }
+    delete observer;
+  }
+  realm->layout_observers.clear();
   if (realm->selection_state != nullptr) {
     realm->selection_state->range_object.Reset();
     delete realm->selection_state;
@@ -11019,6 +11491,8 @@ void ClearRealmHandles(gossamer_v8_realm *realm) {
   realm->focus_event_template.Reset();
   realm->mutation_observer_template.Reset();
   realm->mutation_record_template.Reset();
+  realm->resize_observer_template.Reset();
+  realm->intersection_observer_template.Reset();
   realm->range_template.Reset();
   realm->tree_walker_template.Reset();
   realm->node_iterator_template.Reset();
@@ -11354,6 +11828,11 @@ extern "C" int gossamer_v8_realm_drain_microtasks(gossamer_v8_realm *realm,
   }
   std::string observer_error;
   if (!DeliverMutationObservers(realm, context, &observer_error)) {
+    SetError(error_out, observer_error);
+    return 0;
+  }
+  realm->isolate->PerformMicrotaskCheckpoint();
+  if (!DeliverLayoutObservers(realm, context, &observer_error)) {
     SetError(error_out, observer_error);
     return 0;
   }

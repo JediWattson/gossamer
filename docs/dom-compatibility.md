@@ -5,7 +5,7 @@ DOM compatibility gate verifies that this split remains observable as one DOM:
 canonical V8 wrappers carry numeric `NodeHandle` values, while Go owns node
 identity, mutation, form state, construction regions, and queue ARC.
 
-## Selected completed milestones 8-29
+## Selected completed milestones 8-30
 
 | Milestone | Native surface | Regression boundary |
 | --- | --- | --- |
@@ -23,6 +23,7 @@ identity, mutation, form state, construction regions, and queue ARC.
 | 27. CSSOM View and root scrolling | Fresh `DOMRect`, `getBoundingClientRect`, `getClientRects`, client/offset/scroll dimensions, viewport metrics, root scrolling, `scrollIntoView`, translated paint/hit testing, queued scroll events | Geometry reads reuse one immutable Go layout snapshot; React layout effects measure synchronously; scroll delivery is coalesced after the task; value-only rectangles survive forced GC; Realm teardown returns ownership to zero |
 | 28. Element overflow scrolling | Typed `overflow-x`/`overflow-y`, Page-owned per-element offsets, nested `scrollTop`/`scrollLeft`, scrollport clipping, ancestor-aware `scrollIntoView`, translated paint/hit testing, element scroll events | Stable `NodeID` offsets do not mutate layout; nested geometry reads are synchronous; paint and input share one transform/clip projection; scroll events coalesce per target; navigation clears all offsets |
 | 29. Animation timing and resize | `requestAnimationFrame`, cancellation, Page-relative `performance.now()`, batched timestamps, queued viewport resize events | Callback records transfer Realm to queue to task; canceled callbacks release or drain their region; one frame batch shares a timestamp; resize listeners and microtasks run before rAF and one render |
+| 30. Layout observation | `ResizeObserver`, `IntersectionObserver`, entry geometry, thresholds, target registration lifecycle | Delivery reads the current immutable Go layout snapshot at the explicit checkpoint; observers retain canonical target wrappers across forced V8 GC; disconnect and Realm teardown release every native claim |
 
 Run the gate against the locally built stock V8:
 
@@ -41,6 +42,10 @@ and ownership barriers before a separate render task publishes a frame.
 
 - `MutationObserver` delivery occurs at Gossamer's explicit post-task
   checkpoint. Ordering relative to every browser-defined microtask source is
+  not yet claimed.
+- `ResizeObserver` and viewport-root `IntersectionObserver` delivery also occurs
+  at that explicit checkpoint. Resize box options, custom intersection roots,
+  `rootMargin`, visibility tracking, and browser-exact observer task timing are
   not yet claimed.
 - Range contents now cross nested containers and UTF-16 character data.
   `surroundContents`, contextual fragments, point-comparison helpers, and full

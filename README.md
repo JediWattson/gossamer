@@ -160,6 +160,9 @@ rebuilding layout.
 Page-relative `performance.now()`, coalesced `requestAnimationFrame` callbacks,
 cancellation, and queued viewport resize delivery now form the first browser
 frame clock; callback mutations and microtasks publish at most one later frame.
+`ResizeObserver` and viewport-root `IntersectionObserver` sample that same
+native layout at an explicit checkpoint, retain canonical wrappers while
+registered, and release their native claims on disconnect or Realm teardown.
 Browser input currently covers click, pointer, keyboard, input, focus, and
 change event families. Profiling covers heap totals, sampled allocations,
 GC callbacks, weak-wrapper collection, wrapper-root region sweeps, callback
