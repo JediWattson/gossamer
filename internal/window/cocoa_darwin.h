@@ -37,5 +37,6 @@ int gossamer_cocoa_present(gossamer_cocoa_window *window,
 void gossamer_cocoa_close(gossamer_cocoa_window *window);
 int gossamer_cocoa_read_clipboard(char **value, char **error);
 int gossamer_cocoa_write_clipboard(const char *value, char **error);
+int gossamer_cocoa_presentation_is_top_left(void);
 
 #endif

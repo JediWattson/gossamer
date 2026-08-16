@@ -107,6 +107,11 @@ static int gossamer_pop_text_event(gossamer_cocoa_window *state,
   return 1;
 }
 
+static void gossamer_draw_frame(CGContextRef context, CGRect bounds,
+                                CGImageRef image) {
+  CGContextDrawImage(context, bounds, image);
+}
+
 @implementation GossamerView
 - (BOOL)acceptsFirstResponder {
   return YES;
@@ -259,11 +264,7 @@ static int gossamer_pop_text_event(gossamer_cocoa_window *state,
   }
   CGContextRef context = [[NSGraphicsContext currentContext] CGContext];
   CGRect bounds = NSRectToCGRect([self bounds]);
-  CGContextSaveGState(context);
-  CGContextTranslateCTM(context, 0, bounds.size.height);
-  CGContextScaleCTM(context, 1, -1);
-  CGContextDrawImage(context, bounds, image);
-  CGContextRestoreGState(context);
+  gossamer_draw_frame(context, bounds, image);
   CGImageRelease(image);
   CGDataProviderRelease(provider);
   CGColorSpaceRelease(colorSpace);
@@ -544,5 +545,63 @@ int gossamer_cocoa_write_clipboard(const char *value, char **error) {
       return 0;
     }
     return 1;
+  }
+}
+
+int gossamer_cocoa_presentation_is_top_left(void) {
+  @autoreleasepool {
+    uint8_t pixels[] = {
+        255, 0, 0, 255, 255, 0, 0, 255,
+        0, 0, 255, 255, 0, 0, 255, 255,
+    };
+    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+    CGDataProviderRef provider = CGDataProviderCreateWithData(
+        NULL, pixels, sizeof(pixels), NULL);
+    if (colorSpace == NULL || provider == NULL) {
+      if (provider != NULL)
+        CGDataProviderRelease(provider);
+      if (colorSpace != NULL)
+        CGColorSpaceRelease(colorSpace);
+      return 0;
+    }
+    CGImageRef image = CGImageCreate(
+        2, 2, 8, 32, 8, colorSpace,
+        kCGBitmapByteOrder32Big | kCGImageAlphaPremultipliedLast,
+        provider, NULL, false, kCGRenderingIntentDefault);
+    NSBitmapImageRep *target = [[NSBitmapImageRep alloc]
+        initWithBitmapDataPlanes:NULL
+                     pixelsWide:2
+                     pixelsHigh:2
+                  bitsPerSample:8
+                samplesPerPixel:4
+                       hasAlpha:YES
+                       isPlanar:NO
+                 colorSpaceName:NSDeviceRGBColorSpace
+                    bytesPerRow:8
+                   bitsPerPixel:32];
+    if (image == NULL || target == nil) {
+      [target release];
+      if (image != NULL)
+        CGImageRelease(image);
+      CGDataProviderRelease(provider);
+      CGColorSpaceRelease(colorSpace);
+      return 0;
+    }
+    NSGraphicsContext *graphics =
+        [NSGraphicsContext graphicsContextWithBitmapImageRep:target];
+    [NSGraphicsContext saveGraphicsState];
+    [NSGraphicsContext setCurrentContext:graphics];
+    gossamer_draw_frame([graphics CGContext], CGRectMake(0, 0, 2, 2), image);
+    CGContextFlush([graphics CGContext]);
+    [NSGraphicsContext restoreGraphicsState];
+    NSColor *firstRow = [[target colorAtX:0 y:0]
+        colorUsingColorSpace:[NSColorSpace deviceRGBColorSpace]];
+    int topLeft = firstRow != nil &&
+                  [firstRow redComponent] > [firstRow blueComponent];
+    [target release];
+    CGImageRelease(image);
+    CGDataProviderRelease(provider);
+    CGColorSpaceRelease(colorSpace);
+    return topLeft;
   }
 }

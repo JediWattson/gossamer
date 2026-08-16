@@ -118,6 +118,10 @@ func (backend *cocoaBackend) WriteClipboardText(value string) error {
 	return nil
 }
 
+func cocoaPresentationIsTopLeft() bool {
+	return C.gossamer_cocoa_presentation_is_top_left() != 0
+}
+
 func cocoaError(native *C.char, fallback string) error {
 	defer C.free(unsafe.Pointer(native))
 	if native == nil {
