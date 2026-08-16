@@ -1,7 +1,7 @@
 // Package css parses and matches the CSS subset used by Gossamer's rendering
 // pipeline. It supports complex selectors, attribute selectors, logical and
-// structural pseudo-classes, nested cascade layers, viewport media queries,
-// escaped selector identifiers, and tokenized declarations consumed
+// structural pseudo-classes, common CSS nesting forms, nested cascade layers,
+// viewport media queries, escaped selector identifiers, and tokenized declarations consumed
 // by the renderer. Selector namespaces, pseudo-elements, and the remaining
 // at-rules are outside the current subset.
 package css

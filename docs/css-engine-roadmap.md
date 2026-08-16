@@ -129,8 +129,13 @@ normal/important priority order, including distinct anonymous identities across
 independently parsed and imported sheets. Ordered layer-declaration events keep
 `@media`, `@supports`, and interleaved import conditions in the browser's
 current environment instead of freezing one parse-time order.
+Common CSS nesting now expands parent selector lists with the spec's maximum
+parent specificity, supports implicit descendants, leading combinators, and a
+leading `&` with compound suffixes, and preserves declaration/rule source order
+through nested media, supports, and layer groups.
 
-- Add `@font-face`, keyframes, and CSS nesting.
+- Add `@font-face`, keyframes, and the remaining arbitrary/multiple nesting
+  selector placements such as `:is(&)`.
 - Retain imported-sheet identities and source spans instead of only the current
   flattened immutable renderer view.
 - Track stylesheet identity and generations so dynamic `<style>` and `<link>`

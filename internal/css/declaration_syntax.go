@@ -26,6 +26,15 @@ func splitDeclarationComponents(values []ComponentValue, sourceSize int) []decla
 	start := 0
 	segmentStart := 0
 	for index, value := range values {
+		if value.Kind == ComponentBlock && value.Token.Kind == TokenOpenCurly && !customDeclarationPrefix(values[start:index]) {
+			// A top-level curly block belongs to a nested style/group rule. Start
+			// a fresh declaration segment after it so modern declarations that
+			// follow nested rules are still recovered. Curly blocks remain valid
+			// inside custom-property values.
+			start = index + 1
+			segmentStart = value.Span.End
+			continue
+		}
 		if value.Kind != ComponentToken || value.Token.Kind != TokenSemicolon {
 			continue
 		}
@@ -43,6 +52,19 @@ func splitDeclarationComponents(values []ComponentValue, sourceSize int) []decla
 		end:    sourceSize,
 	})
 	return segments
+}
+
+func customDeclarationPrefix(values []ComponentValue) bool {
+	values = trimComponentWhitespace(values)
+	if len(values) < 2 || values[0].Kind != ComponentToken || values[0].Token.Kind != TokenIdent || !strings.HasPrefix(values[0].Token.Value, "--") {
+		return false
+	}
+	for _, value := range values[1:] {
+		if value.Kind == ComponentToken && value.Token.Kind == TokenColon {
+			return true
+		}
+	}
+	return false
 }
 
 func parseDeclarationSegment(source string, segment declarationSegment, baseOffset int) (SourcedDeclaration, bool) {

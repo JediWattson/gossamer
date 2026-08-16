@@ -251,9 +251,10 @@ The following are intentionally still outside the current milestone:
   boxes
 - `calc()` and related functions, gradients, background images, border radii,
   shadows, transforms, and generated content
-- Escaped literal dots in layer-name segments, `@font-face`, keyframes, CSS
-  nesting, and the remaining media-query and `@supports` syntax beyond the
-  current declaration/logical/`selector()` subset
+- Escaped literal dots in layer-name segments, `@font-face`, keyframes,
+  arbitrary or repeated non-leading `&` nesting selectors, and the remaining
+  media-query and `@supports` syntax beyond the current
+  declaration/logical/`selector()` subset
 - SVG, AVIF, video, canvas, browser controls, and accessibility trees
 
 Only `inline`, `block`, `list-item`, and `none` have dedicated display

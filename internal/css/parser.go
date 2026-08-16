@@ -64,9 +64,10 @@ type stylesheetParser struct {
 }
 
 type ruleContext struct {
-	layer    string
-	media    []string
-	supports []string
+	layer           string
+	media           []string
+	supports        []string
+	parentSelectors []Selector
 }
 
 func (parser *stylesheetParser) parse() (Stylesheet, error) {
@@ -115,23 +116,27 @@ func (parser *stylesheetParser) parseRuleList() error {
 			return err
 		}
 		originalPrelude := parser.original[preludeStart : preludeStart+len(prelude)]
-		selectors, valid := parseSelectorList(originalPrelude)
+		var selectors []Selector
+		var valid bool
+		if len(parser.context.parentSelectors) > 0 {
+			selectors, valid = parseNestedSelectorList(originalPrelude, parser.context.parentSelectors)
+		} else {
+			selectors, valid = parseSelectorList(originalPrelude)
+		}
 		if !valid {
 			continue
 		}
 		originalBlock := parser.original[blockStart : blockStart+len(block)]
-		sourced, _ := parseSourcedDeclarationList(originalBlock, parser.baseOffset+blockStart)
-		declarations, sources := splitSourcedDeclarations(sourced)
-
-		parser.stylesheet.Rules = append(parser.stylesheet.Rules, Rule{
-			Selectors:          selectors,
-			Declarations:       declarations,
-			DeclarationSources: sources,
-			Order:              len(parser.stylesheet.Rules),
-			Layer:              parser.context.layer,
-			Media:              append([]string(nil), parser.context.media...),
-			Supports:           append([]string(nil), parser.context.supports...),
-		})
+		nestedContext := parser.context
+		nestedContext.parentSelectors = selectors
+		before := len(parser.stylesheet.Rules)
+		direct, err := parser.parseNestedStyleContents(block, originalBlock, parser.baseOffset+blockStart, nestedContext)
+		if err != nil {
+			return err
+		}
+		if !direct && len(parser.stylesheet.Rules) == before {
+			parser.appendRule(selectors, nil, nil, parser.context)
+		}
 	}
 
 	return nil
@@ -197,26 +202,29 @@ func (parser *stylesheetParser) parseAtRule() error {
 			}
 			layer = qualifyLayerName(parser.context.layer, layer)
 			parser.recordLayer(layer)
-			return parser.parseNestedRuleList(block, parser.original[blockStart:blockStart+len(block)], parser.baseOffset+blockStart, ruleContext{
-				layer:    layer,
-				media:    append([]string(nil), parser.context.media...),
-				supports: append([]string(nil), parser.context.supports...),
+			return parser.parseNestedGroupRuleList(block, parser.original[blockStart:blockStart+len(block)], parser.baseOffset+blockStart, ruleContext{
+				layer:           layer,
+				media:           append([]string(nil), parser.context.media...),
+				supports:        append([]string(nil), parser.context.supports...),
+				parentSelectors: append([]Selector(nil), parser.context.parentSelectors...),
 			})
 		case "media":
 			media := append([]string(nil), parser.context.media...)
 			media = append(media, prelude)
-			return parser.parseNestedRuleList(block, parser.original[blockStart:blockStart+len(block)], parser.baseOffset+blockStart, ruleContext{
-				layer:    parser.context.layer,
-				media:    media,
-				supports: append([]string(nil), parser.context.supports...),
+			return parser.parseNestedGroupRuleList(block, parser.original[blockStart:blockStart+len(block)], parser.baseOffset+blockStart, ruleContext{
+				layer:           parser.context.layer,
+				media:           media,
+				supports:        append([]string(nil), parser.context.supports...),
+				parentSelectors: append([]Selector(nil), parser.context.parentSelectors...),
 			})
 		case "supports":
 			supports := append([]string(nil), parser.context.supports...)
 			supports = append(supports, prelude)
-			return parser.parseNestedRuleList(block, parser.original[blockStart:blockStart+len(block)], parser.baseOffset+blockStart, ruleContext{
-				layer:    parser.context.layer,
-				media:    append([]string(nil), parser.context.media...),
-				supports: supports,
+			return parser.parseNestedGroupRuleList(block, parser.original[blockStart:blockStart+len(block)], parser.baseOffset+blockStart, ruleContext{
+				layer:           parser.context.layer,
+				media:           append([]string(nil), parser.context.media...),
+				supports:        supports,
+				parentSelectors: append([]Selector(nil), parser.context.parentSelectors...),
 			})
 		default:
 			return nil
@@ -224,6 +232,86 @@ func (parser *stylesheetParser) parseAtRule() error {
 	default:
 		return nil
 	}
+}
+
+func (parser *stylesheetParser) appendRule(selectors []Selector, declarations []Declaration, sources []DeclarationSource, context ruleContext) {
+	if len(selectors) == 0 {
+		return
+	}
+	parser.stylesheet.Rules = append(parser.stylesheet.Rules, Rule{
+		Selectors:          selectors,
+		Declarations:       declarations,
+		DeclarationSources: sources,
+		Order:              len(parser.stylesheet.Rules),
+		Layer:              context.layer,
+		Media:              append([]string(nil), context.media...),
+		Supports:           append([]string(nil), context.supports...),
+	})
+}
+
+func (parser *stylesheetParser) parseNestedGroupRuleList(source, original string, baseOffset int, context ruleContext) error {
+	if len(context.parentSelectors) == 0 {
+		return parser.parseNestedRuleList(source, original, baseOffset, context)
+	}
+	_, err := parser.parseNestedStyleContents(source, original, baseOffset, context)
+	return err
+}
+
+func (parser *stylesheetParser) parseNestedStyleContents(source, original string, baseOffset int, context ruleContext) (bool, error) {
+	values, err := ParseComponentValues(original)
+	if err != nil {
+		return false, err
+	}
+	direct := false
+	runStart := 0
+	candidateStart := 0
+	candidateStartByte := 0
+	flushDeclarations := func(end int) {
+		if end < runStart || end > len(original) {
+			return
+		}
+		sourced, _ := parseSourcedDeclarationList(original[runStart:end], baseOffset+runStart)
+		declarations, sources := splitSourcedDeclarations(sourced)
+		if len(declarations) == 0 {
+			return
+		}
+		parser.appendRule(context.parentSelectors, declarations, sources, context)
+		direct = true
+	}
+	for index, value := range values {
+		if value.Kind == ComponentToken && value.Token.Kind == TokenSemicolon {
+			candidateStart = index + 1
+			candidateStartByte = value.Span.End
+			continue
+		}
+		if value.Kind != ComponentBlock || value.Token.Kind != TokenOpenCurly || customDeclarationPrefix(values[candidateStart:index]) {
+			continue
+		}
+		flushDeclarations(candidateStartByte)
+		if candidateStartByte < 0 || value.Span.End < candidateStartByte || value.Span.End > len(original) || value.Span.End > len(source) {
+			return direct, nil
+		}
+		nested := stylesheetParser{
+			source:         source[candidateStartByte:value.Span.End],
+			original:       original[candidateStartByte:value.Span.End],
+			baseOffset:     baseOffset + candidateStartByte,
+			stylesheet:     parser.stylesheet,
+			context:        context,
+			nesting:        parser.nesting + 1,
+			anonymousLayer: parser.anonymousLayer,
+			appearance:     parser.appearance,
+		}
+		if nested.nesting <= maxGroupRuleNesting {
+			if err := nested.parseRuleList(); err != nil {
+				return direct, err
+			}
+		}
+		runStart = value.Span.End
+		candidateStart = index + 1
+		candidateStartByte = value.Span.End
+	}
+	flushDeclarations(len(original))
+	return direct, nil
 }
 
 func parseImportRule(source string) (ImportRule, bool) {
