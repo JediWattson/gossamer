@@ -56,6 +56,8 @@ const (
 	propertyGap
 	propertyTextAlign
 	propertyTextDecorationLine
+	propertyVisibility
+	propertyWhiteSpace
 	propertyWidth
 	propertyZIndex
 )
@@ -142,6 +144,8 @@ var propertyDefinitions = [...]propertyDefinition{
 	{name: "text-align", kind: propertyTextAlign, inherited: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "text-decoration-line", kind: propertyTextDecorationLine, invalidation: propertyInvalidatesPaint},
 	{name: "top", kind: propertyInset, edge: propertyTop, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
+	{name: "visibility", kind: propertyVisibility, inherited: true, invalidation: propertyInvalidatesPaint},
+	{name: "white-space", kind: propertyWhiteSpace, inherited: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "width", kind: propertyWidth, invalidation: propertyInvalidatesLayout},
 	{name: "z-index", kind: propertyZIndex, invalidation: propertyInvalidatesPaint},
 }
@@ -293,6 +297,10 @@ func (definition propertyDefinition) copy(destination *computedStyle, source com
 	case propertyTextDecorationLine:
 		destination.textDecoration = source.textDecoration
 		destination.underline = destination.ancestorUnderline || source.textDecoration == TextDecorationUnderline
+	case propertyVisibility:
+		destination.visibility = source.visibility
+	case propertyWhiteSpace:
+		destination.whiteSpace = source.whiteSpace
 	case propertyWidth:
 		destination.width = source.width
 	case propertyZIndex:
@@ -434,6 +442,12 @@ func (definition propertyDefinition) valid(source string, viewport Viewport) boo
 		}
 		token, ok := singleCSSNumber(source)
 		return ok && token.Integer
+	case propertyVisibility:
+		keyword, ok := singleCSSKeyword(source)
+		return ok && (keyword == "visible" || keyword == "hidden" || keyword == "collapse")
+	case propertyWhiteSpace:
+		keyword, ok := singleCSSKeyword(source)
+		return ok && (keyword == "normal" || keyword == "nowrap" || keyword == "pre" || keyword == "pre-wrap" || keyword == "pre-line" || keyword == "break-spaces")
 	default:
 		return false
 	}
@@ -672,6 +686,31 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 			style.textDecoration = TextDecorationNone
 			style.underline = style.ancestorUnderline
 		}
+	case propertyVisibility:
+		keyword, _ := singleCSSKeyword(source)
+		if keyword == "hidden" {
+			style.visibility = VisibilityHidden
+		} else if keyword == "collapse" {
+			style.visibility = VisibilityCollapse
+		} else {
+			style.visibility = VisibilityVisible
+		}
+	case propertyWhiteSpace:
+		keyword, _ := singleCSSKeyword(source)
+		switch keyword {
+		case "nowrap":
+			style.whiteSpace = WhiteSpaceNoWrap
+		case "pre":
+			style.whiteSpace = WhiteSpacePre
+		case "pre-wrap":
+			style.whiteSpace = WhiteSpacePreWrap
+		case "pre-line":
+			style.whiteSpace = WhiteSpacePreLine
+		case "break-spaces":
+			style.whiteSpace = WhiteSpaceBreakSpaces
+		default:
+			style.whiteSpace = WhiteSpaceNormal
+		}
 	case propertyWidth:
 		if parsed, ok := parseLength(source, style.fontSize, style.fontSize, context.viewport); ok && nonNegativeLength(parsed) {
 			style.width = parsed
@@ -810,6 +849,30 @@ func (definition propertyDefinition) serialize(computed ComputedStyle) string {
 			return "underline"
 		}
 		return "none"
+	case propertyVisibility:
+		switch computed.visibility {
+		case VisibilityHidden:
+			return "hidden"
+		case VisibilityCollapse:
+			return "collapse"
+		default:
+			return "visible"
+		}
+	case propertyWhiteSpace:
+		switch computed.whiteSpace {
+		case WhiteSpaceNoWrap:
+			return "nowrap"
+		case WhiteSpacePre:
+			return "pre"
+		case WhiteSpacePreWrap:
+			return "pre-wrap"
+		case WhiteSpacePreLine:
+			return "pre-line"
+		case WhiteSpaceBreakSpaces:
+			return "break-spaces"
+		default:
+			return "normal"
+		}
 	case propertyWidth:
 		return serializeComputedLength(computed.width)
 	case propertyZIndex:

@@ -117,6 +117,12 @@ The central property registry and layout now also carry `box-sizing`,
 `min-height`, and `max-height`; block and replaced content apply constraints to
 the selected content or border box, and layout-backed computed width/height
 reads preserve the corresponding resolved box semantics.
+Inherited `visibility` now suppresses an element's paint without discarding
+geometry or preventing a visible descendant override. The typed `white-space`
+longhand drives CSS-space collapsing, preserved segment breaks and spaces,
+nowrap behavior, and soft-wrap opportunities for normal, pre, pre-wrap,
+pre-line, and break-spaces modes; the built-in UA sheet applies `pre` to
+`<pre>` elements.
 
 - Extend CSS math beyond the current length-percentage subset as number,
   angle, time, resolution, transform, and color consumers arrive.

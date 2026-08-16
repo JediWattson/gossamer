@@ -345,11 +345,11 @@ func buildDisplayList(document *dom.Node, root *Box, styles map[*dom.Node]comput
 	htmlNode := findElement(document, "html")
 	bodyNode := findElement(document, "body")
 	htmlBackground, htmlHasBackground := color.NRGBA{}, false
-	if htmlStyle, ok := styles[htmlNode]; ok {
+	if htmlStyle, ok := styles[htmlNode]; ok && htmlStyle.Visibility() == visibilityVisible {
 		htmlBackground, htmlHasBackground = htmlStyle.Background()
 	}
 	bodyBackground, bodyHasBackground := color.NRGBA{}, false
-	if bodyStyle, ok := styles[bodyNode]; ok {
+	if bodyStyle, ok := styles[bodyNode]; ok && bodyStyle.Visibility() == visibilityVisible {
 		bodyBackground, bodyHasBackground = bodyStyle.Background()
 	}
 	if htmlHasBackground {
@@ -371,12 +371,13 @@ func paintBox(list *DisplayList, box *Box, styles map[*dom.Node]computedStyle) {
 		return
 	}
 	style, hasStyle := styles[box.Node]
+	visible := hasStyle && style.Visibility() == visibilityVisible
 	grouped := hasStyle && style.Opacity() < 1
 	if grouped {
 		list.Commands = append(list.Commands, Command{Kind: BeginOpacityCommand, Opacity: style.Opacity()})
 	}
 	background, hasBackground := style.Background()
-	if hasStyle && hasBackground && box.Bounds.Width > 0 && box.Bounds.Height > 0 {
+	if visible && hasBackground && box.Bounds.Width > 0 && box.Bounds.Height > 0 {
 		list.Commands = append(list.Commands, Command{
 			Kind:  FillRectCommand,
 			Node:  box.Node,
@@ -384,7 +385,7 @@ func paintBox(list *DisplayList, box *Box, styles map[*dom.Node]computedStyle) {
 			Color: background,
 		})
 	}
-	if hasStyle {
+	if visible {
 		paintBoxBorders(list, box, style)
 	}
 	negative, nonNegative := positionedPaintChildren(box)
@@ -489,11 +490,14 @@ func paintInlineFragment(list *DisplayList, fragment InlineFragment, styles map[
 	case TextFragmentKind:
 		paintTextFragment(list, fragment.Text, styles)
 	case ImageFragmentKind:
-		paintImageFragment(list, fragment.Image)
+		paintImageFragment(list, fragment.Image, styles)
 	}
 }
 
 func paintTextFragment(list *DisplayList, fragment TextFragment, styles map[*dom.Node]computedStyle) {
+	if style, ok := styles[fragment.Node]; ok && style.Visibility() != visibilityVisible {
+		return
+	}
 	list.Commands = append(list.Commands, Command{
 		Kind: DrawTextCommand, Node: fragment.Node, Color: fragment.Color, Text: fragment.Text,
 		X: fragment.X, BaselineY: fragment.BaselineY,
@@ -509,8 +513,11 @@ func paintTextFragment(list *DisplayList, fragment TextFragment, styles map[*dom
 	}
 }
 
-func paintImageFragment(list *DisplayList, fragment ImageFragment) {
+func paintImageFragment(list *DisplayList, fragment ImageFragment, styles map[*dom.Node]computedStyle) {
 	if fragment.Image == nil || fragment.Bounds.Width <= 0 || fragment.Bounds.Height <= 0 {
+		return
+	}
+	if style, ok := styles[fragment.Node]; ok && style.Visibility() != visibilityVisible {
 		return
 	}
 	list.Commands = append(list.Commands, Command{Kind: DrawImageCommand, Node: fragment.Node, Rect: fragment.Bounds, Image: fragment.Image, Opacity: fragment.Opacity})

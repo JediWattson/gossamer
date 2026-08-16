@@ -7,7 +7,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"unicode"
 
 	"github.com/JediWattson/gossamer/internal/dom"
 	computed "github.com/JediWattson/gossamer/internal/style"
@@ -28,6 +27,7 @@ type inlineToken struct {
 	replaced     bool
 	opacity      float64
 	leadingSpace bool
+	wrapBefore   bool
 	lineBreak    bool
 }
 
@@ -879,11 +879,20 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 		lineWidth = 0
 	}
 
+	lastWasBreak := false
+	var lastBreakStyle computedStyle
 	for _, token := range builder.tokens {
 		if token.lineBreak {
-			flushLine()
+			if len(line) == 0 {
+				cursorY += token.style.LineHeight().Pixels(token.style.FontSize())
+			} else {
+				flushLine()
+			}
+			lastWasBreak = true
+			lastBreakStyle = token.style
 			continue
 		}
+		lastWasBreak = false
 		wordMetrics := textMetrics{}
 		imageWidth := 0.0
 		imageHeight := 0.0
@@ -911,7 +920,7 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 			prefix = " "
 			prefixWidth = spaceMetrics.width
 		}
-		if len(line) != 0 && lineWidth+prefixWidth+wordMetrics.width > width {
+		if token.wrapBefore && len(line) != 0 && lineWidth+prefixWidth+wordMetrics.width > width {
 			flushLine()
 			prefix = ""
 			prefixWidth = 0
@@ -939,7 +948,11 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 		line = append(line, inlinePiece{text: pieceText, node: token.node, style: token.style, opacity: token.opacity, x: lineWidth, width: pieceMetrics.width, metrics: pieceMetrics})
 		lineWidth += pieceMetrics.width
 	}
-	flushLine()
+	if lastWasBreak {
+		cursorY += lastBreakStyle.LineHeight().Pixels(lastBreakStyle.FontSize())
+	} else {
+		flushLine()
+	}
 	return fragments, cursorY - y, nil
 }
 
@@ -1067,7 +1080,7 @@ func (builder *inlineTokenBuilder) add(node *styledNode, inheritedOpacity float6
 	}
 	opacity := clamp(inheritedOpacity*node.style.Opacity(), 0, 1)
 	if node.node.Type == dom.ElementNode && node.node.Data == "br" {
-		builder.tokens = append(builder.tokens, inlineToken{lineBreak: true})
+		builder.tokens = append(builder.tokens, inlineToken{node: node.node, style: node.style, lineBreak: true})
 		builder.pendingSpace = false
 		builder.hasContent = false
 		return
@@ -1075,13 +1088,15 @@ func (builder *inlineTokenBuilder) add(node *styledNode, inheritedOpacity float6
 	if node.node.Type == dom.ElementNode && node.node.Data == "img" {
 		decoded := builder.images[node.node]
 		if decoded != nil || hasExplicitImageDimensions(node.style) {
+			leadingSpace := builder.pendingSpace && builder.hasContent
 			builder.tokens = append(builder.tokens, inlineToken{
 				node:         node.node,
 				style:        node.style,
 				image:        decoded,
 				replaced:     true,
 				opacity:      opacity,
-				leadingSpace: builder.pendingSpace && builder.hasContent,
+				leadingSpace: leadingSpace,
+				wrapBefore:   whiteSpaceAllowsSoftWrap(node.style.WhiteSpace()) && (leadingSpace || builder.hasContent),
 			})
 			builder.pendingSpace = false
 			builder.hasContent = true
@@ -1100,24 +1115,53 @@ func (builder *inlineTokenBuilder) add(node *styledNode, inheritedOpacity float6
 }
 
 func (builder *inlineTokenBuilder) addText(source string, node *dom.Node, style computedStyle, opacity float64) {
+	switch style.WhiteSpace() {
+	case whiteSpacePre:
+		builder.addPreservedText(source, node, style, opacity, false)
+	case whiteSpacePreWrap, whiteSpaceBreak:
+		builder.addPreservedText(source, node, style, opacity, true)
+	case whiteSpacePreLine:
+		builder.addCollapsedText(source, node, style, opacity, true, true)
+	case whiteSpaceNoWrap:
+		builder.addCollapsedText(source, node, style, opacity, false, false)
+	default:
+		builder.addCollapsedText(source, node, style, opacity, true, false)
+	}
+}
+
+func (builder *inlineTokenBuilder) addCollapsedText(source string, node *dom.Node, style computedStyle, opacity float64, wrap, preserveBreaks bool) {
+	if preserveBreaks {
+		parts := strings.Split(normalizeSegmentBreaks(source), "\n")
+		for index, part := range parts {
+			builder.addCollapsedText(part, node, style, opacity, wrap, false)
+			if index != len(parts)-1 {
+				builder.tokens = append(builder.tokens, inlineToken{node: node, style: style, lineBreak: true})
+				builder.pendingSpace = false
+				builder.hasContent = false
+			}
+		}
+		return
+	}
 	start := -1
 	flushWord := func(end int) {
 		if start < 0 {
 			return
 		}
+		leadingSpace := builder.pendingSpace && builder.hasContent
 		builder.tokens = append(builder.tokens, inlineToken{
 			text:         source[start:end],
 			node:         node,
 			style:        style,
 			opacity:      opacity,
-			leadingSpace: builder.pendingSpace && builder.hasContent,
+			leadingSpace: leadingSpace,
+			wrapBefore:   wrap && leadingSpace,
 		})
 		builder.hasContent = true
 		builder.pendingSpace = false
 		start = -1
 	}
 	for index, runeValue := range source {
-		if unicode.IsSpace(runeValue) {
+		if cssCollapsibleSpace(runeValue) {
 			flushWord(index)
 			if builder.hasContent {
 				builder.pendingSpace = true
@@ -1129,6 +1173,53 @@ func (builder *inlineTokenBuilder) addText(source string, node *dom.Node, style 
 		}
 	}
 	flushWord(len(source))
+}
+
+func (builder *inlineTokenBuilder) addPreservedText(source string, node *dom.Node, style computedStyle, opacity float64, wrap bool) {
+	source = strings.ReplaceAll(normalizeSegmentBreaks(source), "\t", "        ")
+	parts := strings.Split(source, "\n")
+	for partIndex, part := range parts {
+		if part != "" {
+			if !wrap {
+				builder.tokens = append(builder.tokens, inlineToken{text: part, node: node, style: style, opacity: opacity})
+			} else {
+				start := 0
+				wrapBefore := false
+				for index, runeValue := range part {
+					if runeValue != ' ' {
+						continue
+					}
+					end := index + 1
+					builder.tokens = append(builder.tokens, inlineToken{text: part[start:end], node: node, style: style, opacity: opacity, wrapBefore: wrapBefore})
+					start = end
+					wrapBefore = true
+				}
+				if start < len(part) {
+					builder.tokens = append(builder.tokens, inlineToken{text: part[start:], node: node, style: style, opacity: opacity, wrapBefore: wrapBefore})
+				}
+			}
+			builder.hasContent = true
+		}
+		builder.pendingSpace = false
+		if partIndex != len(parts)-1 {
+			builder.tokens = append(builder.tokens, inlineToken{node: node, style: style, lineBreak: true})
+			builder.hasContent = false
+		}
+	}
+}
+
+func normalizeSegmentBreaks(source string) string {
+	source = strings.ReplaceAll(source, "\r\n", "\n")
+	source = strings.ReplaceAll(source, "\r", "\n")
+	return strings.ReplaceAll(source, "\f", "\n")
+}
+
+func cssCollapsibleSpace(value rune) bool {
+	return value == ' ' || value == '\t' || value == '\n' || value == '\r' || value == '\f'
+}
+
+func whiteSpaceAllowsSoftWrap(mode whiteSpaceMode) bool {
+	return mode == whiteSpaceNormal || mode == whiteSpacePreWrap || mode == whiteSpacePreLine || mode == whiteSpaceBreak
 }
 
 func hasExplicitImageDimensions(style computedStyle) bool {

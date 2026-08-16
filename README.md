@@ -233,6 +233,8 @@ performance budgets; see
   margin collapsing
 - Content- and border-box sizing, width/height and min/max constraints,
   margins, padding, solid borders, backgrounds, opacity, and text alignment
+- Inherited `visibility` plus normal, nowrap, pre, pre-wrap, pre-line, and
+  break-spaces text whitespace behavior
 - Regular and bold bundled fonts, font sizing, line height, underline, and the
   size/line-height/weight portions of the `font` shorthand
 - Disc, circle, square, and decimal list markers
@@ -273,9 +275,12 @@ The following are intentionally still outside the current milestone:
 - SVG, AVIF, video, canvas, browser controls, and accessibility trees
 
 Only `inline`, `block`, `list-item`, and `none` have dedicated display
-behavior; `inline-block` currently degrades to inline. Screenshots clip to one
-800 x 600 viewport. Unsupported CSS is skipped, and failed stylesheets or
-images degrade independently so the rest of a page can still render.
+behavior; `inline-block` currently degrades to inline. Preserved whitespace
+uses the current simple glyph metrics and an eight-space tab approximation;
+full Unicode line breaking, bidi, shaping, and CSS Text 4 controls remain
+future work. Screenshots clip to one 800 x 600 viewport. Unsupported CSS is
+skipped, and failed stylesheets or images degrade independently so the rest of
+a page can still render.
 
 The first `getComputedStyle()` surface reports typed computed values and uses a
 separate synchronous layout snapshot for width and the currently definite

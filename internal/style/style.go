@@ -337,6 +337,25 @@ const (
 	BoxSizingBorderBox
 )
 
+type Visibility uint8
+
+const (
+	VisibilityVisible Visibility = iota
+	VisibilityHidden
+	VisibilityCollapse
+)
+
+type WhiteSpaceMode uint8
+
+const (
+	WhiteSpaceNormal WhiteSpaceMode = iota
+	WhiteSpaceNoWrap
+	WhiteSpacePre
+	WhiteSpacePreWrap
+	WhiteSpacePreLine
+	WhiteSpaceBreakSpaces
+)
+
 // ComputedStyle is the typed, layout-independent result of cascade,
 // inheritance, and computed-value resolution for one DOM node. Snapshot
 // lookups return it by value, so callers cannot mutate stored styles.
@@ -372,6 +391,8 @@ type ComputedStyle struct {
 	left              Length
 	zIndex            ZIndex
 	boxSizing         BoxSizing
+	visibility        Visibility
+	whiteSpace        WhiteSpaceMode
 	width             Length
 	height            Length
 	minHeight         Length
@@ -434,6 +455,8 @@ func (computed ComputedStyle) Bottom() Length                         { return c
 func (computed ComputedStyle) Left() Length                           { return computed.left }
 func (computed ComputedStyle) ZIndex() ZIndex                         { return computed.zIndex }
 func (computed ComputedStyle) BoxSizing() BoxSizing                   { return computed.boxSizing }
+func (computed ComputedStyle) Visibility() Visibility                 { return computed.visibility }
+func (computed ComputedStyle) WhiteSpace() WhiteSpaceMode             { return computed.whiteSpace }
 func (computed ComputedStyle) Width() Length                          { return computed.width }
 func (computed ComputedStyle) Height() Length                         { return computed.height }
 func (computed ComputedStyle) MinHeight() Length                      { return computed.minHeight }
@@ -801,6 +824,7 @@ html, body, address, article, aside, blockquote, div, dl, dt, dd,
 fieldset, figcaption, figure, footer, form, header, hgroup, main, nav,
 ol, p, pre, section, table, ul, h1, h2, h3, h4, h5, h6 { display:block }
 li { display:list-item }
+pre { white-space:pre }
 /* Gossamer has no scripting engine, so body fallback content remains visible. */
 noscript { display:block }
 head, base, link, meta, title, style, script, template { display:none }

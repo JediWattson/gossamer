@@ -31,6 +31,8 @@ func TestComputedPropertyValueSerializesEverySupportedLonghand(t *testing.T) {
 		listStyleType:   ListStyleSquare,
 		opacity:         0.5,
 		boxSizing:       BoxSizingBorderBox,
+		visibility:      VisibilityHidden,
+		whiteSpace:      WhiteSpacePreWrap,
 		width:           Length{unit: LengthAuto},
 		height:          Length{value: 12, unit: LengthPX},
 		minHeight:       Length{value: 20, unit: LengthPX},
@@ -118,6 +120,8 @@ func TestComputedPropertyValueSerializesEverySupportedLonghand(t *testing.T) {
 		"text-align":           "right",
 		"text-decoration-line": "underline",
 		"top":                  "auto",
+		"visibility":           "hidden",
+		"white-space":          "pre-wrap",
 		"width":                "auto",
 		"z-index":              "0",
 	}
@@ -172,6 +176,8 @@ func TestComputedPropertyValueSerializesInitialAndAlternateEnums(t *testing.T) {
 		{name: "auto max width", computed: ComputedStyle{maxWidth: Length{unit: LengthAuto}}, property: "max-width", want: "none"},
 		{name: "auto max height", computed: ComputedStyle{maxHeight: Length{unit: LengthAuto}}, property: "max-height", want: "none"},
 		{name: "content box sizing", property: "box-sizing", want: "content-box"},
+		{name: "visible visibility", property: "visibility", want: "visible"},
+		{name: "normal white space", property: "white-space", want: "normal"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

@@ -72,10 +72,18 @@ type length = computed.Length
 type computedLineHeight = computed.LineHeight
 type borderSide = computed.BorderSide
 type computedStyle = computed.ComputedStyle
+type whiteSpaceMode = computed.WhiteSpaceMode
 
 const (
 	boxSizingContentBox = computed.BoxSizingContentBox
 	boxSizingBorderBox  = computed.BoxSizingBorderBox
+	visibilityVisible   = computed.VisibilityVisible
+	whiteSpaceNormal    = computed.WhiteSpaceNormal
+	whiteSpaceNoWrap    = computed.WhiteSpaceNoWrap
+	whiteSpacePre       = computed.WhiteSpacePre
+	whiteSpacePreWrap   = computed.WhiteSpacePreWrap
+	whiteSpacePreLine   = computed.WhiteSpacePreLine
+	whiteSpaceBreak     = computed.WhiteSpaceBreakSpaces
 )
 
 type styledNode struct {

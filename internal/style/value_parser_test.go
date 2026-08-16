@@ -294,6 +294,36 @@ func TestAbsoluteAndViewportLengthUnitsComputeThroughTypedLengths(t *testing.T) 
 	}
 }
 
+func TestVisibilityAndWhiteSpacePropertyGrammars(t *testing.T) {
+	t.Parallel()
+
+	viewport := Viewport{Width: 800, Height: 600, InitialFontSize: 16}
+	for _, declaration := range []css.Declaration{
+		{Property: "visibility", Value: "visible"},
+		{Property: "visibility", Value: "hidden"},
+		{Property: "visibility", Value: "collapse"},
+		{Property: "white-space", Value: "normal"},
+		{Property: "white-space", Value: "nowrap"},
+		{Property: "white-space", Value: "pre"},
+		{Property: "white-space", Value: "pre-wrap"},
+		{Property: "white-space", Value: "pre-line"},
+		{Property: "white-space", Value: "break-spaces"},
+	} {
+		if !validComputedDeclaration(declaration, viewport) {
+			t.Errorf("%s:%s was rejected", declaration.Property, declaration.Value)
+		}
+	}
+	for _, declaration := range []css.Declaration{
+		{Property: "visibility", Value: "none"},
+		{Property: "white-space", Value: "preserve nowrap"},
+		{Property: "white-space", Value: "trim-both"},
+	} {
+		if validComputedDeclaration(declaration, viewport) {
+			t.Errorf("invalid %s:%s was accepted", declaration.Property, declaration.Value)
+		}
+	}
+}
+
 func FuzzPropertyValueParsingDoesNotPanic(f *testing.F) {
 	f.Add("width", "10px")
 	f.Add("color", `r\65 d`)
