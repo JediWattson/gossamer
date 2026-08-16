@@ -41,6 +41,9 @@ func hitTestVisualBox(box *Box, x, y float64, transforms map[*dom.Node]VisualTra
 	if boxTransform.HasClip && !containsPoint(boxTransform.Clip, x, y) {
 		return nil
 	}
+	if box.hasClipBounds && !containsPoint(translatedRect(box.clipBounds, boxTransform), x, y) {
+		return nil
+	}
 	negative, nonNegative := positionedPaintChildren(box)
 	for index := len(nonNegative) - 1; index >= 0; index-- {
 		if node := hitTestVisualBox(nonNegative[index], x, y, transforms); node != nil {
@@ -111,6 +114,9 @@ func translatedRect(rectangle Rect, transform VisualTransform) Rect {
 
 func hitTestBox(box *Box, x, y float64) *dom.Node {
 	if box == nil {
+		return nil
+	}
+	if box.hasClipBounds && !containsPoint(box.clipBounds, x, y) {
 		return nil
 	}
 	negative, nonNegative := positionedPaintChildren(box)

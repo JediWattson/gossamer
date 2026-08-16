@@ -1010,11 +1010,16 @@ bool IsDashedStylePropertyName(const std::string &name) {
 bool IsSupportedDashedStylePropertyName(const std::string &name) {
   for (const char *supported : {
            "align-content",       "align-items",         "align-self",
-           "background-color",    "column-gap",
+           "background-color",    "border-collapse",     "border-spacing",
+           "box-sizing",          "caption-side",        "column-gap",
+           "empty-cells",
            "flex-basis",          "flex-direction",      "flex-grow",
-           "flex-shrink",         "font-size",           "font-weight",
+           "flex-shrink",         "font-family",         "font-size",
+           "font-style",          "font-weight",
            "line-height",         "text-decoration",     "text-decoration-line",
-           "text-align",          "min-width",           "max-width",
+           "text-align",          "vertical-align",      "white-space",
+           "min-height",          "min-width",           "max-height",
+           "max-width",           "table-layout",
            "padding-top",         "padding-right",       "padding-bottom",
            "padding-left",        "margin-top",          "margin-right",
            "margin-bottom",       "margin-left",         "border-top",
@@ -11204,11 +11209,13 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   for (const char *name : {
            "display",          "color",              "content",
            "background",
-           "backgroundColor",  "fontSize",           "fontWeight",
+           "backgroundColor",  "boxSizing",          "fontFamily",
+           "fontSize",         "fontStyle",           "fontWeight",
            "lineHeight",       "textDecoration",     "textDecorationLine",
            "textAlign",        "verticalAlign",       "opacity",
            "width",
-           "height",           "minWidth",           "maxWidth",
+           "height",           "minHeight",          "minWidth",
+           "maxHeight",        "maxWidth",
            "overflow",         "overflowX",          "overflowY",
            "position",         "top",                "right",
            "bottom",           "left",               "zIndex",
@@ -11233,8 +11240,9 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
            "borderBottomStyle", "borderLeftStyle",    "borderTopColor",
            "borderRightColor", "borderBottomColor",  "borderLeftColor",
            "borderCollapse",   "borderSpacing",     "captionSide",
-           "emptyCells",      "tableLayout",       "listStyle",
-           "listStyleType",    "cssFloat"}) {
+           "emptyCells",       "tableLayout",        "listStyle",
+           "listStyleType",    "visibility",         "whiteSpace",
+           "cssFloat"}) {
     for (v8::Local<v8::ObjectTemplate> surface : {style_prototype,
                                                    style_instance}) {
       surface->SetNativeDataProperty(

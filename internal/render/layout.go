@@ -464,7 +464,7 @@ func (context *layoutContext) layoutBlockSizedWithSubgrid(node *styledNode, cont
 		if err != nil {
 			return nil, err
 		}
-		if contentWidth > box.ContentBounds.Width {
+		if contentWidth != box.ContentBounds.Width {
 			baseLeft, baseRight := left, right
 			if leftAuto {
 				baseLeft = 0
@@ -485,9 +485,13 @@ func (context *layoutContext) layoutBlockSizedWithSubgrid(node *styledNode, cont
 			translateLayoutBox(box, containingX+newLeft-box.Bounds.X, 0)
 		}
 		if hasDefiniteHeight {
-			contentHeight = specifiedContentHeight
+			if !box.tableRowsCollapsed {
+				contentHeight = specifiedContentHeight
+			}
 		}
-		contentHeight = context.constrainHeight(style, contentHeight, verticalInsets, containingHeight)
+		if !box.tableRowsCollapsed {
+			contentHeight = context.constrainHeight(style, contentHeight, verticalInsets, containingHeight)
+		}
 		box.ContentBounds.Height = contentHeight
 		box.Bounds.Height = border.Top + padding.Top + contentHeight + padding.Bottom + border.Bottom
 		return context.finalizeBlock(node, box, availableWidth)
@@ -1072,6 +1076,10 @@ func translateLayoutBox(box *Box, deltaX, deltaY float64) {
 	if box.hasDecorationBounds {
 		box.decorationBounds.X += deltaX
 		box.decorationBounds.Y += deltaY
+	}
+	if box.hasClipBounds {
+		box.clipBounds.X += deltaX
+		box.clipBounds.Y += deltaY
 	}
 	for index := range box.backgroundRects {
 		box.backgroundRects[index].X += deltaX

@@ -373,7 +373,13 @@ and top/middle/bottom/baseline cell content aligns inside stretched rows.
 Collapsed tables ignore spacing and table padding, harmonize the supported
 none/hidden/solid borders across table, column/group, row/group, and cell
 edges, use half-width layout insets, and paint one bounded winning segment
-grid instead of duplicate cell borders. The first Grid vertical slice retains
+grid instead of duplicate cell borders. Table rows, row groups, columns, and
+column groups with `visibility: collapse` continue to participate in intrinsic
+and fixed sizing, then suppress their used track geometry and adjacent border
+spacing without a second layout. Spanning cells retain their logical content
+layout and clip paint and hit testing to the remaining visible tracks; the
+same model feeds separated and collapsed borders, retained geometry, live
+CSSOM reads, scroll transforms, and bounded table fuzzing. The first Grid vertical slice retains
 block and inline Grid formatting contexts, blockifies element and anonymous
 text items without mutating computed snapshots, and bounds placement by item,
 track, occupied-cell, and operation budgets. Explicit and implicit tracks
@@ -422,8 +428,8 @@ a compatible parent formatting context computes to the retained keyword but
 uses `none`, as exposed by live resolved CSSOM geometry.
 
 - Complete table track merging/missing-cell fixup, percentage/intrinsic sizing
-  edge cases, row/column `visibility: collapse`, table-wrapper separation,
-  direction/writing-mode placement, and collapsed-border junctions once the
+  edge cases, table-wrapper separation, direction/writing-mode placement, and
+  collapsed-border junctions once the
   wider border-style set exists.
 - Extend Grid Subgrid through orthogonal writing modes and the remaining
   advanced intrinsic/overflow interactions.

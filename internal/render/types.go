@@ -4,6 +4,7 @@ package render
 import (
 	"image"
 	"image/color"
+	"math"
 
 	"github.com/JediWattson/gossamer/internal/css"
 	"github.com/JediWattson/gossamer/internal/dom"
@@ -109,6 +110,12 @@ type Box struct {
 	backgroundRects     []Rect
 	suppressDecorations bool
 	suppressBorders     bool
+	// clipBounds constrains this box and all descendant paint/hit testing. Table
+	// cells use it after visibility:collapse removes one or more spanned tracks
+	// without relaying out the cell's contents.
+	clipBounds          Rect
+	hasClipBounds       bool
+	tableRowsCollapsed  bool
 	afterPaint          []boxPaintRect
 	gridColumnSizes     []float64
 	gridRowSizes        []float64
@@ -274,6 +281,10 @@ func ScrollDisplayList(frame *Frame, x, y float64) *Frame {
 			command.X -= x
 			command.BaselineY -= y
 		}
+		if command.HasClip {
+			command.Clip.X -= x
+			command.Clip.Y -= y
+		}
 	}
 	return &result
 }
@@ -302,8 +313,26 @@ func TransformDisplayList(frame *Frame, transforms map[*dom.Node]VisualTransform
 			command.X -= transform.OffsetX
 			command.BaselineY -= transform.OffsetY
 		}
-		command.HasClip = transform.HasClip
-		command.Clip = transform.Clip
+		if command.HasClip {
+			command.Clip.X -= transform.OffsetX
+			command.Clip.Y -= transform.OffsetY
+		}
+		if transform.HasClip {
+			if command.HasClip {
+				command.Clip = intersectRects(command.Clip, transform.Clip)
+			} else {
+				command.HasClip = true
+				command.Clip = transform.Clip
+			}
+		}
 	}
 	return &result
+}
+
+func intersectRects(left, right Rect) Rect {
+	x := math.Max(left.X, right.X)
+	y := math.Max(left.Y, right.Y)
+	rightEdge := math.Min(left.X+left.Width, right.X+right.Width)
+	bottomEdge := math.Min(left.Y+left.Height, right.Y+right.Height)
+	return Rect{X: x, Y: y, Width: math.Max(0, rightEdge-x), Height: math.Max(0, bottomEdge-y)}
 }

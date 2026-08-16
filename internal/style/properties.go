@@ -192,7 +192,9 @@ var propertyDefinitions = [...]propertyDefinition{
 	{name: "text-decoration-line", kind: propertyTextDecorationLine, invalidation: propertyInvalidatesPaint},
 	{name: "top", kind: propertyInset, edge: propertyTop, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "vertical-align", kind: propertyVerticalAlign, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
-	{name: "visibility", kind: propertyVisibility, inherited: true, invalidation: propertyInvalidatesPaint},
+	// collapse changes table row/column geometry; treating every visibility
+	// mutation as layout+paint invalidation is the safe registry contract.
+	{name: "visibility", kind: propertyVisibility, inherited: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "white-space", kind: propertyWhiteSpace, inherited: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "width", kind: propertyWidth, invalidation: propertyInvalidatesLayout},
 	{name: "z-index", kind: propertyZIndex, invalidation: propertyInvalidatesPaint},

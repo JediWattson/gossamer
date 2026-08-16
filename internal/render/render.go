@@ -375,6 +375,7 @@ func paintBox(list *DisplayList, box *Box, styles map[*dom.Node]computedStyle) {
 	if box == nil {
 		return
 	}
+	commandStart := len(list.Commands)
 	style, hasStyle := box.style, box.hasStyle
 	if !hasStyle {
 		style, hasStyle = styles[box.Node]
@@ -459,6 +460,17 @@ func paintBox(list *DisplayList, box *Box, styles map[*dom.Node]computedStyle) {
 	}
 	if grouped {
 		list.Commands = append(list.Commands, Command{Kind: EndOpacityCommand, Node: box.Node, Pseudo: box.Pseudo})
+	}
+	if box.hasClipBounds {
+		for index := commandStart; index < len(list.Commands); index++ {
+			command := &list.Commands[index]
+			if command.HasClip {
+				command.Clip = intersectRects(command.Clip, box.clipBounds)
+			} else {
+				command.HasClip = true
+				command.Clip = box.clipBounds
+			}
+		}
 	}
 }
 

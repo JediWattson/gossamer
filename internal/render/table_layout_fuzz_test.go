@@ -43,18 +43,43 @@ func FuzzTableLayoutSpansStayFinite(f *testing.F) {
 		caption := dom.NewElement("caption", dom.Attribute{Name: "style", Value: "caption-side:" + captionSide})
 		caption.AppendChild(dom.NewText("caption"))
 		table.AppendChild(caption)
-		group := dom.NewElement("tbody")
+		columnGroupStyle := ""
+		if rawModes&32 != 0 {
+			columnGroupStyle = "visibility:collapse"
+		}
+		columnGroup := dom.NewElement("colgroup", dom.Attribute{Name: "style", Value: columnGroupStyle})
+		for columnIndex := range columns {
+			visibility := "visible"
+			if rawModes&64 != 0 && columnIndex%2 == 0 {
+				visibility = "collapse"
+			}
+			columnGroup.AppendChild(dom.NewElement("col", dom.Attribute{Name: "style", Value: fmt.Sprintf("width:%dpx;visibility:%s", 4+columnIndex, visibility)}))
+		}
+		table.AppendChild(columnGroup)
+		groupStyle := ""
+		if rawModes&32 != 0 {
+			groupStyle = "visibility:collapse"
+		}
+		group := dom.NewElement("tbody", dom.Attribute{Name: "style", Value: groupStyle})
 		for rowIndex := range rows {
-			row := dom.NewElement("tr")
+			rowVisibility := "visible"
+			if rawModes&128 != 0 && rowIndex%2 == 0 {
+				rowVisibility = "collapse"
+			}
+			row := dom.NewElement("tr", dom.Attribute{Name: "style", Value: "visibility:" + rowVisibility})
 			for columnIndex := range columns {
 				alignment := []string{"baseline", "top", "middle", "bottom"}[(rowIndex+columnIndex)%4]
 				borderStyle := "solid"
 				if rawModes&8 != 0 && rowIndex == 0 && columnIndex == 0 {
 					borderStyle = "hidden"
 				}
+				cellVisibility := ""
+				if rawModes&32 != 0 && columnIndex == 0 {
+					cellVisibility = "visibility:visible;"
+				}
 				attributes := []dom.Attribute{{Name: "style", Value: fmt.Sprintf(
-					"width:%dpx;padding:%dpx;vertical-align:%s;border:%dpx %s #abcdef",
-					4+columnIndex, rowIndex%3, alignment, 1+(rowIndex+columnIndex)%4, borderStyle,
+					"%swidth:%dpx;padding:%dpx;vertical-align:%s;border:%dpx %s #abcdef",
+					cellVisibility, 4+columnIndex, rowIndex%3, alignment, 1+(rowIndex+columnIndex)%4, borderStyle,
 				)}}
 				if columnIndex == 0 {
 					attributes = append(attributes,

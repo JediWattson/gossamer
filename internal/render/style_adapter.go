@@ -134,6 +134,7 @@ const (
 	boxSizingContentBox = computed.BoxSizingContentBox
 	boxSizingBorderBox  = computed.BoxSizingBorderBox
 	visibilityVisible   = computed.VisibilityVisible
+	visibilityCollapse  = computed.VisibilityCollapse
 	whiteSpaceNormal    = computed.WhiteSpaceNormal
 	whiteSpaceNoWrap    = computed.WhiteSpaceNoWrap
 	whiteSpacePre       = computed.WhiteSpacePre

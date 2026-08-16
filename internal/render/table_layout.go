@@ -635,6 +635,9 @@ func (context *layoutContext) layoutTableContainer(table *styledNode, tableBox *
 		return 0, 0, err
 	}
 	horizontalSpacing, verticalSpacing := tableBorderSpacing(table.style, context.viewport)
+	collapsedColumns := tableCollapsedColumns(model)
+	collapsedRows := tableCollapsedRows(model)
+	tableBox.tableRowsCollapsed = tableHasCollapsedTrack(collapsedRows)
 	clipStructuralBackgrounds := horizontalSpacing > 0 || verticalSpacing > 0
 	if clipStructuralBackgrounds {
 		if count := tableStructuralBackgroundRectCount(model); count > maxTableBackgroundRects {
@@ -663,8 +666,12 @@ func (context *layoutContext) layoutTableContainer(table *styledNode, tableBox *
 	if err != nil {
 		return 0, 0, err
 	}
-	columnStarts, columnEnds, gridWidth := tableTrackGeometry(columnWidths, horizontalSpacing)
+	logicalColumnStarts, logicalColumnEnds, _ := tableTrackGeometry(columnWidths, horizontalSpacing, nil)
+	columnStarts, columnEnds, gridWidth := tableTrackGeometry(columnWidths, horizontalSpacing, collapsedColumns)
 	usedWidth := math.Max(contentWidth, gridWidth)
+	if tableHasCollapsedTrack(collapsedColumns) {
+		usedWidth = gridWidth
+	}
 
 	topCaptions := make([]*styledNode, 0, len(model.captions))
 	bottomCaptions := make([]*styledNode, 0, len(model.captions))
@@ -709,7 +716,8 @@ func (context *layoutContext) layoutTableContainer(table *styledNode, tableBox *
 	cellLayouts := make([]tableCellLayout, 0, len(model.cells))
 	rowBaselines := make([]float64, len(model.rows))
 	for _, placement := range model.cells {
-		spanWidth := tableTrackSpan(columnStarts, columnEnds, placement.column, placement.columnSpan)
+		spanWidth := tableTrackSpan(logicalColumnStarts, logicalColumnEnds, placement.column, placement.columnSpan)
+		usedSpanWidth := tableTrackSpan(columnStarts, columnEnds, placement.column, placement.columnSpan)
 		padding := context.resolvePadding(placement.node.style, spanWidth)
 		border := context.resolveBorder(placement.node.style, spanWidth)
 		if collapsed != nil {
@@ -722,10 +730,10 @@ func (context *layoutContext) layoutTableContainer(table *styledNode, tableBox *
 			return 0, 0, layoutErr
 		}
 		if collapsed != nil {
-			adjustCollapsedTableCellBox(cellBox, cellX, spanWidth, padding, border)
+			adjustCollapsedTableCellBox(cellBox, cellX, usedSpanWidth, padding, border)
 			cellBox.suppressBorders = true
 		} else {
-			translateLayoutBox(cellBox, cellX-cellBox.Bounds.X, 0)
+			adjustTableCellBox(cellBox, cellX, usedSpanWidth, padding, border)
 		}
 		baseline, hasBaseline := firstBoxBaseline(cellBox)
 		if hasBaseline {
@@ -780,11 +788,12 @@ func (context *layoutContext) layoutTableContainer(table *styledNode, tableBox *
 			}
 		}
 	}
-	rowStarts, rowEnds, gridHeight := tableTrackGeometry(rowHeights, verticalSpacing)
+	logicalRowStarts, logicalRowEnds, _ := tableTrackGeometry(rowHeights, verticalSpacing, nil)
+	rowStarts, rowEnds, gridHeight := tableTrackGeometry(rowHeights, verticalSpacing, collapsedRows)
 	rowBoxes := make([]*Box, len(model.rows))
 	for index, row := range model.rows {
 		rowBoxes[index] = tableStructuralBox(row.node, Rect{
-			X: tableBox.ContentBounds.X, Y: gridY + rowStarts[index], Width: gridWidth, Height: rowHeights[index],
+			X: tableBox.ContentBounds.X, Y: gridY + rowStarts[index], Width: gridWidth, Height: rowEnds[index] - rowStarts[index],
 		})
 		if clipStructuralBackgrounds && tableNodeHasBackground(row.node) {
 			rowBoxes[index].backgroundRects = tableRowBackgroundRects(tableBox.ContentBounds.X, gridY, columnStarts, columnEnds, rowStarts[index], rowEnds[index])
@@ -792,11 +801,18 @@ func (context *layoutContext) layoutTableContainer(table *styledNode, tableBox *
 	}
 	for _, cell := range cellLayouts {
 		start := cell.placement.row
-		targetHeight := tableTrackSpan(rowStarts, rowEnds, start, cell.placement.rowSpan)
-		setBoxOuterHeight(cell.box, targetHeight)
+		logicalHeight := tableTrackSpan(logicalRowStarts, logicalRowEnds, start, cell.placement.rowSpan)
+		usedHeight := tableTrackSpan(rowStarts, rowEnds, start, cell.placement.rowSpan)
+		setBoxOuterHeight(cell.box, logicalHeight)
 		translateLayoutBox(cell.box, 0, gridY+rowStarts[start]-cell.box.Bounds.Y)
-		shift := tableCellContentShift(cell, targetHeight, rowBaselines[start])
+		shift := tableCellContentShift(cell, logicalHeight, rowBaselines[start])
 		translateBoxContents(cell.box, 0, shift)
+		setBoxOuterHeight(cell.box, usedHeight)
+		if tableSpanTouchesCollapsed(collapsedColumns, cell.placement.column, cell.placement.columnSpan) ||
+			tableSpanTouchesCollapsed(collapsedRows, cell.placement.row, cell.placement.rowSpan) {
+			cell.box.hasClipBounds = true
+			cell.box.clipBounds = cell.box.Bounds
+		}
 	}
 
 	for _, spec := range model.columnBoxes {
@@ -929,19 +945,87 @@ func totalTableSpacing(trackCount int, spacing float64) float64 {
 	return float64(trackCount+1) * spacing
 }
 
-func tableTrackGeometry(widths []float64, spacing float64) ([]float64, []float64, float64) {
+func tableTrackGeometry(widths []float64, spacing float64, collapsed []bool) ([]float64, []float64, float64) {
 	starts := make([]float64, len(widths))
 	ends := make([]float64, len(widths))
-	if len(widths) == 0 {
+	if tableVisibleTrackCount(widths, collapsed) == 0 {
 		return starts, ends, 0
 	}
 	cursor := spacing
 	for index, width := range widths {
+		if tableTrackCollapsed(collapsed, len(widths), index) {
+			starts[index], ends[index] = cursor, cursor
+			continue
+		}
 		starts[index] = cursor
 		ends[index] = cursor + math.Max(0, width)
 		cursor = ends[index] + spacing
 	}
 	return starts, ends, cursor
+}
+
+func tableCollapsedRows(model tableModel) []bool {
+	result := make([]bool, len(model.rows))
+	for index, row := range model.rows {
+		result[index] = row.node != nil && row.node.style.Visibility() == visibilityCollapse ||
+			row.group != nil && row.group.style.Visibility() == visibilityCollapse
+	}
+	return result
+}
+
+func tableCollapsedColumns(model tableModel) []bool {
+	result := make([]bool, model.columnCount)
+	var mark func(tableColumnSpec, bool)
+	mark = func(spec tableColumnSpec, inherited bool) {
+		collapsed := inherited || spec.node != nil && spec.node.style.Visibility() == visibilityCollapse
+		if collapsed {
+			for column := max(0, spec.start); column < min(len(result), spec.start+spec.span); column++ {
+				result[column] = true
+			}
+		}
+		for _, child := range spec.children {
+			mark(child, collapsed)
+		}
+	}
+	for _, spec := range model.columnBoxes {
+		mark(spec, false)
+	}
+	return result
+}
+
+func tableTrackCollapsed(collapsed []bool, count, index int) bool {
+	return len(collapsed) == count && index >= 0 && index < count && collapsed[index]
+}
+
+func tableHasCollapsedTrack(collapsed []bool) bool {
+	for _, value := range collapsed {
+		if value {
+			return true
+		}
+	}
+	return false
+}
+
+func tableVisibleTrackCount(widths []float64, collapsed []bool) int {
+	count := 0
+	for index := range widths {
+		if !tableTrackCollapsed(collapsed, len(widths), index) {
+			count++
+		}
+	}
+	return count
+}
+
+func tableSpanTouchesCollapsed(collapsed []bool, start, span int) bool {
+	if span <= 0 || start < 0 {
+		return false
+	}
+	for index := start; index < min(len(collapsed), start+span); index++ {
+		if collapsed[index] {
+			return true
+		}
+	}
+	return false
 }
 
 func tableTrackSpan(starts, ends []float64, start, span int) float64 {
@@ -1025,6 +1109,10 @@ func (context *layoutContext) fixedTableColumnWidths(model tableModel, assignabl
 }
 
 func adjustCollapsedTableCellBox(box *Box, x, width float64, padding, border Edges) {
+	adjustTableCellBox(box, x, width, padding, border)
+}
+
+func adjustTableCellBox(box *Box, x, width float64, padding, border Edges) {
 	if box == nil {
 		return
 	}
