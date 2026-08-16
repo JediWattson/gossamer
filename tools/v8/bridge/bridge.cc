@@ -978,7 +978,9 @@ bool IsDashedStylePropertyName(const std::string &name) {
 
 bool IsSupportedDashedStylePropertyName(const std::string &name) {
   for (const char *supported : {
-           "background-color",    "font-size",           "font-weight",
+           "align-items",         "background-color",    "column-gap",
+           "flex-basis",          "flex-direction",      "flex-grow",
+           "flex-shrink",         "font-size",           "font-weight",
            "line-height",         "text-decoration",     "text-decoration-line",
            "text-align",          "min-width",           "max-width",
            "padding-top",         "padding-right",       "padding-bottom",
@@ -991,7 +993,8 @@ bool IsSupportedDashedStylePropertyName(const std::string &name) {
            "border-bottom-style", "border-left-style",   "border-top-color",
            "border-right-color",  "border-bottom-color", "border-left-color",
            "list-style",          "list-style-type",      "overflow-x",
-           "overflow-y",          "z-index",
+           "justify-content",     "overflow-y",          "row-gap",
+           "z-index",
        }) {
     if (name == supported)
       return true;
@@ -10994,6 +10997,10 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
            "overflow",         "overflowX",          "overflowY",
            "position",         "top",                "right",
            "bottom",           "left",               "zIndex",
+           "alignItems",       "columnGap",           "flex",
+           "flexBasis",        "flexDirection",       "flexGrow",
+           "flexShrink",       "gap",                 "justifyContent",
+           "order",            "rowGap",
            "padding",          "paddingTop",         "paddingRight",
            "paddingBottom",    "paddingLeft",        "margin",
            "marginTop",        "marginRight",        "marginBottom",

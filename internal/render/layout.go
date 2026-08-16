@@ -4,11 +4,13 @@ import (
 	"fmt"
 	"image"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode"
 
 	"github.com/JediWattson/gossamer/internal/dom"
+	computed "github.com/JediWattson/gossamer/internal/style"
 )
 
 type layoutContext struct {
@@ -102,6 +104,10 @@ func (context *layoutContext) indexStyles(node *styledNode) {
 }
 
 func (context *layoutContext) layoutBlock(node *styledNode, containingX, contentY, availableWidth float64) (*Box, error) {
+	return context.layoutBlockSized(node, containingX, contentY, availableWidth, nil)
+}
+
+func (context *layoutContext) layoutBlockSized(node *styledNode, containingX, contentY, availableWidth float64, forcedContentWidth *float64) (*Box, error) {
 	style := node.style
 	leftAuto := style.MarginLeft().Unit() == lengthAuto
 	rightAuto := style.MarginRight().Unit() == lengthAuto
@@ -149,7 +155,9 @@ func (context *layoutContext) layoutBlock(node *styledNode, containingX, content
 	}
 
 	width := availableWidth - left - right - padding.Left - padding.Right - border.Left - border.Right
-	if style.Width().Unit() != lengthAuto {
+	if forcedContentWidth != nil {
+		width = *forcedContentWidth
+	} else if style.Width().Unit() != lengthAuto {
 		width = resolveLength(style.Width(), availableWidth, context.viewport, availableWidth)
 	}
 	width = context.constrainWidth(style, math.Max(0, width), availableWidth)
@@ -175,6 +183,15 @@ func (context *layoutContext) layoutBlock(node *styledNode, containingX, content
 		X:     box.Bounds.X + border.Left + padding.Left,
 		Y:     box.Bounds.Y + border.Top + padding.Top,
 		Width: width,
+	}
+	if style.Display() == displayFlex {
+		contentHeight, err := context.layoutFlexContainer(node, box, width)
+		if err != nil {
+			return nil, err
+		}
+		box.ContentBounds.Height = contentHeight
+		box.Bounds.Height = border.Top + padding.Top + contentHeight + padding.Bottom + border.Bottom
+		return context.finalizeBlock(node, box, availableWidth)
 	}
 	cursorY := box.ContentBounds.Y
 	previousBottomMargin := 0.0
@@ -260,6 +277,235 @@ func (context *layoutContext) layoutBlock(node *styledNode, containingX, content
 	box.ContentBounds.Height = contentHeight
 	box.Bounds.Height = border.Top + padding.Top + box.ContentBounds.Height + padding.Bottom + border.Bottom
 	return context.finalizeBlock(node, box, availableWidth)
+}
+
+type flexLayoutItem struct {
+	node          *styledNode
+	box           *Box
+	originalIndex int
+	mainSize      float64
+	outerMain     float64
+	marginBefore  float64
+	marginAfter   float64
+}
+
+func (context *layoutContext) layoutFlexContainer(node *styledNode, box *Box, contentWidth float64) (float64, error) {
+	items := make([]flexLayoutItem, 0, len(node.children))
+	for index, child := range node.children {
+		if child.node == nil || child.node.Type != dom.ElementNode ||
+			child.style.Display() == displayNone || isOutOfFlow(child.style.Position()) {
+			continue
+		}
+		items = append(items, flexLayoutItem{node: child, originalIndex: index})
+	}
+	sort.SliceStable(items, func(left, right int) bool {
+		return items[left].node.style.Order() < items[right].node.style.Order()
+	})
+	direction := node.style.FlexDirection()
+	if direction == computed.FlexDirectionRowReverse || direction == computed.FlexDirectionColumnReverse {
+		for left, right := 0, len(items)-1; left < right; left, right = left+1, right-1 {
+			items[left], items[right] = items[right], items[left]
+		}
+	}
+	if direction == computed.FlexDirectionColumn || direction == computed.FlexDirectionColumnReverse {
+		return context.layoutFlexColumn(node, box, contentWidth, items)
+	}
+	return context.layoutFlexRow(node, box, contentWidth, items)
+}
+
+func (context *layoutContext) layoutFlexRow(node *styledNode, box *Box, contentWidth float64, items []flexLayoutItem) (float64, error) {
+	if len(items) == 0 {
+		return context.definiteFlexHeight(node.style, 0), nil
+	}
+	gap := math.Max(0, resolveLength(node.style.ColumnGap(), contentWidth, context.viewport, 0))
+	totalOuter := gap * float64(len(items)-1)
+	totalGrow := 0.0
+	totalShrinkWeight := 0.0
+	for index := range items {
+		item := &items[index]
+		style := item.node.style
+		padding := context.resolvePadding(style, contentWidth)
+		border := context.resolveBorder(style, contentWidth)
+		item.marginBefore = resolveLength(style.MarginLeft(), contentWidth, context.viewport, 0)
+		item.marginAfter = resolveLength(style.MarginRight(), contentWidth, context.viewport, 0)
+		basis := 0.0
+		switch {
+		case style.FlexBasis().Unit() != lengthAuto:
+			basis = resolveLength(style.FlexBasis(), contentWidth, context.viewport, 0)
+		case style.Width().Unit() != lengthAuto:
+			basis = resolveLength(style.Width(), contentWidth, context.viewport, 0)
+		}
+		item.mainSize = math.Max(0, basis)
+		decoration := padding.Left + padding.Right + border.Left + border.Right + item.marginBefore + item.marginAfter
+		item.outerMain = item.mainSize + decoration
+		totalOuter += item.outerMain
+		totalGrow += style.FlexGrow()
+		totalShrinkWeight += style.FlexShrink() * item.mainSize
+	}
+	free := contentWidth - totalOuter
+	if free > 0 && totalGrow > 0 {
+		for index := range items {
+			item := &items[index]
+			addition := free * item.node.style.FlexGrow() / totalGrow
+			item.mainSize += addition
+			item.outerMain += addition
+		}
+		free = 0
+	} else if free < 0 && totalShrinkWeight > 0 {
+		deficit := -free
+		for index := range items {
+			item := &items[index]
+			weight := item.node.style.FlexShrink() * item.mainSize
+			reduction := math.Min(item.mainSize, deficit*weight/totalShrinkWeight)
+			item.mainSize -= reduction
+			item.outerMain -= reduction
+		}
+		free = 0
+	}
+	start, extraGap := justifyFlexSpace(node.style.JustifyContent(), math.Max(0, free), len(items))
+	cursorX := box.ContentBounds.X + start
+	maxCross := 0.0
+	for index := range items {
+		item := &items[index]
+		marginTop := resolveLength(item.node.style.MarginTop(), contentWidth, context.viewport, 0)
+		marginBottom := resolveLength(item.node.style.MarginBottom(), contentWidth, context.viewport, 0)
+		childBox, err := context.layoutBlockSized(item.node, cursorX, box.ContentBounds.Y+marginTop, item.outerMain, &item.mainSize)
+		if err != nil {
+			return 0, err
+		}
+		item.box = childBox
+		cross := marginTop + childBox.Bounds.Height + marginBottom
+		maxCross = math.Max(maxCross, cross)
+		cursorX += item.outerMain + gap + extraGap
+	}
+	containerHeight := context.definiteFlexHeight(node.style, maxCross)
+	for index := range items {
+		item := &items[index]
+		marginTop := resolveLength(item.node.style.MarginTop(), contentWidth, context.viewport, 0)
+		marginBottom := resolveLength(item.node.style.MarginBottom(), contentWidth, context.viewport, 0)
+		availableCross := math.Max(0, containerHeight-marginTop-marginBottom)
+		if node.style.AlignItems() == computed.AlignStretch && item.node.style.Height().Unit() == lengthAuto {
+			setBoxOuterHeight(item.box, availableCross)
+		}
+		offset := alignFlexOffset(node.style.AlignItems(), math.Max(0, availableCross-item.box.Bounds.Height))
+		translateLayoutBox(item.box, 0, box.ContentBounds.Y+marginTop+offset-item.box.Bounds.Y)
+		box.Children = append(box.Children, item.box)
+		box.flow = append(box.flow, flowItem{box: item.box})
+	}
+	return containerHeight, nil
+}
+
+func (context *layoutContext) layoutFlexColumn(node *styledNode, box *Box, contentWidth float64, items []flexLayoutItem) (float64, error) {
+	gap := math.Max(0, resolveLength(node.style.RowGap(), contentWidth, context.viewport, 0))
+	totalMain := gap * math.Max(0, float64(len(items)-1))
+	for index := range items {
+		item := &items[index]
+		childBox, err := context.layoutBlock(item.node, box.ContentBounds.X, box.ContentBounds.Y, contentWidth)
+		if err != nil {
+			return 0, err
+		}
+		item.box = childBox
+		marginTop := resolveLength(item.node.style.MarginTop(), contentWidth, context.viewport, 0)
+		marginBottom := resolveLength(item.node.style.MarginBottom(), contentWidth, context.viewport, 0)
+		basis := childBox.Bounds.Height
+		if item.node.style.FlexBasis().Unit() != lengthAuto {
+			basis = resolveLength(item.node.style.FlexBasis(), 0, context.viewport, basis)
+		}
+		item.mainSize = math.Max(0, basis)
+		item.outerMain = marginTop + item.mainSize + marginBottom
+		totalMain += item.outerMain
+	}
+	containerHeight := context.definiteFlexHeight(node.style, totalMain)
+	free := containerHeight - totalMain
+	totalGrow := 0.0
+	totalShrinkWeight := 0.0
+	for index := range items {
+		totalGrow += items[index].node.style.FlexGrow()
+		totalShrinkWeight += items[index].node.style.FlexShrink() * items[index].mainSize
+	}
+	if free > 0 && totalGrow > 0 {
+		for index := range items {
+			addition := free * items[index].node.style.FlexGrow() / totalGrow
+			items[index].mainSize += addition
+			items[index].outerMain += addition
+		}
+		free = 0
+	} else if free < 0 && totalShrinkWeight > 0 {
+		deficit := -free
+		for index := range items {
+			weight := items[index].node.style.FlexShrink() * items[index].mainSize
+			reduction := math.Min(items[index].mainSize, deficit*weight/totalShrinkWeight)
+			items[index].mainSize -= reduction
+			items[index].outerMain -= reduction
+		}
+		free = 0
+	}
+	start, extraGap := justifyFlexSpace(node.style.JustifyContent(), math.Max(0, free), len(items))
+	cursorY := box.ContentBounds.Y + start
+	for index := range items {
+		item := &items[index]
+		marginTop := resolveLength(item.node.style.MarginTop(), contentWidth, context.viewport, 0)
+		marginBottom := resolveLength(item.node.style.MarginBottom(), contentWidth, context.viewport, 0)
+		marginLeft := resolveLength(item.node.style.MarginLeft(), contentWidth, context.viewport, 0)
+		marginRight := resolveLength(item.node.style.MarginRight(), contentWidth, context.viewport, 0)
+		setBoxOuterHeight(item.box, item.mainSize)
+		availableCross := math.Max(0, contentWidth-marginLeft-marginRight)
+		xOffset := alignFlexOffset(node.style.AlignItems(), math.Max(0, availableCross-item.box.Bounds.Width))
+		translateLayoutBox(item.box, box.ContentBounds.X+marginLeft+xOffset-item.box.Bounds.X, cursorY+marginTop-item.box.Bounds.Y)
+		box.Children = append(box.Children, item.box)
+		box.flow = append(box.flow, flowItem{box: item.box})
+		cursorY += marginTop + item.mainSize + marginBottom + gap + extraGap
+	}
+	return containerHeight, nil
+}
+
+func (context *layoutContext) definiteFlexHeight(style computedStyle, fallback float64) float64 {
+	if style.Height().Unit() != lengthAuto && !style.Height().DependsOnPercent() {
+		return math.Max(0, resolveLength(style.Height(), 0, context.viewport, fallback))
+	}
+	return math.Max(0, fallback)
+}
+
+func setBoxOuterHeight(box *Box, outerHeight float64) {
+	if box == nil {
+		return
+	}
+	box.Bounds.Height = math.Max(0, outerHeight)
+	box.ContentBounds.Height = math.Max(0, box.Bounds.Height-box.Border.Top-box.Padding.Top-box.Padding.Bottom-box.Border.Bottom)
+}
+
+func justifyFlexSpace(justify computed.JustifyContent, free float64, count int) (start, extraGap float64) {
+	if count == 0 || free <= 0 {
+		return 0, 0
+	}
+	switch justify {
+	case computed.JustifyFlexEnd:
+		return free, 0
+	case computed.JustifyCenter:
+		return free / 2, 0
+	case computed.JustifySpaceBetween:
+		if count > 1 {
+			return 0, free / float64(count-1)
+		}
+	case computed.JustifySpaceAround:
+		space := free / float64(count)
+		return space / 2, space
+	case computed.JustifySpaceEvenly:
+		space := free / float64(count+1)
+		return space, space
+	}
+	return 0, 0
+}
+
+func alignFlexOffset(align computed.AlignItems, free float64) float64 {
+	switch align {
+	case computed.AlignFlexEnd:
+		return free
+	case computed.AlignCenterItems:
+		return free / 2
+	default:
+		return 0
+	}
 }
 
 func (context *layoutContext) finalizeBlock(node *styledNode, box *Box, containingWidth float64) (*Box, error) {

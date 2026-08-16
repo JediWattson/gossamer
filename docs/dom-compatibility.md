@@ -5,7 +5,7 @@ DOM compatibility gate verifies that this split remains observable as one DOM:
 canonical V8 wrappers carry numeric `NodeHandle` values, while Go owns node
 identity, mutation, form state, construction regions, and queue ARC.
 
-## Selected completed milestones 8-31
+## Selected completed milestones 8-32
 
 | Milestone | Native surface | Regression boundary |
 | --- | --- | --- |
@@ -25,6 +25,7 @@ identity, mutation, form state, construction regions, and queue ARC.
 | 29. Animation timing and resize | `requestAnimationFrame`, cancellation, Page-relative `performance.now()`, batched timestamps, queued viewport resize events | Callback records transfer Realm to queue to task; canceled callbacks release or drain their region; one frame batch shares a timestamp; resize listeners and microtasks run before rAF and one render |
 | 30. Layout observation | `ResizeObserver`, `IntersectionObserver`, entry geometry, thresholds, target registration lifecycle | Delivery reads the current immutable Go layout snapshot at the explicit checkpoint; observers retain canonical target wrappers across forced V8 GC; disconnect and Realm teardown release every native claim |
 | 31. Positioned layout | Typed `position`, physical insets, integer `z-index`, relative/absolute/fixed block geometry, local stacking order | Absolute boxes leave normal flow; fixed boxes bypass root scrolling; display-list paint and hit testing share the same ordered positioned children; a React layout effect measures the same native geometry used by delegated click routing |
+| 32. Flex formatting | `display:flex`, row/column directions and reversals, grow/shrink/basis, `order`, row/column gaps, justification, cross-axis alignment | Ordered element children share one single-line flex calculation for retained geometry, paint, CSSOM View, and hit testing; React style assignment and `useLayoutEffect` observe the native result; teardown returns ownership to zero |
 
 Run the gate against the locally built stock V8:
 
@@ -53,6 +54,11 @@ and ownership barriers before a separate render task publishes a frame.
   local integer stacking order. Inline containing blocks, logical insets,
   sticky positioning, transforms, and the complete CSS stacking-context paint
   algorithm remain future work.
+- Flex layout currently covers a single line of element children. Wrapping,
+  anonymous flex items for non-whitespace text, intrinsic/min-content sizing,
+  auto margins, baseline alignment, `align-self`, and the complete flexible-box
+  min/max constraint algorithm are not yet claimed; `inline-flex` computes but
+  still follows the existing inline fallback.
 - Range contents now cross nested containers and UTF-16 character data.
   `surroundContents`, contextual fragments, point-comparison helpers, and full
   live boundary adjustment after unrelated DOM mutations remain future work.

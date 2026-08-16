@@ -6,8 +6,8 @@ import (
 )
 
 func TestPropertyDefinitionsAreCanonicalAndComplete(t *testing.T) {
-	if len(propertyDefinitions) != 42 {
-		t.Fatalf("property definition count = %d, want 42", len(propertyDefinitions))
+	if len(propertyDefinitions) != 51 {
+		t.Fatalf("property definition count = %d, want 51", len(propertyDefinitions))
 	}
 	if !slices.IsSorted(computedPropertyNames) {
 		t.Fatalf("computed property names are not sorted: %q", computedPropertyNames)
@@ -77,6 +77,8 @@ func TestPropertyDefinitionsAreCanonicalAndComplete(t *testing.T) {
 
 func registryTestValue(definition propertyDefinition) string {
 	switch definition.kind {
+	case propertyAlignItems:
+		return "center"
 	case propertyBackgroundColor, propertyBorderColor, propertyColor:
 		return "red"
 	case propertyBorderStyle:
@@ -85,6 +87,12 @@ func registryTestValue(definition propertyDefinition) string {
 		return "1px"
 	case propertyDisplay:
 		return "block"
+	case propertyFlexBasis:
+		return "10px"
+	case propertyFlexDirection:
+		return "column"
+	case propertyFlexGrow, propertyFlexShrink:
+		return "2"
 	case propertyFontSize:
 		return "18px"
 	case propertyFontWeight:
@@ -93,14 +101,20 @@ func registryTestValue(definition propertyDefinition) string {
 		return "2px"
 	case propertyLineHeight:
 		return "1.5"
+	case propertyJustifyContent:
+		return "space-between"
 	case propertyListStyleType:
 		return "square"
 	case propertyOpacity:
 		return "0.5"
+	case propertyOrder:
+		return "-1"
 	case propertyOverflowX, propertyOverflowY:
 		return "auto"
 	case propertyPosition:
 		return "absolute"
+	case propertyGap:
+		return "3px"
 	case propertyTextAlign:
 		return "center"
 	case propertyTextDecorationLine:

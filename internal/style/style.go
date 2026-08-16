@@ -49,6 +49,8 @@ const (
 	DisplayInlineBlock
 	DisplayBlock
 	DisplayListItem
+	DisplayFlex
+	DisplayInlineFlex
 	DisplayNone
 )
 
@@ -59,7 +61,38 @@ const (
 	displayInlineBlock = DisplayInlineBlock
 	displayBlock       = DisplayBlock
 	displayListItem    = DisplayListItem
+	displayFlex        = DisplayFlex
+	displayInlineFlex  = DisplayInlineFlex
 	displayNone        = DisplayNone
+)
+
+type FlexDirection uint8
+
+const (
+	FlexDirectionRow FlexDirection = iota
+	FlexDirectionRowReverse
+	FlexDirectionColumn
+	FlexDirectionColumnReverse
+)
+
+type JustifyContent uint8
+
+const (
+	JustifyFlexStart JustifyContent = iota
+	JustifyFlexEnd
+	JustifyCenter
+	JustifySpaceBetween
+	JustifySpaceAround
+	JustifySpaceEvenly
+)
+
+type AlignItems uint8
+
+const (
+	AlignStretch AlignItems = iota
+	AlignFlexStart
+	AlignFlexEnd
+	AlignCenterItems
 )
 
 type TextAlignment uint8
@@ -292,6 +325,15 @@ func (index ZIndex) IsAuto() bool { return index.auto }
 // lookups return it by value, so callers cannot mutate stored styles.
 type ComputedStyle struct {
 	display           DisplayMode
+	flexDirection     FlexDirection
+	justifyContent    JustifyContent
+	alignItems        AlignItems
+	rowGap            Length
+	columnGap         Length
+	flexGrow          float64
+	flexShrink        float64
+	flexBasis         Length
+	order             int
 	color             color.NRGBA
 	background        color.NRGBA
 	hasBackground     bool
@@ -334,7 +376,18 @@ type ComputedStyle struct {
 type computedStyle = ComputedStyle
 
 func (computed ComputedStyle) Display() DisplayMode { return computed.display }
-func (computed ComputedStyle) Color() color.NRGBA   { return computed.color }
+func (computed ComputedStyle) FlexDirection() FlexDirection {
+	return computed.flexDirection
+}
+func (computed ComputedStyle) JustifyContent() JustifyContent { return computed.justifyContent }
+func (computed ComputedStyle) AlignItems() AlignItems         { return computed.alignItems }
+func (computed ComputedStyle) RowGap() Length                 { return computed.rowGap }
+func (computed ComputedStyle) ColumnGap() Length              { return computed.columnGap }
+func (computed ComputedStyle) FlexGrow() float64              { return computed.flexGrow }
+func (computed ComputedStyle) FlexShrink() float64            { return computed.flexShrink }
+func (computed ComputedStyle) FlexBasis() Length              { return computed.flexBasis }
+func (computed ComputedStyle) Order() int                     { return computed.order }
+func (computed ComputedStyle) Color() color.NRGBA             { return computed.color }
 func (computed ComputedStyle) Background() (color.NRGBA, bool) {
 	return computed.background, computed.hasBackground
 }
@@ -680,6 +733,13 @@ func initialStyle(node *dom.Node, parent *styledNode, viewport Viewport) (comput
 func cssInitialStyle(viewport Viewport) computedStyle {
 	return computedStyle{
 		display:         displayInline,
+		flexDirection:   FlexDirectionRow,
+		justifyContent:  JustifyFlexStart,
+		alignItems:      AlignStretch,
+		rowGap:          px(0),
+		columnGap:       px(0),
+		flexShrink:      1,
+		flexBasis:       length{unit: lengthAuto},
 		color:           color.NRGBA{A: 0xff},
 		fontSize:        environmentInitialFontSize(viewport),
 		fontWeightValue: 400,

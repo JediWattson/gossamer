@@ -15,6 +15,8 @@ const (
 	displayInlineBlock = computed.DisplayInlineBlock
 	displayBlock       = computed.DisplayBlock
 	displayListItem    = computed.DisplayListItem
+	displayFlex        = computed.DisplayFlex
+	displayInlineFlex  = computed.DisplayInlineFlex
 	displayNone        = computed.DisplayNone
 )
 
@@ -134,7 +136,7 @@ func resolveLength(value length, percentBase float64, viewport Viewport, autoVal
 }
 
 func isBlockLevel(display displayMode) bool {
-	return display == displayBlock || display == displayListItem
+	return display == displayBlock || display == displayListItem || display == displayFlex
 }
 
 func isOutOfFlow(position positionMode) bool {

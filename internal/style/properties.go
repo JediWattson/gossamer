@@ -23,26 +23,34 @@ const (
 type propertyKind uint8
 
 const (
-	propertyBackgroundColor propertyKind = iota
+	propertyAlignItems propertyKind = iota
+	propertyBackgroundColor
 	propertyBorderColor
 	propertyBorderStyle
 	propertyBorderWidth
 	propertyColor
 	propertyDisplay
+	propertyFlexBasis
+	propertyFlexDirection
+	propertyFlexGrow
+	propertyFlexShrink
 	propertyFontSize
 	propertyFontWeight
 	propertyHeight
 	propertyInset
+	propertyJustifyContent
 	propertyLineHeight
 	propertyListStyleType
 	propertyMargin
 	propertyMaxWidth
 	propertyMinWidth
 	propertyOpacity
+	propertyOrder
 	propertyOverflowX
 	propertyOverflowY
 	propertyPadding
 	propertyPosition
+	propertyGap
 	propertyTextAlign
 	propertyTextDecorationLine
 	propertyWidth
@@ -79,6 +87,7 @@ type propertyDefinition struct {
 // propertyDefinitions is kept in canonical byte order so CSSStyleDeclaration
 // enumeration, all expansion, and deterministic test/debug output agree.
 var propertyDefinitions = [...]propertyDefinition{
+	{name: "align-items", kind: propertyAlignItems, invalidation: propertyInvalidatesLayout},
 	{name: "background-color", kind: propertyBackgroundColor, invalidation: propertyInvalidatesPaint},
 	{name: "border-bottom-color", kind: propertyBorderColor, edge: propertyBottom, invalidation: propertyInvalidatesPaint},
 	{name: "border-bottom-style", kind: propertyBorderStyle, edge: propertyBottom, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
@@ -94,10 +103,16 @@ var propertyDefinitions = [...]propertyDefinition{
 	{name: "border-top-width", kind: propertyBorderWidth, edge: propertyTop, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "bottom", kind: propertyInset, edge: propertyBottom, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "color", kind: propertyColor, inherited: true, invalidation: propertyInvalidatesPaint},
+	{name: "column-gap", kind: propertyGap, edge: propertyRight, invalidation: propertyInvalidatesLayout},
 	{name: "display", kind: propertyDisplay, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
+	{name: "flex-basis", kind: propertyFlexBasis, invalidation: propertyInvalidatesLayout},
+	{name: "flex-direction", kind: propertyFlexDirection, invalidation: propertyInvalidatesLayout},
+	{name: "flex-grow", kind: propertyFlexGrow, invalidation: propertyInvalidatesLayout},
+	{name: "flex-shrink", kind: propertyFlexShrink, invalidation: propertyInvalidatesLayout},
 	{name: "font-size", kind: propertyFontSize, inherited: true, computeEarly: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "font-weight", kind: propertyFontWeight, inherited: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "height", kind: propertyHeight, invalidation: propertyInvalidatesLayout},
+	{name: "justify-content", kind: propertyJustifyContent, invalidation: propertyInvalidatesLayout},
 	{name: "left", kind: propertyInset, edge: propertyLeft, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "line-height", kind: propertyLineHeight, inherited: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "list-style-type", kind: propertyListStyleType, inherited: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
@@ -108,6 +123,7 @@ var propertyDefinitions = [...]propertyDefinition{
 	{name: "max-width", kind: propertyMaxWidth, invalidation: propertyInvalidatesLayout},
 	{name: "min-width", kind: propertyMinWidth, invalidation: propertyInvalidatesLayout},
 	{name: "opacity", kind: propertyOpacity, invalidation: propertyInvalidatesPaint},
+	{name: "order", kind: propertyOrder, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "overflow-x", kind: propertyOverflowX, invalidation: propertyInvalidatesPaint},
 	{name: "overflow-y", kind: propertyOverflowY, invalidation: propertyInvalidatesPaint},
 	{name: "padding-bottom", kind: propertyPadding, edge: propertyBottom, invalidation: propertyInvalidatesLayout},
@@ -116,6 +132,7 @@ var propertyDefinitions = [...]propertyDefinition{
 	{name: "padding-top", kind: propertyPadding, edge: propertyTop, invalidation: propertyInvalidatesLayout},
 	{name: "position", kind: propertyPosition, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "right", kind: propertyInset, edge: propertyRight, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
+	{name: "row-gap", kind: propertyGap, edge: propertyBottom, invalidation: propertyInvalidatesLayout},
 	{name: "text-align", kind: propertyTextAlign, inherited: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "text-decoration-line", kind: propertyTextDecorationLine, invalidation: propertyInvalidatesPaint},
 	{name: "top", kind: propertyInset, edge: propertyTop, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
@@ -153,6 +170,8 @@ var shorthandTargets = map[string][]string{
 	"border-top":      {"border-top-width", "border-top-style", "border-top-color"},
 	"border-width":    {"border-top-width", "border-right-width", "border-bottom-width", "border-left-width"},
 	"font":            {"font-size", "font-weight", "line-height"},
+	"flex":            {"flex-grow", "flex-shrink", "flex-basis"},
+	"gap":             {"row-gap", "column-gap"},
 	"list-style":      {"list-style-type"},
 	"margin":          {"margin-top", "margin-right", "margin-bottom", "margin-left"},
 	"overflow":        {"overflow-x", "overflow-y"},
@@ -197,6 +216,8 @@ func copyComputedProperty(destination *computedStyle, source computedStyle, prop
 
 func (definition propertyDefinition) copy(destination *computedStyle, source computedStyle) {
 	switch definition.kind {
+	case propertyAlignItems:
+		destination.alignItems = source.alignItems
 	case propertyBackgroundColor:
 		destination.background = source.background
 		destination.hasBackground = source.hasBackground
@@ -213,6 +234,14 @@ func (definition propertyDefinition) copy(destination *computedStyle, source com
 		destination.color = source.color
 	case propertyDisplay:
 		destination.display = source.display
+	case propertyFlexBasis:
+		destination.flexBasis = source.flexBasis
+	case propertyFlexDirection:
+		destination.flexDirection = source.flexDirection
+	case propertyFlexGrow:
+		destination.flexGrow = source.flexGrow
+	case propertyFlexShrink:
+		destination.flexShrink = source.flexShrink
 	case propertyFontSize:
 		destination.fontSize = source.fontSize
 	case propertyFontWeight:
@@ -221,6 +250,8 @@ func (definition propertyDefinition) copy(destination *computedStyle, source com
 		destination.height = source.height
 	case propertyInset:
 		*definition.boxLength(destination) = *definition.boxLength(&source)
+	case propertyJustifyContent:
+		destination.justifyContent = source.justifyContent
 	case propertyLineHeight:
 		destination.lineHeight = source.lineHeight
 	case propertyListStyleType:
@@ -233,6 +264,8 @@ func (definition propertyDefinition) copy(destination *computedStyle, source com
 		destination.minWidth = source.minWidth
 	case propertyOpacity:
 		destination.opacity = source.opacity
+	case propertyOrder:
+		destination.order = source.order
 	case propertyOverflowX:
 		destination.overflowX = source.overflowX
 	case propertyOverflowY:
@@ -241,6 +274,8 @@ func (definition propertyDefinition) copy(destination *computedStyle, source com
 		*definition.boxLength(destination) = *definition.boxLength(&source)
 	case propertyPosition:
 		destination.position = source.position
+	case propertyGap:
+		*definition.boxLength(destination) = *definition.boxLength(&source)
 	case propertyTextAlign:
 		destination.textAlign = source.textAlign
 	case propertyTextDecorationLine:
@@ -259,6 +294,9 @@ func (definition propertyDefinition) resetToInitial(destination *computedStyle, 
 
 func (definition propertyDefinition) valid(source string, viewport Viewport) bool {
 	switch definition.kind {
+	case propertyAlignItems:
+		keyword, ok := singleCSSKeyword(source)
+		return ok && (keyword == "stretch" || keyword == "flex-start" || keyword == "flex-end" || keyword == "center")
 	case propertyBackgroundColor:
 		_, ok := parseColor(source)
 		return ok
@@ -280,11 +318,20 @@ func (definition propertyDefinition) valid(source string, viewport Viewport) boo
 			return false
 		}
 		switch keyword {
-		case "none", "block", "list-item", "inline", "inline-block":
+		case "none", "block", "list-item", "inline", "inline-block", "flex", "inline-flex":
 			return true
 		default:
 			return false
 		}
+	case propertyFlexBasis:
+		parsed, ok := parseLength(source, 1, 1, viewport)
+		return ok && nonNegativeLength(parsed)
+	case propertyFlexDirection:
+		keyword, ok := singleCSSKeyword(source)
+		return ok && (keyword == "row" || keyword == "row-reverse" || keyword == "column" || keyword == "column-reverse")
+	case propertyFlexGrow, propertyFlexShrink:
+		token, ok := singleCSSNumber(source)
+		return ok && token.Number >= 0
 	case propertyFontSize:
 		parsed, ok := parseLength(source, 1, 1, viewport)
 		if !ok || parsed.unit == lengthAuto {
@@ -304,6 +351,9 @@ func (definition propertyDefinition) valid(source string, viewport Viewport) boo
 	case propertyInset:
 		_, ok := parseLength(source, 1, 1, viewport)
 		return ok
+	case propertyJustifyContent:
+		keyword, ok := singleCSSKeyword(source)
+		return ok && (keyword == "flex-start" || keyword == "flex-end" || keyword == "center" || keyword == "space-between" || keyword == "space-around" || keyword == "space-evenly")
 	case propertyLineHeight:
 		if keyword, ok := singleCSSKeyword(source); ok && keyword == "normal" {
 			return true
@@ -332,6 +382,9 @@ func (definition propertyDefinition) valid(source string, viewport Viewport) boo
 	case propertyOpacity:
 		_, ok := singleCSSNumber(source)
 		return ok
+	case propertyOrder:
+		token, ok := singleCSSNumber(source)
+		return ok && token.Integer
 	case propertyOverflowX, propertyOverflowY:
 		keyword, ok := singleCSSKeyword(source)
 		return ok && validOverflowKeyword(keyword)
@@ -341,6 +394,9 @@ func (definition propertyDefinition) valid(source string, viewport Viewport) boo
 	case propertyPosition:
 		keyword, ok := singleCSSKeyword(source)
 		return ok && (keyword == "static" || keyword == "relative" || keyword == "absolute" || keyword == "fixed")
+	case propertyGap:
+		parsed, ok := parseLength(source, 1, 1, viewport)
+		return ok && parsed.unit != lengthAuto && nonNegativeLength(parsed)
 	case propertyTextAlign:
 		keyword, ok := singleCSSKeyword(source)
 		if !ok {
@@ -370,6 +426,18 @@ func (definition propertyDefinition) valid(source string, viewport Viewport) boo
 
 func (definition propertyDefinition) apply(style *computedStyle, source string, context propertyApplyContext) {
 	switch definition.kind {
+	case propertyAlignItems:
+		keyword, _ := singleCSSKeyword(source)
+		switch keyword {
+		case "flex-start":
+			style.alignItems = AlignFlexStart
+		case "flex-end":
+			style.alignItems = AlignFlexEnd
+		case "center":
+			style.alignItems = AlignCenterItems
+		default:
+			style.alignItems = AlignStretch
+		}
 	case propertyBackgroundColor:
 		if parsed, ok := parseColor(source); ok {
 			style.background = parsed
@@ -400,10 +468,38 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 			style.display = displayBlock
 		case "list-item":
 			style.display = displayListItem
+		case "flex":
+			style.display = displayFlex
+		case "inline-flex":
+			style.display = displayInlineFlex
 		case "inline":
 			style.display = displayInline
 		case "inline-block":
 			style.display = displayInlineBlock
+		}
+	case propertyFlexBasis:
+		if parsed, ok := parseLength(source, style.fontSize, style.fontSize, context.viewport); ok && nonNegativeLength(parsed) {
+			style.flexBasis = parsed
+		}
+	case propertyFlexDirection:
+		keyword, _ := singleCSSKeyword(source)
+		switch keyword {
+		case "row-reverse":
+			style.flexDirection = FlexDirectionRowReverse
+		case "column":
+			style.flexDirection = FlexDirectionColumn
+		case "column-reverse":
+			style.flexDirection = FlexDirectionColumnReverse
+		default:
+			style.flexDirection = FlexDirectionRow
+		}
+	case propertyFlexGrow:
+		if token, ok := singleCSSNumber(source); ok && token.Number >= 0 {
+			style.flexGrow = token.Number
+		}
+	case propertyFlexShrink:
+		if token, ok := singleCSSNumber(source); ok && token.Number >= 0 {
+			style.flexShrink = token.Number
 		}
 	case propertyFontSize:
 		if parsed, ok := parseLength(source, context.parentFontSize, context.parentFontSize, context.viewport); ok && parsed.unit != lengthAuto {
@@ -435,6 +531,22 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 	case propertyInset:
 		if parsed, ok := parseLength(source, style.fontSize, style.fontSize, context.viewport); ok {
 			*definition.boxLength(style) = parsed
+		}
+	case propertyJustifyContent:
+		keyword, _ := singleCSSKeyword(source)
+		switch keyword {
+		case "flex-end":
+			style.justifyContent = JustifyFlexEnd
+		case "center":
+			style.justifyContent = JustifyCenter
+		case "space-between":
+			style.justifyContent = JustifySpaceBetween
+		case "space-around":
+			style.justifyContent = JustifySpaceAround
+		case "space-evenly":
+			style.justifyContent = JustifySpaceEvenly
+		default:
+			style.justifyContent = JustifyFlexStart
 		}
 	case propertyLineHeight:
 		if keyword, ok := singleCSSKeyword(source); ok && keyword == "normal" {
@@ -471,6 +583,10 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 		if token, ok := singleCSSNumber(source); ok {
 			style.opacity = clamp(token.Number, 0, 1)
 		}
+	case propertyOrder:
+		if token, ok := singleCSSNumber(source); ok && token.Integer {
+			style.order = int(token.Number)
+		}
 	case propertyOverflowX:
 		if keyword, ok := singleCSSKeyword(source); ok {
 			style.overflowX = parseOverflowMode(keyword)
@@ -494,6 +610,10 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 			style.position = PositionFixed
 		default:
 			style.position = PositionStatic
+		}
+	case propertyGap:
+		if parsed, ok := parseLength(source, style.fontSize, style.fontSize, context.viewport); ok && parsed.unit != lengthAuto && nonNegativeLength(parsed) {
+			*definition.boxLength(style) = parsed
 		}
 	case propertyTextAlign:
 		keyword, _ := singleCSSKeyword(source)
@@ -534,6 +654,17 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 
 func (definition propertyDefinition) serialize(computed ComputedStyle) string {
 	switch definition.kind {
+	case propertyAlignItems:
+		switch computed.alignItems {
+		case AlignFlexStart:
+			return "flex-start"
+		case AlignFlexEnd:
+			return "flex-end"
+		case AlignCenterItems:
+			return "center"
+		default:
+			return "stretch"
+		}
 	case propertyBackgroundColor:
 		return serializeComputedColor(computed.background)
 	case propertyBorderColor:
@@ -546,6 +677,23 @@ func (definition propertyDefinition) serialize(computed ComputedStyle) string {
 		return serializeComputedColor(computed.color)
 	case propertyDisplay:
 		return serializeComputedDisplay(computed.display)
+	case propertyFlexBasis:
+		return serializeComputedLength(computed.flexBasis)
+	case propertyFlexDirection:
+		switch computed.flexDirection {
+		case FlexDirectionRowReverse:
+			return "row-reverse"
+		case FlexDirectionColumn:
+			return "column"
+		case FlexDirectionColumnReverse:
+			return "column-reverse"
+		default:
+			return "row"
+		}
+	case propertyFlexGrow:
+		return serializeComputedNumber(computed.flexGrow)
+	case propertyFlexShrink:
+		return serializeComputedNumber(computed.flexShrink)
 	case propertyFontSize:
 		return serializeComputedNumber(computed.fontSize) + "px"
 	case propertyFontWeight:
@@ -554,6 +702,21 @@ func (definition propertyDefinition) serialize(computed ComputedStyle) string {
 		return serializeComputedLength(computed.height)
 	case propertyInset:
 		return serializeComputedLength(*definition.boxLength(&computed))
+	case propertyJustifyContent:
+		switch computed.justifyContent {
+		case JustifyFlexEnd:
+			return "flex-end"
+		case JustifyCenter:
+			return "center"
+		case JustifySpaceBetween:
+			return "space-between"
+		case JustifySpaceAround:
+			return "space-around"
+		case JustifySpaceEvenly:
+			return "space-evenly"
+		default:
+			return "flex-start"
+		}
 	case propertyLineHeight:
 		if computed.lineHeight.normal {
 			return "normal"
@@ -576,6 +739,8 @@ func (definition propertyDefinition) serialize(computed ComputedStyle) string {
 		return serializeComputedLength(computed.minWidth)
 	case propertyOpacity:
 		return serializeComputedNumber(computed.opacity)
+	case propertyOrder:
+		return strconv.Itoa(computed.order)
 	case propertyOverflowX:
 		return serializeOverflowMode(computed.overflowX)
 	case propertyOverflowY:
@@ -591,6 +756,8 @@ func (definition propertyDefinition) serialize(computed ComputedStyle) string {
 		default:
 			return "static"
 		}
+	case propertyGap:
+		return serializeComputedLength(*definition.boxLength(&computed))
 	case propertyTextAlign:
 		return serializeComputedTextAlignment(computed.textAlign)
 	case propertyTextDecorationLine:
@@ -627,6 +794,13 @@ func (definition propertyDefinition) borderSide(style *computedStyle) *borderSid
 
 func (definition propertyDefinition) boxLength(style *computedStyle) *length {
 	switch definition.kind {
+	case propertyGap:
+		if definition.edge == propertyBottom {
+			return &style.rowGap
+		}
+		if definition.edge == propertyRight {
+			return &style.columnGap
+		}
 	case propertyInset:
 		switch definition.edge {
 		case propertyTop:
@@ -696,6 +870,12 @@ func validComputedDeclaration(declaration css.Declaration, viewport Viewport) bo
 	case "font":
 		_, _, _, _, ok := parseFontShorthand(declaration.Value, viewport)
 		return ok
+	case "flex":
+		_, _, _, ok := parseFlexShorthand(declaration.Value, 1, viewport)
+		return ok
+	case "gap":
+		_, _, ok := parseGapShorthand(declaration.Value, 1, viewport)
+		return ok
 	case "background":
 		_, ok := parseFirstColor(declaration.Value)
 		return ok
@@ -733,6 +913,70 @@ func validComputedDeclaration(declaration css.Declaration, viewport Viewport) bo
 	}
 }
 
+func parseGapShorthand(source string, fontSize float64, viewport Viewport) (length, length, bool) {
+	parts := strings.Fields(source)
+	if len(parts) < 1 || len(parts) > 2 {
+		return length{}, length{}, false
+	}
+	row, ok := parseLength(parts[0], fontSize, fontSize, viewport)
+	if !ok || row.unit == lengthAuto || !nonNegativeLength(row) {
+		return length{}, length{}, false
+	}
+	column := row
+	if len(parts) == 2 {
+		column, ok = parseLength(parts[1], fontSize, fontSize, viewport)
+		if !ok || column.unit == lengthAuto || !nonNegativeLength(column) {
+			return length{}, length{}, false
+		}
+	}
+	return row, column, true
+}
+
+func parseFlexShorthand(source string, fontSize float64, viewport Viewport) (float64, float64, length, bool) {
+	if keyword, ok := singleCSSKeyword(source); ok {
+		switch keyword {
+		case "none":
+			return 0, 0, length{unit: lengthAuto}, true
+		case "auto":
+			return 1, 1, length{unit: lengthAuto}, true
+		case "initial":
+			return 0, 1, length{unit: lengthAuto}, true
+		}
+	}
+	parts := strings.Fields(source)
+	if len(parts) < 1 || len(parts) > 3 {
+		return 0, 0, length{}, false
+	}
+	readNumber := func(value string) (float64, bool) {
+		token, ok := singleCSSNumber(value)
+		return token.Number, ok && token.Number >= 0
+	}
+	readBasis := func(value string) (length, bool) {
+		parsed, ok := parseLength(value, fontSize, fontSize, viewport)
+		return parsed, ok && nonNegativeLength(parsed)
+	}
+	grow, ok := readNumber(parts[0])
+	if !ok {
+		basis, basisOK := readBasis(parts[0])
+		return 1, 1, basis, basisOK && len(parts) == 1
+	}
+	shrink := 1.0
+	basis := px(0)
+	if len(parts) == 1 {
+		return grow, shrink, basis, true
+	}
+	if second, numberOK := readNumber(parts[1]); numberOK {
+		shrink = second
+		if len(parts) == 3 {
+			parsed, basisOK := readBasis(parts[2])
+			return grow, shrink, parsed, basisOK
+		}
+		return grow, shrink, basis, true
+	}
+	parsed, basisOK := readBasis(parts[1])
+	return grow, shrink, parsed, basisOK && len(parts) == 2
+}
+
 func applyDeclaration(style *computedStyle, property, source string, context propertyApplyContext) {
 	if definition, ok := lookupPropertyDefinition(property); ok {
 		definition.apply(style, source, context)
@@ -748,6 +992,14 @@ func applyDeclaration(style *computedStyle, property, source string, context pro
 	case "padding":
 		if values, ok := parsePaddingLengths(source, style.fontSize, context.viewport); ok {
 			style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft = values[0], values[1], values[2], values[3]
+		}
+	case "flex":
+		if grow, shrink, basis, ok := parseFlexShorthand(source, style.fontSize, context.viewport); ok {
+			style.flexGrow, style.flexShrink, style.flexBasis = grow, shrink, basis
+		}
+	case "gap":
+		if row, column, ok := parseGapShorthand(source, style.fontSize, context.viewport); ok {
+			style.rowGap, style.columnGap = row, column
 		}
 	case "border":
 		if parsed, ok := parseBorderShorthand(source, style.fontSize, context.viewport); ok {

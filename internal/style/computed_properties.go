@@ -116,6 +116,10 @@ func serializeComputedDisplay(value DisplayMode) string {
 		return "block"
 	case DisplayListItem:
 		return "list-item"
+	case DisplayFlex:
+		return "flex"
+	case DisplayInlineFlex:
+		return "inline-flex"
 	case DisplayNone:
 		return "none"
 	default:
