@@ -323,6 +323,218 @@ argumentsResult === 9;
 	}
 }
 
+func TestNativeNumericAndTimeBootstrapBuiltins(t *testing.T) {
+	t.Parallel()
+
+	image, err := compiler.Compile(`
+let before = Date.now();
+let random = Math.random();
+let after = Date.now();
+Math.clz32(0) === 32 && Math.clz32(1) === 31 &&
+Math.floor(-1.2) === -2 && Math.log(1) === 0 &&
+Math.min(4, -2, 9) === -2 && Math.min() === Infinity &&
+Math.LN2 > 0.69 && Math.LN2 < 0.70 &&
+random >= 0 && random < 1 && before <= after &&
+isNaN("not-a-number") && !isNaN("42") &&
+Number("42") === 42 && (255).toString(16) === "ff" &&
+random.toString(36).slice(0, 2) === "0.";
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	realm, err := browserruntime.NewRealm(832, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer realm.Close()
+	interpreter := browserruntime.NewInterpreter(browserruntime.InterpreterConfig{})
+	var result memory.Value
+	_, err = realm.EnqueueTask(func(task *browserruntime.TaskContext) error {
+		intrinsics, err := interpreter.Bootstrap(task)
+		if err != nil {
+			return err
+		}
+		loaded, err := program.Load(task, image, memory.RefValue(intrinsics.Global))
+		if err != nil {
+			return err
+		}
+		result, err = interpreter.Execute(task, loaded.Entry)
+		if err != nil {
+			return err
+		}
+		return task.Realm.Store().CheckInvariants()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if result.Kind() != memory.ValueBool || !result.Bool() {
+		t.Fatalf("numeric bootstrap result = %#v, want true", result)
+	}
+}
+
+func TestNativeRegExpBootstrapBuiltins(t *testing.T) {
+	t.Parallel()
+
+	image, err := compiler.Compile(`
+let expression = RegExp("^go+$", "i");
+let globalExpression = new RegExp("a", "g");
+let firstMatch = globalExpression.test("ba");
+let firstIndex = globalExpression.lastIndex;
+let secondMatch = globalExpression.test("ba");
+
+expression.test("GOO") && !expression.test("stop") &&
+expression.source === "^go+$" && expression.flags === "i" &&
+expression.toString() === "/^go+$/i" &&
+firstMatch && firstIndex === 2 && !secondMatch && globalExpression.lastIndex === 0;
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	realm, err := browserruntime.NewRealm(833, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer realm.Close()
+	interpreter := browserruntime.NewInterpreter(browserruntime.InterpreterConfig{})
+	var result memory.Value
+	_, err = realm.EnqueueTask(func(task *browserruntime.TaskContext) error {
+		intrinsics, err := interpreter.Bootstrap(task)
+		if err != nil {
+			return err
+		}
+		loaded, err := program.Load(task, image, memory.RefValue(intrinsics.Global))
+		if err != nil {
+			return err
+		}
+		result, err = interpreter.Execute(task, loaded.Entry)
+		if err != nil {
+			return err
+		}
+		return task.Realm.Store().CheckInvariants()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if result.Kind() != memory.ValueBool || !result.Bool() {
+		t.Fatalf("RegExp bootstrap result = %#v, want true", result)
+	}
+}
+
+func TestNativeWeakCollectionBuiltins(t *testing.T) {
+	t.Parallel()
+
+	image, err := compiler.Compile(`
+let weakKey = {};
+let weakOther = {};
+let weakMap = new WeakMap();
+let weakSet = new WeakSet();
+let mapSetResult = weakMap.set(weakKey, 7);
+let setAddResult = weakSet.add(weakKey);
+
+mapSetResult === weakMap && setAddResult === weakSet &&
+weakMap.get(weakKey) === 7 && weakMap.has(weakKey) && !weakMap.has(weakOther) &&
+weakMap.get(1) === undefined && !weakMap.has(1) &&
+weakSet.has(weakKey) && !weakSet.has(weakOther) && !weakSet.has(1) &&
+weakMap.delete(weakKey) && !weakMap.has(weakKey) &&
+weakSet.delete(weakKey) && !weakSet.has(weakKey);
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	realm, err := browserruntime.NewRealm(834, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer realm.Close()
+	interpreter := browserruntime.NewInterpreter(browserruntime.InterpreterConfig{})
+	var result memory.Value
+	_, err = realm.EnqueueTask(func(task *browserruntime.TaskContext) error {
+		intrinsics, err := interpreter.Bootstrap(task)
+		if err != nil {
+			return err
+		}
+		loaded, err := program.Load(task, image, memory.RefValue(intrinsics.Global))
+		if err != nil {
+			return err
+		}
+		result, err = interpreter.Execute(task, loaded.Entry)
+		if err != nil {
+			return err
+		}
+		return task.Realm.Store().CheckInvariants()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if result.Kind() != memory.ValueBool || !result.Bool() {
+		t.Fatalf("weak collection result = %#v, want true", result)
+	}
+}
+
+func TestNativeArrayMutationAndConcatBuiltins(t *testing.T) {
+	t.Parallel()
+
+	image, err := compiler.Compile(`
+let concatenated = [1, 2].concat([3, 4], 5);
+let shifted = [1, 2];
+let unshiftLength = shifted.unshift(0);
+let first = shifted.shift();
+let spliced = [1, 2, 3, 4];
+let removed = spliced.splice(1, 2, 7, 8, 9);
+
+concatenated.join(",") === "1,2,3,4,5" &&
+unshiftLength === 3 && first === 0 && shifted.join(",") === "1,2" &&
+removed.join(",") === "2,3" && spliced.join(",") === "1,7,8,9,4";
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	realm, err := browserruntime.NewRealm(835, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer realm.Close()
+	interpreter := browserruntime.NewInterpreter(browserruntime.InterpreterConfig{})
+	var result memory.Value
+	_, err = realm.EnqueueTask(func(task *browserruntime.TaskContext) error {
+		intrinsics, err := interpreter.Bootstrap(task)
+		if err != nil {
+			return err
+		}
+		loaded, err := program.Load(task, image, memory.RefValue(intrinsics.Global))
+		if err != nil {
+			return err
+		}
+		result, err = interpreter.Execute(task, loaded.Entry)
+		if err != nil {
+			return err
+		}
+		return task.Realm.Store().CheckInvariants()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if result.Kind() != memory.ValueBool || !result.Bool() {
+		t.Fatalf("Array mutation result = %#v, want true", result)
+	}
+}
+
 func TestN10PromisesAndDeterministicMicrotaskCheckpoint(t *testing.T) {
 	t.Parallel()
 

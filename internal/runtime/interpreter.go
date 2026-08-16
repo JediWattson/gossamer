@@ -688,7 +688,15 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 					}
 				}
 				if !present {
-					if handled, terminal := execution.routeFrameError(frame, ErrNotCallable); handled {
+					methodErr := ErrNotCallable
+					if key.IsRef() {
+						if kind, kindErr := context.HeapKind(key.Ref()); kindErr == nil && kind == memory.HeapString {
+							if name, nameErr := context.DerefString(key.Ref()); nameErr == nil {
+								methodErr = fmt.Errorf("%w: method %q", ErrNotCallable, name)
+							}
+						}
+					}
+					if handled, terminal := execution.routeFrameError(frame, methodErr); handled {
 						continue
 					} else {
 						return memory.Value{}, terminal

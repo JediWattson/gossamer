@@ -508,6 +508,7 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 	}{
 		{"window", memory.RefValue(bindings.window)},
 		{"self", memory.RefValue(bindings.window)},
+		{"globalThis", memory.RefValue(bindings.window)},
 		{"document", memory.RefValue(bindings.document)},
 		{"queueMicrotask", memory.RefValue(realm.active.QueueMicrotask)},
 		{"setTimeout", memory.RefValue(setTimeout)},
@@ -548,6 +549,7 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{bindingObserverCache, bindings.observerCache, false},
 		{bindingWindow, bindings.window, false},
 		{bindingSelf, bindings.window, false},
+		{"globalThis", bindings.window, false},
 		{bindingDocument, bindings.document, false},
 		{bindingPerformance, bindings.performance, false},
 		{bindingMutationObserver, bindings.mutationObserverConstructor, false},

@@ -94,6 +94,33 @@ const (
 	nativeFunctionApply
 	nativeFunctionBind
 	nativeBoundFunction
+	nativeMathCLZ32
+	nativeMathFloor
+	nativeMathLog
+	nativeMathMin
+	nativeMathRandom
+	nativeDateConstructor
+	nativeDateNow
+	nativeGlobalIsNaN
+	nativeNumberConstructor
+	nativeNumberToString
+	nativeNumberValueOf
+	nativeRegExpConstructor
+	nativeRegExpTest
+	nativeRegExpToString
+	nativeWeakMapConstructor
+	nativeWeakMapGet
+	nativeWeakMapSet
+	nativeWeakMapHas
+	nativeWeakMapDelete
+	nativeWeakSetConstructor
+	nativeWeakSetAdd
+	nativeWeakSetHas
+	nativeWeakSetDelete
+	nativeArrayConcat
+	nativeArrayShift
+	nativeArrayUnshift
+	nativeArraySplice
 )
 
 // Intrinsics is one task-local instantiation of the native ECMAScript
@@ -115,6 +142,12 @@ type Intrinsics struct {
 	SetPrototype            memory.Ref
 	PromisePrototype        memory.Ref
 	SymbolPrototype         memory.Ref
+	DatePrototype           memory.Ref
+	MathObject              memory.Ref
+	NumberPrototype         memory.Ref
+	RegExpPrototype         memory.Ref
+	WeakMapPrototype        memory.Ref
+	WeakSetPrototype        memory.Ref
 
 	ObjectConstructor         memory.Ref
 	FunctionConstructor       memory.Ref
@@ -131,9 +164,15 @@ type Intrinsics struct {
 	SymbolConstructor         memory.Ref
 	SymbolRegistry            memory.Ref
 	SymbolIterator            memory.Ref
+	DateConstructor           memory.Ref
+	IsNaN                     memory.Ref
+	NumberConstructor         memory.Ref
+	RegExpConstructor         memory.Ref
+	WeakMapConstructor        memory.Ref
+	WeakSetConstructor        memory.Ref
 }
 
-const intrinsicRootCount = 29
+const intrinsicRootCount = 41
 
 // Roots returns every Ref needed to carry one intrinsic environment across an
 // explicit ownership boundary. The ordering is private to this package and is
@@ -172,6 +211,18 @@ func (intrinsics *Intrinsics) Roots() []memory.Ref {
 		intrinsics.SymbolConstructor,
 		intrinsics.SymbolRegistry,
 		intrinsics.SymbolIterator,
+		intrinsics.DatePrototype,
+		intrinsics.MathObject,
+		intrinsics.DateConstructor,
+		intrinsics.IsNaN,
+		intrinsics.NumberPrototype,
+		intrinsics.NumberConstructor,
+		intrinsics.RegExpPrototype,
+		intrinsics.RegExpConstructor,
+		intrinsics.WeakMapPrototype,
+		intrinsics.WeakSetPrototype,
+		intrinsics.WeakMapConstructor,
+		intrinsics.WeakSetConstructor,
 	}
 }
 
@@ -216,6 +267,18 @@ func RestoreIntrinsics(roots []memory.Ref) (*Intrinsics, error) {
 		SymbolConstructor:         roots[26],
 		SymbolRegistry:            roots[27],
 		SymbolIterator:            roots[28],
+		DatePrototype:             roots[29],
+		MathObject:                roots[30],
+		DateConstructor:           roots[31],
+		IsNaN:                     roots[32],
+		NumberPrototype:           roots[33],
+		NumberConstructor:         roots[34],
+		RegExpPrototype:           roots[35],
+		RegExpConstructor:         roots[36],
+		WeakMapPrototype:          roots[37],
+		WeakSetPrototype:          roots[38],
+		WeakMapConstructor:        roots[39],
+		WeakSetConstructor:        roots[40],
 	}, nil
 }
 
@@ -278,13 +341,18 @@ func (interpreter *Interpreter) Bootstrap(context *TaskContext) (*Intrinsics, er
 		&intrinsics.SetPrototype,
 		&intrinsics.PromisePrototype,
 		&intrinsics.SymbolPrototype,
+		&intrinsics.DatePrototype,
+		&intrinsics.NumberPrototype,
+		&intrinsics.RegExpPrototype,
+		&intrinsics.WeakMapPrototype,
+		&intrinsics.WeakSetPrototype,
 	} {
 		*target, err = context.NewHeapObject()
 		if err != nil {
 			return nil, err
 		}
 	}
-	for _, target := range []memory.Ref{intrinsics.StringPrototype, intrinsics.IteratorPrototype, intrinsics.ErrorPrototype, intrinsics.MapPrototype, intrinsics.SetPrototype, intrinsics.PromisePrototype, intrinsics.SymbolPrototype} {
+	for _, target := range []memory.Ref{intrinsics.StringPrototype, intrinsics.IteratorPrototype, intrinsics.ErrorPrototype, intrinsics.MapPrototype, intrinsics.SetPrototype, intrinsics.PromisePrototype, intrinsics.SymbolPrototype, intrinsics.DatePrototype, intrinsics.NumberPrototype, intrinsics.RegExpPrototype, intrinsics.WeakMapPrototype, intrinsics.WeakSetPrototype} {
 		if err := context.SetPrototype(target, memory.RefValue(intrinsics.ObjectPrototype)); err != nil {
 			return nil, err
 		}
@@ -306,6 +374,18 @@ func (interpreter *Interpreter) Bootstrap(context *TaskContext) (*Intrinsics, er
 		return nil, err
 	}
 	if err := intrinsics.installSymbolBuiltins(context); err != nil {
+		context.intrinsics = nil
+		return nil, err
+	}
+	if err := intrinsics.installNumericBuiltins(context); err != nil {
+		context.intrinsics = nil
+		return nil, err
+	}
+	if err := intrinsics.installRegExpBuiltins(context); err != nil {
+		context.intrinsics = nil
+		return nil, err
+	}
+	if err := intrinsics.installWeakCollectionBuiltins(context); err != nil {
 		context.intrinsics = nil
 		return nil, err
 	}
@@ -357,6 +437,13 @@ func (interpreter *Interpreter) Bootstrap(context *TaskContext) (*Intrinsics, er
 		{"RangeError", memory.RefValue(intrinsics.RangeErrorConstructor)},
 		{"ReferenceError", memory.RefValue(intrinsics.ReferenceErrorConstructor)},
 		{"Symbol", memory.RefValue(intrinsics.SymbolConstructor)},
+		{"Math", memory.RefValue(intrinsics.MathObject)},
+		{"Date", memory.RefValue(intrinsics.DateConstructor)},
+		{"isNaN", memory.RefValue(intrinsics.IsNaN)},
+		{"Number", memory.RefValue(intrinsics.NumberConstructor)},
+		{"RegExp", memory.RefValue(intrinsics.RegExpConstructor)},
+		{"WeakMap", memory.RefValue(intrinsics.WeakMapConstructor)},
+		{"WeakSet", memory.RefValue(intrinsics.WeakSetConstructor)},
 	} {
 		if err := intrinsics.defineGlobal(context, global.name, global.value); err != nil {
 			context.intrinsics = nil
@@ -459,6 +546,33 @@ func (interpreter *Interpreter) registerBuiltinCallbacks() error {
 		nativeFunctionApply:                  builtinFunctionApply,
 		nativeFunctionBind:                   builtinFunctionBind,
 		nativeBoundFunction:                  builtinBoundFunction,
+		nativeMathCLZ32:                      builtinMathCLZ32,
+		nativeMathFloor:                      builtinMathFloor,
+		nativeMathLog:                        builtinMathLog,
+		nativeMathMin:                        builtinMathMin,
+		nativeMathRandom:                     builtinMathRandom,
+		nativeDateConstructor:                builtinDateConstructor,
+		nativeDateNow:                        builtinDateNow,
+		nativeGlobalIsNaN:                    builtinGlobalIsNaN,
+		nativeNumberConstructor:              builtinNumberConstructor,
+		nativeNumberToString:                 builtinNumberToString,
+		nativeNumberValueOf:                  builtinNumberValueOf,
+		nativeRegExpConstructor:              builtinRegExpConstructor,
+		nativeRegExpTest:                     builtinRegExpTest,
+		nativeRegExpToString:                 builtinRegExpToString,
+		nativeWeakMapConstructor:             builtinWeakMapConstructor,
+		nativeWeakMapGet:                     builtinWeakMapGet,
+		nativeWeakMapSet:                     builtinWeakMapSet,
+		nativeWeakMapHas:                     builtinWeakMapHas,
+		nativeWeakMapDelete:                  builtinWeakMapDelete,
+		nativeWeakSetConstructor:             builtinWeakSetConstructor,
+		nativeWeakSetAdd:                     builtinWeakSetAdd,
+		nativeWeakSetHas:                     builtinWeakSetHas,
+		nativeWeakSetDelete:                  builtinWeakSetDelete,
+		nativeArrayConcat:                    builtinArrayConcat,
+		nativeArrayShift:                     builtinArrayShift,
+		nativeArrayUnshift:                   builtinArrayUnshift,
+		nativeArraySplice:                    builtinArraySplice,
 	}
 	for id, callback := range callbacks {
 		interpreter.nativeMutex.RLock()
@@ -489,6 +603,10 @@ func (intrinsics *Intrinsics) installConstructors(context *TaskContext) error {
 		{"TypeError", 1, nativeTypeErrorConstructor, intrinsics.TypeErrorPrototype, &intrinsics.TypeErrorConstructor},
 		{"RangeError", 1, nativeRangeErrorConstructor, intrinsics.RangeErrorPrototype, &intrinsics.RangeErrorConstructor},
 		{"ReferenceError", 1, nativeReferenceErrorConstructor, intrinsics.ReferenceErrorPrototype, &intrinsics.ReferenceErrorConstructor},
+		{"Date", 7, nativeDateConstructor, intrinsics.DatePrototype, &intrinsics.DateConstructor},
+		{"RegExp", 2, nativeRegExpConstructor, intrinsics.RegExpPrototype, &intrinsics.RegExpConstructor},
+		{"WeakMap", 0, nativeWeakMapConstructor, intrinsics.WeakMapPrototype, &intrinsics.WeakMapConstructor},
+		{"WeakSet", 0, nativeWeakSetConstructor, intrinsics.WeakSetPrototype, &intrinsics.WeakSetConstructor},
 	}
 	for _, constructor := range constructors {
 		name, err := context.NewString(constructor.name)
@@ -596,6 +714,10 @@ func (intrinsics *Intrinsics) installArrayBuiltins(context *TaskContext) error {
 		{"pop", 0, nativeArrayPop},
 		{"join", 1, nativeArrayJoin},
 		{"slice", 2, nativeArraySlice},
+		{"concat", 1, nativeArrayConcat},
+		{"shift", 0, nativeArrayShift},
+		{"unshift", 1, nativeArrayUnshift},
+		{"splice", 2, nativeArraySplice},
 	} {
 		function, err := intrinsics.newBuiltinMethod(context, method.name, method.arity, method.id)
 		if err != nil {
