@@ -146,7 +146,7 @@ func TestParseRejectsUnsupportedOrMalformedSyntax(t *testing.T) {
 		"1 = 2;",
 		"if (true { 1; }",
 		"throw\n42;",
-		"break label;",
+		"break 1;",
 		"({1});",
 	} {
 		_, err := parser.Parse(source)

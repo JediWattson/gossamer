@@ -11,6 +11,7 @@ const (
 	Identifier
 	Number
 	String
+	RegExp
 
 	Let
 	Const
@@ -20,6 +21,12 @@ const (
 	If
 	Else
 	While
+	Do
+	For
+	In
+	Switch
+	Case
+	Default
 	Break
 	Continue
 	New
@@ -33,6 +40,8 @@ const (
 	Finally
 	Typeof
 	Delete
+	Instanceof
+	Void
 
 	LeftParen
 	RightParen
@@ -73,72 +82,105 @@ const (
 	OrOr
 	Nullish
 	Arrow
+	Tilde
+	PlusAssign
+	MinusAssign
+	StarAssign
+	SlashAssign
+	PercentAssign
+	AmpersandAssign
+	PipeAssign
+	CaretAssign
+	ShiftLeftAssign
+	ShiftRightAssign
+	UnsignedShiftRightAssign
 )
 
 var kindNames = [...]string{
-	EOF:                "end of input",
-	Identifier:         "identifier",
-	Number:             "number",
-	String:             "string",
-	Let:                "let",
-	Const:              "const",
-	Var:                "var",
-	Function:           "function",
-	Return:             "return",
-	If:                 "if",
-	Else:               "else",
-	While:              "while",
-	Break:              "break",
-	Continue:           "continue",
-	New:                "new",
-	This:               "this",
-	True:               "true",
-	False:              "false",
-	Null:               "null",
-	Throw:              "throw",
-	Try:                "try",
-	Catch:              "catch",
-	Finally:            "finally",
-	Typeof:             "typeof",
-	Delete:             "delete",
-	LeftParen:          "(",
-	RightParen:         ")",
-	LeftBrace:          "{",
-	RightBrace:         "}",
-	LeftBracket:        "[",
-	RightBracket:       "]",
-	Semicolon:          ";",
-	Comma:              ",",
-	Dot:                ".",
-	Colon:              ":",
-	Question:           "?",
-	Assign:             "=",
-	Plus:               "+",
-	Minus:              "-",
-	Star:               "*",
-	Slash:              "/",
-	Percent:            "%",
-	PlusPlus:           "++",
-	MinusMinus:         "--",
-	Bang:               "!",
-	StrictEqual:        "===",
-	StrictNotEqual:     "!==",
-	EqualEqual:         "==",
-	BangEqual:          "!=",
-	Less:               "<",
-	LessEqual:          "<=",
-	Greater:            ">",
-	GreaterEqual:       ">=",
-	Ampersand:          "&",
-	Pipe:               "|",
-	Caret:              "^",
-	ShiftLeft:          "<<",
-	ShiftRight:         ">>",
-	UnsignedShiftRight: ">>>",
-	AndAnd:             "&&",
-	OrOr:               "||",
-	Nullish:            "??",
-	Arrow:              "=>",
+	EOF:                      "end of input",
+	Identifier:               "identifier",
+	Number:                   "number",
+	String:                   "string",
+	RegExp:                   "regular expression",
+	Let:                      "let",
+	Const:                    "const",
+	Var:                      "var",
+	Function:                 "function",
+	Return:                   "return",
+	If:                       "if",
+	Else:                     "else",
+	While:                    "while",
+	Do:                       "do",
+	For:                      "for",
+	In:                       "in",
+	Switch:                   "switch",
+	Case:                     "case",
+	Default:                  "default",
+	Break:                    "break",
+	Continue:                 "continue",
+	New:                      "new",
+	This:                     "this",
+	True:                     "true",
+	False:                    "false",
+	Null:                     "null",
+	Throw:                    "throw",
+	Try:                      "try",
+	Catch:                    "catch",
+	Finally:                  "finally",
+	Typeof:                   "typeof",
+	Delete:                   "delete",
+	Instanceof:               "instanceof",
+	Void:                     "void",
+	LeftParen:                "(",
+	RightParen:               ")",
+	LeftBrace:                "{",
+	RightBrace:               "}",
+	LeftBracket:              "[",
+	RightBracket:             "]",
+	Semicolon:                ";",
+	Comma:                    ",",
+	Dot:                      ".",
+	Colon:                    ":",
+	Question:                 "?",
+	Assign:                   "=",
+	Plus:                     "+",
+	Minus:                    "-",
+	Star:                     "*",
+	Slash:                    "/",
+	Percent:                  "%",
+	PlusPlus:                 "++",
+	MinusMinus:               "--",
+	Bang:                     "!",
+	StrictEqual:              "===",
+	StrictNotEqual:           "!==",
+	EqualEqual:               "==",
+	BangEqual:                "!=",
+	Less:                     "<",
+	LessEqual:                "<=",
+	Greater:                  ">",
+	GreaterEqual:             ">=",
+	Ampersand:                "&",
+	Pipe:                     "|",
+	Caret:                    "^",
+	ShiftLeft:                "<<",
+	ShiftRight:               ">>",
+	UnsignedShiftRight:       ">>>",
+	AndAnd:                   "&&",
+	OrOr:                     "||",
+	Nullish:                  "??",
+	Arrow:                    "=>",
+	Tilde:                    "~",
+	PlusAssign:               "+=",
+	MinusAssign:              "-=",
+	StarAssign:               "*=",
+	SlashAssign:              "/=",
+	PercentAssign:            "%=",
+	AmpersandAssign:          "&=",
+	PipeAssign:               "|=",
+	CaretAssign:              "^=",
+	ShiftLeftAssign:          "<<=",
+	ShiftRightAssign:         ">>=",
+	UnsignedShiftRightAssign: ">>>=",
 }
 
 func (kind Kind) String() string {
@@ -166,29 +208,38 @@ type Token struct {
 	Lexeme string
 	Text   string
 	Number float64
+	Flags  string
 	Span   Span
 }
 
 var keywords = map[string]Kind{
-	"let":      Let,
-	"const":    Const,
-	"var":      Var,
-	"function": Function,
-	"return":   Return,
-	"if":       If,
-	"else":     Else,
-	"while":    While,
-	"break":    Break,
-	"continue": Continue,
-	"new":      New,
-	"this":     This,
-	"true":     True,
-	"false":    False,
-	"null":     Null,
-	"throw":    Throw,
-	"try":      Try,
-	"catch":    Catch,
-	"finally":  Finally,
-	"typeof":   Typeof,
-	"delete":   Delete,
+	"let":        Let,
+	"const":      Const,
+	"var":        Var,
+	"function":   Function,
+	"return":     Return,
+	"if":         If,
+	"else":       Else,
+	"while":      While,
+	"do":         Do,
+	"for":        For,
+	"in":         In,
+	"switch":     Switch,
+	"case":       Case,
+	"default":    Default,
+	"break":      Break,
+	"continue":   Continue,
+	"new":        New,
+	"this":       This,
+	"true":       True,
+	"false":      False,
+	"null":       Null,
+	"throw":      Throw,
+	"try":        Try,
+	"catch":      Catch,
+	"finally":    Finally,
+	"typeof":     Typeof,
+	"delete":     Delete,
+	"instanceof": Instanceof,
+	"void":       Void,
 }
