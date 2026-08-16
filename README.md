@@ -291,7 +291,7 @@ performance budgets; see
   numbered/named positive and negative line placement, `grid-area`, filtered
   named spans, row/column dense auto-flow, gaps, content distribution,
   container/item/self alignment with explicit `safe`/`unsafe` overflow
-  positions, anonymous text items, order-modified
+  positions and first/last baseline groups, anonymous text items, order-modified
   placement and paint, retained track geometry, and live resolved
   `grid-template-*` CSSOM reads
 - HTML and CSS table display roles with anonymous wrapper fixup, bounded
@@ -336,8 +336,8 @@ The following are intentionally still outside the current milestone:
 - Full HTML error recovery beyond the current table insertion modes and foster
   parenting, including formatting-element reconstruction, complete template
   modes, SVG/MathML, and encoding sniffing
-- Flex wrapping and full intrinsic sizing, Grid subgrid,
-  baseline alignment, remaining table track
+- Flex wrapping and full intrinsic sizing, Grid subgrid and orthogonal or
+  nested-container baseline propagation, remaining table track
   merging, percentage sizing, visibility-collapse, wrapper, writing-mode, and
   border junction behavior, floats, sticky and full inline positioned layout,
   and retained inline boxes

@@ -271,7 +271,7 @@ func (context *layoutContext) layoutGridContainer(node *styledNode, box *Box, co
 		return 0, err
 	}
 	rowTracks := gridTrackSizes(model.rowAxis.template, node.style.GridAutoRows(), model.rows, model.rowOffset)
-	rowSizes := context.sizeGridRows(model.items, rowTracks, collapsedRows, definiteHeight, rowGap, contentAlignmentStretches(node.style.AlignContent()))
+	rowSizes := context.sizeGridRows(model.items, rowTracks, collapsedRows, definiteHeight, rowGap, contentAlignmentStretches(node.style.AlignContent()), node.style.AlignItems())
 	box.gridRowSizes = append([]float64(nil), rowSizes...)
 	box.gridRowLineNames = gridUsedLineNames(model.rowAxis.template, len(rowSizes), model.rowOffset)
 	rowAvailable := sumFloat64(rowSizes) + gridGapTotal(collapsedRows, len(rowSizes), rowGap)
@@ -1110,11 +1110,22 @@ func (context *layoutContext) measureGridItems(model *gridLayoutModel, contentWi
 	return nil
 }
 
-func (context *layoutContext) sizeGridRows(items []gridLayoutItem, tracks []computed.GridTrackSize, collapsed []bool, definiteHeight *float64, gap float64, stretchAuto bool) []float64 {
+func (context *layoutContext) sizeGridRows(items []gridLayoutItem, tracks []computed.GridTrackSize, collapsed []bool, definiteHeight *float64, gap float64, stretchAuto bool, parentAlignment computed.AlignItems) []float64 {
+	firstGroups, lastGroups := gridRowBaselineGroups(items, parentAlignment)
 	contributions := make([]gridTrackContribution, 0, len(items))
 	for index := range items {
 		item := &items[index]
 		contribution := item.box.Bounds.Height + item.marginTop + item.marginBottom
+		alignment := resolvedSelfAlignment(item.node.style.AlignSelf(), parentAlignment)
+		switch alignment {
+		case computed.AlignBaseline:
+			distances := boxBaselineDistances(item.box, item.marginTop, item.marginBottom, false)
+			contribution += math.Max(0, firstGroups[item.row.start].start-distances.start)
+		case computed.AlignLastBaseline:
+			distances := boxBaselineDistances(item.box, item.marginTop, item.marginBottom, true)
+			key := item.row.start + item.row.span - 1
+			contribution += math.Max(0, lastGroups[key].end-distances.end)
+		}
 		contributions = append(contributions, gridTrackContribution{
 			start:     item.row.start,
 			span:      item.row.span,
@@ -1128,14 +1139,10 @@ func (context *layoutContext) sizeGridRows(items []gridLayoutItem, tracks []comp
 func (context *layoutContext) placeGridItems(container *styledNode, box *Box, model *gridLayoutModel, columnStarts, columnEnds, rowStarts, rowEnds []float64) error {
 	for index := range model.items {
 		item := &model.items[index]
-		cellX := box.ContentBounds.X + columnStarts[item.column.start]
-		cellY := box.ContentBounds.Y + rowStarts[item.row.start]
 		cellWidth := gridTrackSpan(columnStarts, columnEnds, item.column.start, item.column.span)
 		cellHeight := gridTrackSpan(rowStarts, rowEnds, item.row.start, item.row.span)
 		horizontalAlignment := resolvedSelfAlignment(item.node.style.JustifySelf(), container.style.JustifyItems())
-		horizontalOverflow := resolvedSelfOverflow(item.node.style.JustifySelf(), item.node.style.JustifySelfOverflow(), container.style.JustifyItemsOverflow())
 		verticalAlignment := resolvedSelfAlignment(item.node.style.AlignSelf(), container.style.AlignItems())
-		verticalOverflow := resolvedSelfOverflow(item.node.style.AlignSelf(), item.node.style.AlignSelfOverflow(), container.style.AlignItemsOverflow())
 		childContainingWidth := cellWidth
 		if !alignmentStretches(horizontalAlignment) && item.node.style.Width().Unit() == lengthAuto {
 			intrinsic, intrinsicErr := context.gridItemIntrinsicWidths(item.node, cellWidth)
@@ -1152,16 +1159,69 @@ func (context *layoutContext) placeGridItems(container *styledNode, box *Box, mo
 		if item.node.style.Height().Unit() == lengthAuto && alignmentStretches(verticalAlignment) {
 			setBoxOuterHeight(childBox, availableHeight)
 		}
+		item.box = childBox
+	}
+
+	firstGroups, lastGroups := gridRowBaselineGroups(model.items, container.style.AlignItems())
+	for index := range model.items {
+		item := &model.items[index]
+		childBox := item.box
+		cellX := box.ContentBounds.X + columnStarts[item.column.start]
+		cellY := box.ContentBounds.Y + rowStarts[item.row.start]
+		cellWidth := gridTrackSpan(columnStarts, columnEnds, item.column.start, item.column.span)
+		cellHeight := gridTrackSpan(rowStarts, rowEnds, item.row.start, item.row.span)
+		horizontalAlignment := resolvedSelfAlignment(item.node.style.JustifySelf(), container.style.JustifyItems())
+		horizontalOverflow := resolvedSelfOverflow(item.node.style.JustifySelf(), item.node.style.JustifySelfOverflow(), container.style.JustifyItemsOverflow())
+		verticalAlignment := resolvedSelfAlignment(item.node.style.AlignSelf(), container.style.AlignItems())
+		verticalOverflow := resolvedSelfOverflow(item.node.style.AlignSelf(), item.node.style.AlignSelfOverflow(), container.style.AlignItemsOverflow())
+		availableHeight := math.Max(0, cellHeight-item.marginTop-item.marginBottom)
 		verticalFree := availableHeight - childBox.Bounds.Height
-		yOffset := alignFlexOffset(verticalAlignment, verticalOverflow, verticalFree)
+		yOffset := 0.0
+		switch verticalAlignment {
+		case computed.AlignBaseline:
+			distances := boxBaselineDistances(childBox, item.marginTop, item.marginBottom, false)
+			yOffset = firstGroups[item.row.start].start - distances.start
+		case computed.AlignLastBaseline:
+			distances := boxBaselineDistances(childBox, item.marginTop, item.marginBottom, true)
+			key := item.row.start + item.row.span - 1
+			yOffset = cellHeight - lastGroups[key].end - distances.start
+		default:
+			yOffset = alignFlexOffset(verticalAlignment, verticalOverflow, verticalFree)
+		}
 		availableWidth := math.Max(0, cellWidth-item.marginLeft-item.marginRight)
 		xOffset := alignFlexOffset(horizontalAlignment, horizontalOverflow, availableWidth-childBox.Bounds.Width)
 		translateLayoutBox(childBox, cellX+xOffset, cellY+item.marginTop+yOffset-childBox.Bounds.Y)
-		item.box = childBox
 		box.Children = append(box.Children, childBox)
 		box.flow = append(box.flow, flowItem{box: childBox})
 	}
 	return nil
+}
+
+func gridRowBaselineGroups(items []gridLayoutItem, parentAlignment computed.AlignItems) (map[int]baselineAlignmentGroup, map[int]baselineAlignmentGroup) {
+	var first map[int]baselineAlignmentGroup
+	var last map[int]baselineAlignmentGroup
+	for index := range items {
+		item := &items[index]
+		alignment := resolvedSelfAlignment(item.node.style.AlignSelf(), parentAlignment)
+		switch alignment {
+		case computed.AlignBaseline:
+			if first == nil {
+				first = make(map[int]baselineAlignmentGroup)
+			}
+			group := first[item.row.start]
+			group.include(boxBaselineDistances(item.box, item.marginTop, item.marginBottom, false))
+			first[item.row.start] = group
+		case computed.AlignLastBaseline:
+			if last == nil {
+				last = make(map[int]baselineAlignmentGroup)
+			}
+			key := item.row.start + item.row.span - 1
+			group := last[key]
+			group.include(boxBaselineDistances(item.box, item.marginTop, item.marginBottom, true))
+			last[key] = group
+		}
+	}
+	return first, last
 }
 
 func gridTrackGeometry(sizes []float64, gap float64) ([]float64, []float64, float64) {
@@ -1252,7 +1312,7 @@ func gridContentSpace(alignment computed.JustifyContent, overflow computed.Overf
 		return 0, 0
 	}
 	switch alignment {
-	case computed.JustifyEnd, computed.JustifyFlexEnd:
+	case computed.JustifyEnd, computed.JustifyFlexEnd, computed.JustifyLastBaseline:
 		return free, 0
 	case computed.JustifyCenter:
 		return free / 2, 0

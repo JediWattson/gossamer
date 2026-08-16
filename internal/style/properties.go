@@ -420,8 +420,11 @@ func (definition propertyDefinition) resetToInitial(destination *computedStyle, 
 
 func (definition propertyDefinition) valid(source string, viewport Viewport) bool {
 	switch definition.kind {
-	case propertyAlignContent, propertyJustifyContent:
-		_, ok := parseContentAlignment(source)
+	case propertyAlignContent:
+		_, ok := parseContentAlignment(source, true)
+		return ok
+	case propertyJustifyContent:
+		_, ok := parseContentAlignment(source, false)
 		return ok
 	case propertyAlignItems, propertyJustifyItems:
 		_, ok := parseSelfAlignment(source, false)
@@ -615,7 +618,7 @@ func (definition propertyDefinition) valid(source string, viewport Viewport) boo
 func (definition propertyDefinition) apply(style *computedStyle, source string, context propertyApplyContext) {
 	switch definition.kind {
 	case propertyAlignContent:
-		if parsed, ok := parseContentAlignment(source); ok {
+		if parsed, ok := parseContentAlignment(source, true); ok {
 			style.alignContent = parsed.position
 			style.alignContentOvf = parsed.overflow
 		}
@@ -842,7 +845,7 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 			*definition.boxLength(style) = parsed
 		}
 	case propertyJustifyContent:
-		if parsed, ok := parseContentAlignment(source); ok {
+		if parsed, ok := parseContentAlignment(source, false); ok {
 			style.justifyContent = parsed.position
 			style.justifyContentOvf = parsed.overflow
 		}
@@ -1623,7 +1626,40 @@ func parseAlignmentKeywords(source string) (string, OverflowAlignment, bool) {
 	return keyword, overflow, ok
 }
 
+func parseBaselinePosition(source string) (bool, bool) {
+	value, ok := parsePropertyValue(source)
+	if !ok || len(value.terms) < 1 || len(value.terms) > 2 {
+		return false, false
+	}
+	first, ok := componentKeyword(value.terms[0])
+	if !ok {
+		return false, false
+	}
+	if len(value.terms) == 1 {
+		return false, first == "baseline"
+	}
+	second, ok := componentKeyword(value.terms[1])
+	if !ok {
+		return false, false
+	}
+	switch {
+	case first == "baseline" && second == "first", first == "first" && second == "baseline":
+		return false, true
+	case first == "baseline" && second == "last", first == "last" && second == "baseline":
+		return true, true
+	default:
+		return false, false
+	}
+}
+
 func parseSelfAlignment(source string, allowAuto bool) (selfAlignmentValue, bool) {
+	if last, ok := parseBaselinePosition(source); ok {
+		position := AlignBaseline
+		if last {
+			position = AlignLastBaseline
+		}
+		return selfAlignmentValue{position: position}, true
+	}
 	keyword, overflow, ok := parseAlignmentKeywords(source)
 	if !ok {
 		return selfAlignmentValue{}, false
@@ -1691,11 +1727,25 @@ func serializeSelfAlignment(alignment AlignItems, overflow OverflowAlignment) st
 		value = "self-start"
 	case AlignSelfEnd:
 		value = "self-end"
+	case AlignBaseline:
+		value = "baseline"
+	case AlignLastBaseline:
+		value = "last baseline"
 	}
 	return serializeAlignmentOverflow(overflow) + value
 }
 
-func parseContentAlignment(source string) (contentAlignmentValue, bool) {
+func parseContentAlignment(source string, allowBaseline bool) (contentAlignmentValue, bool) {
+	if last, ok := parseBaselinePosition(source); ok {
+		if !allowBaseline {
+			return contentAlignmentValue{}, false
+		}
+		position := JustifyBaseline
+		if last {
+			position = JustifyLastBaseline
+		}
+		return contentAlignmentValue{position: position}, true
+	}
 	keyword, overflow, ok := parseAlignmentKeywords(source)
 	if !ok {
 		return contentAlignmentValue{}, false
@@ -1754,6 +1804,10 @@ func serializeContentAlignment(alignment JustifyContent, overflow OverflowAlignm
 		value = "space-around"
 	case JustifySpaceEvenly:
 		value = "space-evenly"
+	case JustifyBaseline:
+		value = "baseline"
+	case JustifyLastBaseline:
+		value = "last baseline"
 	}
 	return serializeAlignmentOverflow(overflow) + value
 }

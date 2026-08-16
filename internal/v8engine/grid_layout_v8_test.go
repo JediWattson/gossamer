@@ -140,6 +140,33 @@ func TestStockV8GridComputedStyleAndGeometryStayLive(t *testing.T) {
 					unsafeSelf.left - safeGrid.left !== -25 || unsafeSelf.top - safeGrid.top !== -25) {
 					throw new Error("unsafe grid self alignment: " + [retainedItem.justifySelf, retainedItem.alignSelf, unsafeSelf.left - safeGrid.left, unsafeSelf.top - safeGrid.top]);
 				}
+				second.style.display = "block";
+				grid.style.cssText = "display:grid;width:200px;grid-template-columns:100px 100px;grid-template-rows:auto;align-items:baseline";
+				first.style.cssText = "grid-column:1;width:20px;height:20px";
+				second.style.cssText = "display:block;grid-column:2;width:20px;height:40px";
+				const baselineGrid = grid.getBoundingClientRect();
+				const baselineFirst = first.getBoundingClientRect();
+				const baselineSecond = second.getBoundingClientRect();
+				if (retained.alignItems !== "baseline" || baselineGrid.height !== 40 ||
+					baselineFirst.bottom !== baselineSecond.bottom || baselineFirst.top - baselineGrid.top !== 20) {
+					throw new Error("grid baseline alignment: " + [retained.alignItems, baselineGrid.height, baselineFirst.top - baselineGrid.top, baselineFirst.bottom, baselineSecond.bottom]);
+				}
+				grid.style.height = "100px";
+				grid.style.gridTemplateRows = "100px";
+				grid.style.alignItems = "last baseline";
+				const lastBaselineFirst = first.getBoundingClientRect();
+				const lastBaselineSecond = second.getBoundingClientRect();
+				if (retained.alignItems !== "last baseline" || lastBaselineFirst.bottom !== baselineGrid.top + 100 ||
+					lastBaselineSecond.bottom !== baselineGrid.top + 100) {
+					throw new Error("grid last baseline alignment: " + [retained.alignItems, lastBaselineFirst.bottom, lastBaselineSecond.bottom, baselineGrid.top]);
+				}
+				grid.style.gridTemplateRows = "20px";
+				grid.style.alignItems = "start";
+				grid.style.alignContent = "last baseline";
+				const baselineContent = first.getBoundingClientRect();
+				if (retained.alignContent !== "last baseline" || baselineContent.top - baselineGrid.top !== 80) {
+					throw new Error("grid baseline content fallback: " + [retained.alignContent, baselineContent.top - baselineGrid.top]);
+				}
 			})();
 		`,
 	}); err != nil {

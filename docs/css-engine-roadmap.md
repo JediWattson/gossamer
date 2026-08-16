@@ -405,7 +405,10 @@ geometry, and non-stretch automatic items shrink to their intrinsic width.
 Supported positional content and self alignment retains the computed
 `safe`/`unsafe` overflow prefix: safe overflowing subjects fall back to the
 start edge, while unsafe and the ordinary non-scroll default honor center/end
-overflow in Grid and Flex geometry.
+overflow in Grid and Flex geometry. First and last baseline self-alignment
+forms shared Flex-line and Grid-row groups from retained box baselines; their
+start/end shims participate in automatic Grid row sizing, and baseline content
+alignment uses its specified fallback when no parent sharing context exists.
 Definite and indefinite flexible tracks follow their distinct fraction sizing
 rules, and retained stable-ID geometry exposes resolved explicit and implicit
 `grid-template-*` tracks to live CSSOM reads.
@@ -414,8 +417,8 @@ rules, and retained stable-ID geometry exposes resolved explicit and implicit
   edge cases, row/column `visibility: collapse`, table-wrapper separation,
   direction/writing-mode placement, and collapsed-border junctions once the
   wider border-style set exists.
-- Extend Grid with baseline alignment, subgrid, and the remaining
-  intrinsic/overflow interactions.
+- Extend Grid with subgrid, orthogonal and nested-container baseline
+  propagation, and the remaining intrinsic/overflow interactions.
 - Add multicolumn and fragmentation only after their block/inline consumers
   are retained and testable.
 - Keep each formatting context as an independent computed-to-used vertical

@@ -94,7 +94,7 @@ func TestOverflowAlignmentGrammarRejectsInvalidCombinationsAtomically(t *testing
 func TestOverflowAlignmentAcceptsEscapedKeywordTokens(t *testing.T) {
 	t.Parallel()
 
-	parsed, ok := parseContentAlignment(`s\61 fe c\65 nter`)
+	parsed, ok := parseContentAlignment(`s\61 fe c\65 nter`, false)
 	if !ok || parsed.position != JustifyCenter || parsed.overflow != OverflowAlignmentSafe {
 		t.Fatalf("escaped safe center = %#v, %t", parsed, ok)
 	}

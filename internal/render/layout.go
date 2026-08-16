@@ -739,6 +739,7 @@ func (context *layoutContext) layoutFlexRow(node *styledNode, box *Box, contentW
 	start, extraGap := justifyFlexSpace(node.style.JustifyContent(), node.style.JustifyContentOverflow(), free, len(items), node.style.FlexDirection() == computed.FlexDirectionRowReverse)
 	cursorX := box.ContentBounds.X + start
 	maxCross := 0.0
+	var firstBaselineGroup, lastBaselineGroup baselineAlignmentGroup
 	for index := range items {
 		item := &items[index]
 		marginTop := resolveLength(item.node.style.MarginTop(), contentWidth, context.viewport, 0)
@@ -750,8 +751,17 @@ func (context *layoutContext) layoutFlexRow(node *styledNode, box *Box, contentW
 		item.box = childBox
 		cross := marginTop + childBox.Bounds.Height + marginBottom
 		maxCross = math.Max(maxCross, cross)
+		alignment := resolvedSelfAlignment(item.node.style.AlignSelf(), node.style.AlignItems())
+		switch alignment {
+		case computed.AlignBaseline:
+			firstBaselineGroup.include(boxBaselineDistances(childBox, marginTop, marginBottom, false))
+		case computed.AlignLastBaseline:
+			lastBaselineGroup.include(boxBaselineDistances(childBox, marginTop, marginBottom, true))
+		}
 		cursorX += item.outerMain + gap + extraGap
 	}
+	maxCross = math.Max(maxCross, firstBaselineGroup.size())
+	maxCross = math.Max(maxCross, lastBaselineGroup.size())
 	containerHeight := flexContainerHeight(definiteHeight, maxCross)
 	for index := range items {
 		item := &items[index]
@@ -763,7 +773,17 @@ func (context *layoutContext) layoutFlexRow(node *styledNode, box *Box, contentW
 		if alignmentStretches(alignment) && item.node.style.Height().Unit() == lengthAuto {
 			setBoxOuterHeight(item.box, availableCross)
 		}
-		offset := alignFlexOffset(alignment, overflow, availableCross-item.box.Bounds.Height)
+		offset := 0.0
+		switch alignment {
+		case computed.AlignBaseline:
+			distances := boxBaselineDistances(item.box, marginTop, marginBottom, false)
+			offset = firstBaselineGroup.start - distances.start
+		case computed.AlignLastBaseline:
+			distances := boxBaselineDistances(item.box, marginTop, marginBottom, true)
+			offset = containerHeight - lastBaselineGroup.end - distances.start
+		default:
+			offset = alignFlexOffset(alignment, overflow, availableCross-item.box.Bounds.Height)
+		}
 		translateLayoutBox(item.box, 0, box.ContentBounds.Y+marginTop+offset-item.box.Bounds.Y)
 		box.Children = append(box.Children, item.box)
 		box.flow = append(box.flow, flowItem{box: item.box})
@@ -935,6 +955,11 @@ func alignFlexOffset(align computed.AlignItems, overflow computed.OverflowAlignm
 	switch align {
 	case computed.AlignEndItems, computed.AlignFlexEnd, computed.AlignSelfEnd:
 		return free
+	case computed.AlignLastBaseline:
+		if free > 0 {
+			return free
+		}
+		return 0
 	case computed.AlignCenterItems:
 		return free / 2
 	default:
@@ -958,6 +983,54 @@ func resolvedSelfOverflow(self computed.AlignItems, overflow, parent computed.Ov
 
 func alignmentStretches(align computed.AlignItems) bool {
 	return align == computed.AlignNormal || align == computed.AlignStretch
+}
+
+type baselineDistances struct {
+	start float64
+	end   float64
+}
+
+type baselineAlignmentGroup struct {
+	start   float64
+	end     float64
+	present bool
+}
+
+func (group *baselineAlignmentGroup) include(distances baselineDistances) {
+	if group == nil {
+		return
+	}
+	group.present = true
+	group.start = math.Max(group.start, distances.start)
+	group.end = math.Max(group.end, distances.end)
+}
+
+func (group baselineAlignmentGroup) size() float64 {
+	if !group.present {
+		return 0
+	}
+	return group.start + group.end
+}
+
+func boxBaselineDistances(box *Box, marginStart, marginEnd float64, last bool) baselineDistances {
+	if box == nil {
+		return baselineDistances{start: marginStart, end: marginEnd}
+	}
+	baseline := box.Bounds.Y + box.Bounds.Height
+	var ok bool
+	if last {
+		baseline, ok = lastBoxBaseline(box)
+	} else {
+		baseline, ok = firstBoxBaseline(box)
+	}
+	if !ok {
+		baseline = box.Bounds.Y + box.Bounds.Height
+	}
+	offset := clamp(baseline-box.Bounds.Y, 0, box.Bounds.Height)
+	return baselineDistances{
+		start: marginStart + offset,
+		end:   marginEnd + box.Bounds.Height - offset,
+	}
 }
 
 func (context *layoutContext) finalizeBlock(node *styledNode, box *Box, containingWidth float64) (*Box, error) {

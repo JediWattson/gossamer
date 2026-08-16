@@ -203,6 +203,8 @@ const (
 	JustifySpaceBetween
 	JustifySpaceAround
 	JustifySpaceEvenly
+	JustifyBaseline
+	JustifyLastBaseline
 )
 
 // OverflowAlignment records an explicitly specified CSS box-alignment
@@ -229,6 +231,8 @@ const (
 	AlignSelfStart
 	AlignSelfEnd
 	AlignCenterItems
+	AlignBaseline
+	AlignLastBaseline
 )
 
 type TextAlignment uint8
