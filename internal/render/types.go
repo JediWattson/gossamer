@@ -101,6 +101,22 @@ type Box struct {
 	// this bit to decide whether layout may replace the computed percentage
 	// with a used pixel height.
 	percentHeightResolved bool
+	// Table formatting can paint a grid independently of the wrapper occupied
+	// by captions, clip structural backgrounds to cell tracks, suppress empty
+	// cell decorations, and draw harmonized collapsed borders after its cells.
+	decorationBounds    Rect
+	hasDecorationBounds bool
+	backgroundRects     []Rect
+	suppressDecorations bool
+	suppressBorders     bool
+	afterPaint          []boxPaintRect
+}
+
+type boxPaintRect struct {
+	Node   *dom.Node
+	Pseudo css.PseudoElement
+	Rect   Rect
+	Color  color.NRGBA
 }
 
 type flowItem struct {

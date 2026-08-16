@@ -77,7 +77,7 @@ shared tokenizer.
 
 Current foundation: cascade and computed-value calculation live in
 `internal/style`; browser pages cache versioned, stable-ID snapshots; and
-render consumes the exact snapshot retained by each frame. The current 60
+render consumes the exact snapshot retained by each frame. The current 65
 longhands share one registry for inheritance, validation, computation, copying,
 serialization, and invalidation metadata, and `all` participates in the full
 layer/importance cascade without resetting custom properties. User-agent,
@@ -362,12 +362,23 @@ wrappers without mutating the DOM, and build a bounded row/column grid. The
 automatic-width foundation accounts for intrinsic cell/caption widths,
 explicit columns, `colspan` and row-group-bounded `rowspan`; block and inline
 tables expose stable geometry, hit testing, CSS table background layer order,
-and live CSSOM dimensions. The collapsed-border model, border spacing, fixed
-table layout, caption-side placement, and full table-cell vertical alignment
-remain pending.
+and live CSSOM dimensions. Typed `border-collapse`, `border-spacing`,
+`caption-side`, `empty-cells`, and `table-layout` values now flow through the
+central registry, inheritance, `all`, CSSOM, layout, and paint. Separated
+spacing contributes outer and inter-cell tracks without painting row/column
+backgrounds through the gaps. Definite-width fixed layout consumes columns,
+then first-row cells, then distributes the remaining width. Captions can sit
+above or below the grid, empty separated cells suppress their decorations,
+and top/middle/bottom/baseline cell content aligns inside stretched rows.
+Collapsed tables ignore spacing and table padding, harmonize the supported
+none/hidden/solid borders across table, column/group, row/group, and cell
+edges, use half-width layout insets, and paint one bounded winning segment
+grid instead of duplicate cell borders.
 
-- Complete separated/collapsed borders, fixed layout, caption placement, cell
-  alignment, and the remaining table sizing/fixup edge cases.
+- Complete table track merging/missing-cell fixup, percentage/intrinsic sizing
+  edge cases, row/column `visibility: collapse`, table-wrapper separation,
+  direction/writing-mode placement, and collapsed-border junctions once the
+  wider border-style set exists.
 - Add Grid track sizing and placement, followed by intrinsic sizing and
   alignment.
 - Add multicolumn and fragmentation only after their block/inline consumers

@@ -11220,7 +11220,9 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
            "borderLeftWidth",  "borderTopStyle",     "borderRightStyle",
            "borderBottomStyle", "borderLeftStyle",    "borderTopColor",
            "borderRightColor", "borderBottomColor",  "borderLeftColor",
-           "listStyle",        "listStyleType",      "cssFloat"}) {
+           "borderCollapse",   "borderSpacing",     "captionSide",
+           "emptyCells",      "tableLayout",       "listStyle",
+           "listStyleType",    "cssFloat"}) {
     for (v8::Local<v8::ObjectTemplate> surface : {style_prototype,
                                                    style_instance}) {
       surface->SetNativeDataProperty(

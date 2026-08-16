@@ -302,6 +302,51 @@ type BorderSide struct {
 	hasColor bool
 }
 
+// BorderCollapse selects the table border model. The property is inherited,
+// even though it only affects table grid boxes and their descendants.
+type BorderCollapse uint8
+
+const (
+	BorderCollapseSeparate BorderCollapse = iota
+	BorderCollapseCollapse
+)
+
+// BorderSpacing is the computed pair of horizontal and vertical distances
+// between adjacent cell borders in the separated border model.
+type BorderSpacing struct {
+	horizontal Length
+	vertical   Length
+}
+
+func (spacing BorderSpacing) Horizontal() Length { return spacing.horizontal }
+
+func (spacing BorderSpacing) Vertical() Length { return spacing.vertical }
+
+// CaptionSide positions a table-caption box before or after the table grid.
+type CaptionSide uint8
+
+const (
+	CaptionSideTop CaptionSide = iota
+	CaptionSideBottom
+)
+
+// EmptyCells controls whether an empty table cell paints its background and
+// border in the separated border model.
+type EmptyCells uint8
+
+const (
+	EmptyCellsShow EmptyCells = iota
+	EmptyCellsHide
+)
+
+// TableLayout selects automatic or fixed column measurement.
+type TableLayout uint8
+
+const (
+	TableLayoutAuto TableLayout = iota
+	TableLayoutFixed
+)
+
 type borderSide = BorderSide
 
 func (lineHeight LineHeight) Pixels(fontSize float64) float64 {
@@ -515,6 +560,11 @@ const (
 // lookups return it by value, so callers cannot mutate stored styles.
 type ComputedStyle struct {
 	display           DisplayMode
+	borderCollapse    BorderCollapse
+	borderSpacing     BorderSpacing
+	captionSide       CaptionSide
+	emptyCells        EmptyCells
+	tableLayout       TableLayout
 	flexDirection     FlexDirection
 	justifyContent    JustifyContent
 	alignItems        AlignItems
@@ -576,7 +626,12 @@ type ComputedStyle struct {
 
 type computedStyle = ComputedStyle
 
-func (computed ComputedStyle) Display() DisplayMode { return computed.display }
+func (computed ComputedStyle) Display() DisplayMode           { return computed.display }
+func (computed ComputedStyle) BorderCollapse() BorderCollapse { return computed.borderCollapse }
+func (computed ComputedStyle) BorderSpacing() BorderSpacing   { return computed.borderSpacing }
+func (computed ComputedStyle) CaptionSide() CaptionSide       { return computed.captionSide }
+func (computed ComputedStyle) EmptyCells() EmptyCells         { return computed.emptyCells }
+func (computed ComputedStyle) TableLayout() TableLayout       { return computed.tableLayout }
 
 // WithAnonymousDisplay returns a copy whose display role is suitable for a
 // renderer-generated anonymous formatting box. The inherited values already
@@ -1151,6 +1206,11 @@ func initialStyle(node *dom.Node, parent *styledNode, viewport Viewport) (comput
 func cssInitialStyle(viewport Viewport) computedStyle {
 	return computedStyle{
 		display:         displayInline,
+		borderCollapse:  BorderCollapseSeparate,
+		borderSpacing:   BorderSpacing{horizontal: px(0), vertical: px(0)},
+		captionSide:     CaptionSideTop,
+		emptyCells:      EmptyCellsShow,
+		tableLayout:     TableLayoutAuto,
 		flexDirection:   FlexDirectionRow,
 		justifyContent:  JustifyFlexStart,
 		alignItems:      AlignStretch,
@@ -1199,15 +1259,16 @@ var builtInUserAgentStylesheet = mustParseBuiltInUserAgentStylesheet(`
 html, body, address, article, aside, blockquote, div, dl, dt, dd,
 fieldset, figcaption, figure, footer, form, header, hgroup, main, nav,
 ol, p, pre, section, ul, h1, h2, h3, h4, h5, h6 { display:block }
-table { display:table }
+table { display:table; border-spacing:2px; border-color:gray }
 caption { display:table-caption; text-align:center }
 colgroup { display:table-column-group }
 col { display:table-column }
 thead { display:table-header-group }
 tbody { display:table-row-group }
 tfoot { display:table-footer-group }
-tr { display:table-row }
-td, th { display:table-cell }
+thead, tbody, tfoot { vertical-align:middle }
+tr { display:table-row; vertical-align:inherit }
+td, th { display:table-cell; vertical-align:inherit }
 th { font-weight:700; text-align:center }
 li { display:list-item }
 pre { white-space:pre }

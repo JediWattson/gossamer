@@ -2,6 +2,7 @@ package style
 
 import (
 	"image/color"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -27,12 +28,16 @@ const (
 	propertyAlignItems propertyKind = iota
 	propertyBackgroundColor
 	propertyBorderColor
+	propertyBorderCollapse
+	propertyBorderSpacing
 	propertyBorderStyle
 	propertyBorderWidth
 	propertyBoxSizing
+	propertyCaptionSide
 	propertyColor
 	propertyContent
 	propertyDisplay
+	propertyEmptyCells
 	propertyFlexBasis
 	propertyFlexDirection
 	propertyFlexGrow
@@ -58,6 +63,7 @@ const (
 	propertyPadding
 	propertyPosition
 	propertyGap
+	propertyTableLayout
 	propertyTextAlign
 	propertyTextDecorationLine
 	propertyVerticalAlign
@@ -102,21 +108,25 @@ var propertyDefinitions = [...]propertyDefinition{
 	{name: "border-bottom-color", kind: propertyBorderColor, edge: propertyBottom, invalidation: propertyInvalidatesPaint},
 	{name: "border-bottom-style", kind: propertyBorderStyle, edge: propertyBottom, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "border-bottom-width", kind: propertyBorderWidth, edge: propertyBottom, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
+	{name: "border-collapse", kind: propertyBorderCollapse, inherited: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "border-left-color", kind: propertyBorderColor, edge: propertyLeft, invalidation: propertyInvalidatesPaint},
 	{name: "border-left-style", kind: propertyBorderStyle, edge: propertyLeft, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "border-left-width", kind: propertyBorderWidth, edge: propertyLeft, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "border-right-color", kind: propertyBorderColor, edge: propertyRight, invalidation: propertyInvalidatesPaint},
 	{name: "border-right-style", kind: propertyBorderStyle, edge: propertyRight, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "border-right-width", kind: propertyBorderWidth, edge: propertyRight, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
+	{name: "border-spacing", kind: propertyBorderSpacing, inherited: true, invalidation: propertyInvalidatesLayout},
 	{name: "border-top-color", kind: propertyBorderColor, edge: propertyTop, invalidation: propertyInvalidatesPaint},
 	{name: "border-top-style", kind: propertyBorderStyle, edge: propertyTop, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "border-top-width", kind: propertyBorderWidth, edge: propertyTop, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "bottom", kind: propertyInset, edge: propertyBottom, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "box-sizing", kind: propertyBoxSizing, invalidation: propertyInvalidatesLayout},
+	{name: "caption-side", kind: propertyCaptionSide, inherited: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "color", kind: propertyColor, inherited: true, invalidation: propertyInvalidatesPaint},
 	{name: "column-gap", kind: propertyGap, edge: propertyRight, invalidation: propertyInvalidatesLayout},
 	{name: "content", kind: propertyContent, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "display", kind: propertyDisplay, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
+	{name: "empty-cells", kind: propertyEmptyCells, inherited: true, invalidation: propertyInvalidatesPaint},
 	{name: "flex-basis", kind: propertyFlexBasis, invalidation: propertyInvalidatesLayout},
 	{name: "flex-direction", kind: propertyFlexDirection, invalidation: propertyInvalidatesLayout},
 	{name: "flex-grow", kind: propertyFlexGrow, invalidation: propertyInvalidatesLayout},
@@ -149,6 +159,7 @@ var propertyDefinitions = [...]propertyDefinition{
 	{name: "position", kind: propertyPosition, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "right", kind: propertyInset, edge: propertyRight, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "row-gap", kind: propertyGap, edge: propertyBottom, invalidation: propertyInvalidatesLayout},
+	{name: "table-layout", kind: propertyTableLayout, invalidation: propertyInvalidatesLayout},
 	{name: "text-align", kind: propertyTextAlign, inherited: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "text-decoration-line", kind: propertyTextDecorationLine, invalidation: propertyInvalidatesPaint},
 	{name: "top", kind: propertyInset, edge: propertyTop, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
@@ -247,18 +258,26 @@ func (definition propertyDefinition) copy(destination *computedStyle, source com
 		sourceSide := definition.borderSide(&source)
 		destinationSide.color = sourceSide.color
 		destinationSide.hasColor = sourceSide.hasColor
+	case propertyBorderCollapse:
+		destination.borderCollapse = source.borderCollapse
+	case propertyBorderSpacing:
+		destination.borderSpacing = source.borderSpacing
 	case propertyBorderStyle:
 		definition.borderSide(destination).style = definition.borderSide(&source).style
 	case propertyBorderWidth:
 		definition.borderSide(destination).width = definition.borderSide(&source).width
 	case propertyBoxSizing:
 		destination.boxSizing = source.boxSizing
+	case propertyCaptionSide:
+		destination.captionSide = source.captionSide
 	case propertyColor:
 		destination.color = source.color
 	case propertyContent:
 		destination.content = source.content
 	case propertyDisplay:
 		destination.display = source.display
+	case propertyEmptyCells:
+		destination.emptyCells = source.emptyCells
 	case propertyFlexBasis:
 		destination.flexBasis = source.flexBasis
 	case propertyFlexDirection:
@@ -310,6 +329,8 @@ func (definition propertyDefinition) copy(destination *computedStyle, source com
 		destination.position = source.position
 	case propertyGap:
 		*definition.boxLength(destination) = *definition.boxLength(&source)
+	case propertyTableLayout:
+		destination.tableLayout = source.tableLayout
 	case propertyTextAlign:
 		destination.textAlign = source.textAlign
 	case propertyTextDecorationLine:
@@ -343,6 +364,12 @@ func (definition propertyDefinition) valid(source string, viewport Viewport) boo
 	case propertyBorderColor:
 		_, ok := parseBorderColor(source)
 		return ok
+	case propertyBorderCollapse:
+		keyword, ok := singleCSSKeyword(source)
+		return ok && (keyword == "separate" || keyword == "collapse")
+	case propertyBorderSpacing:
+		_, ok := parseBorderSpacing(source, 1, viewport)
+		return ok
 	case propertyBorderStyle:
 		_, ok := parseBorderStyle(source)
 		return ok
@@ -352,6 +379,9 @@ func (definition propertyDefinition) valid(source string, viewport Viewport) boo
 	case propertyBoxSizing:
 		keyword, ok := singleCSSKeyword(source)
 		return ok && (keyword == "content-box" || keyword == "border-box")
+	case propertyCaptionSide:
+		keyword, ok := singleCSSKeyword(source)
+		return ok && (keyword == "top" || keyword == "bottom")
 	case propertyColor:
 		_, ok := parseComputedColor(source)
 		return ok
@@ -371,6 +401,9 @@ func (definition propertyDefinition) valid(source string, viewport Viewport) boo
 		default:
 			return false
 		}
+	case propertyEmptyCells:
+		keyword, ok := singleCSSKeyword(source)
+		return ok && (keyword == "show" || keyword == "hide")
 	case propertyFlexBasis:
 		parsed, ok := parseLength(source, 1, 1, viewport)
 		return ok && nonNegativeLength(parsed)
@@ -451,6 +484,9 @@ func (definition propertyDefinition) valid(source string, viewport Viewport) boo
 	case propertyGap:
 		parsed, ok := parseLength(source, 1, 1, viewport)
 		return ok && parsed.unit != lengthAuto && nonNegativeLength(parsed)
+	case propertyTableLayout:
+		keyword, ok := singleCSSKeyword(source)
+		return ok && (keyword == "auto" || keyword == "fixed")
 	case propertyTextAlign:
 		keyword, ok := singleCSSKeyword(source)
 		if !ok {
@@ -517,6 +553,17 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 		if parsed, ok := parseBorderColor(source); ok {
 			applyBorderColor(definition.borderSide(style), parsed)
 		}
+	case propertyBorderCollapse:
+		keyword, _ := singleCSSKeyword(source)
+		if keyword == "collapse" {
+			style.borderCollapse = BorderCollapseCollapse
+		} else {
+			style.borderCollapse = BorderCollapseSeparate
+		}
+	case propertyBorderSpacing:
+		if parsed, ok := parseBorderSpacing(source, style.fontSize, context.viewport); ok {
+			style.borderSpacing = parsed
+		}
 	case propertyBorderStyle:
 		if parsed, ok := parseBorderStyle(source); ok {
 			definition.borderSide(style).style = parsed
@@ -530,6 +577,13 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 			style.boxSizing = BoxSizingBorderBox
 		} else {
 			style.boxSizing = BoxSizingContentBox
+		}
+	case propertyCaptionSide:
+		keyword, _ := singleCSSKeyword(source)
+		if keyword == "bottom" {
+			style.captionSide = CaptionSideBottom
+		} else {
+			style.captionSide = CaptionSideTop
 		}
 	case propertyColor:
 		if parsed, ok := parseComputedColor(source); ok {
@@ -580,6 +634,13 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 			style.display = DisplayTableColumn
 		case "table-caption":
 			style.display = DisplayTableCaption
+		}
+	case propertyEmptyCells:
+		keyword, _ := singleCSSKeyword(source)
+		if keyword == "hide" {
+			style.emptyCells = EmptyCellsHide
+		} else {
+			style.emptyCells = EmptyCellsShow
 		}
 	case propertyFlexBasis:
 		if parsed, ok := parseLength(source, style.fontSize, style.fontSize, context.viewport); ok && nonNegativeLength(parsed) {
@@ -745,6 +806,13 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 		if parsed, ok := parseLength(source, style.fontSize, style.fontSize, context.viewport); ok && parsed.unit != lengthAuto && nonNegativeLength(parsed) {
 			*definition.boxLength(style) = parsed
 		}
+	case propertyTableLayout:
+		keyword, _ := singleCSSKeyword(source)
+		if keyword == "fixed" {
+			style.tableLayout = TableLayoutFixed
+		} else {
+			style.tableLayout = TableLayoutAuto
+		}
 	case propertyTextAlign:
 		keyword, _ := singleCSSKeyword(source)
 		switch keyword {
@@ -848,6 +916,18 @@ func (definition propertyDefinition) serialize(computed ComputedStyle) string {
 		return serializeComputedColor(background)
 	case propertyBorderColor:
 		return serializeComputedBorderColor(*definition.borderSide(&computed), computed.color)
+	case propertyBorderCollapse:
+		if computed.borderCollapse == BorderCollapseCollapse {
+			return "collapse"
+		}
+		return "separate"
+	case propertyBorderSpacing:
+		horizontal := serializeComputedLength(computed.borderSpacing.horizontal)
+		vertical := serializeComputedLength(computed.borderSpacing.vertical)
+		if horizontal == vertical {
+			return horizontal
+		}
+		return horizontal + " " + vertical
 	case propertyBorderStyle:
 		return serializeComputedBorderStyle(definition.borderSide(&computed).style)
 	case propertyBorderWidth:
@@ -857,12 +937,22 @@ func (definition propertyDefinition) serialize(computed ComputedStyle) string {
 			return "border-box"
 		}
 		return "content-box"
+	case propertyCaptionSide:
+		if computed.captionSide == CaptionSideBottom {
+			return "bottom"
+		}
+		return "top"
 	case propertyColor:
 		return serializeComputedColor(computed.color)
 	case propertyContent:
 		return serializeContentValue(computed.content)
 	case propertyDisplay:
 		return serializeComputedDisplay(computed.display)
+	case propertyEmptyCells:
+		if computed.emptyCells == EmptyCellsHide {
+			return "hide"
+		}
+		return "show"
 	case propertyFlexBasis:
 		return serializeComputedLength(computed.flexBasis)
 	case propertyFlexDirection:
@@ -961,6 +1051,11 @@ func (definition propertyDefinition) serialize(computed ComputedStyle) string {
 		}
 	case propertyGap:
 		return serializeComputedLength(*definition.boxLength(&computed))
+	case propertyTableLayout:
+		if computed.tableLayout == TableLayoutFixed {
+			return "fixed"
+		}
+		return "auto"
 	case propertyTextAlign:
 		return serializeComputedTextAlignment(computed.textAlign)
 	case propertyTextDecorationLine:
@@ -1159,6 +1254,29 @@ func validComputedDeclaration(declaration css.Declaration, viewport Viewport) bo
 	default:
 		return false
 	}
+}
+
+func parseBorderSpacing(source string, fontSize float64, viewport Viewport) (BorderSpacing, bool) {
+	value, ok := parsePropertyValue(source)
+	if !ok || len(value.terms) < 1 || len(value.terms) > 2 {
+		return BorderSpacing{}, false
+	}
+	parsed := [2]Length{}
+	for index, term := range value.terms {
+		candidate, candidateOK := parseLengthComponent(term, value.source, fontSize, viewport)
+		if !candidateOK || candidate.unit == lengthAuto || candidate.DependsOnPercent() {
+			return BorderSpacing{}, false
+		}
+		resolved := resolveLength(candidate, 0, viewport, math.NaN())
+		if !isFinite(resolved) || resolved < 0 {
+			return BorderSpacing{}, false
+		}
+		parsed[index] = px(resolved)
+	}
+	if len(value.terms) == 1 {
+		parsed[1] = parsed[0]
+	}
+	return BorderSpacing{horizontal: parsed[0], vertical: parsed[1]}, true
 }
 
 func parseGapShorthand(source string, fontSize float64, viewport Viewport) (length, length, bool) {

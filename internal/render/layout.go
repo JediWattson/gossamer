@@ -348,6 +348,16 @@ func (context *layoutContext) layoutBlockSized(node *styledNode, containingX, co
 	right := resolveLength(style.MarginRight(), availableWidth, context.viewport, 0)
 	padding := context.resolvePadding(style, availableWidth)
 	border := context.resolveBorder(style, availableWidth)
+	if style.Display().Inside() == computed.DisplayInsideTable && style.BorderCollapse() == computed.BorderCollapseCollapse {
+		collapsedBorder, err := context.collapsedTableOuterEdges(node)
+		if err != nil {
+			return nil, err
+		}
+		// CSS collapsed-border tables ignore table padding and use half of the
+		// harmonized outer grid border as their table box border.
+		padding = Edges{}
+		border = collapsedBorder
+	}
 	horizontalInsets := padding.Left + padding.Right + border.Left + border.Right
 	verticalInsets := padding.Top + padding.Bottom + border.Top + border.Bottom
 	specifiedContentHeight, hasDefiniteHeight := context.resolveSpecifiedContentHeight(style, containingHeight, verticalInsets)
@@ -865,6 +875,18 @@ func translateLayoutBox(box *Box, deltaX, deltaY float64) {
 	box.Bounds.Y += deltaY
 	box.ContentBounds.X += deltaX
 	box.ContentBounds.Y += deltaY
+	if box.hasDecorationBounds {
+		box.decorationBounds.X += deltaX
+		box.decorationBounds.Y += deltaY
+	}
+	for index := range box.backgroundRects {
+		box.backgroundRects[index].X += deltaX
+		box.backgroundRects[index].Y += deltaY
+	}
+	for index := range box.afterPaint {
+		box.afterPaint[index].Rect.X += deltaX
+		box.afterPaint[index].Rect.Y += deltaY
+	}
 	for index := range box.Fragments {
 		translateInlineFragment(&box.Fragments[index], deltaX, deltaY)
 	}

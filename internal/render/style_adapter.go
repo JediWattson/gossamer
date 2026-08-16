@@ -75,6 +75,34 @@ const (
 	borderStyleHidden = computed.BorderStyleHidden
 )
 
+type borderCollapse = computed.BorderCollapse
+
+const (
+	borderCollapseSeparate = computed.BorderCollapseSeparate
+	borderCollapseCollapse = computed.BorderCollapseCollapse
+)
+
+type captionSide = computed.CaptionSide
+
+const (
+	captionSideTop    = computed.CaptionSideTop
+	captionSideBottom = computed.CaptionSideBottom
+)
+
+type emptyCells = computed.EmptyCells
+
+const (
+	emptyCellsShow = computed.EmptyCellsShow
+	emptyCellsHide = computed.EmptyCellsHide
+)
+
+type tableLayout = computed.TableLayout
+
+const (
+	tableLayoutAuto  = computed.TableLayoutAuto
+	tableLayoutFixed = computed.TableLayoutFixed
+)
+
 type positionMode = computed.PositionMode
 
 const (

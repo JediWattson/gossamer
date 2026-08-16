@@ -15,7 +15,7 @@ func TestTableLayoutBuildsColumnsRowsSpansAndPaintLayers(t *testing.T) {
 
 	document := mustParseTableDocument(t, `<!doctype html><html><head><style>
 		body { margin:0 }
-		table { border:2px solid #010203; background:#f0f0f0 }
+		table { border:2px solid #010203; border-spacing:0; background:#f0f0f0 }
 		caption { height:20px; background:#111111 }
 		colgroup { background:#222222 }
 		col:first-child { width:60px; background:#333333 }
@@ -148,7 +148,7 @@ func TestTableFixupGeneratesAnonymousWrappersWithoutChangingDOM(t *testing.T) {
 func TestInlineTableParticipatesAsOneAtomicInlineBox(t *testing.T) {
 	t.Parallel()
 
-	document := mustParseTableDocument(t, `<!doctype html><html><body style="margin:0"><div id=container style="width:220px;font:16px/24px monospace">before <table id=table style="display:inline-table"><tr><td style="width:30px">A</td><td style="width:40px">B</td></tr></table> after</div></body></html>`)
+	document := mustParseTableDocument(t, `<!doctype html><html><body style="margin:0"><div id=container style="width:220px;font:16px/24px monospace">before <table id=table style="display:inline-table;border-spacing:0"><tr><td style="width:30px">A</td><td style="width:40px">B</td></tr></table> after</div></body></html>`)
 	frame, err := render.Render(document, render.Viewport{Width: 300, Height: 200})
 	if err != nil {
 		t.Fatal(err)
@@ -177,7 +177,7 @@ func TestInlineTableParticipatesAsOneAtomicInlineBox(t *testing.T) {
 func TestTableMinimumWidthExpandsSpecifiedWidthBeforeAutoMarginCentering(t *testing.T) {
 	t.Parallel()
 
-	document := mustParseTableDocument(t, `<!doctype html><html><body style="margin:0;width:300px"><table id=table style="width:50px;margin-left:auto;margin-right:auto"><colgroup><col style="width:60px"><col style="width:80px"></colgroup><tr><td>A</td><td>B</td></tr></table></body></html>`)
+	document := mustParseTableDocument(t, `<!doctype html><html><body style="margin:0;width:300px"><table id=table style="width:50px;margin-left:auto;margin-right:auto;border-spacing:0"><colgroup><col style="width:60px"><col style="width:80px"></colgroup><tr><td>A</td><td>B</td></tr></table></body></html>`)
 	frame, err := render.Render(document, render.Viewport{Width: 300, Height: 200})
 	if err != nil {
 		t.Fatal(err)
@@ -194,7 +194,7 @@ func TestTableMinimumWidthExpandsSpecifiedWidthBeforeAutoMarginCentering(t *test
 func TestDefiniteTableHeightDistributesExtraSpaceAcrossRows(t *testing.T) {
 	t.Parallel()
 
-	document := mustParseTableDocument(t, `<!doctype html><html><body style="margin:0"><table id=table style="height:100px"><tr id=first><td>A</td></tr><tr id=second><td>B</td></tr></table></body></html>`)
+	document := mustParseTableDocument(t, `<!doctype html><html><body style="margin:0"><table id=table style="height:100px;border-spacing:0"><tr id=first><td>A</td></tr><tr id=second><td>B</td></tr></table></body></html>`)
 	frame, err := render.Render(document, render.Viewport{Width: 300, Height: 200})
 	if err != nil {
 		t.Fatal(err)

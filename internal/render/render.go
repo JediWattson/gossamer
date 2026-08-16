@@ -389,16 +389,31 @@ func paintBox(list *DisplayList, box *Box, styles map[*dom.Node]computedStyle) {
 		list.Commands = append(list.Commands, Command{Kind: BeginOpacityCommand, Node: box.Node, Pseudo: box.Pseudo, Opacity: opacity})
 	}
 	background, hasBackground := style.Background()
-	if visible && hasBackground && box.Bounds.Width > 0 && box.Bounds.Height > 0 {
-		list.Commands = append(list.Commands, Command{
-			Kind:   FillRectCommand,
-			Node:   box.Node,
-			Pseudo: box.Pseudo,
-			Rect:   box.Bounds,
-			Color:  background,
-		})
+	if visible && !box.suppressDecorations && hasBackground {
+		if len(box.backgroundRects) == 0 {
+			bounds := box.Bounds
+			if box.hasDecorationBounds {
+				bounds = box.decorationBounds
+			}
+			if bounds.Width > 0 && bounds.Height > 0 {
+				list.Commands = append(list.Commands, Command{
+					Kind: FillRectCommand, Node: box.Node, Pseudo: box.Pseudo,
+					Rect: bounds, Color: background,
+				})
+			}
+		} else {
+			for _, rectangle := range box.backgroundRects {
+				if rectangle.Width <= 0 || rectangle.Height <= 0 {
+					continue
+				}
+				list.Commands = append(list.Commands, Command{
+					Kind: FillRectCommand, Node: box.Node, Pseudo: box.Pseudo,
+					Rect: rectangle, Color: background,
+				})
+			}
+		}
 	}
-	if visible {
+	if visible && !box.suppressDecorations && !box.suppressBorders {
 		paintBoxBorders(list, box, style)
 	}
 	negative, nonNegative := positionedPaintChildren(box)
@@ -432,6 +447,15 @@ func paintBox(list *DisplayList, box *Box, styles map[*dom.Node]computedStyle) {
 	}
 	for _, child := range nonNegative {
 		paintBox(list, child, styles)
+	}
+	for _, overlay := range box.afterPaint {
+		if overlay.Rect.Width <= 0 || overlay.Rect.Height <= 0 || overlay.Color.A == 0 {
+			continue
+		}
+		list.Commands = append(list.Commands, Command{
+			Kind: FillRectCommand, Node: overlay.Node, Pseudo: overlay.Pseudo,
+			Rect: overlay.Rect, Color: overlay.Color,
+		})
 	}
 	if grouped {
 		list.Commands = append(list.Commands, Command{Kind: EndOpacityCommand, Node: box.Node, Pseudo: box.Pseudo})
@@ -471,6 +495,9 @@ func positionedPaintChildren(box *Box) (negative, nonNegative []*Box) {
 
 func paintBoxBorders(list *DisplayList, box *Box, style computedStyle) {
 	bounds := box.Bounds
+	if box.hasDecorationBounds {
+		bounds = box.decorationBounds
+	}
 	borders := box.Border
 	// Physical sides are painted in top/right/bottom/left order. Uniform solid
 	// borders are exact; diagonal corner splitting for differently colored

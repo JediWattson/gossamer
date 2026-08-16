@@ -10,10 +10,10 @@ import (
 )
 
 func FuzzTableLayoutSpansStayFinite(f *testing.F) {
-	f.Add(byte(2), byte(3), byte(1), byte(1))
-	f.Add(byte(4), byte(4), byte(2), byte(3))
-	f.Add(byte(8), byte(8), byte(255), byte(0))
-	f.Fuzz(func(t *testing.T, rawRows, rawColumns, rawColumnSpan, rawRowSpan byte) {
+	f.Add(byte(2), byte(3), byte(1), byte(1), byte(0))
+	f.Add(byte(4), byte(4), byte(2), byte(3), byte(0xff))
+	f.Add(byte(8), byte(8), byte(255), byte(0), byte(0x55))
+	f.Fuzz(func(t *testing.T, rawRows, rawColumns, rawColumnSpan, rawRowSpan, rawModes byte) {
 		rows := int(rawRows%8) + 1
 		columns := int(rawColumns%8) + 1
 		columnSpan := int(rawColumnSpan%8) + 1
@@ -22,12 +22,40 @@ func FuzzTableLayoutSpansStayFinite(f *testing.F) {
 		document := dom.NewDocument()
 		html := dom.NewElement("html")
 		body := dom.NewElement("body", dom.Attribute{Name: "style", Value: "margin:0"})
-		table := dom.NewElement("table")
+		borderCollapse := "separate"
+		if rawModes&1 != 0 {
+			borderCollapse = "collapse"
+		}
+		tableLayout := "auto"
+		width := "auto"
+		if rawModes&2 != 0 {
+			tableLayout = "fixed"
+			width = fmt.Sprintf("%dpx", 40+int(rawModes))
+		}
+		table := dom.NewElement("table", dom.Attribute{Name: "style", Value: fmt.Sprintf(
+			"border-collapse:%s;border-spacing:%dpx %dpx;table-layout:%s;width:%s;border:%dpx solid #123456;empty-cells:hide",
+			borderCollapse, rawModes%7, (rawModes/7)%7, tableLayout, width, 1+rawModes%5,
+		)})
+		captionSide := "top"
+		if rawModes&4 != 0 {
+			captionSide = "bottom"
+		}
+		caption := dom.NewElement("caption", dom.Attribute{Name: "style", Value: "caption-side:" + captionSide})
+		caption.AppendChild(dom.NewText("caption"))
+		table.AppendChild(caption)
 		group := dom.NewElement("tbody")
 		for rowIndex := range rows {
 			row := dom.NewElement("tr")
 			for columnIndex := range columns {
-				attributes := []dom.Attribute{{Name: "style", Value: fmt.Sprintf("width:%dpx;padding:%dpx", 4+columnIndex, rowIndex%3)}}
+				alignment := []string{"baseline", "top", "middle", "bottom"}[(rowIndex+columnIndex)%4]
+				borderStyle := "solid"
+				if rawModes&8 != 0 && rowIndex == 0 && columnIndex == 0 {
+					borderStyle = "hidden"
+				}
+				attributes := []dom.Attribute{{Name: "style", Value: fmt.Sprintf(
+					"width:%dpx;padding:%dpx;vertical-align:%s;border:%dpx %s #abcdef",
+					4+columnIndex, rowIndex%3, alignment, 1+(rowIndex+columnIndex)%4, borderStyle,
+				)}}
 				if columnIndex == 0 {
 					attributes = append(attributes,
 						dom.Attribute{Name: "colspan", Value: fmt.Sprint(columnSpan)},
@@ -35,7 +63,9 @@ func FuzzTableLayoutSpansStayFinite(f *testing.F) {
 					)
 				}
 				cell := dom.NewElement("td", attributes...)
-				cell.AppendChild(dom.NewText(fmt.Sprintf("%d:%d", rowIndex, columnIndex)))
+				if rawModes&16 == 0 || (rowIndex+columnIndex)%3 != 0 {
+					cell.AppendChild(dom.NewText(fmt.Sprintf("%d:%d", rowIndex, columnIndex)))
+				}
 				row.AppendChild(cell)
 			}
 			group.AppendChild(row)
@@ -54,6 +84,14 @@ func FuzzTableLayoutSpansStayFinite(f *testing.F) {
 		tableBox := findBox(frame.Root, table)
 		if tableBox == nil || tableBox.Bounds.Width < 0 || tableBox.Bounds.Height < 0 {
 			t.Fatalf("table box = %#v", tableBox)
+		}
+		for _, command := range frame.DisplayList.Commands {
+			values := []float64{command.Rect.X, command.Rect.Y, command.Rect.Width, command.Rect.Height, command.X, command.BaselineY}
+			for _, value := range values {
+				if math.IsNaN(value) || math.IsInf(value, 0) {
+					t.Fatalf("non-finite table paint command %#v", command)
+				}
+			}
 		}
 	})
 }
