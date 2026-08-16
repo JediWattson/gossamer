@@ -84,6 +84,7 @@ type inlinePiece struct {
 	image                 image.Image
 	replaced              bool
 	percentHeightResolved bool
+	justifyBefore         bool
 	opacity               float64
 	x                     float64
 	width                 float64
@@ -1108,7 +1109,8 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 					previous.Text.FontFamily == text.FontFamily &&
 					previous.Text.FontWeight == text.FontWeight &&
 					previous.Text.FontStyle == text.FontStyle &&
-					previous.Text.Color == text.Color {
+					previous.Text.Color == text.Color &&
+					previous.Text.X+previous.Text.Width == text.X {
 					previous.Text.Text += text.Text
 					previous.Text.Width += text.Width
 					flow.fragment = *previous
@@ -1119,7 +1121,7 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 		result.fragments = append(result.fragments, fragment)
 		result.flow = append(result.flow, flowItem{fragment: fragment})
 	}
-	flushLine := func() {
+	flushLine := func(justify bool) {
 		if len(line) == 0 {
 			return
 		}
@@ -1141,13 +1143,26 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 		case alignRight, alignEnd:
 			lineOffset = width - lineWidth
 		case alignLeft, alignStart, alignJustify:
-			// The current formatter has no bidi or justification pass. Preserve
-			// its existing left-aligned used behavior without collapsing the
-			// distinct computed values.
 		}
+		justifyStep := 0.0
+		if alignment == alignJustify && justify && lineWidth < width {
+			opportunities := 0
+			for _, piece := range line {
+				if piece.justifyBefore {
+					opportunities++
+				}
+			}
+			if opportunities != 0 {
+				justifyStep = (width - lineWidth) / float64(opportunities)
+			}
+		}
+		justifiedOffset := 0.0
 		for _, piece := range line {
+			if piece.justifyBefore {
+				justifiedOffset += justifyStep
+			}
 			if piece.box != nil {
-				targetX := x + lineOffset + piece.x
+				targetX := x + lineOffset + piece.x + justifiedOffset
 				targetY := baseline - piece.baseline
 				translateLayoutBox(piece.box, targetX, targetY)
 				result.flow = append(result.flow, flowItem{box: piece.box})
@@ -1159,7 +1174,7 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 					Image: ImageFragment{
 						Node:                  piece.node,
 						Image:                 piece.image,
-						Bounds:                Rect{X: x + lineOffset + piece.x, Y: baseline - piece.height, Width: piece.width, Height: piece.height},
+						Bounds:                Rect{X: x + lineOffset + piece.x + justifiedOffset, Y: baseline - piece.height, Width: piece.width, Height: piece.height},
 						Opacity:               piece.opacity,
 						percentHeightResolved: piece.percentHeightResolved,
 					},
@@ -1172,7 +1187,7 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 				Node:       piece.node,
 				Pseudo:     piece.pseudo,
 				Text:       piece.text,
-				X:          x + lineOffset + piece.x,
+				X:          x + lineOffset + piece.x + justifiedOffset,
 				BaselineY:  baseline,
 				Width:      piece.width,
 				Height:     lineHeight,
@@ -1198,7 +1213,7 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 			if len(line) == 0 {
 				cursorY += token.style.LineHeight().Pixels(token.style.FontSize())
 			} else {
-				flushLine()
+				flushLine(false)
 			}
 			lastWasBreak = true
 			lastBreakStyle = token.style
@@ -1244,21 +1259,23 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 			prefixWidth = spaceMetrics.width
 		}
 		if token.wrapBefore && len(line) != 0 && lineWidth+prefixWidth+wordMetrics.width > width {
-			flushLine()
+			flushLine(true)
 			prefix = ""
 			prefixWidth = 0
 		}
+		justifyBefore := prefix != ""
 		if atomicBox != nil {
 			line = append(line, inlinePiece{
-				node:     token.node,
-				pseudo:   token.pseudo,
-				style:    token.style,
-				box:      atomicBox,
-				x:        lineWidth + prefixWidth,
-				width:    wordMetrics.width,
-				height:   atomicHeight,
-				baseline: atomicBaseline,
-				metrics:  wordMetrics,
+				node:          token.node,
+				pseudo:        token.pseudo,
+				style:         token.style,
+				box:           atomicBox,
+				x:             lineWidth + prefixWidth,
+				width:         wordMetrics.width,
+				height:        atomicHeight,
+				baseline:      atomicBaseline,
+				metrics:       wordMetrics,
+				justifyBefore: justifyBefore,
 			})
 			lineWidth += prefixWidth + wordMetrics.width
 			continue
@@ -1270,6 +1287,7 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 				image:                 token.image,
 				replaced:              true,
 				percentHeightResolved: token.style.Height().DependsOnPercent() && containingHeight != nil,
+				justifyBefore:         justifyBefore,
 				opacity:               token.opacity,
 				x:                     lineWidth + prefixWidth,
 				width:                 wordMetrics.width,
@@ -1284,13 +1302,13 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 		if err != nil {
 			return inlineLayout{}, err
 		}
-		line = append(line, inlinePiece{text: pieceText, node: token.node, pseudo: token.pseudo, style: token.style, opacity: token.opacity, x: lineWidth, width: pieceMetrics.width, metrics: pieceMetrics})
+		line = append(line, inlinePiece{text: pieceText, node: token.node, pseudo: token.pseudo, style: token.style, opacity: token.opacity, x: lineWidth, width: pieceMetrics.width, metrics: pieceMetrics, justifyBefore: justifyBefore})
 		lineWidth += pieceMetrics.width
 	}
 	if lastWasBreak {
 		cursorY += lastBreakStyle.LineHeight().Pixels(lastBreakStyle.FontSize())
 	} else {
-		flushLine()
+		flushLine(false)
 	}
 	result.height = cursorY - y
 	return result, nil

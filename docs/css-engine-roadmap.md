@@ -292,12 +292,17 @@ parent-child, nested, and collapse-through empty-block groups retain the
 largest positive plus most-negative margins, while formatting roots, overflow,
 padding, borders, specified height, and nonzero minimum height stop propagation
 at the corresponding edge. Scrollbar layout, inline fragmentation, anchoring,
-snapping, and advanced formatting contexts remain pending.
+snapping, and advanced formatting contexts remain pending. `text-align:
+justify` now distributes positive free space across collapsed inter-word
+opportunities on soft-wrapped non-final lines, including gaps before atomic
+inline and replaced boxes; final and forced-break lines retain start alignment
+until the `text-align-last` property is added.
 
 - Complete inline formatting with retained inline boxes, whitespace, bidi,
   shaping, line breaking, and vertical alignment.
 - Extend definite sizing through the remaining Flexbox stretch/intrinsic edge
-  cases; complete clearance/floats and justified line layout.
+  cases; complete clearance/floats and add `text-align-last` plus broader
+  language-aware justification opportunities.
 - Extend positioning, stacking contexts, overflow/scrolling, and Flexbox in
   measured slices; add floats as a dedicated compatibility slice.
 - Keep computed values separate from used values that depend on geometry.

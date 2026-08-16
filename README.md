@@ -274,7 +274,8 @@ performance budgets; see
 - Content- and border-box sizing, width/height and min/max constraints,
   definite containing-block percentage heights across block, atomic-inline,
   flex, replaced, and positioned boxes, margins, padding, solid borders,
-  backgrounds, opacity, and text alignment
+  backgrounds, opacity, start/end/center alignment, and inter-word
+  justification of soft-wrapped non-final lines
 - Inherited `visibility` plus normal, nowrap, pre, pre-wrap, pre-line, and
   break-spaces text whitespace behavior
 - Bundled Go sans and monospace families with regular, bold, italic, and

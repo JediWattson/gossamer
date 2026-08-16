@@ -100,6 +100,39 @@ func TestPageGeometryObservesCollapsedMarginMutationWithoutPublishingFrame(t *te
 	}
 }
 
+func TestPageGeometryObservesLiveJustifiedAtomicPosition(t *testing.T) {
+	t.Parallel()
+
+	engine, page, targetID := computedStyleTestPage(t, `<!doctype html><html><body style="margin:0">
+		<div id="container" style="width:60px;text-align:justify;font:10px monospace">a <span id="target" style="display:inline-block;width:10px;height:10px"></span> xxxxxxxx</div>
+	</body></html>`)
+	defer engine.Close()
+	handle := NodeHandle{Document: page.DocumentGeneration(), Node: targetID}
+
+	justified, err := page.ElementGeometry(handle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if justified.Rect.X+justified.Rect.Width != 60 {
+		t.Fatalf("justified atomic rect = %#v, want right edge 60", justified.Rect)
+	}
+	firstLayout := page.layout.snapshot
+	containerID := mustPageElementID(t, page, "container")
+	if err := page.document.SetAttribute(containerID, "style", "width:60px;text-align:left;font:10px monospace"); err != nil {
+		t.Fatal(err)
+	}
+	left, err := page.ElementGeometry(handle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if left.Rect.X >= justified.Rect.X {
+		t.Fatalf("left/justified atomic x = %v/%v, want left before justified", left.Rect.X, justified.Rect.X)
+	}
+	if page.layout.snapshot == firstLayout || page.Frame() != nil || !page.Dirty() {
+		t.Fatal("live text-align mutation reused layout, published a frame, or cleared dirtiness")
+	}
+}
+
 func TestElementOverflowScrollTranslatesClipsAndHitTestsWithoutRelayout(t *testing.T) {
 	engine, page, targetID := computedStyleTestPage(t, `<!doctype html><html><body style="margin:0"><div id="target" style="display:block;height:40px;overflow:auto"><div style="display:block;height:60px"></div><button id="button" style="display:block;height:30px">button</button></div><div style="height:80px"></div></body></html>`)
 	defer engine.Close()
