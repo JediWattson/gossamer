@@ -2,6 +2,7 @@ package window_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/url"
 	"reflect"
@@ -12,6 +13,7 @@ import (
 	"github.com/JediWattson/gossamer/internal/browser/fake"
 	"github.com/JediWattson/gossamer/internal/dom"
 	"github.com/JediWattson/gossamer/internal/loader"
+	browserruntime "github.com/JediWattson/gossamer/internal/runtime"
 	"github.com/JediWattson/gossamer/internal/window"
 )
 
@@ -222,6 +224,96 @@ func TestRunBrowserOffsetsGraphiteChromeFromDOMViewportAndInput(t *testing.T) {
 	if bounds := frames[len(frames)-1].Bounds(); bounds.Dx() != 368 || bounds.Dy() != 324 {
 		t.Fatalf("last Graphite frame = %v, want 368x324", bounds)
 	}
+}
+
+func TestRunBrowserPumpsInactiveTabsAndClosesBrowserOwnedPages(t *testing.T) {
+	t.Parallel()
+
+	fakeEngine := fake.New()
+	browserRuntime, err := browser.NewWithEngine(fakeEngine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer browserRuntime.Close()
+	client := windowDocumentLoader{response: &loader.Response{
+		URL:        mustWindowURL(t, "https://tabs.gossamer.test/"),
+		StatusCode: 200,
+		Body:       io.NopCloser(strings.NewReader(`<html><body>initial tab</body></html>`)),
+	}}
+	initialPage, err := browserRuntime.LoadPage(context.Background(), "https://tabs.gossamer.test/", client)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var openedPage *browser.Page
+	var inactiveTaskRan bool
+	opener := func(ctx context.Context) (*browser.Page, error) {
+		openedPage, err = browserRuntime.NewBlankPage(ctx)
+		return openedPage, err
+	}
+	memory := window.NewMemoryBackend(
+		window.Event{Kind: window.EventKeyDown, Key: "t", Code: "KeyT", Modifiers: window.Modifiers{Meta: true}},
+		window.Event{Kind: window.EventKeyDown, Key: "Tab", Code: "Tab", Modifiers: window.Modifiers{Ctrl: true}},
+		window.Event{Kind: window.EventClose},
+	)
+	backend := &tabTaskBackend{
+		MemoryBackend: memory,
+		beforeSecondEvent: func() error {
+			if openedPage == nil {
+				return errors.New("new tab was not opened before tab switch")
+			}
+			_, enqueueErr := openedPage.Realm.EnqueueTask(func(*browserruntime.TaskContext) error {
+				inactiveTaskRan = true
+				return nil
+			})
+			return enqueueErr
+		},
+	}
+	if err := window.RunBrowser(context.Background(), initialPage, backend, window.ShellConfig{
+		Title: "Gossamer tab pump test", Loader: client, OpenTab: opener,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !inactiveTaskRan {
+		t.Fatal("inactive tab task was not pumped")
+	}
+	if openedPage == nil {
+		t.Fatal("tab opener was not called")
+	}
+	if _, err := openedPage.Navigate(context.Background(), "https://closed.gossamer.test/", client); !errors.Is(err, browser.ErrPageClosed) {
+		t.Fatalf("browser-owned Page after window close = %v, want ErrPageClosed", err)
+	}
+	if _, err := initialPage.QueueRender(); err != nil {
+		t.Fatalf("caller-owned initial Page closed with native window: %v", err)
+	}
+	if len(memory.Frames()) < 3 {
+		t.Fatalf("tab session presented %d frames, want initial, new tab, and switched tab", len(memory.Frames()))
+	}
+}
+
+type tabTaskBackend struct {
+	*window.MemoryBackend
+	beforeSecondEvent func() error
+	eventsRead        int
+}
+
+func (backend *tabTaskBackend) NextEvent(ctx context.Context) (window.Event, error) {
+	backend.eventsRead++
+	if backend.eventsRead == 2 && backend.beforeSecondEvent != nil {
+		if err := backend.beforeSecondEvent(); err != nil {
+			return window.Event{}, err
+		}
+	}
+	return backend.MemoryBackend.NextEvent(ctx)
+}
+
+func mustWindowURL(t *testing.T, raw string) *url.URL {
+	t.Helper()
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return parsed
 }
 
 type windowDocumentLoader struct {

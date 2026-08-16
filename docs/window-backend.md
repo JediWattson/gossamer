@@ -30,7 +30,7 @@ frame.
 `window.Run` and `window.RunBrowser` stay on one locked OS thread and repeat
 this sequence:
 
-1. drain the current Page Realm task queue to its checkpoint;
+1. drain every tab Page Realm task queue to its checkpoint;
 2. rasterize and present when the immutable Frame pointer or Graphite shell
    revision changed;
 3. poll one native event;
@@ -78,18 +78,19 @@ opening a desktop window:
 GOCACHE=/tmp/gossamer-go-cache tools/v8/window.sh --check -count=1
 ```
 
-The stock-V8 conformance test drives Graphite resize, translated pointer,
-click, focus, keyboard editing, scroll, and blur through `MemoryBackend`. It
-checks JavaScript event order and payloads, input value, exact content viewport,
-shell-sized frame publication, forced V8 collection, and zero native ownership
-after Page teardown.
+The stock-V8 conformance tests drive Graphite resize, translated pointer,
+click, focus, keyboard editing, scroll, blur, tab creation, switching,
+navigation, and closure through `MemoryBackend`. They check JavaScript event
+order and payloads, input value, exact content viewport, shell-sized frame
+publication, forced V8 collection, balanced Realm lifecycle, and zero native
+ownership after Page teardown.
 
 ## Current scope
 
-This is still an early browser shell. Graphite has one functional tab, address
-navigation, reload, and an engine/kernel telemetry rail. It does not yet have a
-multiple-tab model, working history traversal, scrollbar chrome, clipboard,
-IME/composition bridge, touch, drag-and-drop, accessibility tree, GPU
-compositor, or non-macOS backend. Event polling and CPU rasterization are
-intentionally serial until correctness and profiling establish where
-concurrency is valuable.
+This is still an early browser shell. Graphite has up to eight functional tabs,
+independent Page history and input state, address navigation, history
+traversal, reload, and an engine/kernel telemetry rail. It does not yet have a
+back-forward cache, scrollbar chrome, clipboard, IME/composition bridge, touch,
+drag-and-drop, accessibility tree, GPU compositor, or non-macOS backend. Event
+polling and CPU rasterization are intentionally serial until correctness and
+profiling establish where concurrency is valuable.

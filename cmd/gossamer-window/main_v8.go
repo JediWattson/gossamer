@@ -55,8 +55,9 @@ func main() {
 		windowTitle = "Gossamer — " + rawURL
 	}
 	if err := window.RunBrowser(ctx, page, window.NewNativeBackend(), window.ShellConfig{
-		Title:  windowTitle,
-		Loader: documentLoader,
+		Title:   windowTitle,
+		Loader:  documentLoader,
+		OpenTab: browserRuntime.NewBlankPage,
 	}); err != nil {
 		fatalf("run interactive window: %v", err)
 	}

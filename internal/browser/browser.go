@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strings"
 	"sync"
 
 	"github.com/JediWattson/gossamer/internal/dom"
+	htmlparser "github.com/JediWattson/gossamer/internal/html"
 	"github.com/JediWattson/gossamer/internal/loader"
 	browserruntime "github.com/JediWattson/gossamer/internal/runtime"
 	"github.com/JediWattson/gossamer/internal/runtime/ownership"
@@ -180,6 +182,32 @@ func (browser *Browser) LoadPage(ctx context.Context, rawURL string, client Docu
 	if err := page.WaitNavigation(ctx, navigation); err != nil {
 		_ = page.Close()
 		return nil, err
+	}
+	return page, nil
+}
+
+// NewBlankPage creates and renders an empty Page suitable for a browser-owned
+// tab. It has no URL or session-history entry until its first navigation.
+func (browser *Browser) NewBlankPage(ctx context.Context) (*Page, error) {
+	if browser == nil {
+		return nil, fmt.Errorf("browser: nil browser")
+	}
+	if ctx == nil {
+		return nil, fmt.Errorf("browser: nil blank-page context")
+	}
+	root, err := htmlparser.Parse(strings.NewReader(`<!doctype html><html><head></head><body></body></html>`))
+	if err != nil {
+		return nil, err
+	}
+	page, err := browser.NewPage(root, nil)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := page.QueueRender(); err != nil {
+		return nil, errors.Join(err, page.Close())
+	}
+	if err := page.Realm.RunOne(ctx); err != nil {
+		return nil, errors.Join(err, page.Close())
 	}
 	return page, nil
 }

@@ -2,6 +2,7 @@ package window
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"image"
 	"net/url"
@@ -27,14 +28,15 @@ const (
 // reused for address-bar and reload navigation; nil keeps Page's default HTTP
 // loader behavior.
 type ShellConfig struct {
-	Title  string
-	Loader browser.DocumentLoader
+	Title   string
+	Loader  browser.DocumentLoader
+	OpenTab PageOpener
 }
 
 type shellLayout struct {
 	window         image.Rectangle
-	tab            image.Rectangle
-	tabClose       image.Rectangle
+	tabs           []shellTabLayout
+	newTab         image.Rectangle
 	back           image.Rectangle
 	forward        image.Rectangle
 	reload         image.Rectangle
@@ -45,9 +47,17 @@ type shellLayout struct {
 	inspector      image.Rectangle
 }
 
+type shellTabLayout struct {
+	body  image.Rectangle
+	close image.Rectangle
+}
+
 type graphiteShell struct {
-	loader browser.DocumentLoader
-	fonts  *shellFontBook
+	loader    browser.DocumentLoader
+	opener    PageOpener
+	fonts     *shellFontBook
+	tabs      []graphiteTab
+	activeTab int
 
 	width  int
 	height int
@@ -76,8 +86,9 @@ func newGraphiteShell(page *browser.Page, config ShellConfig) (*graphiteShell, e
 	if page != nil && page.URL() != nil {
 		location = page.URL().String()
 	}
-	return &graphiteShell{
+	shell := &graphiteShell{
 		loader:         config.Loader,
+		opener:         config.OpenTab,
 		fonts:          fonts,
 		address:        location,
 		lastPageURL:    location,
@@ -86,14 +97,17 @@ func newGraphiteShell(page *browser.Page, config ShellConfig) (*graphiteShell, e
 		navigationView: shellNavigationLabel(page.Navigation()),
 		suppressedKeys: make(map[string]bool),
 		revision:       1,
-	}, nil
+		activeTab:      0,
+	}
+	shell.tabs = []graphiteTab{{page: page, state: shell.capturePageState()}}
+	return shell, nil
 }
 
 func (shell *graphiteShell) close() error {
-	if shell == nil || shell.fonts == nil {
+	if shell == nil {
 		return nil
 	}
-	return shell.fonts.close()
+	return errors.Join(shell.closeOwnedTabs(), shell.fonts.close())
 }
 
 func (shell *graphiteShell) initialWindowSize(viewport render.Viewport) (int, int) {
@@ -111,10 +125,10 @@ func (shell *graphiteShell) initialWindowSize(viewport render.Viewport) (int, in
 }
 
 func (shell *graphiteShell) layout() shellLayout {
-	return graphiteLayout(shell.width, shell.height, shell.inspectorOpen)
+	return graphiteLayout(shell.width, shell.height, shell.inspectorOpen, len(shell.tabs), shell.opener != nil && len(shell.tabs) < maximumGraphiteTabs)
 }
 
-func graphiteLayout(width, height int, inspectorOpen bool) shellLayout {
+func graphiteLayout(width, height int, inspectorOpen bool, tabCount int, showNewTab bool) shellLayout {
 	if width < 1 {
 		width = 1
 	}
@@ -140,8 +154,6 @@ func graphiteLayout(width, height int, inspectorOpen bool) shellLayout {
 	}
 	layout := shellLayout{
 		window:         image.Rect(0, 0, width, height),
-		tab:            image.Rect(10, 5, minInt(282, contentRight-52), 34),
-		tabClose:       image.Rect(minInt(252, contentRight-82), 10, minInt(276, contentRight-58), 31),
 		back:           image.Rect(12, 46, 42, 76),
 		forward:        image.Rect(48, 46, 78, 76),
 		reload:         image.Rect(84, 46, 114, 76),
@@ -149,6 +161,42 @@ func graphiteLayout(width, height int, inspectorOpen bool) shellLayout {
 		content:        image.Rect(0, chromeBottom, contentRight, height),
 		rail:           image.Rect(contentRight, 0, width, height),
 		railDisclosure: image.Rect(contentRight, 208, width, 252),
+	}
+	if tabCount < 1 {
+		tabCount = 1
+	}
+	tabStart := 10
+	tabGap := 4
+	newTabWidth := 0
+	if showNewTab {
+		newTabWidth = 38
+	}
+	available := contentRight - tabStart - 10 - newTabWidth - tabGap*(tabCount-1)
+	if available < tabCount {
+		available = tabCount
+	}
+	tabWidth := available / tabCount
+	if tabWidth > 272 {
+		tabWidth = 272
+	}
+	layout.tabs = make([]shellTabLayout, tabCount)
+	x := tabStart
+	for index := 0; index < tabCount; index++ {
+		bodyLeft := minInt(x, contentRight)
+		bodyRight := minInt(x+tabWidth, contentRight)
+		if bodyRight < bodyLeft {
+			bodyRight = bodyLeft
+		}
+		body := image.Rect(bodyLeft, 5, bodyRight, 34)
+		close := image.Rectangle{}
+		if body.Dx() >= 28 {
+			close = image.Rect(body.Max.X-24, 9, body.Max.X-2, 32)
+		}
+		layout.tabs[index] = shellTabLayout{body: body, close: close}
+		x += tabWidth + tabGap
+	}
+	if showNewTab && x < contentRight {
+		layout.newTab = image.Rect(x+2, 7, minInt(x+32, contentRight-4), 33)
 	}
 	if inspectorOpen {
 		panelWidth := 280
@@ -232,7 +280,11 @@ func (shell *graphiteShell) handleEvent(
 		content := shell.layout().content
 		width := maxInt(1, content.Dx())
 		height := maxInt(1, content.Dy())
-		_, resizeErr := page.QueueViewportResize(render.Viewport{Width: width, Height: height})
+		var resizeErr error
+		for _, tabPage := range shell.pages() {
+			_, queueErr := tabPage.QueueViewportResize(render.Viewport{Width: width, Height: height})
+			resizeErr = errors.Join(resizeErr, queueErr)
+		}
 		return true, translated, false, resizeErr
 	}
 
@@ -241,6 +293,30 @@ func (shell *graphiteShell) handleEvent(
 		return true, translated, false, nil
 	}
 	if event.Kind == EventKeyDown {
+		if event.Modifiers.Meta && strings.EqualFold(event.Key, "t") {
+			shell.suppress(event)
+			return true, translated, false, shell.openTab(ctx)
+		}
+		if event.Modifiers.Meta && strings.EqualFold(event.Key, "w") {
+			shell.suppress(event)
+			last, closeErr := shell.closeTab(shell.activeTab)
+			return true, translated, last, closeErr
+		}
+		if event.Modifiers.Ctrl && !event.Modifiers.Shift && event.Key == "Tab" || event.Modifiers.Meta && event.Modifiers.Shift && event.Key == "]" {
+			shell.cycleTab(1)
+			shell.suppress(event)
+			return true, translated, false, nil
+		}
+		if event.Modifiers.Ctrl && event.Modifiers.Shift && event.Key == "Tab" || event.Modifiers.Meta && event.Modifiers.Shift && event.Key == "[" {
+			shell.cycleTab(-1)
+			shell.suppress(event)
+			return true, translated, false, nil
+		}
+		if event.Modifiers.Meta && len(event.Key) == 1 && event.Key[0] >= '1' && event.Key[0] <= '8' {
+			shell.switchTab(int(event.Key[0] - '1'))
+			shell.suppress(event)
+			return true, translated, false, nil
+		}
 		if (event.Modifiers.Meta && event.Key == "[") || (event.Modifiers.Alt && event.Key == "ArrowLeft") {
 			shell.suppress(event)
 			return true, translated, false, shell.navigateHistory(ctx, page, -1)
@@ -282,8 +358,18 @@ func (shell *graphiteShell) handleEvent(
 			state.pressedButton = 0
 		}
 		if event.Kind == EventPointerDown {
-			if point.In(layout.tabClose) {
-				return true, translated, true, nil
+			for index, tab := range layout.tabs {
+				if !tab.close.Empty() && point.In(tab.close) {
+					last, closeErr := shell.closeTab(index)
+					return true, translated, last, closeErr
+				}
+				if point.In(tab.body) {
+					shell.switchTab(index)
+					return true, translated, false, nil
+				}
+			}
+			if !layout.newTab.Empty() && point.In(layout.newTab) {
+				return true, translated, false, shell.openTab(ctx)
 			}
 			if point.In(layout.address) {
 				shell.focusAddress()
@@ -453,7 +539,7 @@ func maxInt(left, right int) int {
 
 func shellTabTitle(page *browser.Page) string {
 	if page == nil || page.URL() == nil {
-		return "Gossamer"
+		return "New Tab"
 	}
 	location := page.URL()
 	if location.Hostname() != "" {

@@ -192,3 +192,68 @@ func TestStockV8HistoryTraversalReplacesRealmsAndInvalidatesWrappers(t *testing.
 		t.Fatalf("V8 history teardown ownership = %#v", ledger)
 	}
 }
+
+func TestStockV8GraphiteTabsOwnPageRealmLifecycle(t *testing.T) {
+	engine := newTestEngine(t)
+	browserRuntime, err := browser.NewWithEngine(engine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer browserRuntime.Close()
+	client := staticDocumentLoader{document: `<!doctype html><html><body><p>tab document</p></body></html>`}
+	initialPage, err := browserRuntime.LoadPage(context.Background(), "https://gossamer.test/first-tab", client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initialRealm, ok := engine.LatestRealm()
+	if !ok {
+		t.Fatal("initial tab did not create a live V8 Realm")
+	}
+	baseline := engine.Profile()
+
+	var openedPage *browser.Page
+	opener := func(ctx context.Context) (*browser.Page, error) {
+		openedPage, err = browserRuntime.NewBlankPage(ctx)
+		return openedPage, err
+	}
+	backend := window.NewMemoryBackend(
+		window.Event{Kind: window.EventKeyDown, Key: "t", Code: "KeyT", Modifiers: window.Modifiers{Meta: true}},
+		window.Event{Kind: window.EventKeyDown, Key: "s", Code: "KeyS", Text: "second.gossamer.test/path"},
+		window.Event{Kind: window.EventKeyDown, Key: "Enter", Code: "Enter"},
+		window.Event{Kind: window.EventKeyDown, Key: "Tab", Code: "Tab", Modifiers: window.Modifiers{Ctrl: true}},
+		window.Event{Kind: window.EventKeyDown, Key: "2", Code: "Digit2", Modifiers: window.Modifiers{Meta: true}},
+		window.Event{Kind: window.EventKeyDown, Key: "w", Code: "KeyW", Modifiers: window.Modifiers{Meta: true}},
+		window.Event{Kind: window.EventClose},
+	)
+	if err := window.RunBrowser(context.Background(), initialPage, backend, window.ShellConfig{
+		Title: "Gossamer V8 tabs test", Loader: client, OpenTab: opener,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if openedPage == nil {
+		t.Fatal("Graphite did not create a Page for Command-T")
+	}
+	if _, err := openedPage.Navigate(context.Background(), "https://closed.gossamer.test/", client); err != browser.ErrPageClosed {
+		t.Fatalf("closed V8 tab navigation = %v, want ErrPageClosed", err)
+	}
+	afterTabClose := engine.Profile()
+	if afterTabClose.RealmsCreated != baseline.RealmsCreated+2 || afterTabClose.RealmsClosed != baseline.RealmsClosed+2 {
+		t.Fatalf("V8 tab open, navigation, and close Realm lifecycle = before %#v after %#v", baseline, afterTabClose)
+	}
+	if err := initialRealm.CollectGarbage(initialPage); err != nil {
+		t.Fatal(err)
+	}
+	if err := initialPage.Close(); err != nil {
+		t.Fatal(err)
+	}
+	profile := engine.Profile()
+	if profile.RealmsCreated != profile.RealmsClosed {
+		t.Fatalf("V8 tab final Realm lifecycle = %#v", profile)
+	}
+	if _, live := engine.LatestRealm(); live {
+		t.Fatal("V8 tab lifecycle retained a live Realm")
+	}
+	if ledger := browserRuntime.Ledger().Stats(); ledger.LiveObjects != 0 || ledger.PersistentObjects != 0 {
+		t.Fatalf("V8 tab teardown ownership = %#v", ledger)
+	}
+}

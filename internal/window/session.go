@@ -65,16 +65,29 @@ func runSession(ctx context.Context, page *browser.Page, backend Backend, config
 	var presentedShellRevision uint64
 	state := inputState{}
 	for {
-		if err := pumpPageTasks(ctx, page); err != nil {
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				return nil
+		activePage := page
+		activeState := &state
+		pages := []*browser.Page{page}
+		if shell != nil {
+			activePage = shell.activePage()
+			activeState = shell.activeInputState()
+			pages = shell.pages()
+		}
+		if activePage == nil || activeState == nil {
+			return fmt.Errorf("window: browser shell has no active tab")
+		}
+		for _, currentPage := range pages {
+			if err := pumpPageTasks(ctx, currentPage); err != nil {
+				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+					return nil
+				}
+				return err
 			}
-			return err
 		}
 		if shell != nil {
-			shell.syncPage(page)
+			shell.syncPage(activePage)
 		}
-		frame = page.Frame()
+		frame = activePage.Frame()
 		shellChanged := shell != nil && shell.revision != presentedShellRevision
 		if frame != nil && (frame != presented || shellChanged) {
 			canvas, err := render.Rasterize(frame)
@@ -82,7 +95,7 @@ func runSession(ctx context.Context, page *browser.Page, backend Backend, config
 				return fmt.Errorf("window: rasterize frame: %w", err)
 			}
 			if shell != nil {
-				canvas, err = shell.compose(canvas, page)
+				canvas, err = shell.compose(canvas, activePage)
 				if err != nil {
 					return fmt.Errorf("window: compose Graphite shell: %w", err)
 				}
@@ -107,7 +120,7 @@ func runSession(ctx context.Context, page *browser.Page, backend Backend, config
 			return nil
 		}
 		if shell != nil {
-			handled, translated, closeWindow, err := shell.handleEvent(ctx, page, event, &state)
+			handled, translated, closeWindow, err := shell.handleEvent(ctx, activePage, event, activeState)
 			if err != nil {
 				return err
 			}
@@ -119,7 +132,7 @@ func runSession(ctx context.Context, page *browser.Page, backend Backend, config
 			}
 			event = translated
 		}
-		if err := routeEvent(page, event, &state); err != nil {
+		if err := routeEvent(activePage, event, activeState); err != nil {
 			return err
 		}
 	}

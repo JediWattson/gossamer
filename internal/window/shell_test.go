@@ -2,6 +2,7 @@ package window
 
 import (
 	"context"
+	"errors"
 	"image"
 	"image/color"
 	"image/draw"
@@ -51,10 +52,10 @@ func TestGraphiteShellComposesChromeContentRailAndInspector(t *testing.T) {
 		t.Fatal("collapsed rail exposed the page canvas")
 	}
 	layout := shell.layout()
-	if got := color.NRGBAModel.Convert(composed.At(layout.tab.Min.X, layout.tab.Min.Y)).(color.NRGBA); got != graphitePalette.top {
+	if got := color.NRGBAModel.Convert(composed.At(layout.tabs[0].body.Min.X, layout.tabs[0].body.Min.Y)).(color.NRGBA); got != graphitePalette.top {
 		t.Fatalf("tab top corner = %#v, want rounded-through background %#v", got, graphitePalette.top)
 	}
-	if got := color.NRGBAModel.Convert(composed.At(layout.tab.Min.X, layout.tab.Max.Y-1)).(color.NRGBA); got != graphitePalette.tealDim {
+	if got := color.NRGBAModel.Convert(composed.At(layout.tabs[0].body.Min.X, layout.tabs[0].body.Max.Y-1)).(color.NRGBA); got != graphitePalette.tealDim {
 		t.Fatalf("tab bottom corner = %#v, want square active edge %#v", got, graphitePalette.tealDim)
 	}
 
@@ -207,6 +208,125 @@ func TestGraphiteAddressBarNormalizesAndNavigates(t *testing.T) {
 	entriesAfterReload, indexAfterReload := page.History()
 	if len(entriesAfterReload) != len(entriesBeforeReload) || indexAfterReload != indexBeforeReload {
 		t.Fatalf("Graphite reload changed history length/index from %d/%d to %d/%d", len(entriesBeforeReload), indexBeforeReload, len(entriesAfterReload), indexAfterReload)
+	}
+}
+
+func TestGraphiteTabsPreservePageStateAndCloseTheirOwnedRealm(t *testing.T) {
+	t.Parallel()
+
+	fakeEngine := fake.New()
+	browserRuntime, err := browser.NewWithEngine(fakeEngine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer browserRuntime.Close()
+	client := shellTestLoader{document: `<html><body>tab document</body></html>`}
+	initialPage, err := browserRuntime.LoadPage(context.Background(), "https://first.gossamer.test/", client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shell, err := newGraphiteShell(initialPage, ShellConfig{
+		Loader: client, OpenTab: browserRuntime.NewBlankPage,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer shell.close()
+	shell.initialWindowSize(initialPage.Frame().Viewport)
+
+	state := shell.activeInputState()
+	handled, _, closeWindow, err := shell.handleEvent(context.Background(), initialPage, Event{
+		Kind: EventKeyDown, Key: "t", Code: "KeyT", Modifiers: Modifiers{Meta: true},
+	}, state)
+	if err != nil || !handled || closeWindow {
+		t.Fatalf("Command-T handled=%t close=%t err=%v", handled, closeWindow, err)
+	}
+	if len(shell.tabs) != 2 || shell.activeTab != 1 {
+		t.Fatalf("tabs after Command-T = %d active %d, want 2 active 1", len(shell.tabs), shell.activeTab)
+	}
+	secondPage := shell.activePage()
+	if secondPage == nil || secondPage == initialPage || secondPage.URL() != nil {
+		t.Fatalf("new tab page = %#v URL=%v", secondPage, secondPage.URL())
+	}
+	if !shell.addressFocused || !shell.selectAll || shell.address != "" {
+		t.Fatalf("new tab address state = %q focused=%t selected=%t", shell.address, shell.addressFocused, shell.selectAll)
+	}
+	layout := shell.layout()
+	if len(layout.tabs) != 2 || layout.newTab.Empty() || layout.tabs[0].body.Overlaps(layout.tabs[1].body) {
+		t.Fatalf("two-tab layout = tabs %#v new-tab %v", layout.tabs, layout.newTab)
+	}
+	pageCanvas := image.NewRGBA(image.Rect(0, 0, 800, 600))
+	composed, err := shell.compose(pageCanvas, secondPage)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inactiveSample := image.Pt(layout.tabs[0].body.Min.X+3, layout.tabs[0].body.Max.Y-2)
+	activeSample := image.Pt(layout.tabs[1].body.Min.X+3, layout.tabs[1].body.Max.Y-2)
+	if got := color.NRGBAModel.Convert(composed.At(inactiveSample.X, inactiveSample.Y)).(color.NRGBA); got != graphitePalette.ink {
+		t.Fatalf("inactive tab fill = %#v, want %#v", got, graphitePalette.ink)
+	}
+	if got := color.NRGBAModel.Convert(composed.At(activeSample.X, activeSample.Y)).(color.NRGBA); got != graphitePalette.surface {
+		t.Fatalf("active tab fill = %#v, want %#v", got, graphitePalette.surface)
+	}
+
+	if _, _, _, err := shell.handleEvent(context.Background(), secondPage, Event{
+		Kind: EventKeyDown, Key: "s", Code: "KeyS", Text: "second.gossamer.test/path",
+	}, shell.activeInputState()); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := shell.handleEvent(context.Background(), secondPage, Event{
+		Kind: EventKeyDown, Key: "Enter", Code: "Enter",
+	}, shell.activeInputState()); err != nil {
+		t.Fatal(err)
+	}
+	navigation := shell.navigation
+	if navigation == 0 {
+		t.Fatal("new tab address did not start navigation")
+	}
+	if err := secondPage.WaitNavigation(context.Background(), navigation); err != nil {
+		t.Fatal(err)
+	}
+	shell.syncPage(secondPage)
+	secondFocus := browser.NodeHandle{Document: secondPage.DocumentGeneration(), Node: secondPage.Document().RootID()}
+	shell.activeInputState().focusTarget = secondFocus
+
+	firstTabPoint := center(shell.layout().tabs[0].body)
+	if handled, _, _, err := shell.handleEvent(context.Background(), secondPage, Event{
+		Kind: EventPointerDown, X: float64(firstTabPoint.X), Y: float64(firstTabPoint.Y),
+	}, shell.activeInputState()); err != nil || !handled {
+		t.Fatalf("first tab click handled=%t err=%v", handled, err)
+	}
+	if shell.activePage() != initialPage || shell.address != "https://first.gossamer.test/" || shell.activeInputState().focusTarget != (browser.NodeHandle{}) {
+		t.Fatalf("first tab state = page %p address %q focus=%#v", shell.activePage(), shell.address, shell.activeInputState().focusTarget)
+	}
+	secondTabPoint := center(shell.layout().tabs[1].body)
+	if handled, _, _, err := shell.handleEvent(context.Background(), initialPage, Event{
+		Kind: EventPointerDown, X: float64(secondTabPoint.X), Y: float64(secondTabPoint.Y),
+	}, shell.activeInputState()); err != nil || !handled {
+		t.Fatalf("second tab click handled=%t err=%v", handled, err)
+	}
+	if shell.activePage() != secondPage || shell.address != "https://second.gossamer.test/path" || shell.activeInputState().focusTarget != secondFocus {
+		t.Fatalf("second tab state = page %p address %q focus=%#v", shell.activePage(), shell.address, shell.activeInputState().focusTarget)
+	}
+
+	secondRealm, ok := fakeEngine.LatestRealm()
+	if !ok {
+		t.Fatal("new tab navigation did not create a script Realm")
+	}
+	handled, _, closeWindow, err = shell.handleEvent(context.Background(), secondPage, Event{
+		Kind: EventKeyDown, Key: "w", Code: "KeyW", Modifiers: Modifiers{Meta: true},
+	}, shell.activeInputState())
+	if err != nil || !handled || closeWindow {
+		t.Fatalf("Command-W handled=%t close=%t err=%v", handled, closeWindow, err)
+	}
+	if len(shell.tabs) != 1 || shell.activePage() != initialPage || shell.activeTab != 0 {
+		t.Fatalf("tabs after close = %d active %d page %p", len(shell.tabs), shell.activeTab, shell.activePage())
+	}
+	if _, err := secondPage.Navigate(context.Background(), "https://closed.gossamer.test/", client); !errors.Is(err, browser.ErrPageClosed) {
+		t.Fatalf("closed tab navigation = %v, want ErrPageClosed", err)
+	}
+	if _, err := secondRealm.RegisterCallback(func(browser.Host) error { return nil }); !errors.Is(err, fake.ErrRealmClosed) {
+		t.Fatalf("closed tab Realm registration = %v, want fake ErrRealmClosed", err)
 	}
 }
 

@@ -5,7 +5,7 @@ DOM compatibility gate verifies that this split remains observable as one DOM:
 canonical V8 wrappers carry numeric `NodeHandle` values, while Go owns node
 identity, mutation, form state, construction regions, and queue ARC.
 
-## Selected completed milestones 8-36
+## Selected completed milestones 8-37
 
 | Milestone | Native surface | Regression boundary |
 | --- | --- | --- |
@@ -30,6 +30,7 @@ identity, mutation, form state, construction regions, and queue ARC.
 | 34. Production page boot | Live `document.readyState`, blocking/defer/async scheduling, `DOMContentLoaded` and `load`, browser-fetched stock-V8 ES modules, per-Realm module identity | An HTTP-served Vite-shaped module graph boots pinned production React, commits and updates the Go DOM, evaluates a duplicated module once, unmounts, forces GC, and closes with zero native ownership |
 | 35. Graphite browser shell | Single-tab Graphite chrome, editable address navigation, reload, content viewport, collapsed telemetry rail, engine/kernel inspector | Chrome remains in Go, page coordinates are translated before hit testing, native dimensions subtract to the exact DOM viewport, and deterministic plus stock-V8 tests retain ordered input and teardown behavior |
 | 36. Session history traversal | `Page.Back`, `Forward`, `Go`, and `Reload`; Graphite controls and keyboard commands; live direction availability | Traversal commits the index only after a successful document rebuild, creates a fresh document generation and V8 Realm, invalidates departed wrappers, preserves the current entry after failure, and leaves zero ownership after teardown |
+| 37. Graphite tab ownership | Browser-created blank Pages, independent address/history/input state, tab switching and cycling, close controls, inactive queue pumping | Each tab is a real Page/Realm ownership unit; browser-owned tabs close deterministically, background queues keep their ordered checkpoints, stock V8 Realm counts balance, and native ownership returns to zero |
 
 Run the gate against the locally built stock V8:
 
@@ -64,9 +65,10 @@ and ownership barriers before a separate render task publishes a frame.
   min/max constraint algorithm are not yet claimed; `inline-flex` computes but
   still follows the existing inline fallback.
 - The AppKit backend is an Apple Silicon macOS milestone surface. Graphite
-  currently supports one window and one functional tab with address/reload
-  chrome plus mouse, wheel, basic keyboard text, focus, blur, and resize events.
-  Multiple tabs, a back-forward cache, scrollbar widgets, clipboard,
+  currently supports one window with up to eight functional tabs, independent
+  Page history/input state, address/history/reload chrome, plus mouse, wheel,
+  basic keyboard text, focus, blur, and resize events. A back-forward cache,
+  scrollbar widgets, clipboard,
   IME/composition, touch, drag-and-drop, accessibility, and non-macOS backends
   remain future work.
 - Initial scripts run after the document and represented render resources are

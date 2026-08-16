@@ -137,7 +137,7 @@ func (shell *graphiteShell) compose(pageCanvas *image.RGBA, page *browser.Page) 
 	fillRect(canvas, image.Rect(0, graphiteChromeHeight-1, layout.rail.Min.X, graphiteChromeHeight), graphitePalette.border)
 	fillRect(canvas, image.Rect(layout.rail.Min.X, 0, layout.rail.Min.X+1, shell.height), graphitePalette.border)
 
-	if err := shell.drawTab(canvas, layout, page); err != nil {
+	if err := shell.drawTabs(canvas, layout); err != nil {
 		return nil, err
 	}
 	if err := shell.drawToolbar(canvas, layout); err != nil {
@@ -156,18 +156,46 @@ func (shell *graphiteShell) compose(pageCanvas *image.RGBA, page *browser.Page) 
 	return canvas, nil
 }
 
-func (shell *graphiteShell) drawTab(canvas *image.RGBA, layout shellLayout, page *browser.Page) error {
-	if layout.tab.Empty() {
-		return nil
+func (shell *graphiteShell) drawTabs(canvas *image.RGBA, layout shellLayout) error {
+	for index, tabLayout := range layout.tabs {
+		if index >= len(shell.tabs) || tabLayout.body.Empty() {
+			continue
+		}
+		active := index == shell.activeTab
+		fill := graphitePalette.ink
+		textColor := graphitePalette.muted
+		if active {
+			fill = graphitePalette.surface
+			textColor = graphitePalette.pearl
+		}
+		fillTopRoundedRect(canvas, tabLayout.body, graphiteTabTopRadius, fill)
+		if active {
+			fillRect(canvas, image.Rect(tabLayout.body.Min.X, tabLayout.body.Max.Y-1, tabLayout.body.Max.X, tabLayout.body.Max.Y), graphitePalette.tealDim)
+		}
+		textLeft := tabLayout.body.Min.X + 8
+		if tabLayout.body.Dx() >= 52 {
+			drawKnot(canvas, image.Pt(tabLayout.body.Min.X+16, tabLayout.body.Min.Y+14), 8)
+			textLeft = tabLayout.body.Min.X + 34
+		}
+		textRight := tabLayout.body.Max.X - 6
+		if !tabLayout.close.Empty() {
+			textRight = tabLayout.close.Min.X - 4
+		}
+		titleClip := image.Rect(textLeft, tabLayout.body.Min.Y, textRight, tabLayout.body.Max.Y)
+		if err := shell.fonts.draw(canvas, titleClip, shellTabTitle(shell.tabs[index].page), textLeft, tabLayout.body.Min.Y+20, 12, textColor, active); err != nil {
+			return err
+		}
+		if !tabLayout.close.Empty() {
+			closeColor := graphitePalette.dim
+			if active {
+				closeColor = graphitePalette.muted
+			}
+			drawClose(canvas, tabLayout.close, closeColor)
+		}
 	}
-	fillTopRoundedRect(canvas, layout.tab, graphiteTabTopRadius, graphitePalette.surface)
-	fillRect(canvas, image.Rect(layout.tab.Min.X, layout.tab.Max.Y-1, layout.tab.Max.X, layout.tab.Max.Y), graphitePalette.tealDim)
-	drawKnot(canvas, image.Pt(layout.tab.Min.X+16, layout.tab.Min.Y+14), 8)
-	titleClip := image.Rect(layout.tab.Min.X+34, layout.tab.Min.Y, layout.tabClose.Min.X-4, layout.tab.Max.Y)
-	if err := shell.fonts.draw(canvas, titleClip, shellTabTitle(page), titleClip.Min.X, layout.tab.Min.Y+20, 12, graphitePalette.pearl, true); err != nil {
-		return err
+	if !layout.newTab.Empty() {
+		drawPlus(canvas, center(layout.newTab), graphitePalette.muted)
 	}
-	drawClose(canvas, layout.tabClose, graphitePalette.muted)
 	return nil
 }
 
@@ -534,6 +562,11 @@ func drawClose(dst *image.RGBA, rectangle image.Rectangle, stroke color.NRGBA) {
 	middle := center(rectangle)
 	drawThickLine(dst, middle.Add(image.Pt(-4, -4)), middle.Add(image.Pt(4, 4)), 1, stroke)
 	drawThickLine(dst, middle.Add(image.Pt(4, -4)), middle.Add(image.Pt(-4, 4)), 1, stroke)
+}
+
+func drawPlus(dst *image.RGBA, middle image.Point, stroke color.NRGBA) {
+	drawThickLine(dst, middle.Add(image.Pt(-5, 0)), middle.Add(image.Pt(5, 0)), 1, stroke)
+	drawThickLine(dst, middle.Add(image.Pt(0, -5)), middle.Add(image.Pt(0, 5)), 1, stroke)
 }
 
 func drawChevron(dst *image.RGBA, middle image.Point, right bool, stroke color.NRGBA) {

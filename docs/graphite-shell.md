@@ -36,7 +36,7 @@ an 848 by 684 backend surface. A native resize to 368 by 324 publishes a 320 by
 
 Graphite handles native input before the existing Page router:
 
-1. tab, toolbar, address, reload, and rail events are consumed by the shell;
+1. tab, toolbar, address, history, reload, and rail events are consumed by the shell;
 2. a content pointer has the chrome origin subtracted;
 3. the translated value-only event enters the existing Page hit test and Realm
    queue;
@@ -59,7 +59,13 @@ surfaces.
   appending a duplicate.
 - Back/forward controls and Command-[ / Command-] traverse the Page's session
   history. Option-Left / Option-Right provide the same native shortcuts.
-- The tab close control ends the current window session.
+- The plus control and Command-T create a rendered blank Page with no URL or
+  history entry; its first address navigation creates the first entry.
+- Clicking a tab switches its Page, address/history state, and native input
+  target. Control-Tab / Control-Shift-Tab cycle tabs, Command-Shift-[ / ] cycle
+  in the same directions, and Command-1 through Command-8 select directly.
+- A tab close control or Command-W closes that tab's Page, Realm, wrappers,
+  queued work, and ownership regions. Closing the last tab ends the window.
 - The collapsed right-rail disclosure opens an overlay with navigation state,
   live regions, native host objects, ownership claims, and task plus microtask
   queue depth.
@@ -72,10 +78,11 @@ opening diagnostics from causing layout or framework resize work.
 ## Regression contract
 
 Backend-neutral tests assert composition layers, address navigation, exact
-viewport subtraction, coordinate translation, DOM event dispatch, and frame
-dimensions. The tagged stock-V8 test repeats the Graphite input sequence,
-checks JavaScript event order and edit state, forces V8 collection, closes the
-Page, and requires zero native ownership.
+viewport subtraction, coordinate translation, DOM event dispatch, frame
+dimensions, per-tab state, inactive-tab task pumping, and browser-owned Page
+closure. Tagged stock-V8 tests repeat the Graphite input and tab sequences,
+check JavaScript behavior, force V8 collection, close every Page, and require
+balanced Realm creation/closure plus zero native ownership.
 
 ```sh
 go test ./internal/window
@@ -85,9 +92,9 @@ tools/v8/gate.sh
 
 ## Deliberate next boundaries
 
-Graphite does not yet claim a multiple-tab model, back-forward document
-caching, page security-state derivation, downloads, bookmarks, scrollbar widgets,
-clipboard, IME/composition, drag-and-drop, touch, accessibility, GPU
-compositing, or a non-macOS backend. Those features should extend the shell and
-backend-neutral event contracts without moving browser object ownership into
-the active JavaScript engine.
+Graphite does not yet claim back-forward document caching, page security-state
+derivation, downloads, bookmarks, scrollbar widgets, clipboard,
+IME/composition, drag-and-drop, touch, accessibility, GPU compositing, or a
+non-macOS backend. Those features should extend the shell and backend-neutral
+event contracts without moving browser object ownership into the active
+JavaScript engine.
