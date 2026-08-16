@@ -122,6 +122,19 @@ func (book *fontBook) metrics(text string, size float64, weight FontWeight, styl
 	}, nil
 }
 
+func (book *fontBook) xHeight(size float64, weight FontWeight, style FontStyle, family FontFamily) (float64, error) {
+	face, err := book.face(size, weight, style, family)
+	if err != nil {
+		return 0, err
+	}
+	bounds, _ := font.BoundString(face, "x")
+	height := float64(bounds.Max.Y-bounds.Min.Y) / 64
+	if height <= 0 || math.IsNaN(height) || math.IsInf(height, 0) {
+		return size / 2, nil
+	}
+	return height, nil
+}
+
 func (book *fontBook) draw(
 	destination *image.RGBA,
 	text string,

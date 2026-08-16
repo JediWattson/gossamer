@@ -77,7 +77,7 @@ shared tokenizer.
 
 Current foundation: cascade and computed-value calculation live in
 `internal/style`; browser pages cache versioned, stable-ID snapshots; and
-render consumes the exact snapshot retained by each frame. The current 34
+render consumes the exact snapshot retained by each frame. The current 60
 longhands share one registry for inheritance, validation, computation, copying,
 serialization, and invalidation metadata, and `all` participates in the full
 layer/importance cascade without resetting custom properties. User-agent,
@@ -296,10 +296,17 @@ snapping, and advanced formatting contexts remain pending. `text-align:
 justify` now distributes positive free space across collapsed inter-word
 opportunities on soft-wrapped non-final lines, including gaps before atomic
 inline and replaced boxes; final and forced-break lines retain start alignment
-until the `text-align-last` property is added.
+until the `text-align-last` property is added. Inline runs, replaced elements,
+and atomic inline formatting roots now participate in parent-strut baseline
+alignment. The legacy `vertical-align` keywords and typed length-percentage
+shifts drive baseline-relative placement, parent text-edge placement, and
+line-relative top/bottom placement; text fragments retain their baseline
+offset so layout geometry and hit testing follow shifted runs. Ordinary inline
+elements still flatten into runs, so retained nested aligned subtrees remain
+part of the inline-box milestone.
 
-- Complete inline formatting with retained inline boxes, whitespace, bidi,
-  shaping, line breaking, and vertical alignment.
+- Complete inline formatting with retained inline boxes and nested aligned
+  subtrees, bidi, shaping, and Unicode line breaking.
 - Extend definite sizing through the remaining Flexbox stretch/intrinsic edge
   cases; complete clearance/floats and add `text-align-last` plus broader
   language-aware justification opportunities.

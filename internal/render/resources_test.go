@@ -243,7 +243,7 @@ func TestRenderWithResourcesAppliesInlineAncestorOpacityDirectlyToImage(t *testi
 	t.Parallel()
 
 	document, _, body := resourceTestDocument()
-	body.Attributes = append(body.Attributes, dom.Attribute{Name: "style", Value: "margin: 0"})
+	body.Attributes = append(body.Attributes, dom.Attribute{Name: "style", Value: "margin: 0; font-size: 1px; line-height: 1"})
 	ancestor := dom.NewElement("span", dom.Attribute{Name: "style", Value: "opacity: 0.25"})
 	imageNode := dom.NewElement("img",
 		dom.Attribute{Name: "src", Value: "red.png"},
@@ -347,7 +347,7 @@ func TestRenderPNGWithResourcesPaintsImagePixels(t *testing.T) {
 	t.Parallel()
 
 	document, _, body := resourceTestDocument()
-	body.Attributes = append(body.Attributes, dom.Attribute{Name: "style", Value: "margin: 0"})
+	body.Attributes = append(body.Attributes, dom.Attribute{Name: "style", Value: "margin: 0; font-size: 1px; line-height: 1"})
 	imageNode := dom.NewElement("img",
 		dom.Attribute{Name: "src", Value: "colors.png"},
 		dom.Attribute{Name: "style", Value: "font-size: 1px; line-height: 1"},

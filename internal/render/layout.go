@@ -62,17 +62,18 @@ type marginCacheKey struct {
 }
 
 type inlineToken struct {
-	text         string
-	node         *dom.Node
-	pseudo       computed.PseudoElement
-	style        computedStyle
-	atomic       *styledNode
-	image        image.Image
-	replaced     bool
-	opacity      float64
-	leadingSpace bool
-	wrapBefore   bool
-	lineBreak    bool
+	text          string
+	node          *dom.Node
+	pseudo        computed.PseudoElement
+	style         computedStyle
+	atomic        *styledNode
+	image         image.Image
+	replaced      bool
+	opacity       float64
+	leadingSpace  bool
+	wrapBefore    bool
+	lineBreak     bool
+	verticalAlign verticalAlignment
 }
 
 type inlinePiece struct {
@@ -91,6 +92,7 @@ type inlinePiece struct {
 	height                float64
 	baseline              float64
 	metrics               textMetrics
+	verticalAlign         verticalAlignment
 }
 
 type inlineLayout struct {
@@ -514,7 +516,7 @@ func (context *layoutContext) layoutBlockSized(node *styledNode, containingX, co
 			!isOutOfFlow(node.children[end].style.Position()) {
 			end++
 		}
-		inline, err := context.layoutInline(node.children[index:end], box.ContentBounds.X, cursorY, width, childContainingHeight, node.style.TextAlignment())
+		inline, err := context.layoutInline(node.children[index:end], box.ContentBounds.X, cursorY, width, childContainingHeight, node.style)
 		if err != nil {
 			return nil, err
 		}
@@ -962,31 +964,33 @@ func (context *layoutContext) addListMarker(node *styledNode, box *Box) error {
 	if err != nil {
 		return err
 	}
+	markerLineHeight := math.Max(node.style.LineHeight().Pixels(node.style.FontSize()), metrics.ascent+metrics.descent)
+	markerLeading := math.Max(0, markerLineHeight-metrics.ascent-metrics.descent)
+	baselineOffset := markerLeading/2 + metrics.ascent
 	baseline, hasBaseline := firstBoxBaseline(box)
 	if !hasBaseline {
-		lineHeight := math.Max(node.style.LineHeight().Pixels(node.style.FontSize()), metrics.ascent+metrics.descent)
-		leading := math.Max(0, lineHeight-metrics.ascent-metrics.descent)
-		baseline = box.ContentBounds.Y + leading/2 + metrics.ascent
-		if box.ContentBounds.Height < lineHeight && node.style.Height().Unit() == lengthAuto {
-			box.ContentBounds.Height = lineHeight
-			box.Bounds.Height = box.Border.Top + box.Padding.Top + lineHeight + box.Padding.Bottom + box.Border.Bottom
+		baseline = box.ContentBounds.Y + baselineOffset
+		if box.ContentBounds.Height < markerLineHeight && node.style.Height().Unit() == lengthAuto {
+			box.ContentBounds.Height = markerLineHeight
+			box.Bounds.Height = box.Border.Top + box.Padding.Top + markerLineHeight + box.Padding.Bottom + box.Border.Bottom
 		}
 	}
 	marker := TextFragment{
-		Node:       node.node,
-		Pseudo:     node.pseudo,
-		Text:       markerText,
-		X:          box.Bounds.X - node.style.FontSize()*.5 - metrics.width,
-		BaselineY:  baseline,
-		Width:      metrics.width,
-		Height:     node.style.LineHeight().Pixels(node.style.FontSize()),
-		FontSize:   node.style.FontSize(),
-		FontFamily: node.style.FontFamily(),
-		FontWeight: node.style.FontWeight(),
-		FontStyle:  node.style.FontStyle(),
-		Color:      node.style.Color(),
-		Visible:    node.style.Visibility() == visibilityVisible,
-		Underline:  node.style.Underline(),
+		Node:           node.node,
+		Pseudo:         node.pseudo,
+		Text:           markerText,
+		X:              box.Bounds.X - node.style.FontSize()*.5 - metrics.width,
+		BaselineY:      baseline,
+		BaselineOffset: baselineOffset,
+		Width:          metrics.width,
+		Height:         markerLineHeight,
+		FontSize:       node.style.FontSize(),
+		FontFamily:     node.style.FontFamily(),
+		FontWeight:     node.style.FontWeight(),
+		FontStyle:      node.style.FontStyle(),
+		Color:          node.style.Color(),
+		Visible:        node.style.Visibility() == visibilityVisible,
+		Underline:      node.style.Underline(),
 	}
 	fragment := InlineFragment{Kind: TextFragmentKind, Text: marker}
 	box.flow = append([]flowItem{{fragment: fragment}}, box.flow...)
@@ -1083,7 +1087,7 @@ func (context *layoutContext) generatedListItemCount(container *dom.Node) int {
 	return count
 }
 
-func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width float64, containingHeight *float64, alignment textAlignment) (inlineLayout, error) {
+func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width float64, containingHeight *float64, containerStyle computedStyle) (inlineLayout, error) {
 	builder := inlineTokenBuilder{images: context.images}
 	for _, node := range nodes {
 		builder.add(node, 1)
@@ -1091,6 +1095,19 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 	if len(builder.tokens) == 0 {
 		return inlineLayout{}, nil
 	}
+	containerMetrics, err := context.fonts.metrics("M", containerStyle.FontSize(), containerStyle.FontWeight(), containerStyle.FontStyle(), containerStyle.FontFamily())
+	if err != nil {
+		return inlineLayout{}, err
+	}
+	containerLineHeight := math.Max(containerStyle.LineHeight().Pixels(containerStyle.FontSize()), containerMetrics.ascent+containerMetrics.descent)
+	containerLeading := math.Max(0, containerLineHeight-containerMetrics.ascent-containerMetrics.descent)
+	containerBaseline := containerLeading/2 + containerMetrics.ascent
+	containerDescent := containerLineHeight - containerBaseline
+	containerXHeight, err := context.fonts.xHeight(containerStyle.FontSize(), containerStyle.FontWeight(), containerStyle.FontStyle(), containerStyle.FontFamily())
+	if err != nil {
+		return inlineLayout{}, err
+	}
+	alignment := containerStyle.TextAlignment()
 
 	var result inlineLayout
 	var line []inlinePiece
@@ -1105,6 +1122,8 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 				if previous.Text.Node == text.Node &&
 					previous.Text.Pseudo == text.Pseudo &&
 					previous.Text.BaselineY == text.BaselineY &&
+					previous.Text.BaselineOffset == text.BaselineOffset &&
+					previous.Text.Height == text.Height &&
 					previous.Text.FontSize == text.FontSize &&
 					previous.Text.FontFamily == text.FontFamily &&
 					previous.Text.FontWeight == text.FontWeight &&
@@ -1125,17 +1144,37 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 		if len(line) == 0 {
 			return
 		}
-		lineAscent := 0.0
-		lineDescent := 0.0
-		lineHeight := 0.0
-		for _, piece := range line {
-			lineAscent = math.Max(lineAscent, piece.metrics.ascent)
-			lineDescent = math.Max(lineDescent, piece.metrics.descent)
-			lineHeight = math.Max(lineHeight, piece.style.LineHeight().Pixels(piece.style.FontSize()))
+		lineAscent := containerBaseline
+		lineDescent := containerDescent
+		raises := make([]float64, len(line))
+		lineRelativeHeight := 0.0
+		for index := range line {
+			piece := &line[index]
+			if piece.box == nil && !piece.replaced {
+				piece.height = math.Max(piece.style.LineHeight().Pixels(piece.style.FontSize()), piece.metrics.ascent+piece.metrics.descent)
+				leading := math.Max(0, piece.height-piece.metrics.ascent-piece.metrics.descent)
+				piece.baseline = leading/2 + piece.metrics.ascent
+			} else if piece.replaced {
+				piece.baseline = piece.height
+			}
+			mode := piece.verticalAlign.Mode()
+			if mode == verticalAlignTop || mode == verticalAlignBottom {
+				lineRelativeHeight = math.Max(lineRelativeHeight, piece.height)
+				continue
+			}
+			raise := context.inlineVerticalRaise(*piece, containerMetrics.ascent, containerMetrics.descent, containerXHeight, containerStyle.FontSize())
+			raises[index] = raise
+			top := -piece.baseline - raise
+			bottom := top + piece.height
+			lineAscent = math.Max(lineAscent, -top)
+			lineDescent = math.Max(lineDescent, bottom)
 		}
-		lineHeight = math.Max(lineHeight, lineAscent+lineDescent)
-		leading := math.Max(0, lineHeight-lineAscent-lineDescent)
-		baseline := cursorY + leading/2 + lineAscent
+		lineHeight := math.Max(lineAscent+lineDescent, lineRelativeHeight)
+		if extra := lineHeight - lineAscent - lineDescent; extra > 0 {
+			lineAscent += extra / 2
+			lineDescent += extra - extra/2
+		}
+		baseline := cursorY + lineAscent
 		lineOffset := 0.0
 		switch alignment {
 		case alignCenter:
@@ -1157,13 +1196,19 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 			}
 		}
 		justifiedOffset := 0.0
-		for _, piece := range line {
+		for index, piece := range line {
 			if piece.justifyBefore {
 				justifiedOffset += justifyStep
 			}
+			targetY := baseline - piece.baseline - raises[index]
+			switch piece.verticalAlign.Mode() {
+			case verticalAlignTop:
+				targetY = cursorY
+			case verticalAlignBottom:
+				targetY = cursorY + lineHeight - piece.height
+			}
 			if piece.box != nil {
 				targetX := x + lineOffset + piece.x + justifiedOffset
-				targetY := baseline - piece.baseline
 				translateLayoutBox(piece.box, targetX, targetY)
 				result.flow = append(result.flow, flowItem{box: piece.box})
 				continue
@@ -1174,7 +1219,7 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 					Image: ImageFragment{
 						Node:                  piece.node,
 						Image:                 piece.image,
-						Bounds:                Rect{X: x + lineOffset + piece.x + justifiedOffset, Y: baseline - piece.height, Width: piece.width, Height: piece.height},
+						Bounds:                Rect{X: x + lineOffset + piece.x + justifiedOffset, Y: targetY, Width: piece.width, Height: piece.height},
 						Opacity:               piece.opacity,
 						percentHeightResolved: piece.percentHeightResolved,
 					},
@@ -1184,20 +1229,21 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 			textColor := piece.style.Color()
 			textColor.A = uint8(math.Round(float64(textColor.A) * clamp(piece.opacity, 0, 1)))
 			text := TextFragment{
-				Node:       piece.node,
-				Pseudo:     piece.pseudo,
-				Text:       piece.text,
-				X:          x + lineOffset + piece.x + justifiedOffset,
-				BaselineY:  baseline,
-				Width:      piece.width,
-				Height:     lineHeight,
-				FontSize:   piece.style.FontSize(),
-				FontFamily: piece.style.FontFamily(),
-				FontWeight: piece.style.FontWeight(),
-				FontStyle:  piece.style.FontStyle(),
-				Color:      textColor,
-				Visible:    piece.style.Visibility() == visibilityVisible,
-				Underline:  piece.style.Underline(),
+				Node:           piece.node,
+				Pseudo:         piece.pseudo,
+				Text:           piece.text,
+				X:              x + lineOffset + piece.x + justifiedOffset,
+				BaselineY:      targetY + piece.baseline,
+				BaselineOffset: piece.baseline,
+				Width:          piece.width,
+				Height:         piece.height,
+				FontSize:       piece.style.FontSize(),
+				FontFamily:     piece.style.FontFamily(),
+				FontWeight:     piece.style.FontWeight(),
+				FontStyle:      piece.style.FontStyle(),
+				Color:          textColor,
+				Visible:        piece.style.Visibility() == visibilityVisible,
+				Underline:      piece.style.Underline(),
 			}
 			appendFragment(InlineFragment{Kind: TextFragmentKind, Text: text})
 		}
@@ -1276,6 +1322,7 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 				baseline:      atomicBaseline,
 				metrics:       wordMetrics,
 				justifyBefore: justifyBefore,
+				verticalAlign: token.verticalAlign,
 			})
 			lineWidth += prefixWidth + wordMetrics.width
 			continue
@@ -1293,6 +1340,7 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 				width:                 wordMetrics.width,
 				height:                imageHeight,
 				metrics:               wordMetrics,
+				verticalAlign:         token.verticalAlign,
 			})
 			lineWidth += prefixWidth + wordMetrics.width
 			continue
@@ -1302,7 +1350,7 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 		if err != nil {
 			return inlineLayout{}, err
 		}
-		line = append(line, inlinePiece{text: pieceText, node: token.node, pseudo: token.pseudo, style: token.style, opacity: token.opacity, x: lineWidth, width: pieceMetrics.width, metrics: pieceMetrics, justifyBefore: justifyBefore})
+		line = append(line, inlinePiece{text: pieceText, node: token.node, pseudo: token.pseudo, style: token.style, opacity: token.opacity, x: lineWidth, width: pieceMetrics.width, metrics: pieceMetrics, justifyBefore: justifyBefore, verticalAlign: token.verticalAlign})
 		lineWidth += pieceMetrics.width
 	}
 	if lastWasBreak {
@@ -1312,6 +1360,31 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 	}
 	result.height = cursorY - y
 	return result, nil
+}
+
+func (context *layoutContext) inlineVerticalRaise(piece inlinePiece, parentAscent, parentDescent, parentXHeight, parentFontSize float64) float64 {
+	switch piece.verticalAlign.Mode() {
+	case verticalAlignSub:
+		// CSS Inline permits font metrics here and defines one fifth of the
+		// parent's font size as the fallback when no subscript metric exists.
+		return -parentFontSize / 5
+	case verticalAlignSuper:
+		// The corresponding superscript fallback is one third of the parent
+		// font size.
+		return parentFontSize / 3
+	case verticalAlignTextTop:
+		return parentAscent - piece.baseline
+	case verticalAlignTextBottom:
+		return piece.height - piece.baseline - parentDescent
+	case verticalAlignMiddle:
+		return piece.height/2 + parentXHeight/2 - piece.baseline
+	case verticalAlignLength:
+		lineHeight := piece.style.LineHeight().Pixels(piece.style.FontSize())
+		if resolved, ok := piece.verticalAlign.Offset().Resolve(lineHeight, float64(context.viewport.Width), float64(context.viewport.Height)); ok {
+			return resolved
+		}
+	}
+	return 0
 }
 
 type intrinsicWidths struct {
@@ -1763,27 +1836,36 @@ type inlineTokenBuilder struct {
 }
 
 func (builder *inlineTokenBuilder) add(node *styledNode, inheritedOpacity float64) {
+	builder.addAligned(node, inheritedOpacity, verticalAlignment{})
+}
+
+func (builder *inlineTokenBuilder) addAligned(node *styledNode, inheritedOpacity float64, inheritedAlignment verticalAlignment) {
 	if node == nil || node.style.Display() == displayNone {
 		return
+	}
+	alignment := inheritedAlignment
+	if own := node.style.VerticalAlignment(); own.Mode() != verticalAlignBaseline || alignment.Mode() == verticalAlignBaseline {
+		alignment = own
 	}
 	if node.generated {
 		// The synthetic text is the pseudo box's content, not a second styled
 		// box. Its parent's opacity has already been flattened for inline
 		// pseudos or will group the containing atomic/block pseudo box.
-		builder.addText(node.generatedText, node.node, node.pseudo, node.style, inheritedOpacity)
+		builder.addText(node.generatedText, node.node, node.pseudo, node.style, inheritedOpacity, alignment)
 		return
 	}
 	opacity := clamp(inheritedOpacity*node.style.Opacity(), 0, 1)
 	if isAtomicInline(node.style.Display()) {
 		leadingSpace := builder.pendingSpace && builder.hasContent
 		builder.tokens = append(builder.tokens, inlineToken{
-			node:         node.node,
-			pseudo:       node.pseudo,
-			style:        node.style,
-			atomic:       node,
-			opacity:      opacity,
-			leadingSpace: leadingSpace,
-			wrapBefore:   whiteSpaceAllowsSoftWrap(node.style.WhiteSpace()) && builder.hasContent,
+			node:          node.node,
+			pseudo:        node.pseudo,
+			style:         node.style,
+			atomic:        node,
+			opacity:       opacity,
+			leadingSpace:  leadingSpace,
+			wrapBefore:    whiteSpaceAllowsSoftWrap(node.style.WhiteSpace()) && builder.hasContent,
+			verticalAlign: alignment,
 		})
 		builder.pendingSpace = false
 		builder.hasContent = true
@@ -1800,13 +1882,14 @@ func (builder *inlineTokenBuilder) add(node *styledNode, inheritedOpacity float6
 		if decoded != nil || hasExplicitImageDimensions(node.style) {
 			leadingSpace := builder.pendingSpace && builder.hasContent
 			builder.tokens = append(builder.tokens, inlineToken{
-				node:         node.node,
-				style:        node.style,
-				image:        decoded,
-				replaced:     true,
-				opacity:      opacity,
-				leadingSpace: leadingSpace,
-				wrapBefore:   whiteSpaceAllowsSoftWrap(node.style.WhiteSpace()) && (leadingSpace || builder.hasContent),
+				node:          node.node,
+				style:         node.style,
+				image:         decoded,
+				replaced:      true,
+				opacity:       opacity,
+				leadingSpace:  leadingSpace,
+				wrapBefore:    whiteSpaceAllowsSoftWrap(node.style.WhiteSpace()) && (leadingSpace || builder.hasContent),
+				verticalAlign: alignment,
 			})
 			builder.pendingSpace = false
 			builder.hasContent = true
@@ -1814,36 +1897,36 @@ func (builder *inlineTokenBuilder) add(node *styledNode, inheritedOpacity float6
 		return
 	}
 	if node.node.Type == dom.TextNode {
-		builder.addText(node.node.Data, node.node, computed.PseudoElementNone, node.style, opacity)
+		builder.addText(node.node.Data, node.node, computed.PseudoElementNone, node.style, opacity, alignment)
 		return
 	}
 	for _, child := range node.children {
 		if !isBlockLevel(child.style.Display()) {
-			builder.add(child, opacity)
+			builder.addAligned(child, opacity, alignment)
 		}
 	}
 }
 
-func (builder *inlineTokenBuilder) addText(source string, node *dom.Node, pseudo computed.PseudoElement, style computedStyle, opacity float64) {
+func (builder *inlineTokenBuilder) addText(source string, node *dom.Node, pseudo computed.PseudoElement, style computedStyle, opacity float64, alignment verticalAlignment) {
 	switch style.WhiteSpace() {
 	case whiteSpacePre:
-		builder.addPreservedText(source, node, pseudo, style, opacity, false)
+		builder.addPreservedText(source, node, pseudo, style, opacity, alignment, false)
 	case whiteSpacePreWrap, whiteSpaceBreak:
-		builder.addPreservedText(source, node, pseudo, style, opacity, true)
+		builder.addPreservedText(source, node, pseudo, style, opacity, alignment, true)
 	case whiteSpacePreLine:
-		builder.addCollapsedText(source, node, pseudo, style, opacity, true, true)
+		builder.addCollapsedText(source, node, pseudo, style, opacity, alignment, true, true)
 	case whiteSpaceNoWrap:
-		builder.addCollapsedText(source, node, pseudo, style, opacity, false, false)
+		builder.addCollapsedText(source, node, pseudo, style, opacity, alignment, false, false)
 	default:
-		builder.addCollapsedText(source, node, pseudo, style, opacity, true, false)
+		builder.addCollapsedText(source, node, pseudo, style, opacity, alignment, true, false)
 	}
 }
 
-func (builder *inlineTokenBuilder) addCollapsedText(source string, node *dom.Node, pseudo computed.PseudoElement, style computedStyle, opacity float64, wrap, preserveBreaks bool) {
+func (builder *inlineTokenBuilder) addCollapsedText(source string, node *dom.Node, pseudo computed.PseudoElement, style computedStyle, opacity float64, alignment verticalAlignment, wrap, preserveBreaks bool) {
 	if preserveBreaks {
 		parts := strings.Split(normalizeSegmentBreaks(source), "\n")
 		for index, part := range parts {
-			builder.addCollapsedText(part, node, pseudo, style, opacity, wrap, false)
+			builder.addCollapsedText(part, node, pseudo, style, opacity, alignment, wrap, false)
 			if index != len(parts)-1 {
 				builder.tokens = append(builder.tokens, inlineToken{node: node, pseudo: pseudo, style: style, lineBreak: true})
 				builder.pendingSpace = false
@@ -1859,13 +1942,14 @@ func (builder *inlineTokenBuilder) addCollapsedText(source string, node *dom.Nod
 		}
 		leadingSpace := builder.pendingSpace && builder.hasContent
 		builder.tokens = append(builder.tokens, inlineToken{
-			text:         source[start:end],
-			node:         node,
-			pseudo:       pseudo,
-			style:        style,
-			opacity:      opacity,
-			leadingSpace: leadingSpace,
-			wrapBefore:   wrap && leadingSpace,
+			text:          source[start:end],
+			node:          node,
+			pseudo:        pseudo,
+			style:         style,
+			opacity:       opacity,
+			verticalAlign: alignment,
+			leadingSpace:  leadingSpace,
+			wrapBefore:    wrap && leadingSpace,
 		})
 		builder.hasContent = true
 		builder.pendingSpace = false
@@ -1886,13 +1970,13 @@ func (builder *inlineTokenBuilder) addCollapsedText(source string, node *dom.Nod
 	flushWord(len(source))
 }
 
-func (builder *inlineTokenBuilder) addPreservedText(source string, node *dom.Node, pseudo computed.PseudoElement, style computedStyle, opacity float64, wrap bool) {
+func (builder *inlineTokenBuilder) addPreservedText(source string, node *dom.Node, pseudo computed.PseudoElement, style computedStyle, opacity float64, alignment verticalAlignment, wrap bool) {
 	source = strings.ReplaceAll(normalizeSegmentBreaks(source), "\t", "        ")
 	parts := strings.Split(source, "\n")
 	for partIndex, part := range parts {
 		if part != "" {
 			if !wrap {
-				builder.tokens = append(builder.tokens, inlineToken{text: part, node: node, pseudo: pseudo, style: style, opacity: opacity})
+				builder.tokens = append(builder.tokens, inlineToken{text: part, node: node, pseudo: pseudo, style: style, opacity: opacity, verticalAlign: alignment})
 			} else {
 				start := 0
 				wrapBefore := false
@@ -1901,12 +1985,12 @@ func (builder *inlineTokenBuilder) addPreservedText(source string, node *dom.Nod
 						continue
 					}
 					end := index + 1
-					builder.tokens = append(builder.tokens, inlineToken{text: part[start:end], node: node, pseudo: pseudo, style: style, opacity: opacity, wrapBefore: wrapBefore})
+					builder.tokens = append(builder.tokens, inlineToken{text: part[start:end], node: node, pseudo: pseudo, style: style, opacity: opacity, wrapBefore: wrapBefore, verticalAlign: alignment})
 					start = end
 					wrapBefore = true
 				}
 				if start < len(part) {
-					builder.tokens = append(builder.tokens, inlineToken{text: part[start:], node: node, pseudo: pseudo, style: style, opacity: opacity, wrapBefore: wrapBefore})
+					builder.tokens = append(builder.tokens, inlineToken{text: part[start:], node: node, pseudo: pseudo, style: style, opacity: opacity, wrapBefore: wrapBefore, verticalAlign: alignment})
 				}
 			}
 			builder.hasContent = true

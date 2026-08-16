@@ -276,6 +276,10 @@ performance budgets; see
   flex, replaced, and positioned boxes, margins, padding, solid borders,
   backgrounds, opacity, start/end/center alignment, and inter-word
   justification of soft-wrapped non-final lines
+- Baseline, subscript/superscript, text-edge, middle, line-edge, and typed
+  length-percentage `vertical-align` placement for inline runs, replaced
+  content, and atomic inline formatting roots, with shifted geometry and hit
+  testing
 - Inherited `visibility` plus normal, nowrap, pre, pre-wrap, pre-line, and
   break-spaces text whitespace behavior
 - Bundled Go sans and monospace families with regular, bold, italic, and
@@ -329,10 +333,10 @@ participate atomically in line layout with shrink-to-fit sizing, baseline
 alignment, box-model paint, geometry, and hit testing. Ordinary inline elements
 still flatten into runs rather than retained inline boxes. Preserved whitespace
 uses the current simple glyph metrics and an eight-space tab approximation;
-full Unicode line breaking, bidi, shaping, and CSS Text 4 controls remain
-future work. Screenshots clip to one 800 x 600 viewport. Unsupported CSS is
-skipped, and failed stylesheets or images degrade independently so the rest of
-a page can still render.
+full nested aligned-subtree bounds, Unicode line breaking, bidi, shaping, and
+CSS Text 4 controls remain future work. Screenshots clip to one 800 x 600
+viewport. Unsupported CSS is skipped, and failed stylesheets or images degrade
+independently so the rest of a page can still render.
 
 The first `getComputedStyle()` surface reports typed computed values and uses a
 separate synchronous layout snapshot for width and height when a principal box

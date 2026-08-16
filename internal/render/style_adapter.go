@@ -32,6 +32,21 @@ const (
 	alignJustify = computed.AlignJustify
 )
 
+type verticalAlignMode = computed.VerticalAlignMode
+type verticalAlignment = computed.VerticalAlignment
+
+const (
+	verticalAlignBaseline   = computed.VerticalAlignBaseline
+	verticalAlignSub        = computed.VerticalAlignSub
+	verticalAlignSuper      = computed.VerticalAlignSuper
+	verticalAlignTextTop    = computed.VerticalAlignTextTop
+	verticalAlignTextBottom = computed.VerticalAlignTextBottom
+	verticalAlignMiddle     = computed.VerticalAlignMiddle
+	verticalAlignTop        = computed.VerticalAlignTop
+	verticalAlignBottom     = computed.VerticalAlignBottom
+	verticalAlignLength     = computed.VerticalAlignLength
+)
+
 type listStyleType = computed.ListStyleType
 
 const (

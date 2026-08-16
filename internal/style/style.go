@@ -201,6 +201,32 @@ const (
 	alignJustify = AlignJustify
 )
 
+// VerticalAlignMode identifies the computed inline-axis alignment behavior.
+// VerticalAlignLength carries a typed length/percentage in VerticalAlignment.
+type VerticalAlignMode uint8
+
+const (
+	VerticalAlignBaseline VerticalAlignMode = iota
+	VerticalAlignSub
+	VerticalAlignSuper
+	VerticalAlignTextTop
+	VerticalAlignTextBottom
+	VerticalAlignMiddle
+	VerticalAlignTop
+	VerticalAlignBottom
+	VerticalAlignLength
+)
+
+// VerticalAlignment is the immutable computed vertical-align value.
+type VerticalAlignment struct {
+	mode   VerticalAlignMode
+	offset Length
+}
+
+func (alignment VerticalAlignment) Mode() VerticalAlignMode { return alignment.mode }
+
+func (alignment VerticalAlignment) Offset() Length { return alignment.offset }
+
 type LineHeight struct {
 	value    float64
 	absolute bool
@@ -489,6 +515,7 @@ type ComputedStyle struct {
 	ancestorUnderline bool
 	underline         bool
 	textAlign         TextAlignment
+	verticalAlign     VerticalAlignment
 	listStyleType     ListStyleType
 	opacity           float64
 	overflowX         OverflowMode
@@ -561,6 +588,7 @@ func (computed ComputedStyle) LineHeight() LineHeight                 { return c
 func (computed ComputedStyle) TextDecorationLine() TextDecorationLine { return computed.textDecoration }
 func (computed ComputedStyle) Underline() bool                        { return computed.underline }
 func (computed ComputedStyle) TextAlignment() TextAlignment           { return computed.textAlign }
+func (computed ComputedStyle) VerticalAlignment() VerticalAlignment   { return computed.verticalAlign }
 func (computed ComputedStyle) ListStyleType() ListStyleType           { return computed.listStyleType }
 func (computed ComputedStyle) Opacity() float64                       { return computed.opacity }
 func (computed ComputedStyle) OverflowX() OverflowMode                { return computed.overflowX }
@@ -1104,6 +1132,7 @@ func cssInitialStyle(viewport Viewport) computedStyle {
 		fontWeightValue: 400,
 		lineHeight:      computedLineHeight{value: 1.2, normal: true},
 		textAlign:       alignStart,
+		verticalAlign:   VerticalAlignment{mode: VerticalAlignBaseline},
 		opacity:         1,
 		position:        PositionStatic,
 		top:             length{unit: lengthAuto},

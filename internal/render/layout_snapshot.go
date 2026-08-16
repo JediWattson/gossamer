@@ -231,7 +231,7 @@ func indexPointerGeometry(box *Box, index map[*dom.Node]LayoutGeometry, pseudoIn
 		case ImageFragmentKind:
 			bounds = fragment.Image.Bounds
 		case TextFragmentKind:
-			bounds = Rect{X: fragment.Text.X, Y: fragment.Text.BaselineY - fragment.Text.Height, Width: fragment.Text.Width, Height: fragment.Text.Height}
+			bounds = textFragmentBounds(fragment.Text)
 		}
 		if right := bounds.X + bounds.Width; right > extent.right {
 			extent.right = right
@@ -288,7 +288,7 @@ func indexStableGeometry(box *Box, access *dom.ReadAccess, index map[dom.NodeID]
 		case ImageFragmentKind:
 			bounds = fragment.Image.Bounds
 		case TextFragmentKind:
-			bounds = Rect{X: fragment.Text.X, Y: fragment.Text.BaselineY - fragment.Text.Height, Width: fragment.Text.Width, Height: fragment.Text.Height}
+			bounds = textFragmentBounds(fragment.Text)
 		}
 		if right := bounds.X + bounds.Width; right > extent.right {
 			extent.right = right

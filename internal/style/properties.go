@@ -60,6 +60,7 @@ const (
 	propertyGap
 	propertyTextAlign
 	propertyTextDecorationLine
+	propertyVerticalAlign
 	propertyVisibility
 	propertyWhiteSpace
 	propertyWidth
@@ -151,6 +152,7 @@ var propertyDefinitions = [...]propertyDefinition{
 	{name: "text-align", kind: propertyTextAlign, inherited: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "text-decoration-line", kind: propertyTextDecorationLine, invalidation: propertyInvalidatesPaint},
 	{name: "top", kind: propertyInset, edge: propertyTop, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
+	{name: "vertical-align", kind: propertyVerticalAlign, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "visibility", kind: propertyVisibility, inherited: true, invalidation: propertyInvalidatesPaint},
 	{name: "white-space", kind: propertyWhiteSpace, inherited: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "width", kind: propertyWidth, invalidation: propertyInvalidatesLayout},
@@ -313,6 +315,8 @@ func (definition propertyDefinition) copy(destination *computedStyle, source com
 	case propertyTextDecorationLine:
 		destination.textDecoration = source.textDecoration
 		destination.underline = destination.ancestorUnderline || source.textDecoration == TextDecorationUnderline
+	case propertyVerticalAlign:
+		destination.verticalAlign = source.verticalAlign
 	case propertyVisibility:
 		destination.visibility = source.visibility
 	case propertyWhiteSpace:
@@ -461,6 +465,15 @@ func (definition propertyDefinition) valid(source string, viewport Viewport) boo
 			return true
 		}
 		return valueContainsKeyword(source, "underline")
+	case propertyVerticalAlign:
+		if keyword, ok := singleCSSKeyword(source); ok {
+			switch keyword {
+			case "baseline", "sub", "super", "text-top", "text-bottom", "middle", "top", "bottom":
+				return true
+			}
+		}
+		parsed, ok := parseLength(source, 1, 1, viewport)
+		return ok && parsed.unit != lengthAuto
 	case propertyZIndex:
 		if keyword, ok := singleCSSKeyword(source); ok && keyword == "auto" {
 			return true
@@ -734,6 +747,29 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 			style.textDecoration = TextDecorationNone
 			style.underline = style.ancestorUnderline
 		}
+	case propertyVerticalAlign:
+		if keyword, ok := singleCSSKeyword(source); ok {
+			mode := VerticalAlignBaseline
+			switch keyword {
+			case "sub":
+				mode = VerticalAlignSub
+			case "super":
+				mode = VerticalAlignSuper
+			case "text-top":
+				mode = VerticalAlignTextTop
+			case "text-bottom":
+				mode = VerticalAlignTextBottom
+			case "middle":
+				mode = VerticalAlignMiddle
+			case "top":
+				mode = VerticalAlignTop
+			case "bottom":
+				mode = VerticalAlignBottom
+			}
+			style.verticalAlign = VerticalAlignment{mode: mode}
+		} else if parsed, ok := parseLength(source, style.fontSize, style.fontSize, context.viewport); ok && parsed.unit != lengthAuto {
+			style.verticalAlign = VerticalAlignment{mode: VerticalAlignLength, offset: parsed}
+		}
 	case propertyVisibility:
 		keyword, _ := singleCSSKeyword(source)
 		if keyword == "hidden" {
@@ -910,6 +946,27 @@ func (definition propertyDefinition) serialize(computed ComputedStyle) string {
 			return "underline"
 		}
 		return "none"
+	case propertyVerticalAlign:
+		switch computed.verticalAlign.mode {
+		case VerticalAlignSub:
+			return "sub"
+		case VerticalAlignSuper:
+			return "super"
+		case VerticalAlignTextTop:
+			return "text-top"
+		case VerticalAlignTextBottom:
+			return "text-bottom"
+		case VerticalAlignMiddle:
+			return "middle"
+		case VerticalAlignTop:
+			return "top"
+		case VerticalAlignBottom:
+			return "bottom"
+		case VerticalAlignLength:
+			return serializeComputedLength(computed.verticalAlign.offset)
+		default:
+			return "baseline"
+		}
 	case propertyVisibility:
 		switch computed.visibility {
 		case VisibilityHidden:

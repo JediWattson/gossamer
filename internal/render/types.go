@@ -125,20 +125,37 @@ type InlineFragment struct {
 
 // TextFragment is one positioned run of text.
 type TextFragment struct {
-	Node       *dom.Node
-	Pseudo     css.PseudoElement
-	Text       string
-	X          float64
-	BaselineY  float64
-	Width      float64
-	Height     float64
-	FontSize   float64
-	FontFamily FontFamily
-	FontWeight FontWeight
-	FontStyle  FontStyle
-	Color      color.NRGBA
-	Visible    bool
-	Underline  bool
+	Node      *dom.Node
+	Pseudo    css.PseudoElement
+	Text      string
+	X         float64
+	BaselineY float64
+	// BaselineOffset is the distance from the fragment's top edge to its
+	// alphabetic baseline. Older synthetic fragments leave it zero and use
+	// Height as the conservative bounds fallback.
+	BaselineOffset float64
+	Width          float64
+	Height         float64
+	FontSize       float64
+	FontFamily     FontFamily
+	FontWeight     FontWeight
+	FontStyle      FontStyle
+	Color          color.NRGBA
+	Visible        bool
+	Underline      bool
+}
+
+func textFragmentBounds(fragment TextFragment) Rect {
+	baselineOffset := fragment.BaselineOffset
+	if baselineOffset <= 0 || baselineOffset > fragment.Height {
+		baselineOffset = fragment.Height
+	}
+	return Rect{
+		X:      fragment.X,
+		Y:      fragment.BaselineY - baselineOffset,
+		Width:  fragment.Width,
+		Height: fragment.Height,
+	}
 }
 
 // ImageFragment is one positioned decoded image.

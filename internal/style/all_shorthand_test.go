@@ -43,6 +43,7 @@ var allInitialComputedValues = map[string]string{
 	"padding-top":          "0px",
 	"text-align":           "start",
 	"text-decoration-line": "none",
+	"vertical-align":       "baseline",
 	"width":                "auto",
 }
 
@@ -81,6 +82,7 @@ const allNonInitialDeclarations = `
 	margin: 10px 11px 12px 13px;
 	text-align: end;
 	text-decoration-line: underline;
+	vertical-align: super;
 `
 
 func TestAllInitialResetsEverySupportedLonghand(t *testing.T) {

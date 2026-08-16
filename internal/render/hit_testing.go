@@ -95,7 +95,7 @@ func hitTestVisualFragment(fragment InlineFragment, x, y float64, transforms map
 		}
 	case TextFragmentKind:
 		transform := transforms[fragment.Text.Node]
-		bounds := Rect{X: fragment.Text.X, Y: fragment.Text.BaselineY - fragment.Text.Height, Width: fragment.Text.Width, Height: fragment.Text.Height}
+		bounds := textFragmentBounds(fragment.Text)
 		if (!transform.HasClip || containsPoint(transform.Clip, x, y)) && containsPoint(translatedRect(bounds, transform), x, y) {
 			return fragment.Text.Node
 		}
@@ -165,12 +165,7 @@ func hitTestFragment(fragment InlineFragment, x, y float64) *dom.Node {
 			return fragment.Image.Node
 		}
 	case TextFragmentKind:
-		bounds := Rect{
-			X:      fragment.Text.X,
-			Y:      fragment.Text.BaselineY - fragment.Text.Height,
-			Width:  fragment.Text.Width,
-			Height: fragment.Text.Height,
-		}
+		bounds := textFragmentBounds(fragment.Text)
 		if containsPoint(bounds, x, y) {
 			return fragment.Text.Node
 		}
