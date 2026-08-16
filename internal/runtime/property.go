@@ -10,6 +10,16 @@ import (
 
 func (execution *execution) getProperty(base, key memory.Value) (memory.Value, bool, error) {
 	context := execution.context
+	if base.Kind() == memory.ValueNumber {
+		name, err := execution.propertyName(key)
+		if err != nil {
+			return memory.Value{}, false, err
+		}
+		if context.intrinsics == nil {
+			return memory.Value{}, false, nil
+		}
+		return execution.getNamedProperty(base, context.intrinsics.NumberPrototype, name)
+	}
 	ref, err := requireRef(base, "property base")
 	if err != nil {
 		return memory.Value{}, false, err
@@ -106,6 +116,47 @@ func (execution *execution) getProperty(base, key memory.Value) (memory.Value, b
 		default:
 			return memory.Value{}, false, nil
 		}
+	case memory.HeapRegExp:
+		name, err := execution.propertyName(key)
+		if err != nil {
+			return memory.Value{}, false, err
+		}
+		nameText, stringKey, err := execution.stringPropertyName(name)
+		if err != nil {
+			return memory.Value{}, false, err
+		}
+		if stringKey {
+			expression, err := context.DerefRegExp(ref)
+			if err != nil {
+				return memory.Value{}, false, err
+			}
+			switch nameText {
+			case "source":
+				return memory.RefValue(expression.Pattern), true, nil
+			case "flags":
+				flags, err := context.NewString(expression.Flags.String())
+				return memory.RefValue(flags), true, err
+			case "lastIndex":
+				return memory.NumberValue(float64(expression.LastIndex)), true, nil
+			}
+		}
+		if context.intrinsics == nil {
+			return memory.Value{}, false, nil
+		}
+		return execution.getNamedProperty(base, context.intrinsics.RegExpPrototype, name)
+	case memory.HeapWeakMap, memory.HeapWeakSet:
+		name, err := execution.propertyName(key)
+		if err != nil {
+			return memory.Value{}, false, err
+		}
+		if context.intrinsics == nil {
+			return memory.Value{}, false, nil
+		}
+		prototype := context.intrinsics.WeakMapPrototype
+		if kind == memory.HeapWeakSet {
+			prototype = context.intrinsics.WeakSetPrototype
+		}
+		return execution.getNamedProperty(base, prototype, name)
 	default:
 		return memory.Value{}, false, fmt.Errorf("%w: HeapKind(%d) has no properties", ErrOperandType, kind)
 	}
@@ -271,6 +322,23 @@ func (execution *execution) setPropertyValue(base, key, value memory.Value) erro
 			return context.SetArrayElement(ref, index, value)
 		}
 		return execution.setNamedProperty(base, ref, name, value)
+	case memory.HeapRegExp:
+		name, err := execution.propertyName(key)
+		if err != nil {
+			return err
+		}
+		nameText, stringKey, err := execution.stringPropertyName(name)
+		if err != nil {
+			return err
+		}
+		if stringKey && nameText == "lastIndex" {
+			index, err := execution.toNumber(value)
+			if err != nil {
+				return err
+			}
+			return context.SetRegExpLastIndex(ref, uint64(toUint32(index)))
+		}
+		return memory.ErrReadOnlyProperty
 	case memory.HeapString, memory.HeapSymbol:
 		return memory.ErrReadOnlyProperty
 	default:
