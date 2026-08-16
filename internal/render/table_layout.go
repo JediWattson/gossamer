@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image/color"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -64,6 +65,21 @@ type tableCellLayout struct {
 	naturalHeight float64
 	baseline      float64
 	hasBaseline   bool
+}
+
+type tableColumnMeasure struct {
+	minimum            float64
+	maximum            float64
+	nonSpanningMaximum float64
+	percentage         float64
+	constrained        bool
+	originating        bool
+}
+
+type tableCellMeasure struct {
+	minimum    float64
+	maximum    float64
+	percentage float64
 }
 
 type collapsedBorderSource uint8
@@ -672,12 +688,38 @@ func (context *layoutContext) intrinsicTableContentWidths(table *styledNode, ava
 	if err != nil {
 		return intrinsicWidths{}, err
 	}
-	minimums, preferred, err := context.tableColumnIntrinsicWidths(model, availableWidth, horizontalSpacing, collapsed)
-	if err != nil {
-		return intrinsicWidths{}, err
-	}
 	spacing := totalTableSpacing(model.columnCount, horizontalSpacing)
-	result := intrinsicWidths{minimum: sumFloat64(minimums) + spacing, preferred: sumFloat64(preferred) + spacing}
+	result := intrinsicWidths{}
+	if tableUsesFixedLayout(table) {
+		tableWidth := math.Max(0, resolveLength(table.style.Width(), availableWidth, context.viewport, 0))
+		if table.style.BoxSizing() == boxSizingBorderBox {
+			padding := context.resolvePadding(table.style, availableWidth)
+			border := context.resolveBorder(table.style, availableWidth)
+			if collapsed != nil {
+				padding = Edges{}
+				border = collapsed.outerHalfEdges()
+			}
+			tableWidth = math.Max(0, tableWidth-padding.Left-padding.Right-border.Left-border.Right)
+		}
+		widths, widthErr := context.fixedTableColumnWidths(model, math.Max(0, tableWidth-spacing), tableWidth, horizontalSpacing, collapsed)
+		if widthErr != nil {
+			return intrinsicWidths{}, widthErr
+		}
+		result.minimum = sumFloat64(widths) + spacing
+		result.preferred = result.minimum
+	} else {
+		measures, measureErr := context.tableColumnMeasures(model, availableWidth, horizontalSpacing, collapsed)
+		if measureErr != nil {
+			return intrinsicWidths{}, measureErr
+		}
+		for _, measure := range measures {
+			result.minimum += measure.minimum
+			result.preferred += measure.maximum
+		}
+		result.minimum += spacing
+		result.preferred += spacing
+		result.preferred = math.Max(result.preferred, tableIntrinsicPercentagePreferred(measures, spacing, availableWidth, result.minimum))
+	}
 	for _, caption := range model.captions {
 		measured, measureErr := context.intrinsicOuterWidths(caption, availableWidth)
 		if measureErr != nil {
@@ -692,61 +734,216 @@ func (context *layoutContext) intrinsicTableContentWidths(table *styledNode, ava
 	return result, nil
 }
 
-func (context *layoutContext) tableColumnIntrinsicWidths(model tableModel, availableWidth, horizontalSpacing float64, collapsed *collapsedBorderGrid) ([]float64, []float64, error) {
-	minimums := make([]float64, model.columnCount)
-	preferred := make([]float64, model.columnCount)
-	for index, column := range model.columns {
-		if index >= len(minimums) || column == nil || column.style.Width().Unit() == lengthAuto || column.style.Width().DependsOnPercent() {
+func tableIntrinsicPercentagePreferred(measures []tableColumnMeasure, spacing, availableWidth, minimum float64) float64 {
+	hasPercentage := false
+	for _, measure := range measures {
+		hasPercentage = hasPercentage || measure.percentage > 0
+	}
+	if !hasPercentage {
+		return minimum
+	}
+	limit := math.Max(minimum, availableWidth)
+	target := minimum
+	// Each pass can only change whether a percentage track is held by its
+	// min-content floor. There are at most len(measures) such transitions; the
+	// extra pass proves a stable partition without an unbounded fixed point.
+	for range len(measures) + 2 {
+		fixed := spacing
+		percentage := 0.0
+		for _, measure := range measures {
+			if measure.percentage <= 0 {
+				fixed += measure.maximum
+				continue
+			}
+			if target*measure.percentage/100 < measure.minimum {
+				fixed += measure.minimum
+				continue
+			}
+			percentage += measure.percentage / 100
+		}
+		candidate := fixed
+		if percentage >= 1 {
+			if fixed > 0 {
+				candidate = limit
+			}
+		} else {
+			candidate = fixed / (1 - percentage)
+		}
+		candidate = clamp(math.Max(minimum, candidate), minimum, limit)
+		if math.Abs(candidate-target) < 1e-7 {
+			return candidate
+		}
+		target = candidate
+	}
+	return target
+}
+
+func (context *layoutContext) tableColumnMeasures(model tableModel, availableWidth, horizontalSpacing float64, collapsed *collapsedBorderGrid) ([]tableColumnMeasure, error) {
+	measures := make([]tableColumnMeasure, model.columnCount)
+	columnNodes, err := tableColumnStyleNodes(model)
+	if err != nil {
+		return nil, err
+	}
+	for column, nodes := range columnNodes {
+		for _, node := range tableEffectiveColumnNodes(nodes) {
+			if node == nil {
+				continue
+			}
+			track := context.tableTrackMeasure(node.style, availableWidth)
+			measures[column].minimum = math.Max(measures[column].minimum, track.minimum)
+			measures[column].maximum = math.Max(measures[column].maximum, track.maximum)
+			measures[column].percentage = math.Max(measures[column].percentage, track.percentage)
+			measures[column].constrained = measures[column].constrained || tableWidthConstrainsColumn(node.style.Width())
+		}
+	}
+	for _, placement := range model.cells {
+		if placement.column < 0 || placement.column >= len(measures) {
 			continue
 		}
-		width := math.Max(0, resolveLength(column.style.Width(), availableWidth, context.viewport, 0))
-		minimums[index], preferred[index] = width, width
+		measures[placement.column].originating = true
+		if placement.columnSpan == 1 && placement.node != nil && tableWidthConstrainsColumn(placement.node.style.Width()) {
+			measures[placement.column].constrained = true
+		}
 	}
+
 	spanning := make([]struct {
 		placement tableCellPlacement
-		measured  intrinsicWidths
+		measured  tableCellMeasure
 	}, 0)
 	operations := 0
 	for _, placement := range model.cells {
 		operations++
 		if operations > maxTableGridOps {
-			return nil, nil, fmt.Errorf("render: table exceeds %d sizing operations", maxTableGridOps)
+			return nil, fmt.Errorf("render: table exceeds %d sizing operations", maxTableGridOps)
 		}
-		measured, err := context.intrinsicTableCellWidths(placement, collapsed, availableWidth)
+		constrained := placement.columnSpan == 1 && measures[placement.column].constrained
+		measured, err := context.tableCellMeasure(placement, collapsed, availableWidth, constrained)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		if placement.columnSpan == 1 {
-			minimums[placement.column] = math.Max(minimums[placement.column], measured.minimum)
-			preferred[placement.column] = math.Max(preferred[placement.column], measured.preferred)
+			column := &measures[placement.column]
+			column.minimum = math.Max(column.minimum, measured.minimum)
+			column.maximum = math.Max(column.maximum, measured.maximum)
+			column.percentage = math.Max(column.percentage, measured.percentage)
 			continue
 		}
 		spanning = append(spanning, struct {
 			placement tableCellPlacement
-			measured  intrinsicWidths
+			measured  tableCellMeasure
 		}{placement: placement, measured: measured})
 	}
-	for _, entry := range spanning {
-		start := entry.placement.column
-		end := start + entry.placement.columnSpan
-		operations += entry.placement.columnSpan
-		if operations > maxTableGridOps {
-			return nil, nil, fmt.Errorf("render: table exceeds %d sizing operations", maxTableGridOps)
+	for index := range measures {
+		measures[index].maximum = math.Max(measures[index].maximum, measures[index].minimum)
+		measures[index].nonSpanningMaximum = measures[index].maximum
+	}
+	sort.SliceStable(spanning, func(left, right int) bool {
+		return spanning[left].placement.columnSpan < spanning[right].placement.columnSpan
+	})
+	for start := 0; start < len(spanning); {
+		end := start + 1
+		span := spanning[start].placement.columnSpan
+		for end < len(spanning) && spanning[end].placement.columnSpan == span {
+			end++
 		}
-		internalSpacing := horizontalSpacing * float64(max(0, entry.placement.columnSpan-1))
-		distributeTableSpanDeficit(minimums[start:end], math.Max(0, entry.measured.minimum-internalSpacing))
-		distributeTableSpanDeficit(preferred[start:end], math.Max(0, entry.measured.preferred-internalSpacing))
+		base := append([]tableColumnMeasure(nil), measures...)
+		next := append([]tableColumnMeasure(nil), measures...)
+		for _, entry := range spanning[start:end] {
+			operations += entry.placement.columnSpan
+			if operations > maxTableGridOps {
+				return nil, fmt.Errorf("render: table exceeds %d sizing operations", maxTableGridOps)
+			}
+			applySpanningTableCellMeasure(base, next, entry.placement, entry.measured, horizontalSpacing)
+		}
+		measures = next
+		start = end
 	}
-	for index := range preferred {
-		preferred[index] = math.Max(preferred[index], minimums[index])
+	remainingPercentage := 100.0
+	for index := range measures {
+		measures[index].percentage = clamp(measures[index].percentage, 0, remainingPercentage)
+		remainingPercentage -= measures[index].percentage
+		measures[index].maximum = math.Max(measures[index].maximum, measures[index].minimum)
 	}
-	return minimums, preferred, nil
+	return measures, nil
 }
 
-func (context *layoutContext) intrinsicTableCellWidths(placement tableCellPlacement, collapsed *collapsedBorderGrid, availableWidth float64) (intrinsicWidths, error) {
+func tableEffectiveColumnNodes(nodes []*styledNode) []*styledNode {
+	// A concrete column width overrides its containing colgroup width. When the
+	// concrete column remains auto, the group supplies the track constraint.
+	// This matches the HTML/CSS table mapping exercised by the column-measure
+	// WPTs while still retaining both boxes for paint and border conflict work.
+	if len(nodes) > 1 {
+		leaf := nodes[len(nodes)-1]
+		if leaf != nil && leaf.style.Display() == displayTableColumn && leaf.style.Width().Unit() != lengthAuto {
+			return nodes[len(nodes)-1:]
+		}
+	}
+	return nodes
+}
+
+func tableColumnStyleNodes(model tableModel) ([][]*styledNode, error) {
+	result := make([][]*styledNode, model.columnCount)
+	operations := 0
+	var appendSpec func(tableColumnSpec) error
+	appendSpec = func(spec tableColumnSpec) error {
+		start := max(0, spec.start)
+		end := min(model.columnCount, spec.start+spec.span)
+		for column := start; column < end; column++ {
+			operations++
+			if operations > maxTableGridOps {
+				return fmt.Errorf("render: table exceeds %d column style operations", maxTableGridOps)
+			}
+			result[column] = append(result[column], spec.node)
+		}
+		for _, child := range spec.children {
+			if err := appendSpec(child); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	for _, spec := range model.columnBoxes {
+		if err := appendSpec(spec); err != nil {
+			return nil, err
+		}
+	}
+	return result, nil
+}
+
+func tableWidthConstrainsColumn(value length) bool {
+	return value.Unit() != lengthAuto && !value.IsPercent() && !value.DependsOnPercent()
+}
+
+func tablePercentageContribution(style computedStyle) float64 {
+	percentage := 0.0
+	if style.Width().IsPercent() {
+		percentage = math.Max(0, style.Width().Value())
+	}
+	if style.MaxWidth().IsPercent() {
+		percentage = math.Min(percentage, math.Max(0, style.MaxWidth().Value()))
+	}
+	return percentage
+}
+
+func (context *layoutContext) tableTrackMeasure(style computedStyle, availableWidth float64) tableCellMeasure {
+	contentBox := style.BoxSizing() == boxSizingContentBox
+	minimum := tableDefiniteOuterLength(style.MinWidth(), contentBox, 0, availableWidth, context.viewport)
+	width := tableDefiniteOuterLength(style.Width(), contentBox, 0, availableWidth, context.viewport)
+	maximum := math.Inf(1)
+	if style.MaxWidth().Unit() != lengthAuto && !style.MaxWidth().DependsOnPercent() {
+		maximum = tableDefiniteOuterLength(style.MaxWidth(), contentBox, 0, availableWidth, context.viewport)
+	}
+	return tableCellMeasure{
+		minimum:    math.Max(minimum, width),
+		maximum:    math.Max(minimum, math.Min(maximum, width)),
+		percentage: tablePercentageContribution(style),
+	}
+}
+
+func (context *layoutContext) tableCellMeasure(placement tableCellPlacement, collapsed *collapsedBorderGrid, availableWidth float64, constrained bool) (tableCellMeasure, error) {
 	cell := placement.node
 	if cell == nil {
-		return intrinsicWidths{}, nil
+		return tableCellMeasure{}, nil
 	}
 	style := cell.style
 	padding := context.resolvePadding(style, availableWidth)
@@ -755,59 +952,209 @@ func (context *layoutContext) intrinsicTableCellWidths(placement tableCellPlacem
 		border = collapsed.cellHalfEdges(placement)
 	}
 	insets := padding.Left + padding.Right + border.Left + border.Right
-	if style.Width().Unit() != lengthAuto && !style.Width().DependsOnPercent() {
-		width := math.Max(0, resolveLength(style.Width(), availableWidth, context.viewport, 0))
-		if style.BoxSizing() == boxSizingContentBox {
-			width += insets
-		}
-		return intrinsicWidths{minimum: width, preferred: width}, nil
-	}
 	content, err := context.intrinsicContentWidths(cell, availableWidth)
 	if err != nil {
-		return intrinsicWidths{}, err
+		return tableCellMeasure{}, err
 	}
-	content.minimum += insets
-	content.preferred += insets
-	return content, nil
+	contentMinimum := math.Max(0, content.minimum+insets)
+	contentMaximum := math.Max(contentMinimum, content.preferred+insets)
+	contentBox := style.BoxSizing() == boxSizingContentBox
+	minimumWidth := tableDefiniteOuterLength(style.MinWidth(), contentBox, insets, availableWidth, context.viewport)
+	width := tableDefiniteOuterLength(style.Width(), contentBox, insets, availableWidth, context.viewport)
+	maximumWidth := math.Inf(1)
+	if style.MaxWidth().Unit() != lengthAuto && !style.MaxWidth().DependsOnPercent() {
+		maximumWidth = tableDefiniteOuterLength(style.MaxWidth(), contentBox, insets, availableWidth, context.viewport)
+	}
+	outerMinimum := math.Max(minimumWidth, contentMinimum)
+	preferredContent := contentMaximum
+	if constrained && width > 0 {
+		preferredContent = width
+	}
+	outerMaximum := max(minimumWidth, width, contentMinimum, math.Min(maximumWidth, preferredContent))
+	return tableCellMeasure{
+		minimum: outerMinimum, maximum: math.Max(outerMinimum, outerMaximum),
+		percentage: tablePercentageContribution(style),
+	}, nil
 }
 
-func distributeTableSpanDeficit(widths []float64, required float64) {
-	if len(widths) == 0 {
+func tableDefiniteOuterLength(value length, contentBox bool, insets, availableWidth float64, viewport Viewport) float64 {
+	if value.Unit() == lengthAuto || value.DependsOnPercent() {
+		return 0
+	}
+	resolved := math.Max(0, resolveLength(value, availableWidth, viewport, 0))
+	if contentBox {
+		return resolved + insets
+	}
+	return math.Max(resolved, insets)
+}
+
+func applySpanningTableCellMeasure(base, next []tableColumnMeasure, placement tableCellPlacement, cell tableCellMeasure, spacing float64) {
+	start := placement.column
+	end := min(len(base), placement.column+placement.columnSpan)
+	if start < 0 || start >= end {
 		return
 	}
-	deficit := required - sumFloat64(widths)
-	if deficit <= 0 {
+	internalSpacing := spacing * float64(max(0, end-start-1))
+	minimumTarget := math.Max(0, cell.minimum-internalSpacing)
+	maximumTarget := math.Max(minimumTarget, cell.maximum-internalSpacing)
+	minimumTotal, maximumTotal := 0.0, 0.0
+	for column := start; column < end; column++ {
+		minimumTotal += base[column].minimum
+		maximumTotal += base[column].maximum
+	}
+	flexible := math.Max(0, maximumTotal-minimumTotal)
+	within := clamp(minimumTarget-minimumTotal, 0, flexible)
+	above := math.Max(0, minimumTarget-maximumTotal)
+	maximumExcess := math.Max(0, maximumTarget-maximumTotal)
+	for column := start; column < end; column++ {
+		flexShare := 0.0
+		if flexible > 0 {
+			flexShare = (base[column].maximum - base[column].minimum) / flexible
+		}
+		maximumShare := tableProportionalShare(base, start, end, column, func(measure tableColumnMeasure) float64 {
+			return measure.maximum
+		})
+		candidateMinimum := base[column].minimum + within*flexShare + above*maximumShare
+		candidateMaximum := base[column].maximum + maximumExcess*maximumShare
+		next[column].minimum = math.Max(next[column].minimum, candidateMinimum)
+		next[column].maximum = max(next[column].maximum, candidateMaximum, next[column].minimum)
+	}
+
+	currentPercentage := 0.0
+	for column := start; column < end; column++ {
+		currentPercentage += base[column].percentage
+	}
+	remaining := math.Max(0, cell.percentage-currentPercentage)
+	if remaining == 0 {
 		return
 	}
-	addition := deficit / float64(len(widths))
-	for index := range widths {
-		widths[index] += addition
+	for column := start; column < end; column++ {
+		if base[column].percentage != 0 {
+			continue
+		}
+		share := tableProportionalShare(base, start, end, column, func(measure tableColumnMeasure) float64 {
+			if measure.percentage != 0 {
+				return -1
+			}
+			return measure.nonSpanningMaximum
+		})
+		if share >= 0 {
+			next[column].percentage = math.Max(next[column].percentage, remaining*share)
+		}
 	}
 }
 
-func distributeTableWidths(minimums, preferred []float64, target float64) []float64 {
-	widths := append([]float64(nil), minimums...)
-	if len(widths) == 0 {
-		return widths
+func tableProportionalShare(measures []tableColumnMeasure, start, end, column int, weight func(tableColumnMeasure) float64) float64 {
+	total := 0.0
+	count := 0
+	selected := weight(measures[column])
+	if selected < 0 {
+		return -1
 	}
-	minimumTotal := sumFloat64(minimums)
-	preferredTotal := sumFloat64(preferred)
-	target = math.Max(target, minimumTotal)
-	if preferredTotal > minimumTotal && target < preferredTotal {
-		ratio := (target - minimumTotal) / (preferredTotal - minimumTotal)
-		for index := range widths {
-			widths[index] += (preferred[index] - minimums[index]) * ratio
+	for index := start; index < end; index++ {
+		candidate := weight(measures[index])
+		if candidate < 0 {
+			continue
 		}
-		return widths
+		total += candidate
+		count++
 	}
-	copy(widths, preferred)
-	if target > preferredTotal {
-		addition := (target - preferredTotal) / float64(len(widths))
-		for index := range widths {
-			widths[index] += addition
+	if total > 0 {
+		return selected / total
+	}
+	if count == 0 {
+		return -1
+	}
+	return 1 / float64(count)
+}
+
+func distributeTableWidths(measures []tableColumnMeasure, target float64) []float64 {
+	if len(measures) == 0 {
+		return nil
+	}
+	guesses := [4][]float64{}
+	for index := range guesses {
+		guesses[index] = make([]float64, len(measures))
+	}
+	for index, measure := range measures {
+		guesses[0][index] = measure.minimum
+		percentageWidth := math.Max(measure.minimum, target*measure.percentage/100)
+		if measure.percentage > 0 {
+			guesses[1][index] = percentageWidth
+			guesses[2][index] = percentageWidth
+			guesses[3][index] = percentageWidth
+		} else {
+			guesses[1][index] = measure.minimum
+			guesses[2][index] = measure.minimum
+			if measure.constrained {
+				guesses[2][index] = measure.maximum
+			}
+			guesses[3][index] = measure.maximum
+		}
+		for guess := 1; guess < len(guesses); guess++ {
+			guesses[guess][index] = math.Max(guesses[guess][index], guesses[guess-1][index])
 		}
 	}
+	target = math.Max(target, sumFloat64(guesses[0]))
+	for guess := 1; guess < len(guesses); guess++ {
+		upperTotal := sumFloat64(guesses[guess])
+		if target <= upperTotal {
+			return interpolateTableWidthGuesses(guesses[guess-1], guesses[guess], target)
+		}
+	}
+	widths := append([]float64(nil), guesses[3]...)
+	distributeTableExcess(widths, measures, math.Max(0, target-sumFloat64(widths)))
 	return widths
+}
+
+func interpolateTableWidthGuesses(lower, upper []float64, target float64) []float64 {
+	result := append([]float64(nil), lower...)
+	lowerTotal, upperTotal := sumFloat64(lower), sumFloat64(upper)
+	if upperTotal <= lowerTotal {
+		return append(result[:0], upper...)
+	}
+	ratio := clamp((target-lowerTotal)/(upperTotal-lowerTotal), 0, 1)
+	for index := range result {
+		result[index] += (upper[index] - lower[index]) * ratio
+	}
+	return result
+}
+
+func distributeTableExcess(widths []float64, measures []tableColumnMeasure, excess float64) {
+	if excess <= 0 || len(widths) == 0 {
+		return
+	}
+	type candidateGroup struct {
+		matches func(tableColumnMeasure) bool
+		weight  func(tableColumnMeasure) float64
+	}
+	groups := []candidateGroup{
+		{func(m tableColumnMeasure) bool {
+			return !m.constrained && m.percentage == 0 && m.originating && m.maximum > 0
+		}, func(m tableColumnMeasure) float64 { return m.maximum }},
+		{func(m tableColumnMeasure) bool { return !m.constrained && m.percentage == 0 && m.originating }, func(tableColumnMeasure) float64 { return 1 }},
+		{func(m tableColumnMeasure) bool { return m.constrained && m.percentage == 0 && m.maximum > 0 }, func(m tableColumnMeasure) float64 { return m.maximum }},
+		{func(m tableColumnMeasure) bool { return m.percentage > 0 }, func(m tableColumnMeasure) float64 { return m.percentage }},
+		{func(m tableColumnMeasure) bool { return m.originating }, func(tableColumnMeasure) float64 { return 1 }},
+		{func(tableColumnMeasure) bool { return true }, func(tableColumnMeasure) float64 { return 1 }},
+	}
+	for _, group := range groups {
+		total := 0.0
+		for _, measure := range measures {
+			if group.matches(measure) {
+				total += group.weight(measure)
+			}
+		}
+		if total <= 0 {
+			continue
+		}
+		for index, measure := range measures {
+			if group.matches(measure) {
+				widths[index] += excess * group.weight(measure) / total
+			}
+		}
+		return
+	}
 }
 
 func (context *layoutContext) layoutTableContainer(table *styledNode, tableBox *Box, contentWidth float64, containingHeight *float64) (float64, float64, error) {
@@ -837,14 +1184,14 @@ func (context *layoutContext) layoutTableContainer(table *styledNode, tableBox *
 	if fixed {
 		columnWidths, err = context.fixedTableColumnWidths(model, assignableWidth, contentWidth, horizontalSpacing, collapsed)
 	} else {
-		var minimums, preferred []float64
-		minimums, preferred, err = context.tableColumnIntrinsicWidths(model, contentWidth, horizontalSpacing, collapsed)
+		var measures []tableColumnMeasure
+		measures, err = context.tableColumnMeasures(model, contentWidth, horizontalSpacing, collapsed)
 		if err == nil {
-			columnWidths = distributeTableWidths(minimums, preferred, assignableWidth)
+			columnWidths = distributeTableWidths(measures, assignableWidth)
 			gridWidth := sumFloat64(columnWidths) + spacingWidth
 			usedWidth := math.Max(contentWidth, gridWidth)
 			if len(columnWidths) != 0 && usedWidth > gridWidth {
-				columnWidths = distributeTableWidths(minimums, preferred, math.Max(0, usedWidth-spacingWidth))
+				columnWidths = distributeTableWidths(measures, math.Max(0, usedWidth-spacingWidth))
 			}
 		}
 	}
@@ -1223,19 +1570,31 @@ func tableTrackSpan(starts, ends []float64, start, span int) float64 {
 func (context *layoutContext) fixedTableColumnWidths(model tableModel, assignableWidth, tableWidth, horizontalSpacing float64, collapsed *collapsedBorderGrid) ([]float64, error) {
 	widths := make([]float64, model.columnCount)
 	assigned := make([]bool, model.columnCount)
-	for index, column := range model.columns {
-		if index >= len(widths) || column == nil || column.style.Width().Unit() == lengthAuto {
-			continue
+	percentageAssigned := make([]bool, model.columnCount)
+	columnNodes, err := tableColumnStyleNodes(model)
+	if err != nil {
+		return nil, err
+	}
+	for index, nodes := range columnNodes {
+		for _, column := range tableEffectiveColumnNodes(nodes) {
+			if index >= len(widths) || column == nil || column.style.Width().Unit() == lengthAuto ||
+				column.style.Width().DependsOnPercent() && !column.style.Width().IsPercent() {
+				continue
+			}
+			width := resolveLength(column.style.Width(), tableWidth, context.viewport, 0)
+			if !isFinite(width) || width < 0 {
+				continue
+			}
+			if !assigned[index] || width > widths[index] {
+				widths[index], assigned[index] = width, true
+				percentageAssigned[index] = column.style.Width().IsPercent()
+			}
 		}
-		width := resolveLength(column.style.Width(), tableWidth, context.viewport, 0)
-		if !isFinite(width) || width < 0 {
-			continue
-		}
-		widths[index], assigned[index] = width, true
 	}
 	operations := 0
 	for _, placement := range model.cells {
-		if placement.row != 0 || placement.node == nil || placement.node.style.Width().Unit() == lengthAuto {
+		if placement.row != 0 || placement.node == nil || placement.node.style.Width().Unit() == lengthAuto ||
+			placement.node.style.Width().DependsOnPercent() && !placement.node.style.Width().IsPercent() {
 			continue
 		}
 		operations += placement.columnSpan
@@ -1248,7 +1607,7 @@ func (context *layoutContext) fixedTableColumnWidths(model tableModel, assignabl
 			border = collapsed.cellHalfEdges(placement)
 		}
 		required := resolveLength(placement.node.style.Width(), tableWidth, context.viewport, 0)
-		if placement.node.style.BoxSizing() == boxSizingContentBox {
+		if placement.node.style.BoxSizing() == boxSizingContentBox && !placement.node.style.Width().IsPercent() {
 			required += padding.Left + padding.Right + border.Left + border.Right
 		}
 		required = math.Max(0, required-horizontalSpacing*float64(max(0, placement.columnSpan-1)))
@@ -1270,6 +1629,31 @@ func (context *layoutContext) fixedTableColumnWidths(model tableModel, assignabl
 		for _, column := range unassigned {
 			widths[column] += addition
 			assigned[column] = true
+			percentageAssigned[column] = placement.node.style.Width().IsPercent()
+		}
+	}
+	// Percentage tracks are resolved after definite-length tracks. If their
+	// requested widths over-subscribe the remaining assignable width, normalize
+	// them proportionally instead of allowing a 160% declaration to recursively
+	// inflate the table's own fixed width.
+	pixelTotal, percentageTotal := 0.0, 0.0
+	for index, width := range widths {
+		if !assigned[index] {
+			continue
+		}
+		if percentageAssigned[index] {
+			percentageTotal += width
+		} else {
+			pixelTotal += width
+		}
+	}
+	percentageAvailable := math.Max(0, assignableWidth-pixelTotal)
+	if percentageTotal > percentageAvailable && percentageTotal > 0 {
+		scale := percentageAvailable / percentageTotal
+		for index := range widths {
+			if percentageAssigned[index] {
+				widths[index] *= scale
+			}
 		}
 	}
 	remainingColumns := make([]int, 0, len(widths))
@@ -1285,9 +1669,32 @@ func (context *layoutContext) fixedTableColumnWidths(model tableModel, assignabl
 			widths[column] = share
 		}
 	} else if remaining > 0 && len(widths) != 0 {
-		share := remaining / float64(len(widths))
-		for index := range widths {
-			widths[index] += share
+		weightTotal := 0.0
+		for index, width := range widths {
+			if assigned[index] && !percentageAssigned[index] && width > 0 {
+				weightTotal += width
+			}
+		}
+		usePercentages := weightTotal == 0
+		if usePercentages {
+			for index, width := range widths {
+				if assigned[index] && percentageAssigned[index] && width > 0 {
+					weightTotal += width
+				}
+			}
+		}
+		if weightTotal == 0 {
+			share := remaining / float64(len(widths))
+			for index := range widths {
+				widths[index] += share
+			}
+		} else {
+			for index, width := range widths {
+				eligible := assigned[index] && width > 0 && ((!usePercentages && !percentageAssigned[index]) || (usePercentages && percentageAssigned[index]))
+				if eligible {
+					widths[index] += remaining * width / weightTotal
+				}
+			}
 		}
 	}
 	return widths, nil

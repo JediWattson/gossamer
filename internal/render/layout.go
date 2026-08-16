@@ -416,6 +416,14 @@ func (context *layoutContext) layoutBlockSizedWithSubgrid(node *styledNode, cont
 	}
 
 	width := availableWidth - left - right - padding.Left - padding.Right - border.Left - border.Right
+	var tableIntrinsic intrinsicWidths
+	if style.Display().Inside() == computed.DisplayInsideTable {
+		intrinsic, err := context.intrinsicContentWidths(node, availableWidth)
+		if err != nil {
+			return nil, err
+		}
+		tableIntrinsic = intrinsic
+	}
 	if forcedContentWidth != nil {
 		width = *forcedContentWidth
 	} else if style.Width().Unit() != lengthAuto {
@@ -424,14 +432,15 @@ func (context *layoutContext) layoutBlockSizedWithSubgrid(node *styledNode, cont
 			width -= horizontalInsets
 		}
 	} else if style.Display().Inside() == computed.DisplayInsideTable {
-		intrinsic, err := context.intrinsicTableContentWidths(node, availableWidth)
-		if err != nil {
-			return nil, err
-		}
 		availableContent := math.Max(0, width)
-		width = math.Min(math.Max(intrinsic.minimum, availableContent), intrinsic.preferred)
+		width = math.Min(math.Max(tableIntrinsic.minimum, availableContent), tableIntrinsic.preferred)
 	}
 	width = context.constrainWidth(style, math.Max(0, width), availableWidth, horizontalInsets)
+	if style.Display().Inside() == computed.DisplayInsideTable {
+		// A table's grid and caption minimums override a smaller specified or
+		// max-constrained width; the table overflows rather than crushing tracks.
+		width = math.Max(width, tableIntrinsic.minimum)
+	}
 	outerWidth := width + padding.Left + padding.Right + border.Left + border.Right
 	remaining := availableWidth - outerWidth - left - right
 	switch {
@@ -1796,12 +1805,16 @@ func (context *layoutContext) intrinsicOuterWidths(node *styledNode, availableWi
 		outer := math.Max(0, width+horizontalInsets+margins)
 		return intrinsicWidths{minimum: outer, preferred: outer}, nil
 	}
-	if style.Width().Unit() != lengthAuto {
+	// Percentage-dependent widths are cyclic during intrinsic measurement and
+	// therefore behave as auto. In particular, table-cell descendants cannot
+	// turn a percentage of their not-yet-known cell width into an intrinsic
+	// contribution.
+	if style.Width().Unit() != lengthAuto && !style.Width().DependsOnPercent() {
 		content := resolveLength(style.Width(), availableWidth, context.viewport, 0)
 		if style.BoxSizing() == boxSizingBorderBox {
 			content = math.Max(0, content-horizontalInsets)
 		}
-		content = context.constrainWidth(style, content, availableWidth, horizontalInsets)
+		content = context.constrainIntrinsicWidth(style, content, availableWidth, horizontalInsets)
 		outer := math.Max(0, content+horizontalInsets+margins)
 		return intrinsicWidths{minimum: outer, preferred: outer}, nil
 	}
@@ -1810,8 +1823,8 @@ func (context *layoutContext) intrinsicOuterWidths(node *styledNode, availableWi
 	if err != nil {
 		return intrinsicWidths{}, err
 	}
-	content.minimum = context.constrainWidth(style, content.minimum, availableWidth, horizontalInsets)
-	content.preferred = context.constrainWidth(style, content.preferred, availableWidth, horizontalInsets)
+	content.minimum = context.constrainIntrinsicWidth(style, content.minimum, availableWidth, horizontalInsets)
+	content.preferred = context.constrainIntrinsicWidth(style, content.preferred, availableWidth, horizontalInsets)
 	if content.preferred < content.minimum {
 		content.preferred = content.minimum
 	}
@@ -2044,6 +2057,24 @@ func (context *layoutContext) constrainWidth(style computedStyle, width, availab
 	}
 	minimum := 0.0
 	if style.MinWidth().Unit() != lengthAuto {
+		minimum = math.Max(0, resolveLength(style.MinWidth(), availableWidth, context.viewport, 0))
+		if style.BoxSizing() == boxSizingBorderBox {
+			minimum = math.Max(0, minimum-horizontalInsets)
+		}
+	}
+	return math.Max(minimum, math.Min(width, maximum))
+}
+
+func (context *layoutContext) constrainIntrinsicWidth(style computedStyle, width, availableWidth, horizontalInsets float64) float64 {
+	maximum := math.Inf(1)
+	if style.MaxWidth().Unit() != lengthAuto && !style.MaxWidth().DependsOnPercent() {
+		maximum = math.Max(0, resolveLength(style.MaxWidth(), availableWidth, context.viewport, width))
+		if style.BoxSizing() == boxSizingBorderBox {
+			maximum = math.Max(0, maximum-horizontalInsets)
+		}
+	}
+	minimum := 0.0
+	if style.MinWidth().Unit() != lengthAuto && !style.MinWidth().DependsOnPercent() {
 		minimum = math.Max(0, resolveLength(style.MinWidth(), availableWidth, context.viewport, 0))
 		if style.BoxSizing() == boxSizingBorderBox {
 			minimum = math.Max(0, minimum-horizontalInsets)

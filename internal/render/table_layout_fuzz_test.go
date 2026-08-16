@@ -14,6 +14,8 @@ func FuzzTableLayoutSpansStayFinite(f *testing.F) {
 	f.Add(byte(4), byte(4), byte(2), byte(3), byte(0xff))
 	f.Add(byte(8), byte(8), byte(255), byte(0), byte(0x55))
 	f.Add(byte(4), byte(5), byte(0x82), byte(0x81), byte(0))
+	f.Add(byte(0x82), byte(0x83), byte(0x42), byte(0x40), byte(0))
+	f.Add(byte(4), byte(0x44), byte(2), byte(1), byte(2))
 	f.Fuzz(func(t *testing.T, rawRows, rawColumns, rawColumnSpan, rawRowSpan, rawModes byte) {
 		rows := int(rawRows%8) + 1
 		columns := int(rawColumns%8) + 1
@@ -32,6 +34,8 @@ func FuzzTableLayoutSpansStayFinite(f *testing.F) {
 		if rawModes&2 != 0 {
 			tableLayout = "fixed"
 			width = fmt.Sprintf("%dpx", 40+int(rawModes))
+		} else if rawRows&0x80 != 0 {
+			width = fmt.Sprintf("%dpx", 80+int(rawRows))
 		}
 		table := dom.NewElement("table", dom.Attribute{Name: "style", Value: fmt.Sprintf(
 			"border-collapse:%s;border-spacing:%dpx %dpx;table-layout:%s;width:%s;border:%dpx solid #123456;empty-cells:hide",
@@ -60,7 +64,14 @@ func FuzzTableLayoutSpansStayFinite(f *testing.F) {
 				if rawModes&64 != 0 && columnIndex%2 == 0 {
 					visibility = "collapse"
 				}
-				columnGroup.AppendChild(dom.NewElement("col", dom.Attribute{Name: "style", Value: fmt.Sprintf("width:%dpx;visibility:%s", 4+columnIndex, visibility)}))
+				columnWidth := fmt.Sprintf("%dpx", 4+columnIndex)
+				switch {
+				case rawColumns&0x80 != 0:
+					columnWidth = fmt.Sprintf("%g%%", float64((columnIndex+1)*int(rawColumns%37+1))/3)
+				case rawColumns&0x40 != 0:
+					columnWidth = fmt.Sprintf("calc(%d%% + %dpx)", 1+columnIndex%70, columnIndex%11)
+				}
+				columnGroup.AppendChild(dom.NewElement("col", dom.Attribute{Name: "style", Value: fmt.Sprintf("width:%s;visibility:%s", columnWidth, visibility)}))
 			}
 		}
 		table.AppendChild(columnGroup)
@@ -88,9 +99,17 @@ func FuzzTableLayoutSpansStayFinite(f *testing.F) {
 				if rawModes&32 != 0 && columnIndex == 0 {
 					cellVisibility = "visibility:visible;"
 				}
+				cellWidth := fmt.Sprintf("%dpx", 4+columnIndex)
+				if rawColumnSpan&0x40 != 0 {
+					cellWidth = fmt.Sprintf("%g%%", float64((rowIndex+1)*(columnIndex+1)*int(rawColumnSpan%31+1))/5)
+				}
+				maxWidth := ""
+				if rawRowSpan&0x40 != 0 {
+					maxWidth = fmt.Sprintf("max-width:%d%%;", 1+(rowIndex+columnIndex)%100)
+				}
 				attributes := []dom.Attribute{{Name: "style", Value: fmt.Sprintf(
-					"%swidth:%dpx;padding:%dpx;vertical-align:%s;border:%dpx %s #abcdef",
-					cellVisibility, 4+columnIndex, rowIndex%3, alignment, 1+(rowIndex+columnIndex)%4, borderStyle,
+					"%swidth:%s;%spadding:%dpx;vertical-align:%s;border:%dpx %s #abcdef",
+					cellVisibility, cellWidth, maxWidth, rowIndex%3, alignment, 1+(rowIndex+columnIndex)%4, borderStyle,
 				)}}
 				if columnIndex == 0 {
 					attributes = append(attributes,
