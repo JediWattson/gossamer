@@ -120,7 +120,11 @@ ancestor's paint value.
 The central property registry and layout now also carry `box-sizing`,
 `min-height`, and `max-height`; block and replaced content apply constraints to
 the selected content or border box, and layout-backed computed width/height
-reads preserve the corresponding resolved box semantics.
+reads preserve the corresponding resolved box semantics. Definite
+containing-block heights now propagate through block, atomic-inline, flex,
+replaced, and positioned layout; percentage-dependent height and min/max-height
+values resolve against that base, while an auto-height ancestor deliberately
+keeps them indefinite.
 Inherited `visibility` now suppresses an element's paint without discarding
 geometry or preventing a visible descendant override. The typed `white-space`
 longhand drives CSS-space collapsing, preserved segment breaks and spaces,
@@ -288,7 +292,8 @@ advanced formatting contexts remain pending.
 
 - Complete inline formatting with retained inline boxes, whitespace, bidi,
   shaping, line breaking, and vertical alignment.
-- Correct percentage heights, margin collapsing, and justified line layout.
+- Extend definite sizing through the remaining Flexbox stretch/intrinsic edge
+  cases; complete margin collapsing and justified line layout.
 - Extend positioning, stacking contexts, overflow/scrolling, and Flexbox in
   measured slices; add floats as a dedicated compatibility slice.
 - Keep computed values separate from used values that depend on geometry.
@@ -303,11 +308,12 @@ attribute, while `getComputedStyle()` returns a fresh read-only declaration
 whose property, indexed-name, and length reads synchronously consult the
 browser's current versioned Go snapshot. Same-task DOM/style mutations are
 therefore observable without publishing a frame or clearing render dirtiness.
-Width and the currently definite height cases synchronously consult a separate
-stable-ID layout snapshot and serialize principal content-box geometry in
-pixels; the next render reuses that exact layout result. Percentage heights,
-ordinary inline and `display:none` elements, and the current inline-block
-fallback retain their layout-independent computed values. Broader
+Width and principal-box height synchronously consult a separate stable-ID
+layout snapshot and serialize used geometry in pixels; the next render reuses
+that exact layout result. Percentage-dependent heights do so only when layout
+records a definite containing-block base, preventing auto-height content from
+being mistaken for a resolved percentage. Ordinary inline and `display:none`
+elements retain their layout-independent computed values. Broader
 box-dependent resolved-value serialization remains pending. `::before` and
 `::after` use sparse stable-ID style and layout slots, so retained computed
 declarations observe generated content changes without publishing an early

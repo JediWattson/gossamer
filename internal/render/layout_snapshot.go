@@ -18,6 +18,10 @@ type LayoutGeometry struct {
 	ContentBounds Rect
 	ScrollWidth   float64
 	ScrollHeight  float64
+	// PercentHeightResolved reports that a percentage-dependent specified
+	// height had a definite containing-block base. When false, CSSOM retains
+	// the computed percentage rather than exposing content-derived geometry.
+	PercentHeightResolved bool
 }
 
 // LayoutSnapshot is an immutable layout result that can be queried before it
@@ -204,11 +208,12 @@ func boxGeometry(box *Box, extent layoutExtent) LayoutGeometry {
 		scrollHeight = overflow
 	}
 	return LayoutGeometry{
-		Bounds:        box.Bounds,
-		ClientBounds:  client,
-		ContentBounds: box.ContentBounds,
-		ScrollWidth:   scrollWidth,
-		ScrollHeight:  scrollHeight,
+		Bounds:                box.Bounds,
+		ClientBounds:          client,
+		ContentBounds:         box.ContentBounds,
+		ScrollWidth:           scrollWidth,
+		ScrollHeight:          scrollHeight,
+		PercentHeightResolved: box.percentHeightResolved,
 	}
 }
 
@@ -257,11 +262,12 @@ func indexPointerGeometry(box *Box, index map[*dom.Node]LayoutGeometry, pseudoIn
 		}
 		if _, exists := index[fragment.Image.Node]; !exists {
 			index[fragment.Image.Node] = LayoutGeometry{
-				Bounds:        fragment.Image.Bounds,
-				ClientBounds:  fragment.Image.Bounds,
-				ContentBounds: fragment.Image.Bounds,
-				ScrollWidth:   fragment.Image.Bounds.Width,
-				ScrollHeight:  fragment.Image.Bounds.Height,
+				Bounds:                fragment.Image.Bounds,
+				ClientBounds:          fragment.Image.Bounds,
+				ContentBounds:         fragment.Image.Bounds,
+				ScrollWidth:           fragment.Image.Bounds.Width,
+				ScrollHeight:          fragment.Image.Bounds.Height,
+				PercentHeightResolved: fragment.Image.percentHeightResolved,
 			}
 		}
 	}
@@ -316,11 +322,12 @@ func indexStableGeometry(box *Box, access *dom.ReadAccess, index map[dom.NodeID]
 		if id, ok := access.ID(fragment.Image.Node); ok {
 			if _, exists := index[id]; !exists {
 				index[id] = LayoutGeometry{
-					Bounds:        fragment.Image.Bounds,
-					ClientBounds:  fragment.Image.Bounds,
-					ContentBounds: fragment.Image.Bounds,
-					ScrollWidth:   fragment.Image.Bounds.Width,
-					ScrollHeight:  fragment.Image.Bounds.Height,
+					Bounds:                fragment.Image.Bounds,
+					ClientBounds:          fragment.Image.Bounds,
+					ContentBounds:         fragment.Image.Bounds,
+					ScrollWidth:           fragment.Image.Bounds.Width,
+					ScrollHeight:          fragment.Image.Bounds.Height,
+					PercentHeightResolved: fragment.Image.percentHeightResolved,
 				}
 			}
 		}

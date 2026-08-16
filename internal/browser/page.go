@@ -631,17 +631,17 @@ func (page *Page) ComputedStyleProperty(handle NodeHandle, property string) (str
 		if canonical != "width" && canonical != "height" {
 			return nil
 		}
-		if canonical == "height" && computedStyle.Height().DependsOnPercent() {
-			// Percentage height remains computed until layout propagates definite
-			// containing-block heights.
-			return nil
-		}
 		layout, layoutErr := page.layoutSnapshotForViewLocked(view, resources, styleSnapshot)
 		if layoutErr != nil {
 			return layoutErr
 		}
 		geometry, hasGeometry := layout.GeometryID(handle.Node)
 		if !hasGeometry {
+			return nil
+		}
+		if canonical == "height" && computedStyle.Height().DependsOnPercent() && !geometry.PercentHeightResolved {
+			// A percentage height in an indefinite-height containing block
+			// computes as auto for layout, so CSSOM retains the computed token.
 			return nil
 		}
 		used := geometry.ContentBounds.Width
@@ -709,15 +709,15 @@ func (page *Page) ComputedPseudoStyleProperty(handle NodeHandle, pseudo computed
 		if canonical != "width" && canonical != "height" {
 			return nil
 		}
-		if canonical == "height" && pseudoStyle.Height().DependsOnPercent() {
-			return nil
-		}
 		layout, layoutErr := page.layoutSnapshotForViewLocked(view, resources, styleSnapshot)
 		if layoutErr != nil {
 			return layoutErr
 		}
 		geometry, hasGeometry := layout.PseudoGeometryID(handle.Node, pseudo)
 		if !hasGeometry {
+			return nil
+		}
+		if canonical == "height" && pseudoStyle.Height().DependsOnPercent() && !geometry.PercentHeightResolved {
 			return nil
 		}
 		used := geometry.ContentBounds.Width

@@ -271,7 +271,9 @@ performance budgets; see
 - Block flow, inline text wrapping, inline and block images, and basic vertical
   margin collapsing
 - Content- and border-box sizing, width/height and min/max constraints,
-  margins, padding, solid borders, backgrounds, opacity, and text alignment
+  definite containing-block percentage heights across block, atomic-inline,
+  flex, replaced, and positioned boxes, margins, padding, solid borders,
+  backgrounds, opacity, and text alignment
 - Inherited `visibility` plus normal, nowrap, pre, pre-wrap, pre-line, and
   break-spaces text whitespace behavior
 - Bundled Go sans and monospace families with regular, bold, italic, and
@@ -331,9 +333,12 @@ skipped, and failed stylesheets or images degrade independently so the rest of
 a page can still render.
 
 The first `getComputedStyle()` surface reports typed computed values and uses a
-separate synchronous layout snapshot for width and the currently definite
-height cases. Other box-dependent values, percentage heights, ordinary inline
-elements, and `display:none` retain their layout-independent serialization.
+separate synchronous layout snapshot for width and height when a principal box
+has a used value. Percentage-dependent heights serialize to pixels only when
+layout proves that their containing-block height is definite; the same values
+under an auto-height ancestor retain their computed percentage serialization.
+Other box-dependent values, ordinary inline elements, and `display:none`
+retain their layout-independent serialization.
 `::before` and `::after` have independent live computed-style slots and can
 generate inline or block content from bounded string and `attr()` values.
 Their layout commands and hit-test ownership remain attached to the originating

@@ -19,6 +19,11 @@ func TestPageComputedStylePropertyResolvesWidthAndSupportedHeightFromCachedLayou
 			<div id="viewport" style="width:25vw;height:25vh"></div>
 			<div id="percent-height" style="height:50%"></div>
 			<div id="calculated-percent-height" style="height:calc(50% - 10px)"></div>
+			<div id="definite-height-parent" style="height:200px">
+				<div id="resolved-percent-height" style="height:50%"></div>
+				<div id="resolved-calculated-percent-height" style="height:calc(50% - 10px)"></div>
+				<div id="resolved-border-box-percent-height" style="box-sizing:border-box;height:50%;padding:10px;border:5px solid"></div>
+			</div>
 			<div id="border-box" style="box-sizing:border-box;width:100px;height:80px;padding:10px;border:5px solid"></div>
 			<span id="inline" style="width:50px;height:20px">inline</span>
 			<span id="inline-block" style="display:inline-block;width:60px;height:30px">inline block</span>
@@ -51,6 +56,9 @@ func TestPageComputedStylePropertyResolvesWidthAndSupportedHeightFromCachedLayou
 	assertResolvedProperty(t, page, viewport, "height", "150px")
 	assertResolvedProperty(t, page, NodeHandle{Document: generation, Node: mustPageElementID(t, page, "percent-height")}, "height", "50%")
 	assertResolvedProperty(t, page, NodeHandle{Document: generation, Node: mustPageElementID(t, page, "calculated-percent-height")}, "height", "calc(50% - 10px)")
+	assertResolvedProperty(t, page, NodeHandle{Document: generation, Node: mustPageElementID(t, page, "resolved-percent-height")}, "height", "100px")
+	assertResolvedProperty(t, page, NodeHandle{Document: generation, Node: mustPageElementID(t, page, "resolved-calculated-percent-height")}, "height", "90px")
+	assertResolvedProperty(t, page, NodeHandle{Document: generation, Node: mustPageElementID(t, page, "resolved-border-box-percent-height")}, "height", "100px")
 	borderBox := NodeHandle{Document: generation, Node: mustPageElementID(t, page, "border-box")}
 	assertResolvedProperty(t, page, borderBox, "width", "100px")
 	assertResolvedProperty(t, page, borderBox, "height", "80px")
@@ -89,6 +97,48 @@ func TestPageComputedStylePropertyResolvesWidthAndSupportedHeightFromCachedLayou
 	}
 	if page.Frame() != oldFrame || !page.Dirty() {
 		t.Fatal("resource-backed resolved read published or replaced the old frame")
+	}
+}
+
+func TestPageComputedStylePropertyTracksPercentageHeightDefinitenessWithinSameTask(t *testing.T) {
+	t.Parallel()
+
+	engine, page, _ := computedStyleTestPage(t, `
+		<html><body style="margin:0">
+			<div id="parent"><div id="target" style="height:50%"></div></div>
+		</body></html>
+	`)
+	defer engine.Close()
+	generation := page.DocumentGeneration()
+	parentID := mustPageElementID(t, page, "parent")
+	target := NodeHandle{Document: generation, Node: mustPageElementID(t, page, "target")}
+
+	assertResolvedProperty(t, page, target, "height", "50%")
+	indefiniteLayout := page.layout.snapshot
+	if indefiniteLayout == nil {
+		t.Fatal("indefinite percentage-height read did not consult layout")
+	}
+	if err := page.document.SetAttribute(parentID, "style", "height:200px"); err != nil {
+		t.Fatal(err)
+	}
+	assertResolvedProperty(t, page, target, "height", "100px")
+	definiteLayout := page.layout.snapshot
+	if definiteLayout == indefiniteLayout {
+		t.Fatal("definite parent mutation reused stale layout")
+	}
+	if err := page.document.SetAttribute(parentID, "style", "height:300px"); err != nil {
+		t.Fatal(err)
+	}
+	assertResolvedProperty(t, page, target, "height", "150px")
+	if page.layout.snapshot == definiteLayout {
+		t.Fatal("second definite parent mutation reused stale layout")
+	}
+	if err := page.document.SetAttribute(parentID, "style", "height:auto"); err != nil {
+		t.Fatal(err)
+	}
+	assertResolvedProperty(t, page, target, "height", "50%")
+	if page.Frame() != nil || !page.Dirty() {
+		t.Fatal("same-task percentage-height reads published a frame or cleared dirtiness")
 	}
 }
 

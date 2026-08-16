@@ -94,6 +94,12 @@ type Box struct {
 	hasStyle      bool
 	paintOpacity  float64
 	hasOpacity    bool
+	// percentHeightResolved distinguishes a percentage-dependent specified
+	// height that had a definite containing-block base from the same value
+	// computing to auto in an indefinite-height containing block. CSSOM uses
+	// this bit to decide whether layout may replace the computed percentage
+	// with a used pixel height.
+	percentHeightResolved bool
 }
 
 type flowItem struct {
@@ -137,10 +143,11 @@ type TextFragment struct {
 
 // ImageFragment is one positioned decoded image.
 type ImageFragment struct {
-	Node    *dom.Node
-	Image   image.Image
-	Bounds  Rect
-	Opacity float64
+	Node                  *dom.Node
+	Image                 image.Image
+	Bounds                Rect
+	Opacity               float64
+	percentHeightResolved bool
 }
 
 // CommandKind identifies a display-list operation.

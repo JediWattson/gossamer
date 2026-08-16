@@ -158,7 +158,8 @@ func TestTaskHostComputedPseudoStyleAndHandleValidation(t *testing.T) {
 	t.Parallel()
 
 	engine, page, target := computedStyleTestPage(t, `<html><head><style>
-		#target::before { content:"generated"; display:block; width:50%; height:10px; color:#ff0000 }
+		#target { height:20px }
+		#target::before { content:"generated"; display:block; width:50%; height:50%; color:#ff0000 }
 	</style></head><body><div id="target">text</div></body></html>`)
 	defer engine.Close()
 
