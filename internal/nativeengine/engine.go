@@ -67,6 +67,8 @@ type Realm struct {
 	active           *browserruntime.Intrinsics
 	activeRegion     memory.RegionID
 	activeTask       browserruntime.TaskID
+	bindings         *browserBindings
+	host             browser.Host
 
 	evaluations uint64
 	checkpoints uint64
@@ -90,6 +92,9 @@ func (engine *Engine) NewRealm() (browser.JSRealm, error) {
 	realm := &Realm{
 		engine:      engine,
 		interpreter: browserruntime.NewInterpreter(engine.config.Interpreter),
+	}
+	if err := realm.installBrowserNatives(); err != nil {
+		return nil, err
 	}
 	engine.realms[realm] = struct{}{}
 	engine.latest = realm
@@ -177,6 +182,8 @@ func (realm *Realm) Evaluate(host browser.Host, source browser.ScriptSource) err
 	if realm.closed {
 		return ErrRealmClosed
 	}
+	realm.host = host
+	defer func() { realm.host = nil }()
 	realm.evaluations++
 	realm.sourceBytes += uint64(len(source.Source))
 
@@ -212,6 +219,8 @@ func (realm *Realm) DrainMicrotasks(host browser.Host) error {
 	if realm.closed {
 		return ErrRealmClosed
 	}
+	realm.host = host
+	defer func() { realm.host = nil }()
 	realm.checkpoints++
 	if realm.activeTask == 0 {
 		return nil
@@ -340,6 +349,9 @@ func (realm *Realm) beginTaskLocked(task *browserruntime.TaskContext) (*browserr
 		realm.active = intrinsics
 		realm.activeRegion = task.MemoryRegion
 		realm.activeTask = task.TaskID
+		if err := realm.prepareBrowserBindingsLocked(task); err != nil {
+			return nil, err
+		}
 		return task, nil
 	}
 
@@ -360,6 +372,9 @@ func (realm *Realm) beginTaskLocked(task *browserruntime.TaskContext) (*browserr
 	realm.active = intrinsics
 	realm.activeRegion = roots[0].Region
 	realm.activeTask = task.TaskID
+	if err := realm.prepareBrowserBindingsLocked(scope); err != nil {
+		return nil, err
+	}
 	return scope, nil
 }
 
@@ -393,6 +408,7 @@ func (realm *Realm) clearActiveLocked() {
 	realm.active = nil
 	realm.activeRegion = 0
 	realm.activeTask = 0
+	realm.bindings = nil
 }
 
 func runtimeTask(host browser.Host) (*browserruntime.TaskContext, error) {
