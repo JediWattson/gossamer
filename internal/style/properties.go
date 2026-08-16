@@ -234,125 +234,127 @@ func (definition propertyDefinition) resetToInitial(destination *computedStyle, 
 }
 
 func (definition propertyDefinition) valid(source string, viewport Viewport) bool {
-	value := strings.TrimSpace(strings.ToLower(source))
 	switch definition.kind {
 	case propertyBackgroundColor:
-		_, ok := parseColor(firstCSSValue(value))
+		_, ok := parseColor(source)
 		return ok
 	case propertyBorderColor:
-		_, ok := parseBorderColor(value)
+		_, ok := parseBorderColor(source)
 		return ok
 	case propertyBorderStyle:
-		_, ok := parseBorderStyle(value)
+		_, ok := parseBorderStyle(source)
 		return ok
 	case propertyBorderWidth:
-		_, ok := parseBorderWidth(value, 1, viewport)
+		_, ok := parseBorderWidth(source, 1, viewport)
 		return ok
 	case propertyColor:
-		_, ok := parseColor(value)
+		_, ok := parseColor(source)
 		return ok
 	case propertyDisplay:
-		switch value {
+		keyword, ok := singleCSSKeyword(source)
+		if !ok {
+			return false
+		}
+		switch keyword {
 		case "none", "block", "list-item", "inline", "inline-block":
 			return true
 		default:
 			return false
 		}
 	case propertyFontSize:
-		parsed, ok := parseLength(value, 1, 1, viewport)
+		parsed, ok := parseLength(source, 1, 1, viewport)
 		if !ok || parsed.unit == lengthAuto {
 			return false
 		}
 		resolved := resolveLength(parsed, 1, viewport, 1)
 		return resolved > 0 && isFinite(resolved)
 	case propertyFontWeight:
-		if value == "bold" || value == "bolder" || value == "normal" || value == "lighter" {
+		if keyword, ok := singleCSSKeyword(source); ok && (keyword == "bold" || keyword == "bolder" || keyword == "normal" || keyword == "lighter") {
 			return true
 		}
-		numeric, err := strconv.Atoi(value)
-		return err == nil && numeric >= 1 && numeric <= 1000
+		token, ok := singleCSSNumber(source)
+		return ok && token.Integer && token.Number >= 1 && token.Number <= 1000
 	case propertyHeight, propertyMinWidth, propertyWidth:
-		parsed, ok := parseLength(value, 1, 1, viewport)
+		parsed, ok := parseLength(source, 1, 1, viewport)
 		return ok && nonNegativeLength(parsed)
 	case propertyLineHeight:
-		if value == "normal" {
+		if keyword, ok := singleCSSKeyword(source); ok && keyword == "normal" {
 			return true
 		}
-		if numeric, err := strconv.ParseFloat(value, 64); err == nil {
-			return numeric > 0 && isFinite(numeric)
+		if token, ok := singleCSSNumber(source); ok {
+			return token.Number > 0
 		}
-		parsed, ok := parseLength(value, 1, 1, viewport)
+		parsed, ok := parseLength(source, 1, 1, viewport)
 		if !ok || parsed.unit == lengthAuto {
 			return false
 		}
 		resolved := resolveLength(parsed, 1, viewport, 1)
 		return resolved > 0 && isFinite(resolved)
 	case propertyListStyleType:
-		_, ok := parseListStyleType(value)
+		_, ok := parseListStyleType(source)
 		return ok
 	case propertyMargin:
-		_, ok := parseLength(value, 1, 1, viewport)
+		_, ok := parseLength(source, 1, 1, viewport)
 		return ok
 	case propertyMaxWidth:
-		if value == "none" {
+		if keyword, ok := singleCSSKeyword(source); ok && keyword == "none" {
 			return true
 		}
-		parsed, ok := parseLength(value, 1, 1, viewport)
+		parsed, ok := parseLength(source, 1, 1, viewport)
 		return ok && nonNegativeLength(parsed)
 	case propertyOpacity:
-		numeric, err := strconv.ParseFloat(value, 64)
-		return err == nil && isFinite(numeric)
+		_, ok := singleCSSNumber(source)
+		return ok
 	case propertyPadding:
-		parsed, ok := parseLength(value, 1, 1, viewport)
+		parsed, ok := parseLength(source, 1, 1, viewport)
 		return ok && parsed.unit != lengthAuto && nonNegativeLength(parsed)
 	case propertyTextAlign:
-		switch value {
+		keyword, ok := singleCSSKeyword(source)
+		if !ok {
+			return false
+		}
+		switch keyword {
 		case "center", "right", "end", "left", "start", "justify":
 			return true
 		default:
 			return false
 		}
 	case propertyTextDecorationLine:
-		if value == "none" {
+		if keyword, ok := singleCSSKeyword(source); ok && keyword == "none" {
 			return true
 		}
-		for _, token := range strings.Fields(value) {
-			if token == "underline" {
-				return true
-			}
-		}
-		return false
+		return valueContainsKeyword(source, "underline")
 	default:
 		return false
 	}
 }
 
 func (definition propertyDefinition) apply(style *computedStyle, source string, context propertyApplyContext) {
-	value := strings.TrimSpace(strings.ToLower(source))
 	switch definition.kind {
 	case propertyBackgroundColor:
-		if parsed, ok := parseColor(firstCSSValue(value)); ok {
+		if parsed, ok := parseColor(source); ok {
 			style.background = parsed
 			style.hasBackground = parsed.A != 0
 		}
 	case propertyBorderColor:
-		if parsed, ok := parseBorderColor(value); ok {
+		if parsed, ok := parseBorderColor(source); ok {
 			applyBorderColor(definition.borderSide(style), parsed)
 		}
 	case propertyBorderStyle:
-		if parsed, ok := parseBorderStyle(value); ok {
+		if parsed, ok := parseBorderStyle(source); ok {
 			definition.borderSide(style).style = parsed
 		}
 	case propertyBorderWidth:
-		if parsed, ok := parseBorderWidth(value, style.fontSize, context.viewport); ok {
+		if parsed, ok := parseBorderWidth(source, style.fontSize, context.viewport); ok {
 			definition.borderSide(style).width = parsed
 		}
 	case propertyColor:
-		if parsed, ok := parseColor(value); ok {
+		if parsed, ok := parseColor(source); ok {
 			style.color = parsed
 		}
 	case propertyDisplay:
-		switch value {
+		keyword, _ := singleCSSKeyword(source)
+		switch keyword {
 		case "none":
 			style.display = displayNone
 		case "block":
@@ -365,14 +367,15 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 			style.display = displayInlineBlock
 		}
 	case propertyFontSize:
-		if parsed, ok := parseLength(value, context.parentFontSize, context.parentFontSize, context.viewport); ok && parsed.unit != lengthAuto {
+		if parsed, ok := parseLength(source, context.parentFontSize, context.parentFontSize, context.viewport); ok && parsed.unit != lengthAuto {
 			resolved := resolveLength(parsed, context.parentFontSize, context.viewport, context.parentFontSize)
 			if resolved > 0 && isFinite(resolved) {
 				style.fontSize = resolved
 			}
 		}
 	case propertyFontWeight:
-		switch value {
+		keyword, _ := singleCSSKeyword(source)
+		switch keyword {
 		case "bold":
 			style.fontWeightValue = 700
 		case "bolder":
@@ -382,55 +385,56 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 		case "lighter":
 			style.fontWeightValue = relativeFontWeight(context.parentFontWeight, false)
 		default:
-			if numeric, err := strconv.Atoi(value); err == nil && numeric >= 1 && numeric <= 1000 {
-				style.fontWeightValue = numeric
+			if token, ok := singleCSSNumber(source); ok && token.Integer && token.Number >= 1 && token.Number <= 1000 {
+				style.fontWeightValue = int(token.Number)
 			}
 		}
 	case propertyHeight:
-		if parsed, ok := parseLength(value, style.fontSize, style.fontSize, context.viewport); ok && nonNegativeLength(parsed) {
+		if parsed, ok := parseLength(source, style.fontSize, style.fontSize, context.viewport); ok && nonNegativeLength(parsed) {
 			style.height = parsed
 		}
 	case propertyLineHeight:
-		if value == "normal" {
+		if keyword, ok := singleCSSKeyword(source); ok && keyword == "normal" {
 			style.lineHeight = computedLineHeight{value: 1.2, normal: true}
-		} else if numeric, err := strconv.ParseFloat(value, 64); err == nil && numeric > 0 && isFinite(numeric) {
-			style.lineHeight = computedLineHeight{value: numeric}
-		} else if parsed, ok := parseLength(value, style.fontSize, style.fontSize, context.viewport); ok && parsed.unit != lengthAuto {
+		} else if token, ok := singleCSSNumber(source); ok && token.Number > 0 {
+			style.lineHeight = computedLineHeight{value: token.Number}
+		} else if parsed, ok := parseLength(source, style.fontSize, style.fontSize, context.viewport); ok && parsed.unit != lengthAuto {
 			resolved := resolveLength(parsed, style.fontSize, context.viewport, style.lineHeight.pixels(style.fontSize))
 			if resolved > 0 && isFinite(resolved) {
 				style.lineHeight = computedLineHeight{value: resolved, absolute: true}
 			}
 		}
 	case propertyListStyleType:
-		if parsed, ok := parseListStyleType(value); ok {
+		if parsed, ok := parseListStyleType(source); ok {
 			style.listStyleType = parsed
 		}
 	case propertyMargin:
-		if parsed, ok := parseLength(value, style.fontSize, style.fontSize, context.viewport); ok {
+		if parsed, ok := parseLength(source, style.fontSize, style.fontSize, context.viewport); ok {
 			*definition.boxLength(style) = parsed
 		}
 	case propertyMaxWidth:
-		if value == "none" {
+		if keyword, ok := singleCSSKeyword(source); ok && keyword == "none" {
 			style.maxWidth = length{unit: lengthAuto}
-		} else if parsed, ok := parseLength(value, style.fontSize, style.fontSize, context.viewport); ok && nonNegativeLength(parsed) {
+		} else if parsed, ok := parseLength(source, style.fontSize, style.fontSize, context.viewport); ok && nonNegativeLength(parsed) {
 			style.maxWidth = parsed
 		}
 	case propertyMinWidth:
-		if value == "auto" {
+		if keyword, ok := singleCSSKeyword(source); ok && keyword == "auto" {
 			style.minWidth = px(0)
-		} else if parsed, ok := parseLength(value, style.fontSize, style.fontSize, context.viewport); ok && nonNegativeLength(parsed) {
+		} else if parsed, ok := parseLength(source, style.fontSize, style.fontSize, context.viewport); ok && nonNegativeLength(parsed) {
 			style.minWidth = parsed
 		}
 	case propertyOpacity:
-		if numeric, err := strconv.ParseFloat(value, 64); err == nil && isFinite(numeric) {
-			style.opacity = clamp(numeric, 0, 1)
+		if token, ok := singleCSSNumber(source); ok {
+			style.opacity = clamp(token.Number, 0, 1)
 		}
 	case propertyPadding:
-		if parsed, ok := parseLength(value, style.fontSize, style.fontSize, context.viewport); ok && parsed.unit != lengthAuto && nonNegativeLength(parsed) {
+		if parsed, ok := parseLength(source, style.fontSize, style.fontSize, context.viewport); ok && parsed.unit != lengthAuto && nonNegativeLength(parsed) {
 			*definition.boxLength(style) = parsed
 		}
 	case propertyTextAlign:
-		switch value {
+		keyword, _ := singleCSSKeyword(source)
+		switch keyword {
 		case "center":
 			style.textAlign = alignCenter
 		case "right":
@@ -445,15 +449,15 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 			style.textAlign = alignJustify
 		}
 	case propertyTextDecorationLine:
-		if strings.Contains(value, "underline") {
+		if valueContainsKeyword(source, "underline") {
 			style.textDecoration = TextDecorationUnderline
 			style.underline = true
-		} else if value == "none" {
+		} else if keyword, ok := singleCSSKeyword(source); ok && keyword == "none" {
 			style.textDecoration = TextDecorationNone
 			style.underline = style.ancestorUnderline
 		}
 	case propertyWidth:
-		if parsed, ok := parseLength(value, style.fontSize, style.fontSize, context.viewport); ok && nonNegativeLength(parsed) {
+		if parsed, ok := parseLength(source, style.fontSize, style.fontSize, context.viewport); ok && nonNegativeLength(parsed) {
 			style.width = parsed
 		}
 	}
@@ -567,46 +571,40 @@ func validComputedDeclaration(declaration css.Declaration, viewport Viewport) bo
 		return definition.valid(declaration.Value, viewport)
 	}
 
-	value := strings.TrimSpace(strings.ToLower(declaration.Value))
 	switch declaration.Property {
 	case "all":
-		return cssWideKeyword(value) != ""
+		return cssWideKeyword(declaration.Value) != ""
 	case "font":
-		_, _, _, _, ok := parseFontShorthand(value, viewport)
+		_, _, _, _, ok := parseFontShorthand(declaration.Value, viewport)
 		return ok
 	case "background":
-		_, ok := parseColor(firstCSSValue(value))
+		_, ok := parseFirstColor(declaration.Value)
 		return ok
 	case "padding":
-		_, ok := parsePaddingLengths(value, 1, viewport)
+		_, ok := parsePaddingLengths(declaration.Value, 1, viewport)
 		return ok
 	case "border", "border-top", "border-right", "border-bottom", "border-left":
-		_, ok := parseBorderShorthand(value, 1, viewport)
+		_, ok := parseBorderShorthand(declaration.Value, 1, viewport)
 		return ok
 	case "border-width":
-		_, ok := parseBorderWidths(value, 1, viewport)
+		_, ok := parseBorderWidths(declaration.Value, 1, viewport)
 		return ok
 	case "border-style":
-		_, ok := parseBorderStyles(value)
+		_, ok := parseBorderStyles(declaration.Value)
 		return ok
 	case "border-color":
-		_, ok := parseBorderColors(value)
+		_, ok := parseBorderColors(declaration.Value)
 		return ok
 	case "text-decoration":
-		if value == "none" {
+		if keyword, ok := singleCSSKeyword(declaration.Value); ok && keyword == "none" {
 			return true
 		}
-		for _, token := range strings.Fields(value) {
-			if token == "underline" {
-				return true
-			}
-		}
-		return false
+		return valueContainsKeyword(declaration.Value, "underline")
 	case "list-style":
-		_, ok := parseListStyleType(value)
+		_, ok := parseListStyleType(declaration.Value)
 		return ok
 	case "margin":
-		_, ok := parseBoxLengths(value, 1, viewport)
+		_, ok := parseBoxLengths(declaration.Value, 1, viewport)
 		return ok
 	default:
 		return false
@@ -619,23 +617,22 @@ func applyDeclaration(style *computedStyle, property, source string, context pro
 		return
 	}
 
-	value := strings.TrimSpace(strings.ToLower(source))
 	switch property {
 	case "background":
-		if parsed, ok := parseColor(firstCSSValue(value)); ok {
+		if parsed, ok := parseFirstColor(source); ok {
 			style.background = parsed
 			style.hasBackground = parsed.A != 0
 		}
 	case "padding":
-		if values, ok := parsePaddingLengths(value, style.fontSize, context.viewport); ok {
+		if values, ok := parsePaddingLengths(source, style.fontSize, context.viewport); ok {
 			style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft = values[0], values[1], values[2], values[3]
 		}
 	case "border":
-		if parsed, ok := parseBorderShorthand(value, style.fontSize, context.viewport); ok {
+		if parsed, ok := parseBorderShorthand(source, style.fontSize, context.viewport); ok {
 			style.borderTop, style.borderRight, style.borderBottom, style.borderLeft = parsed, parsed, parsed, parsed
 		}
 	case "border-top", "border-right", "border-bottom", "border-left":
-		if parsed, ok := parseBorderShorthand(value, style.fontSize, context.viewport); ok {
+		if parsed, ok := parseBorderShorthand(source, style.fontSize, context.viewport); ok {
 			switch property {
 			case "border-top":
 				style.borderTop = parsed
@@ -648,34 +645,34 @@ func applyDeclaration(style *computedStyle, property, source string, context pro
 			}
 		}
 	case "border-width":
-		if parsed, ok := parseBorderWidths(value, style.fontSize, context.viewport); ok {
+		if parsed, ok := parseBorderWidths(source, style.fontSize, context.viewport); ok {
 			style.borderTop.width, style.borderRight.width, style.borderBottom.width, style.borderLeft.width = parsed[0], parsed[1], parsed[2], parsed[3]
 		}
 	case "border-style":
-		if parsed, ok := parseBorderStyles(value); ok {
+		if parsed, ok := parseBorderStyles(source); ok {
 			style.borderTop.style, style.borderRight.style, style.borderBottom.style, style.borderLeft.style = parsed[0], parsed[1], parsed[2], parsed[3]
 		}
 	case "border-color":
-		if parsed, ok := parseBorderColors(value); ok {
+		if parsed, ok := parseBorderColors(source); ok {
 			applyBorderColor(&style.borderTop, parsed[0])
 			applyBorderColor(&style.borderRight, parsed[1])
 			applyBorderColor(&style.borderBottom, parsed[2])
 			applyBorderColor(&style.borderLeft, parsed[3])
 		}
 	case "text-decoration":
-		if strings.Contains(value, "underline") {
+		if valueContainsKeyword(source, "underline") {
 			style.textDecoration = TextDecorationUnderline
 			style.underline = true
-		} else if value == "none" {
+		} else if keyword, ok := singleCSSKeyword(source); ok && keyword == "none" {
 			style.textDecoration = TextDecorationNone
 			style.underline = style.ancestorUnderline
 		}
 	case "list-style":
-		if parsed, ok := parseListStyleType(value); ok {
+		if parsed, ok := parseListStyleType(source); ok {
 			style.listStyleType = parsed
 		}
 	case "margin":
-		if values, ok := parseBoxLengths(value, style.fontSize, context.viewport); ok {
+		if values, ok := parseBoxLengths(source, style.fontSize, context.viewport); ok {
 			style.marginTop, style.marginRight, style.marginBottom, style.marginLeft = values[0], values[1], values[2], values[3]
 		}
 	}

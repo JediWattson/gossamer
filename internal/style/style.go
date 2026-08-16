@@ -10,7 +10,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"unicode"
 
 	"github.com/JediWattson/gossamer/internal/css"
 	"github.com/JediWattson/gossamer/internal/dom"
@@ -1254,89 +1253,81 @@ func environmentInitialFontSize(environment Environment) float64 {
 	return 16
 }
 
+// parseFontShorthand retains only the pieces represented by the current
+// computed style. Family/style/variant tokens are recognized far enough to
+// identify the size boundary and remain available for later registry growth.
 func parseFontShorthand(source string, viewport Viewport) (size, lineHeight, weight, family string, ok bool) {
-	fields := strings.Fields(strings.TrimSpace(source))
-	if len(fields) < 2 {
+	value, valid := parsePropertyValue(source)
+	if !valid || len(value.terms) < 2 {
 		return "", "", "", "", false
 	}
 	weight = "normal"
 	lineHeight = "normal"
-	for index := 0; index < len(fields); index++ {
-		field := fields[index]
-		sizeSource := field
-		inlineLineHeight := ""
-		if slash := strings.IndexByte(field, '/'); slash >= 0 {
-			sizeSource = field[:slash]
-			inlineLineHeight = field[slash+1:]
-		}
-		parsedSize, validSize := parseLength(sizeSource, 1, 1, viewport)
+	for index := 0; index < len(value.terms); index++ {
+		term := value.terms[index]
+		parsedSize, validSize := parseLengthComponent(term, 1, viewport)
 		if !validSize || parsedSize.unit == lengthAuto || !nonNegativeLength(parsedSize) {
-			if !parseFontPrefixToken(field, &weight) {
+			if !parseFontPrefixComponent(term, &weight) {
 				return "", "", "", "", false
 			}
 			continue
 		}
 
-		size = sizeSource
+		size = value.raw(term)
 		familyStart := index + 1
-		if strings.Contains(field, "/") {
-			if inlineLineHeight == "" {
-				if familyStart >= len(fields) {
-					return "", "", "", "", false
-				}
-				inlineLineHeight = fields[familyStart]
-				familyStart++
+		if familyStart < len(value.terms) && isValueDelimiter(value.terms[familyStart], "/") {
+			familyStart++
+			if familyStart >= len(value.terms) {
+				return "", "", "", "", false
 			}
-			lineHeight = inlineLineHeight
-		} else if familyStart < len(fields) {
-			next := fields[familyStart]
-			switch {
-			case next == "/":
-				familyStart++
-				if familyStart >= len(fields) {
-					return "", "", "", "", false
-				}
-				lineHeight = fields[familyStart]
-				familyStart++
-			case strings.HasPrefix(next, "/"):
-				lineHeight = strings.TrimPrefix(next, "/")
-				familyStart++
-			}
+			lineHeight = value.raw(value.terms[familyStart])
+			familyStart++
 		}
-		if !validFontLineHeight(lineHeight, viewport) || familyStart >= len(fields) {
+		if !validFontLineHeight(lineHeight, viewport) || familyStart >= len(value.terms) {
 			return "", "", "", "", false
 		}
-		family = strings.Join(fields[familyStart:], " ")
+		familyParts := make([]string, 0, len(value.terms)-familyStart)
+		for _, familyTerm := range value.terms[familyStart:] {
+			familyParts = append(familyParts, value.raw(familyTerm))
+		}
+		family = strings.Join(familyParts, " ")
 		return size, lineHeight, weight, family, true
 	}
 	return "", "", "", "", false
 }
 
-func parseFontPrefixToken(token string, weight *string) bool {
-	token = strings.ToLower(token)
-	switch token {
-	case "normal":
-		*weight = "normal"
-		return true
-	case "bold", "bolder", "lighter":
-		*weight = token
-		return true
-	case "italic", "oblique", "small-caps", "condensed", "expanded":
-		return true
+func parseFontPrefixComponent(component css.ComponentValue, weight *string) bool {
+	if keyword, ok := componentKeyword(component); ok {
+		switch keyword {
+		case "normal":
+			*weight = "normal"
+			return true
+		case "bold", "bolder", "lighter":
+			*weight = keyword
+			return true
+		case "italic", "oblique", "small-caps", "condensed", "expanded":
+			return true
+		}
 	}
-	if numeric, err := strconv.Atoi(token); err == nil && numeric >= 1 && numeric <= 1000 {
-		*weight = token
+	token, ok := componentToken(component)
+	if ok && token.Kind == css.TokenNumber && token.Integer && token.Number >= 1 && token.Number <= 1000 {
+		*weight = token.Representation
 		return true
 	}
 	return false
 }
 
+func isValueDelimiter(component css.ComponentValue, delimiter string) bool {
+	token, ok := componentToken(component)
+	return ok && token.Kind == css.TokenDelim && token.Value == delimiter
+}
+
 func validFontLineHeight(source string, viewport Viewport) bool {
-	if strings.EqualFold(source, "normal") {
+	if keyword, ok := singleCSSKeyword(source); ok && keyword == "normal" {
 		return true
 	}
-	if numeric, err := strconv.ParseFloat(source, 64); err == nil {
-		return numeric > 0 && isFinite(numeric)
+	if token, ok := singleCSSNumber(source); ok {
+		return token.Number > 0
 	}
 	parsed, ok := parseLength(source, 1, 1, viewport)
 	return ok && parsed.unit != lengthAuto && nonNegativeLength(parsed)
@@ -1427,26 +1418,26 @@ func initialBorderSide() borderSide {
 }
 
 func parseBorderShorthand(source string, fontSize float64, viewport Viewport) (borderSide, bool) {
-	fields := strings.Fields(source)
-	if len(fields) == 0 || len(fields) > 3 {
+	value, ok := parsePropertyValue(source)
+	if !ok || len(value.terms) == 0 || len(value.terms) > 3 {
 		return borderSide{}, false
 	}
 	result := initialBorderSide()
 	seenWidth := false
 	seenStyle := false
 	seenColor := false
-	for _, field := range fields {
-		if width, ok := parseBorderWidth(field, fontSize, viewport); ok && !seenWidth {
+	for _, term := range value.terms {
+		if width, ok := parseBorderWidthComponent(term, fontSize, viewport); ok && !seenWidth {
 			result.width = width
 			seenWidth = true
 			continue
 		}
-		if style, ok := parseBorderStyle(field); ok && !seenStyle {
+		if style, ok := parseBorderStyleComponent(term); ok && !seenStyle {
 			result.style = style
 			seenStyle = true
 			continue
 		}
-		if parsedColor, ok := parseBorderColor(field); ok && !seenColor {
+		if parsedColor, ok := parseBorderColorComponent(term); ok && !seenColor {
 			applyBorderColor(&result, parsedColor)
 			seenColor = true
 			continue
@@ -1457,7 +1448,20 @@ func parseBorderShorthand(source string, fontSize float64, viewport Viewport) (b
 }
 
 func parseBorderWidth(source string, fontSize float64, viewport Viewport) (length, bool) {
-	switch source {
+	value, ok := parsePropertyValue(source)
+	if !ok {
+		return length{}, false
+	}
+	component, ok := value.single()
+	if !ok {
+		return length{}, false
+	}
+	return parseBorderWidthComponent(component, fontSize, viewport)
+}
+
+func parseBorderWidthComponent(component css.ComponentValue, fontSize float64, viewport Viewport) (length, bool) {
+	keyword, _ := componentKeyword(component)
+	switch keyword {
 	case "thin":
 		return px(1), true
 	case "medium":
@@ -1465,7 +1469,7 @@ func parseBorderWidth(source string, fontSize float64, viewport Viewport) (lengt
 	case "thick":
 		return px(5), true
 	}
-	parsed, ok := parseLength(source, fontSize, fontSize, viewport)
+	parsed, ok := parseLengthComponent(component, fontSize, viewport)
 	if !ok || parsed.unit == lengthAuto || parsed.unit == lengthPercent || !nonNegativeLength(parsed) {
 		return length{}, false
 	}
@@ -1473,23 +1477,36 @@ func parseBorderWidth(source string, fontSize float64, viewport Viewport) (lengt
 }
 
 func parseBorderWidths(source string, fontSize float64, viewport Viewport) ([4]length, bool) {
-	parts := strings.Fields(source)
-	if len(parts) < 1 || len(parts) > 4 {
+	value, ok := parsePropertyValue(source)
+	if !ok || len(value.terms) < 1 || len(value.terms) > 4 {
 		return [4]length{}, false
 	}
-	parsed := make([]length, len(parts))
-	for index, part := range parts {
-		value, ok := parseBorderWidth(part, fontSize, viewport)
+	parsed := make([]length, len(value.terms))
+	for index, term := range value.terms {
+		parsedValue, ok := parseBorderWidthComponent(term, fontSize, viewport)
 		if !ok {
 			return [4]length{}, false
 		}
-		parsed[index] = value
+		parsed[index] = parsedValue
 	}
 	return expandFourSides(parsed), true
 }
 
 func parseBorderStyle(source string) (borderStyle, bool) {
-	switch source {
+	value, ok := parsePropertyValue(source)
+	if !ok {
+		return borderStyleNone, false
+	}
+	component, ok := value.single()
+	if !ok {
+		return borderStyleNone, false
+	}
+	return parseBorderStyleComponent(component)
+}
+
+func parseBorderStyleComponent(component css.ComponentValue) (borderStyle, bool) {
+	keyword, _ := componentKeyword(component)
+	switch keyword {
 	case "none":
 		return borderStyleNone, true
 	case "solid":
@@ -1502,17 +1519,17 @@ func parseBorderStyle(source string) (borderStyle, bool) {
 }
 
 func parseBorderStyles(source string) ([4]borderStyle, bool) {
-	parts := strings.Fields(source)
-	if len(parts) < 1 || len(parts) > 4 {
+	value, ok := parsePropertyValue(source)
+	if !ok || len(value.terms) < 1 || len(value.terms) > 4 {
 		return [4]borderStyle{}, false
 	}
-	parsed := make([]borderStyle, len(parts))
-	for index, part := range parts {
-		value, ok := parseBorderStyle(part)
+	parsed := make([]borderStyle, len(value.terms))
+	for index, term := range value.terms {
+		parsedValue, ok := parseBorderStyleComponent(term)
 		if !ok {
 			return [4]borderStyle{}, false
 		}
-		parsed[index] = value
+		parsed[index] = parsedValue
 	}
 	return expandFourSides(parsed), true
 }
@@ -1523,25 +1540,37 @@ type borderColor struct {
 }
 
 func parseBorderColor(source string) (borderColor, bool) {
-	if source == "currentcolor" {
+	value, ok := parsePropertyValue(source)
+	if !ok {
+		return borderColor{}, false
+	}
+	component, ok := value.single()
+	if !ok {
+		return borderColor{}, false
+	}
+	return parseBorderColorComponent(component)
+}
+
+func parseBorderColorComponent(component css.ComponentValue) (borderColor, bool) {
+	if keyword, ok := componentKeyword(component); ok && keyword == "currentcolor" {
 		return borderColor{}, true
 	}
-	parsed, ok := parseColor(source)
+	parsed, ok := parseColorComponent(component)
 	return borderColor{value: parsed, explicit: ok}, ok
 }
 
 func parseBorderColors(source string) ([4]borderColor, bool) {
-	parts := strings.Fields(source)
-	if len(parts) < 1 || len(parts) > 4 {
+	value, ok := parsePropertyValue(source)
+	if !ok || len(value.terms) < 1 || len(value.terms) > 4 {
 		return [4]borderColor{}, false
 	}
-	parsed := make([]borderColor, len(parts))
-	for index, part := range parts {
-		value, ok := parseBorderColor(part)
+	parsed := make([]borderColor, len(value.terms))
+	for index, term := range value.terms {
+		parsedValue, ok := parseBorderColorComponent(term)
 		if !ok {
 			return [4]borderColor{}, false
 		}
-		parsed[index] = value
+		parsed[index] = parsedValue
 	}
 	return expandFourSides(parsed), true
 }
@@ -1567,8 +1596,13 @@ func applyBorderColor(side *borderSide, parsed borderColor) {
 }
 
 func parseListStyleType(source string) (listStyleType, bool) {
-	for _, token := range strings.Fields(source) {
-		switch token {
+	value, ok := parsePropertyValue(source)
+	if !ok {
+		return listStyleDisc, false
+	}
+	for _, term := range value.terms {
+		keyword, _ := componentKeyword(term)
+		switch keyword {
 		case "disc":
 			return listStyleDisc, true
 		case "circle":
@@ -1606,17 +1640,17 @@ func dimensionAttribute(node *dom.Node, name string) (float64, bool) {
 }
 
 func parseBoxLengths(source string, fontSize float64, viewport Viewport) ([4]length, bool) {
-	parts := strings.Fields(source)
-	if len(parts) < 1 || len(parts) > 4 {
+	value, ok := parsePropertyValue(source)
+	if !ok || len(value.terms) < 1 || len(value.terms) > 4 {
 		return [4]length{}, false
 	}
-	parsed := make([]length, len(parts))
-	for index, part := range parts {
-		value, ok := parseLength(part, fontSize, fontSize, viewport)
+	parsed := make([]length, len(value.terms))
+	for index, term := range value.terms {
+		parsedValue, ok := parseLengthComponent(term, fontSize, viewport)
 		if !ok {
 			return [4]length{}, false
 		}
-		parsed[index] = value
+		parsed[index] = parsedValue
 	}
 	var result [4]length
 	switch len(parsed) {
@@ -1645,41 +1679,16 @@ func parsePaddingLengths(source string, fontSize float64, viewport Viewport) ([4
 	return values, true
 }
 
-func parseLength(source string, emBase, percentBase float64, viewport Viewport) (length, bool) {
-	value := strings.TrimSpace(strings.ToLower(source))
-	if value == "auto" {
-		return length{unit: lengthAuto}, true
+func parseLength(source string, emBase, _ float64, viewport Viewport) (length, bool) {
+	value, ok := parsePropertyValue(source)
+	if !ok {
+		return length{}, false
 	}
-	if value == "0" {
-		return px(0), true
+	component, ok := value.single()
+	if !ok {
+		return length{}, false
 	}
-	units := []struct {
-		suffix string
-		unit   lengthUnit
-		scale  float64
-	}{
-		{"rem", lengthPX, environmentInitialFontSize(viewport)},
-		{"px", lengthPX, 1},
-		{"em", lengthPX, emBase},
-		{"vw", lengthVW, 1},
-		{"vh", lengthVH, 1},
-		{"%", lengthPercent, 1},
-	}
-	for _, candidate := range units {
-		if !strings.HasSuffix(value, candidate.suffix) {
-			continue
-		}
-		numeric, err := strconv.ParseFloat(strings.TrimSpace(strings.TrimSuffix(value, candidate.suffix)), 64)
-		if err != nil || !isFinite(numeric) {
-			return length{}, false
-		}
-		scaled := numeric * candidate.scale
-		if !isFinite(scaled) {
-			return length{}, false
-		}
-		return length{value: scaled, unit: candidate.unit}, true
-	}
-	return length{}, false
+	return parseLengthComponent(component, emBase, viewport)
 }
 
 func resolveLength(value length, percentBase float64, viewport Viewport, autoValue float64) float64 {
@@ -1698,52 +1707,23 @@ func resolveLength(value length, percentBase float64, viewport Viewport, autoVal
 }
 
 func parseColor(source string) (color.NRGBA, bool) {
-	value := strings.TrimSpace(strings.ToLower(source))
-	if strings.HasPrefix(value, "#") {
-		hex := strings.TrimPrefix(value, "#")
-		if len(hex) == 3 || len(hex) == 4 {
-			expanded := make([]byte, 0, len(hex)*2)
-			for index := range hex {
-				expanded = append(expanded, hex[index], hex[index])
-			}
-			hex = string(expanded)
-		}
-		if len(hex) == 6 || len(hex) == 8 {
-			encoded, err := strconv.ParseUint(hex, 16, 32)
-			if err == nil {
-				if len(hex) == 6 {
-					return color.NRGBA{R: uint8(encoded >> 16), G: uint8(encoded >> 8), B: uint8(encoded), A: 0xff}, true
-				}
-				return color.NRGBA{R: uint8(encoded >> 24), G: uint8(encoded >> 16), B: uint8(encoded >> 8), A: uint8(encoded)}, true
-			}
-		}
+	value, ok := parsePropertyValue(source)
+	if !ok {
+		return color.NRGBA{}, false
 	}
-	switch value {
-	case "black":
-		return color.NRGBA{A: 0xff}, true
-	case "white":
-		return color.NRGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff}, true
-	case "red":
-		return color.NRGBA{R: 0xff, A: 0xff}, true
-	case "green":
-		return color.NRGBA{G: 0x80, A: 0xff}, true
-	case "blue":
-		return color.NRGBA{B: 0xff, A: 0xff}, true
-	case "gray", "grey":
-		return color.NRGBA{R: 0x80, G: 0x80, B: 0x80, A: 0xff}, true
-	case "transparent":
-		return color.NRGBA{}, true
+	component, ok := value.single()
+	if !ok {
+		return color.NRGBA{}, false
 	}
-	return color.NRGBA{}, false
+	return parseColorComponent(component)
 }
 
-func firstCSSValue(source string) string {
-	for index, runeValue := range source {
-		if unicode.IsSpace(runeValue) {
-			return source[:index]
-		}
+func parseFirstColor(source string) (color.NRGBA, bool) {
+	value, ok := parsePropertyValue(source)
+	if !ok || len(value.terms) == 0 {
+		return color.NRGBA{}, false
 	}
-	return source
+	return parseColorComponent(value.terms[0])
 }
 
 func parentFontSize(parent *styledNode, viewport Viewport) float64 {

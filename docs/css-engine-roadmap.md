@@ -58,8 +58,10 @@ layer, including token-correct `!important` handling and recovery, while
 stylesheet and inline declaration spans flow into computed-style provenance.
 Selectors and media queries now consume the shared component-value tree,
 including decoded escaped identifiers and token-boundary-correct recovery.
-Individual property-value parsers remain on their existing scanners and are
-the final migration step for this milestone.
+The central style registry and every currently supported shorthand now parse
+their keywords, numbers, dimensions, colors, and lists from the same decoded
+component values. Legacy whitespace- and suffix-based property scanners have
+been removed.
 
 - Migrate selectors, media queries, and property-value grammars onto the shared
   representation, adding grammar-specific escaped identifiers as each moves.
