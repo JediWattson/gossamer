@@ -194,6 +194,12 @@ type JSRealm interface {
 	Close() error
 }
 
+// JSBackForwardCacheRealm lets an engine reject suspension when the current
+// realm contains lifecycle state that must be torn down instead.
+type JSBackForwardCacheRealm interface {
+	BFCacheEligible() bool
+}
+
 // JSModuleRealm is the optional stock-engine extension for browser-fetched ES
 // module graphs. Fetching and resolution stay in Go outside the Realm; compile,
 // instantiate, and evaluation stay inside the engine entry.

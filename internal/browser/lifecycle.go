@@ -12,6 +12,7 @@ import (
 func (page *Page) dispatchDepartureLifecycle(
 	task *browserruntime.TaskContext,
 	navigation NavigationID,
+	persisted bool,
 ) (allowed bool, err error) {
 	page.mutex.RLock()
 	if !page.matchesNavigationLocked(navigation, 0) {
@@ -25,14 +26,14 @@ func (page *Page) dispatchDepartureLifecycle(
 		return true, nil
 	}
 	host := &taskHost{page: page, task: task, generation: generation, autoRender: false}
-	dispatch := func(eventType InputEventType) (EventDispatchResult, error) {
+	dispatch := func(eventType InputEventType, eventPersisted bool) (EventDispatchResult, error) {
 		result, dispatchErr := script.DispatchEvent(host, InputEvent{
-			Type: eventType, Target: NodeHandle{Document: generation},
+			Type: eventType, Target: NodeHandle{Document: generation}, Persisted: eventPersisted,
 		})
 		dispatchErr = errors.Join(dispatchErr, script.DrainMicrotasks(host), host.finish())
 		return result, dispatchErr
 	}
-	result, err := dispatch(InputBeforeUnload)
+	result, err := dispatch(InputBeforeUnload, false)
 	if err != nil {
 		return false, err
 	}
@@ -45,8 +46,11 @@ func (page *Page) dispatchDepartureLifecycle(
 	if !stillCurrent {
 		return false, ErrNavigationSuperseded
 	}
-	_, pageHideErr := dispatch(InputPageHide)
-	_, unloadErr := dispatch(InputUnload)
+	_, pageHideErr := dispatch(InputPageHide, persisted)
+	var unloadErr error
+	if !persisted {
+		_, unloadErr = dispatch(InputUnload, false)
+	}
 	return true, errors.Join(pageHideErr, unloadErr)
 }
 

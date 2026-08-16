@@ -112,7 +112,7 @@ func TestStockV8GraphiteShellRoutesNativeInputAndTeardown(t *testing.T) {
 	}
 }
 
-func TestStockV8HistoryTraversalReplacesRealmsAndInvalidatesWrappers(t *testing.T) {
+func TestStockV8HistoryTraversalRestoresCachedRealmsAndInvalidatesInactiveWrappers(t *testing.T) {
 	engine := newTestEngine(t)
 	browserRuntime, err := browser.NewWithEngine(engine)
 	if err != nil {
@@ -166,6 +166,9 @@ func TestStockV8HistoryTraversalReplacesRealmsAndInvalidatesWrappers(t *testing.
 	if err := page.WaitNavigation(context.Background(), forward); err != nil {
 		t.Fatal(err)
 	}
+	if page.DocumentGeneration() != cGeneration {
+		t.Fatalf("V8 forward traversal generation = %d, want cached %d", page.DocumentGeneration(), cGeneration)
+	}
 	reload, err := page.Reload(context.Background(), client)
 	if err != nil {
 		t.Fatal(err)
@@ -182,7 +185,7 @@ func TestStockV8HistoryTraversalReplacesRealmsAndInvalidatesWrappers(t *testing.
 		t.Fatal(err)
 	}
 	profile := engine.Profile()
-	if profile.RealmsCreated < 7 || profile.RealmsCreated != profile.RealmsClosed {
+	if profile.RealmsCreated != 5 || profile.RealmsCreated != profile.RealmsClosed {
 		t.Fatalf("V8 history Realm lifecycle = %#v", profile)
 	}
 	if _, live := engine.LatestRealm(); live {

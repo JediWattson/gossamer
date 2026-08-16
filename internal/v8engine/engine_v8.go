@@ -502,6 +502,16 @@ func (realm *Realm) Profile() (RealmProfile, error) {
 	return profileFromC(native), nil
 }
 
+func (realm *Realm) BFCacheEligible() bool {
+	if realm == nil {
+		return false
+	}
+	realm.mutex.Lock()
+	defer realm.mutex.Unlock()
+	return !realm.isClosed && realm.pointer != nil &&
+		C.gossamer_v8_realm_bfcache_eligible(realm.pointer) != 0
+}
+
 func (realm *Realm) Close() error {
 	if realm == nil {
 		return nil

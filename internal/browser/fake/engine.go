@@ -240,6 +240,12 @@ func (realm *Realm) Invoke(host browser.Host, handle browser.ValueHandle) error 
 // its isolate microtask checkpoint here.
 func (*Realm) DrainMicrotasks(browser.Host) error { return nil }
 
+func (realm *Realm) BFCacheEligible() bool {
+	realm.mutex.Lock()
+	defer realm.mutex.Unlock()
+	return !realm.closed
+}
+
 func (realm *Realm) Close() error {
 	if realm == nil {
 		return nil

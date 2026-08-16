@@ -122,8 +122,8 @@ func TestHistoryTraversalRebuildsDocumentsAndPreservesSessionIndex(t *testing.T)
 	if _, err := page.Go(context.Background(), 1, client); !errors.Is(err, browser.ErrHistoryTraversalOutOfRange) {
 		t.Fatalf("out-of-range traversal error = %v", err)
 	}
-	if got := client.loadCount("https://history.gossamer.test/b"); got != 4 {
-		t.Fatalf("B document loads = %d, want navigation, back, forward, and reload", got)
+	if got := client.loadCount("https://history.gossamer.test/b"); got != 2 {
+		t.Fatalf("B document loads = %d, want initial navigation and explicit reload only", got)
 	}
 
 	if err := page.Close(); err != nil {
@@ -148,6 +148,9 @@ func TestFailedHistoryTraversalLeavesCurrentEntryUntouched(t *testing.T) {
 		t.Fatal(err)
 	}
 	navigateAndWait(t, page, "https://history.gossamer.test/b", client)
+	if err := page.EvictBackForwardCache(); err != nil {
+		t.Fatal(err)
+	}
 	back, err := page.Back(context.Background(), failingHistoryLoader{})
 	if err != nil {
 		t.Fatal(err)

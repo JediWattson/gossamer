@@ -137,9 +137,14 @@ func (page *Page) Go(ctx context.Context, delta int, client DocumentLoader) (Nav
 	rawURL := page.history[target].URL.String()
 	sameDocument := delta != 0 && page.history[target].DocumentSequence != 0 &&
 		page.history[target].DocumentSequence == page.historyDocument
+	cachedDocument := delta != 0 && page.history[target].DocumentSequence != 0 &&
+		page.backForwardCache[page.history[target].DocumentSequence] != nil
 	page.mutex.RUnlock()
 	if sameDocument {
 		return page.beginSameDocumentTraversal(ctx, source, target)
+	}
+	if cachedDocument {
+		return page.beginBackForwardCacheTraversal(ctx, source, target)
 	}
 	return page.beginNavigation(ctx, rawURL, client, source, target, false)
 }
@@ -457,7 +462,8 @@ func (page *Page) commitNavigationDocument(
 	}
 	prepared.requests = requests
 
-	allowed, departureErr := page.dispatchDepartureLifecycle(task, id)
+	cacheDeparture := page.canCacheCurrentDocument()
+	allowed, departureErr := page.dispatchDepartureLifecycle(task, id, cacheDeparture)
 	if !allowed {
 		page.mutex.Lock()
 		if page.matchesNavigationLocked(id, 0) {
@@ -512,6 +518,13 @@ func (page *Page) commitNavigationDocument(
 	oldScript := page.script
 	oldLifetimes := page.nodeLifetimes
 	oldDocumentCancel := page.documentCancel
+	var retiredCachedDocuments []*cachedDocumentState
+	if cacheDeparture {
+		retiredCachedDocuments = page.storeCachedDocumentLocked(page.captureCurrentDocumentLocked())
+		oldScript = nil
+		oldLifetimes = nil
+		oldDocumentCancel = nil
+	}
 	documentContext, documentCancel := context.WithCancel(context.Background())
 	timers := page.takeTimersLocked()
 	animationRefs := page.takeAnimationFramesLocked()
@@ -587,6 +600,7 @@ func (page *Page) commitNavigationDocument(
 	if oldLifetimes != nil {
 		cleanupErr = errors.Join(cleanupErr, oldLifetimes.close())
 	}
+	cleanupErr = errors.Join(cleanupErr, closeCachedDocuments(retiredCachedDocuments))
 	if cleanupErr != nil {
 		page.mutex.Lock()
 		if page.matchesNavigationLocked(id, generation) {

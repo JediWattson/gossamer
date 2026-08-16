@@ -43,6 +43,8 @@ type Page struct {
 	historyIndex        int
 	historyDocument     uint64
 	nextHistoryDocument uint64
+	backForwardCache    map[uint64]*cachedDocumentState
+	backForwardOrder    []uint64
 	resources           pageResources
 	resourceFetcher     resource.Fetcher
 	documentContext     context.Context
@@ -132,6 +134,7 @@ func newPage(
 		timers:             make(map[TimerID]*pageTimer),
 		dirty:              true,
 		historyIndex:       -1,
+		backForwardCache:   make(map[uint64]*cachedDocumentState),
 	}
 	if location != nil {
 		page.nextHistoryDocument = 1
@@ -435,6 +438,7 @@ func (page *Page) Close() error {
 	lifetimes := page.nodeLifetimes
 	page.nodeLifetimes = nil
 	children := page.takeChildFramesLocked()
+	cachedDocuments := page.takeAllCachedDocumentsLocked()
 	parent := page.parent
 	page.parent = nil
 	generation := page.documentGeneration
@@ -462,7 +466,8 @@ func (page *Page) Close() error {
 	if lifetimes != nil {
 		lifetimeErr = lifetimes.close()
 	}
-	return errors.Join(timerErr, animationErr, childErr, scriptErr, lifetimeErr, page.Realm.Close())
+	cacheErr := closeCachedDocuments(cachedDocuments)
+	return errors.Join(timerErr, animationErr, childErr, scriptErr, lifetimeErr, cacheErr, page.Realm.Close())
 }
 
 func (page *Page) renderLocked(onlyIfDirty bool) error {

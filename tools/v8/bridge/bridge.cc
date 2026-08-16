@@ -12934,6 +12934,25 @@ extern "C" int gossamer_v8_realm_drain_microtasks(gossamer_v8_realm *realm,
   return 1;
 }
 
+extern "C" int
+gossamer_v8_realm_bfcache_eligible(gossamer_v8_realm *realm) {
+  if (realm == nullptr || realm->closed)
+    return 0;
+  std::lock_guard<std::mutex> guard(realm->mutex);
+  if (realm->closed)
+    return 0;
+  for (const auto &entry : realm->listeners) {
+    if (entry.first.type != "beforeunload" && entry.first.type != "unload")
+      continue;
+    for (const auto &listener : entry.second) {
+      if (!listener->removed)
+        return 0;
+    }
+  }
+  return realm->timer_callbacks.empty() &&
+         realm->animation_frame_callbacks.empty();
+}
+
 extern "C" int gossamer_v8_realm_collect_garbage(gossamer_v8_realm *realm,
                                                  char **error_out) {
   if (!RequireRealm(realm, error_out))

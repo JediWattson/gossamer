@@ -502,6 +502,8 @@ GOSSAMER_V8_EXPORT int gossamer_v8_realm_invoke_animation_frame(
 GOSSAMER_V8_EXPORT int gossamer_v8_realm_drain_microtasks(
     gossamer_v8_realm *realm, const gossamer_v8_host *host, char **error_out);
 GOSSAMER_V8_EXPORT int
+gossamer_v8_realm_bfcache_eligible(gossamer_v8_realm *realm);
+GOSSAMER_V8_EXPORT int
 gossamer_v8_realm_collect_garbage(gossamer_v8_realm *realm, char **error_out);
 GOSSAMER_V8_EXPORT size_t gossamer_v8_realm_take_collected_wrappers(
     gossamer_v8_realm *realm, gossamer_v8_node_handle *handles_out,
