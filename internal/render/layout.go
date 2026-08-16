@@ -675,7 +675,7 @@ func (context *layoutContext) addListMarker(node *styledNode, box *Box) error {
 	if markerText == "" {
 		return nil
 	}
-	metrics, err := context.fonts.metrics(markerText, node.style.FontSize(), node.style.FontWeight())
+	metrics, err := context.fonts.metrics(markerText, node.style.FontSize(), node.style.FontWeight(), node.style.FontStyle())
 	if err != nil {
 		return err
 	}
@@ -698,6 +698,7 @@ func (context *layoutContext) addListMarker(node *styledNode, box *Box) error {
 		Height:     node.style.LineHeight().Pixels(node.style.FontSize()),
 		FontSize:   node.style.FontSize(),
 		FontWeight: node.style.FontWeight(),
+		FontStyle:  node.style.FontStyle(),
 		Color:      node.style.Color(),
 	}
 	fragment := InlineFragment{Kind: TextFragmentKind, Text: marker}
@@ -858,6 +859,7 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 				Height:     lineHeight,
 				FontSize:   piece.style.FontSize(),
 				FontWeight: piece.style.FontWeight(),
+				FontStyle:  piece.style.FontStyle(),
 				Color:      textColor,
 			}
 			if len(fragments) != 0 && fragments[len(fragments)-1].Kind == TextFragmentKind {
@@ -866,6 +868,7 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 					previous.BaselineY == text.BaselineY &&
 					previous.FontSize == text.FontSize &&
 					previous.FontWeight == text.FontWeight &&
+					previous.FontStyle == text.FontStyle &&
 					previous.Color == text.Color {
 					previous.Text += text.Text
 					previous.Width += text.Width
@@ -905,7 +908,7 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 			wordMetrics = textMetrics{width: imageWidth, ascent: imageHeight}
 		} else {
 			var err error
-			wordMetrics, err = context.fonts.metrics(token.text, token.style.FontSize(), token.style.FontWeight())
+			wordMetrics, err = context.fonts.metrics(token.text, token.style.FontSize(), token.style.FontWeight(), token.style.FontStyle())
 			if err != nil {
 				return nil, 0, err
 			}
@@ -913,7 +916,7 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 		prefix := ""
 		prefixWidth := 0.0
 		if token.leadingSpace && len(line) != 0 {
-			spaceMetrics, err := context.fonts.metrics(" ", token.style.FontSize(), token.style.FontWeight())
+			spaceMetrics, err := context.fonts.metrics(" ", token.style.FontSize(), token.style.FontWeight(), token.style.FontStyle())
 			if err != nil {
 				return nil, 0, err
 			}
@@ -941,7 +944,7 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 			continue
 		}
 		pieceText := prefix + token.text
-		pieceMetrics, err := context.fonts.metrics(pieceText, token.style.FontSize(), token.style.FontWeight())
+		pieceMetrics, err := context.fonts.metrics(pieceText, token.style.FontSize(), token.style.FontWeight(), token.style.FontStyle())
 		if err != nil {
 			return nil, 0, err
 		}

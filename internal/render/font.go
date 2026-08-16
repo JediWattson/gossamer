@@ -9,6 +9,8 @@ import (
 
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/gofont/gobold"
+	"golang.org/x/image/font/gofont/gobolditalic"
+	"golang.org/x/image/font/gofont/goitalic"
 	"golang.org/x/image/font/gofont/goregular"
 	"golang.org/x/image/font/opentype"
 	"golang.org/x/image/math/fixed"
@@ -17,12 +19,15 @@ import (
 type faceKey struct {
 	size   int
 	weight FontWeight
+	style  FontStyle
 }
 
 type fontBook struct {
-	regular *opentype.Font
-	bold    *opentype.Font
-	faces   map[faceKey]font.Face
+	regular    *opentype.Font
+	bold       *opentype.Font
+	italic     *opentype.Font
+	boldItalic *opentype.Font
+	faces      map[faceKey]font.Face
 }
 
 type textMetrics struct {
@@ -41,11 +46,21 @@ func newFontBook() (*fontBook, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse Go Bold font: %w", err)
 	}
+	italic, err := opentype.Parse(goitalic.TTF)
+	if err != nil {
+		return nil, fmt.Errorf("parse Go Italic font: %w", err)
+	}
+	boldItalic, err := opentype.Parse(gobolditalic.TTF)
+	if err != nil {
+		return nil, fmt.Errorf("parse Go Bold Italic font: %w", err)
+	}
 
 	return &fontBook{
-		regular: regular,
-		bold:    bold,
-		faces:   make(map[faceKey]font.Face),
+		regular:    regular,
+		bold:       bold,
+		italic:     italic,
+		boldItalic: boldItalic,
+		faces:      make(map[faceKey]font.Face),
 	}, nil
 }
 
@@ -64,8 +79,8 @@ func (book *fontBook) Close() error {
 	return firstError
 }
 
-func (book *fontBook) metrics(text string, size float64, weight FontWeight) (textMetrics, error) {
-	face, err := book.face(size, weight)
+func (book *fontBook) metrics(text string, size float64, weight FontWeight, style FontStyle) (textMetrics, error) {
+	face, err := book.face(size, weight, style)
 	if err != nil {
 		return textMetrics{}, err
 	}
@@ -85,9 +100,10 @@ func (book *fontBook) draw(
 	baselineY float64,
 	size float64,
 	weight FontWeight,
+	style FontStyle,
 	textColor color.NRGBA,
 ) error {
-	face, err := book.face(size, weight)
+	face, err := book.face(size, weight, style)
 	if err != nil {
 		return err
 	}
@@ -105,17 +121,28 @@ func (book *fontBook) draw(
 	return nil
 }
 
-func (book *fontBook) face(size float64, weight FontWeight) (font.Face, error) {
+func (book *fontBook) face(size float64, weight FontWeight, style FontStyle) (font.Face, error) {
 	if size <= 0 {
 		size = 16
 	}
-	key := faceKey{size: int(math.Round(size * 64)), weight: weight}
+	// The bundled font family does not have a separately slanted oblique face.
+	// Use the italic face as the current oblique fallback and share its cache
+	// entry rather than allocating a duplicate opentype face.
+	if style == FontStyleOblique {
+		style = FontStyleItalic
+	}
+	key := faceKey{size: int(math.Round(size * 64)), weight: weight, style: style}
 	if face := book.faces[key]; face != nil {
 		return face, nil
 	}
 
 	parsedFont := book.regular
-	if weight == FontWeightBold {
+	if style == FontStyleItalic {
+		parsedFont = book.italic
+	}
+	if weight == FontWeightBold && style == FontStyleItalic {
+		parsedFont = book.boldItalic
+	} else if weight == FontWeightBold {
 		parsedFont = book.bold
 	}
 	face, err := opentype.NewFace(parsedFont, &opentype.FaceOptions{

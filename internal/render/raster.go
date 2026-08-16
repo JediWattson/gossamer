@@ -55,6 +55,7 @@ func rasterize(displayList DisplayList, fonts *fontBook) (*image.RGBA, error) {
 				command.BaselineY,
 				command.FontSize,
 				command.FontWeight,
+				command.FontStyle,
 				command.Color,
 			); err != nil {
 				return nil, err

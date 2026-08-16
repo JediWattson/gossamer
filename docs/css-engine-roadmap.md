@@ -123,6 +123,10 @@ longhand drives CSS-space collapsing, preserved segment breaks and spaces,
 nowrap behavior, and soft-wrap opportunities for normal, pre, pre-wrap,
 pre-line, and break-spaces modes; the built-in UA sheet applies `pre` to
 `<pre>` elements.
+Inherited `font-style` now remains typed through computed style, layout,
+display-list commands, and rasterization. The bundled Go font family selects
+real italic and bold-italic faces; `oblique` deliberately shares the italic
+fallback until angle-aware synthesis or a dedicated face is added.
 
 - Extend CSS math beyond the current length-percentage subset as number,
   angle, time, resolution, transform, and color consumers arrive.

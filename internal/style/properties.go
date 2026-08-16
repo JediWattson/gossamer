@@ -36,6 +36,7 @@ const (
 	propertyFlexGrow
 	propertyFlexShrink
 	propertyFontSize
+	propertyFontStyle
 	propertyFontWeight
 	propertyHeight
 	propertyInset
@@ -116,6 +117,7 @@ var propertyDefinitions = [...]propertyDefinition{
 	{name: "flex-grow", kind: propertyFlexGrow, invalidation: propertyInvalidatesLayout},
 	{name: "flex-shrink", kind: propertyFlexShrink, invalidation: propertyInvalidatesLayout},
 	{name: "font-size", kind: propertyFontSize, inherited: true, computeEarly: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
+	{name: "font-style", kind: propertyFontStyle, inherited: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "font-weight", kind: propertyFontWeight, inherited: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "height", kind: propertyHeight, invalidation: propertyInvalidatesLayout},
 	{name: "justify-content", kind: propertyJustifyContent, invalidation: propertyInvalidatesLayout},
@@ -179,8 +181,8 @@ var shorthandTargets = map[string][]string{
 	"border-style":    {"border-top-style", "border-right-style", "border-bottom-style", "border-left-style"},
 	"border-top":      {"border-top-width", "border-top-style", "border-top-color"},
 	"border-width":    {"border-top-width", "border-right-width", "border-bottom-width", "border-left-width"},
-	"font":            {"font-size", "font-weight", "line-height"},
 	"flex":            {"flex-grow", "flex-shrink", "flex-basis"},
+	"font":            {"font-size", "font-style", "font-weight", "line-height"},
 	"gap":             {"row-gap", "column-gap"},
 	"list-style":      {"list-style-type"},
 	"margin":          {"margin-top", "margin-right", "margin-bottom", "margin-left"},
@@ -256,6 +258,8 @@ func (definition propertyDefinition) copy(destination *computedStyle, source com
 		destination.flexShrink = source.flexShrink
 	case propertyFontSize:
 		destination.fontSize = source.fontSize
+	case propertyFontStyle:
+		destination.fontStyle = source.fontStyle
 	case propertyFontWeight:
 		destination.fontWeightValue = source.fontWeightValue
 	case propertyHeight:
@@ -362,6 +366,9 @@ func (definition propertyDefinition) valid(source string, viewport Viewport) boo
 		}
 		resolved := resolveLength(parsed, 1, viewport, 1)
 		return resolved > 0 && isFinite(resolved)
+	case propertyFontStyle:
+		keyword, ok := singleCSSKeyword(source)
+		return ok && (keyword == "normal" || keyword == "italic" || keyword == "oblique")
 	case propertyFontWeight:
 		if keyword, ok := singleCSSKeyword(source); ok && (keyword == "bold" || keyword == "bolder" || keyword == "normal" || keyword == "lighter") {
 			return true
@@ -542,6 +549,15 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 			if resolved > 0 && isFinite(resolved) {
 				style.fontSize = resolved
 			}
+		}
+	case propertyFontStyle:
+		keyword, _ := singleCSSKeyword(source)
+		if keyword == "italic" {
+			style.fontStyle = FontStyleItalic
+		} else if keyword == "oblique" {
+			style.fontStyle = FontStyleOblique
+		} else {
+			style.fontStyle = FontStyleNormal
 		}
 	case propertyFontWeight:
 		keyword, _ := singleCSSKeyword(source)
@@ -773,6 +789,14 @@ func (definition propertyDefinition) serialize(computed ComputedStyle) string {
 		return serializeComputedNumber(computed.flexShrink)
 	case propertyFontSize:
 		return serializeComputedNumber(computed.fontSize) + "px"
+	case propertyFontStyle:
+		if computed.fontStyle == FontStyleItalic {
+			return "italic"
+		}
+		if computed.fontStyle == FontStyleOblique {
+			return "oblique"
+		}
+		return "normal"
 	case propertyFontWeight:
 		return strconv.Itoa(computed.fontWeightValue)
 	case propertyHeight:
@@ -976,7 +1000,7 @@ func validComputedDeclaration(declaration css.Declaration, viewport Viewport) bo
 	case "all":
 		return cssWideKeyword(declaration.Value) != ""
 	case "font":
-		_, _, _, _, ok := parseFontShorthand(declaration.Value, viewport)
+		_, _, _, _, _, ok := parseFontShorthand(declaration.Value, viewport)
 		return ok
 	case "flex":
 		_, _, _, ok := parseFlexShorthand(declaration.Value, 1, viewport)

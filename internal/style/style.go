@@ -285,6 +285,14 @@ const (
 	FontWeightBold
 )
 
+type FontStyle uint8
+
+const (
+	FontStyleNormal FontStyle = iota
+	FontStyleItalic
+	FontStyleOblique
+)
+
 type TextDecorationLine uint8
 
 const (
@@ -375,6 +383,7 @@ type ComputedStyle struct {
 	hasBackground     bool
 	fontSize          float64
 	fontWeightValue   int
+	fontStyle         FontStyle
 	lineHeight        LineHeight
 	textDecoration    TextDecorationLine
 	ancestorUnderline bool
@@ -440,6 +449,7 @@ func (computed ComputedStyle) FontWeight() FontWeight {
 	return FontWeightNormal
 }
 func (computed ComputedStyle) FontWeightValue() int                   { return computed.fontWeightValue }
+func (computed ComputedStyle) FontStyle() FontStyle                   { return computed.fontStyle }
 func (computed ComputedStyle) LineHeight() LineHeight                 { return computed.lineHeight }
 func (computed ComputedStyle) TextDecorationLine() TextDecorationLine { return computed.textDecoration }
 func (computed ComputedStyle) Underline() bool                        { return computed.underline }
@@ -1385,7 +1395,7 @@ func applyTargetDeclaration(style *computedStyle, parent *styledNode, target str
 		viewport:         viewport,
 	}
 	if declaration.Property == "font" {
-		size, lineHeight, weight, _, ok := parseFontShorthand(declaration.Value, viewport)
+		size, lineHeight, weight, fontStyle, _, ok := parseFontShorthand(declaration.Value, viewport)
 		if !ok {
 			return
 		}
@@ -1394,6 +1404,8 @@ func applyTargetDeclaration(style *computedStyle, parent *styledNode, target str
 			declaration = css.Declaration{Property: target, Value: size, Important: declaration.Important}
 		case "font-weight":
 			declaration = css.Declaration{Property: target, Value: weight, Important: declaration.Important}
+		case "font-style":
+			declaration = css.Declaration{Property: target, Value: fontStyle, Important: declaration.Important}
 		case "line-height":
 			declaration = css.Declaration{Property: target, Value: lineHeight, Important: declaration.Important}
 		}
@@ -1471,22 +1483,23 @@ func environmentInitialFontSize(environment Environment) float64 {
 	return 16
 }
 
-// parseFontShorthand retains only the pieces represented by the current
-// computed style. Family/style/variant tokens are recognized far enough to
-// identify the size boundary and remain available for later registry growth.
-func parseFontShorthand(source string, viewport Viewport) (size, lineHeight, weight, family string, ok bool) {
+// parseFontShorthand retains the pieces represented by the current computed
+// style. Family and unsupported variant/stretch tokens are recognized far
+// enough to identify the size boundary and remain available for later growth.
+func parseFontShorthand(source string, viewport Viewport) (size, lineHeight, weight, fontStyle, family string, ok bool) {
 	value, valid := parsePropertyValue(source)
 	if !valid || len(value.terms) < 2 {
-		return "", "", "", "", false
+		return "", "", "", "", "", false
 	}
 	weight = "normal"
+	fontStyle = "normal"
 	lineHeight = "normal"
 	for index := 0; index < len(value.terms); index++ {
 		term := value.terms[index]
 		parsedSize, validSize := parseLengthComponent(term, value.source, 1, viewport)
 		if !validSize || parsedSize.unit == lengthAuto || !nonNegativeLength(parsedSize) {
-			if !parseFontPrefixComponent(term, &weight) {
-				return "", "", "", "", false
+			if !parseFontPrefixComponent(term, &weight, &fontStyle) {
+				return "", "", "", "", "", false
 			}
 			continue
 		}
@@ -1496,25 +1509,25 @@ func parseFontShorthand(source string, viewport Viewport) (size, lineHeight, wei
 		if familyStart < len(value.terms) && isValueDelimiter(value.terms[familyStart], "/") {
 			familyStart++
 			if familyStart >= len(value.terms) {
-				return "", "", "", "", false
+				return "", "", "", "", "", false
 			}
 			lineHeight = value.raw(value.terms[familyStart])
 			familyStart++
 		}
 		if !validFontLineHeight(lineHeight, viewport) || familyStart >= len(value.terms) {
-			return "", "", "", "", false
+			return "", "", "", "", "", false
 		}
 		familyParts := make([]string, 0, len(value.terms)-familyStart)
 		for _, familyTerm := range value.terms[familyStart:] {
 			familyParts = append(familyParts, value.raw(familyTerm))
 		}
 		family = strings.Join(familyParts, " ")
-		return size, lineHeight, weight, family, true
+		return size, lineHeight, weight, fontStyle, family, true
 	}
-	return "", "", "", "", false
+	return "", "", "", "", "", false
 }
 
-func parseFontPrefixComponent(component css.ComponentValue, weight *string) bool {
+func parseFontPrefixComponent(component css.ComponentValue, weight, fontStyle *string) bool {
 	if keyword, ok := componentKeyword(component); ok {
 		switch keyword {
 		case "normal":
@@ -1523,7 +1536,10 @@ func parseFontPrefixComponent(component css.ComponentValue, weight *string) bool
 		case "bold", "bolder", "lighter":
 			*weight = keyword
 			return true
-		case "italic", "oblique", "small-caps", "condensed", "expanded":
+		case "italic", "oblique":
+			*fontStyle = keyword
+			return true
+		case "small-caps", "condensed", "expanded":
 			return true
 		}
 	}

@@ -57,6 +57,14 @@ const (
 	FontWeightBold   = computed.FontWeightBold
 )
 
+type FontStyle = computed.FontStyle
+
+const (
+	FontStyleNormal  = computed.FontStyleNormal
+	FontStyleItalic  = computed.FontStyleItalic
+	FontStyleOblique = computed.FontStyleOblique
+)
+
 // Box is retained layout geometry for painting and future hit testing.
 type Box struct {
 	Node          *dom.Node
@@ -104,6 +112,7 @@ type TextFragment struct {
 	Height     float64
 	FontSize   float64
 	FontWeight FontWeight
+	FontStyle  FontStyle
 	Color      color.NRGBA
 }
 
@@ -142,6 +151,7 @@ type Command struct {
 	BaselineY  float64
 	FontSize   float64
 	FontWeight FontWeight
+	FontStyle  FontStyle
 	Opacity    float64
 	Image      image.Image
 	HasClip    bool
