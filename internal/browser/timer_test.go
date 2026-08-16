@@ -223,12 +223,16 @@ func (engine *timerTestEngine) NewRealm() (JSRealm, error) { return engine.realm
 func (*timerTestEngine) Close() error                      { return nil }
 
 type timerTestRealm struct {
-	invoked ValueHandle
-	drains  int
+	invoked          ValueHandle
+	drains           int
+	animationInvoked []ValueHandle
+	animationTimes   []float64
+	dispatched       []InputEvent
 }
 
 func (*timerTestRealm) Evaluate(Host, ScriptSource) error { return nil }
-func (*timerTestRealm) DispatchEvent(Host, InputEvent) (EventDispatchResult, error) {
+func (realm *timerTestRealm) DispatchEvent(_ Host, event InputEvent) (EventDispatchResult, error) {
+	realm.dispatched = append(realm.dispatched, event)
 	return EventDispatchResult{}, nil
 }
 func (realm *timerTestRealm) Invoke(_ Host, callback ValueHandle) error {
@@ -237,6 +241,11 @@ func (realm *timerTestRealm) Invoke(_ Host, callback ValueHandle) error {
 }
 func (realm *timerTestRealm) DrainMicrotasks(Host) error {
 	realm.drains++
+	return nil
+}
+func (realm *timerTestRealm) InvokeAnimationFrame(_ Host, callback ValueHandle, timestamp float64) error {
+	realm.animationInvoked = append(realm.animationInvoked, callback)
+	realm.animationTimes = append(realm.animationTimes, timestamp)
 	return nil
 }
 func (*timerTestRealm) Close() error { return nil }

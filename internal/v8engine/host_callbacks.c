@@ -304,6 +304,13 @@ extern int goGossamerV8HostScrollViewport(uint64_t execution_id, double x,
 extern int goGossamerV8HostScrollIntoView(
     uint64_t execution_id, uint64_t document, uint32_t node,
     int *changed_out, char **error_out);
+extern int goGossamerV8HostRequestAnimationFrame(
+    uint64_t execution_id, uint64_t callback, uint64_t *frame_out,
+    char **error_out);
+extern int goGossamerV8HostCancelAnimationFrame(
+    uint64_t execution_id, uint64_t frame, char **error_out);
+extern int goGossamerV8HostPerformanceNow(
+    uint64_t execution_id, double *milliseconds_out, char **error_out);
 
 static gossamer_v8_host gossamer_v8_go_host(uint64_t execution_id) {
   gossamer_v8_host host = {
@@ -388,6 +395,9 @@ static gossamer_v8_host gossamer_v8_go_host(uint64_t execution_id) {
       .scroll_element = goGossamerV8HostScrollElement,
       .scroll_viewport = goGossamerV8HostScrollViewport,
       .scroll_into_view = goGossamerV8HostScrollIntoView,
+      .request_animation_frame = goGossamerV8HostRequestAnimationFrame,
+      .cancel_animation_frame = goGossamerV8HostCancelAnimationFrame,
+      .performance_now = goGossamerV8HostPerformanceNow,
   };
   return host;
 }
@@ -415,6 +425,14 @@ int gossamer_v8_go_realm_invoke(gossamer_v8_realm *realm, uint64_t execution_id,
                                 uint64_t callback, char **error_out) {
   gossamer_v8_host host = gossamer_v8_go_host(execution_id);
   return gossamer_v8_realm_invoke(realm, &host, callback, error_out);
+}
+
+int gossamer_v8_go_realm_invoke_animation_frame(
+    gossamer_v8_realm *realm, uint64_t execution_id, uint64_t callback,
+    double timestamp_milliseconds, char **error_out) {
+  gossamer_v8_host host = gossamer_v8_go_host(execution_id);
+  return gossamer_v8_realm_invoke_animation_frame(
+      realm, &host, callback, timestamp_milliseconds, error_out);
 }
 
 int gossamer_v8_go_realm_drain_microtasks(gossamer_v8_realm *realm,

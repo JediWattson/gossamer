@@ -327,6 +327,12 @@ typedef struct gossamer_v8_host {
                          int *changed_out, char **error_out);
   int (*scroll_into_view)(uint64_t execution_id, uint64_t document,
                           uint32_t node, int *changed_out, char **error_out);
+  int (*request_animation_frame)(uint64_t execution_id, uint64_t callback,
+                                 uint64_t *frame_out, char **error_out);
+  int (*cancel_animation_frame)(uint64_t execution_id, uint64_t frame,
+                                char **error_out);
+  int (*performance_now)(uint64_t execution_id, double *milliseconds_out,
+                         char **error_out);
 } gossamer_v8_host;
 
 typedef struct gossamer_v8_node_handle {
@@ -426,6 +432,9 @@ GOSSAMER_V8_EXPORT int gossamer_v8_realm_invoke(gossamer_v8_realm *realm,
                                                 const gossamer_v8_host *host,
                                                 uint64_t callback,
                                                 char **error_out);
+GOSSAMER_V8_EXPORT int gossamer_v8_realm_invoke_animation_frame(
+    gossamer_v8_realm *realm, const gossamer_v8_host *host, uint64_t callback,
+    double timestamp_milliseconds, char **error_out);
 GOSSAMER_V8_EXPORT int gossamer_v8_realm_drain_microtasks(
     gossamer_v8_realm *realm, const gossamer_v8_host *host, char **error_out);
 GOSSAMER_V8_EXPORT int

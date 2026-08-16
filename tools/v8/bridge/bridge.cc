@@ -454,6 +454,8 @@ struct gossamer_v8_realm {
   std::unordered_map<uint64_t, v8::Global<v8::Function>> callbacks;
   std::unordered_map<uint64_t, uint64_t> timer_callbacks;
   std::unordered_map<uint64_t, uint64_t> callback_timers;
+  std::unordered_map<uint64_t, uint64_t> animation_frame_callbacks;
+  std::unordered_map<uint64_t, uint64_t> callback_animation_frames;
 
   std::atomic<uint64_t> evaluations{0};
   std::atomic<uint64_t> evaluation_nanos{0};
@@ -1249,6 +1251,11 @@ void RemoveCallback(gossamer_v8_realm *realm, uint64_t callback) {
   if (timer != realm->callback_timers.end()) {
     realm->timer_callbacks.erase(timer->second);
     realm->callback_timers.erase(timer);
+  }
+  auto animation = realm->callback_animation_frames.find(callback);
+  if (animation != realm->callback_animation_frames.end()) {
+    realm->animation_frame_callbacks.erase(animation->second);
+    realm->callback_animation_frames.erase(animation);
   }
   auto entry = realm->callbacks.find(callback);
   if (entry != realm->callbacks.end()) {
@@ -8748,6 +8755,87 @@ void ClearTimeoutCallback(const v8::FunctionCallbackInfo<v8::Value> &info) {
     RemoveCallback(realm, callback->second);
 }
 
+void RequestAnimationFrameCallback(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  if (info.Length() == 0 || !info[0]->IsFunction()) {
+    ThrowTypeError(isolate, "requestAnimationFrame requires a function");
+    return;
+  }
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  uint64_t callback = StoreOneShotCallback(realm, info[0].As<v8::Function>());
+  uint64_t frame = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->request_animation_frame(
+          realm->active_host->execution_id, callback, &frame,
+          &host_error) == 0) {
+    error = TakeCString(host_error);
+    RemoveCallback(realm, callback);
+    ThrowError(isolate,
+               error.empty() ? "requestAnimationFrame failed" : error);
+    return;
+  }
+  std::free(host_error);
+  realm->animation_frame_callbacks[frame] = callback;
+  realm->callback_animation_frames[callback] = frame;
+  info.GetReturnValue().Set(
+      v8::Number::New(isolate, static_cast<double>(frame)));
+}
+
+void CancelAnimationFrameCallback(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  if (info.Length() == 0)
+    return;
+  uint64_t frame = 0;
+  if (!TimerIDFromValue(isolate->GetCurrentContext(), info[0], &frame))
+    return;
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  char *host_error = nullptr;
+  if (realm->active_host->cancel_animation_frame(
+          realm->active_host->execution_id, frame, &host_error) == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate,
+               error.empty() ? "cancelAnimationFrame failed" : error);
+    return;
+  }
+  std::free(host_error);
+  auto callback = realm->animation_frame_callbacks.find(frame);
+  if (callback != realm->animation_frame_callbacks.end())
+    RemoveCallback(realm, callback->second);
+}
+
+void PerformanceNowCallback(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  double milliseconds = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->performance_now(
+          realm->active_host->execution_id, &milliseconds,
+          &host_error) == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate, error.empty() ? "performance.now failed" : error);
+    return;
+  }
+  std::free(host_error);
+  info.GetReturnValue().Set(v8::Number::New(isolate, milliseconds));
+}
+
 bool ReadElementGeometry(gossamer_v8_realm *realm, const WrapperKey &key,
                          gossamer_v8_element_geometry *geometry,
                          std::string *error) {
@@ -10477,6 +10565,8 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   v8::Local<v8::Function> queue_microtask;
   v8::Local<v8::Function> set_timeout;
   v8::Local<v8::Function> clear_timeout;
+  v8::Local<v8::Function> request_animation_frame;
+  v8::Local<v8::Function> cancel_animation_frame;
   v8::Local<v8::Function> get_computed_style;
   v8::Local<v8::Function> get_selection;
   v8::Local<v8::Function> window_scroll;
@@ -10486,6 +10576,10 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
       !v8::Function::New(context, SetTimeoutCallback).ToLocal(&set_timeout) ||
       !v8::Function::New(context, ClearTimeoutCallback)
            .ToLocal(&clear_timeout) ||
+      !v8::Function::New(context, RequestAnimationFrameCallback)
+           .ToLocal(&request_animation_frame) ||
+      !v8::Function::New(context, CancelAnimationFrameCallback)
+           .ToLocal(&cancel_animation_frame) ||
       !v8::Function::New(context, GetComputedStyle)
            .ToLocal(&get_computed_style) ||
       !v8::Function::New(context, GetSelection).ToLocal(&get_selection)) {
@@ -10498,6 +10592,16 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
     return false;
   }
   v8::Local<v8::Object> global = context->Global();
+  v8::Local<v8::Object> performance = v8::Object::New(isolate);
+  v8::Local<v8::Function> performance_now;
+  if (!v8::Function::New(context, PerformanceNowCallback)
+           .ToLocal(&performance_now) ||
+      !performance
+           ->Set(context, v8::String::NewFromUtf8Literal(isolate, "now"),
+                 performance_now)
+           .FromMaybe(false)) {
+    return false;
+  }
   for (const char *name : {"innerWidth", "innerHeight", "scrollX", "scrollY",
                            "pageXOffset", "pageYOffset"}) {
     if (!global
@@ -10617,6 +10721,23 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
              ->Set(context,
                    v8::String::NewFromUtf8Literal(isolate, "clearTimeout"),
                    clear_timeout)
+             .FromMaybe(false) &&
+         global
+             ->Set(context,
+                   v8::String::NewFromUtf8Literal(isolate,
+                                                  "requestAnimationFrame"),
+                   request_animation_frame)
+             .FromMaybe(false) &&
+         global
+             ->Set(context,
+                   v8::String::NewFromUtf8Literal(isolate,
+                                                  "cancelAnimationFrame"),
+                   cancel_animation_frame)
+             .FromMaybe(false) &&
+         global
+             ->Set(context,
+                   v8::String::NewFromUtf8Literal(isolate, "performance"),
+                   performance)
              .FromMaybe(false) &&
          global
              ->Set(context,
@@ -10772,9 +10893,13 @@ bool ConfigureNativeEvent(const gossamer_v8_input_event *input,
     state->cancelable = true;
     break;
   case 24:
-    state->type = "scroll";
-    state->interface = EventInterface::Event;
-    break;
+	state->type = "scroll";
+	state->interface = EventInterface::Event;
+	break;
+  case 25:
+	state->type = "resize";
+	state->interface = EventInterface::Event;
+	break;
   default:
     *error = "V8 received an unsupported browser event type";
     return false;
@@ -10882,6 +11007,8 @@ void ClearRealmHandles(gossamer_v8_realm *realm) {
   realm->callbacks.clear();
   realm->timer_callbacks.clear();
   realm->callback_timers.clear();
+  realm->animation_frame_callbacks.clear();
+  realm->callback_animation_frames.clear();
   realm->event_target_template.Reset();
   realm->event_template.Reset();
   realm->mouse_event_template.Reset();
@@ -11157,6 +11284,47 @@ extern "C" int gossamer_v8_realm_invoke(gossamer_v8_realm *realm,
   v8::TryCatch caught(realm->isolate);
   v8::Local<v8::Value> result;
   if (!function->Call(context, context->Global(), 0, nullptr)
+           .ToLocal(&result)) {
+    SetError(error_out, DescribeException(realm->isolate, context, caught));
+    return 0;
+  }
+  return 1;
+}
+
+extern "C" int gossamer_v8_realm_invoke_animation_frame(
+    gossamer_v8_realm *realm, const gossamer_v8_host *host,
+    uint64_t callback, double timestamp_milliseconds, char **error_out) {
+  if (!RequireRealm(realm, error_out))
+    return 0;
+  std::lock_guard<std::mutex> guard(realm->mutex);
+  if (!RequireRealm(realm, error_out))
+    return 0;
+
+  v8::Locker locker(realm->isolate);
+  v8::Isolate::Scope isolate_scope(realm->isolate);
+  v8::HandleScope handle_scope(realm->isolate);
+  v8::Local<v8::Context> context = realm->context.Get(realm->isolate);
+  v8::Context::Scope context_scope(context);
+  HostScope host_scope(realm, host);
+  std::string binding_error;
+  if (!EnsureDocumentBinding(realm, context, &binding_error)) {
+    SetError(error_out, binding_error);
+    return 0;
+  }
+  auto found = realm->callbacks.find(callback);
+  if (found == realm->callbacks.end()) {
+    SetError(error_out, "V8 animation callback handle is unknown or canceled");
+    return 0;
+  }
+  v8::Local<v8::Function> function = found->second.Get(realm->isolate);
+  RemoveCallback(realm, callback);
+  realm->callbacks_invoked.fetch_add(1, std::memory_order_relaxed);
+
+  v8::TryCatch caught(realm->isolate);
+  v8::Local<v8::Value> argument =
+      v8::Number::New(realm->isolate, timestamp_milliseconds);
+  v8::Local<v8::Value> result;
+  if (!function->Call(context, context->Global(), 1, &argument)
            .ToLocal(&result)) {
     SetError(error_out, DescribeException(realm->isolate, context, caught));
     return 0;

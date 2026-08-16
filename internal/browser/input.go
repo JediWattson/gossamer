@@ -289,18 +289,21 @@ func (page *Page) evaluateScript(
 }
 
 type taskHost struct {
-	page          *Page
-	task          *browserruntime.TaskContext
-	generation    DocumentGeneration
-	mutated       bool
-	scrolled      bool
-	scrollTargets map[NodeHandle]struct{}
-	autoRender    bool
+	page               *Page
+	task               *browserruntime.TaskContext
+	generation         DocumentGeneration
+	mutated            bool
+	scrolled           bool
+	scrollTargets      map[NodeHandle]struct{}
+	animationRequested bool
+	resized            bool
+	autoRender         bool
 }
 
 var _ DOMComputedStyleHost = (*taskHost)(nil)
 var _ DOMMutationObserverHost = (*taskHost)(nil)
 var _ DOMGeometryHost = (*taskHost)(nil)
+var _ AnimationFrameHost = (*taskHost)(nil)
 
 func (host *taskHost) GetElementByID(value string) (NodeHandle, bool, error) {
 	host.page.mutex.RLock()
@@ -1478,6 +1481,24 @@ func (host *taskHost) ClearTimeout(timer TimerID) error {
 	return host.page.clearTimeout(timer)
 }
 
+func (host *taskHost) RequestAnimationFrame(callback ValueHandle) (AnimationFrameID, error) {
+	id, err := host.page.requestAnimationFrameFromTask(host.task, callback)
+	if err == nil {
+		host.animationRequested = true
+	}
+	return id, err
+}
+
+func (host *taskHost) CancelAnimationFrame(frame AnimationFrameID) error {
+	return host.page.cancelAnimationFrame(frame)
+}
+
+func (host *taskHost) PerformanceNow() float64 {
+	host.page.mutex.Lock()
+	defer host.page.mutex.Unlock()
+	return host.page.performanceNowLocked()
+}
+
 func (host *taskHost) RetainNodeWrapper(handle NodeHandle) error {
 	return host.page.RetainNodeWrapper(handle)
 }
@@ -1549,10 +1570,13 @@ func (host *taskHost) finish() error {
 	if host.scrolled {
 		err = host.page.queueScrollEventsFromTask(host.task, host.scrollTargets)
 	}
+	if host.animationRequested {
+		err = errors.Join(err, host.page.queueAnimationFrameFromTask())
+	}
 	if host.mutated {
 		err = errors.Join(err, host.page.syncAndLoadStylesheets())
 	}
-	if host.mutated || host.scrolled {
+	if host.mutated || host.scrolled || host.resized {
 		err = errors.Join(err, host.page.queueRenderFromTask(host.task))
 	}
 	return err

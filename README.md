@@ -157,6 +157,9 @@ Element overflow scrolling extends that projection with typed `overflow`,
 stable-ID element offsets, nested scrollport clipping, ancestor-aware
 `scrollIntoView()`, and per-target asynchronous scroll delivery without
 rebuilding layout.
+Page-relative `performance.now()`, coalesced `requestAnimationFrame` callbacks,
+cancellation, and queued viewport resize delivery now form the first browser
+frame clock; callback mutations and microtasks publish at most one later frame.
 Browser input currently covers click, pointer, keyboard, input, focus, and
 change event families. Profiling covers heap totals, sampled allocations,
 GC callbacks, weak-wrapper collection, wrapper-root region sweeps, callback
@@ -244,7 +247,7 @@ performance budgets; see
 The following are intentionally still outside the current milestone:
 
 - General Web APIs beyond the current V8 DOM slice, history traversal and
-  navigation globals, animation frames, scrollbar UI, and a windowed UI
+  navigation globals, scrollbar UI, and a windowed UI
 - Full HTML error recovery, including table foster parenting, formatting
   element reconstruction, templates, SVG/MathML, and encoding sniffing
 - Flexbox, Grid, table layout, floats, positioned layout, and retained inline

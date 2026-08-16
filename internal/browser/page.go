@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strconv"
 	"sync"
+	"time"
 
 	"github.com/JediWattson/gossamer/internal/dom"
 	"github.com/JediWattson/gossamer/internal/render"
@@ -44,6 +45,10 @@ type Page struct {
 	scrollX            float64
 	scrollY            float64
 	elementScroll      map[dom.NodeID]scrollOffset
+	timeOrigin         time.Time
+	lastFrameTime      float64
+	nextAnimationFrame AnimationFrameID
+	animationFrames    map[AnimationFrameID]*pageAnimationFrame
 	frame              *render.Frame
 	frameGeneration    DocumentGeneration
 	computedStyle      computedStyleState
@@ -110,6 +115,8 @@ func newPage(
 		documentCancel:     documentCancel,
 		viewport:           render.DefaultViewport,
 		elementScroll:      make(map[dom.NodeID]scrollOffset),
+		timeOrigin:         time.Now(),
+		animationFrames:    make(map[AnimationFrameID]*pageAnimationFrame),
 		styleRevision:      1,
 		layoutRevision:     1,
 		timers:             make(map[TimerID]*pageTimer),
@@ -173,11 +180,17 @@ func (page *Page) SetViewport(viewport render.Viewport) error {
 	if page.closed {
 		return ErrPageClosed
 	}
+	page.setViewportLocked(viewport)
+	return nil
+}
+
+func (page *Page) setViewportLocked(viewport render.Viewport) bool {
 	if page.viewport != viewport {
 		page.viewport = viewport
 		page.invalidateStyleLocked()
+		return true
 	}
-	return nil
+	return false
 }
 
 func (page *Page) Frame() *render.Frame {
@@ -401,6 +414,7 @@ func (page *Page) Close() error {
 	page.computedStyle = computedStyleState{}
 	page.layout = layoutState{}
 	timers := page.takeTimersLocked()
+	animationRefs := page.takeAnimationFramesLocked()
 	script := page.script
 	page.script = nil
 	lifetimes := page.nodeLifetimes
@@ -420,6 +434,7 @@ func (page *Page) Close() error {
 		documentCancel()
 	}
 	timerErr := page.releaseTimers(timers)
+	animationErr := page.releaseAnimationFrames(animationRefs)
 	var childErr error
 	for _, child := range children {
 		childErr = errors.Join(childErr, child.Close())
@@ -432,7 +447,7 @@ func (page *Page) Close() error {
 	if lifetimes != nil {
 		lifetimeErr = lifetimes.close()
 	}
-	return errors.Join(timerErr, childErr, scriptErr, lifetimeErr, page.Realm.Close())
+	return errors.Join(timerErr, animationErr, childErr, scriptErr, lifetimeErr, page.Realm.Close())
 }
 
 func (page *Page) renderLocked(onlyIfDirty bool) error {

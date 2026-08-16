@@ -38,6 +38,7 @@ const (
 	InputSubmit
 	InputInvalid
 	InputScroll
+	InputResize
 )
 
 // InputEvent contains browser-normalized input and a generation-safe target.
@@ -114,6 +115,8 @@ func (eventType InputEventType) String() string {
 		return "invalid"
 	case InputScroll:
 		return "scroll"
+	case InputResize:
+		return "resize"
 	default:
 		return ""
 	}
@@ -171,6 +174,24 @@ type Host interface {
 	QueueMicrotask(ValueHandle) error
 	SetTimeout(ValueHandle, time.Duration) (TimerID, error)
 	ClearTimeout(TimerID) error
+}
+
+type AnimationFrameID uint64
+
+// AnimationFrameHost is the optional frame-clock seam exposed by browser
+// hosts. Callback identity stays engine-owned; the Page owns scheduling,
+// cancellation, time origin, and queue publication.
+type AnimationFrameHost interface {
+	RequestAnimationFrame(ValueHandle) (AnimationFrameID, error)
+	CancelAnimationFrame(AnimationFrameID) error
+	PerformanceNow() float64
+}
+
+// AnimationFrameRealm receives the shared monotonic timestamp for every
+// callback in one frame batch. Engines without this extension can fall back to
+// ordinary no-argument callback invocation.
+type AnimationFrameRealm interface {
+	InvokeAnimationFrame(Host, ValueHandle, float64) error
 }
 
 // NodeWrapperLifetimeHost is the optional lifetime seam used by engines with

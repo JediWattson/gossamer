@@ -5,7 +5,7 @@ DOM compatibility gate verifies that this split remains observable as one DOM:
 canonical V8 wrappers carry numeric `NodeHandle` values, while Go owns node
 identity, mutation, form state, construction regions, and queue ARC.
 
-## Selected completed milestones 8-28
+## Selected completed milestones 8-29
 
 | Milestone | Native surface | Regression boundary |
 | --- | --- | --- |
@@ -22,6 +22,7 @@ identity, mutation, form state, construction regions, and queue ARC.
 | 26. Release gate | Focused WPT-aligned behavior, pinned React, forced GC, cross-Realm messaging, 25 submissions, 200 replacements | Bounded runtime/wrapper churn and zero native ownership after teardown |
 | 27. CSSOM View and root scrolling | Fresh `DOMRect`, `getBoundingClientRect`, `getClientRects`, client/offset/scroll dimensions, viewport metrics, root scrolling, `scrollIntoView`, translated paint/hit testing, queued scroll events | Geometry reads reuse one immutable Go layout snapshot; React layout effects measure synchronously; scroll delivery is coalesced after the task; value-only rectangles survive forced GC; Realm teardown returns ownership to zero |
 | 28. Element overflow scrolling | Typed `overflow-x`/`overflow-y`, Page-owned per-element offsets, nested `scrollTop`/`scrollLeft`, scrollport clipping, ancestor-aware `scrollIntoView`, translated paint/hit testing, element scroll events | Stable `NodeID` offsets do not mutate layout; nested geometry reads are synchronous; paint and input share one transform/clip projection; scroll events coalesce per target; navigation clears all offsets |
+| 29. Animation timing and resize | `requestAnimationFrame`, cancellation, Page-relative `performance.now()`, batched timestamps, queued viewport resize events | Callback records transfer Realm to queue to task; canceled callbacks release or drain their region; one frame batch shares a timestamp; resize listeners and microtasks run before rAF and one render |
 
 Run the gate against the locally built stock V8:
 

@@ -14,6 +14,9 @@ int gossamer_v8_go_realm_dispatch_event(gossamer_v8_realm *realm,
                                         char **error_out);
 int gossamer_v8_go_realm_invoke(gossamer_v8_realm *realm, uint64_t execution_id,
                                 uint64_t callback, char **error_out);
+int gossamer_v8_go_realm_invoke_animation_frame(
+    gossamer_v8_realm *realm, uint64_t execution_id, uint64_t callback,
+    double timestamp_milliseconds, char **error_out);
 int gossamer_v8_go_realm_drain_microtasks(gossamer_v8_realm *realm,
                                           uint64_t execution_id,
                                           char **error_out);

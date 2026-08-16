@@ -2188,6 +2188,70 @@ func goGossamerV8HostScrollIntoView(
 	}, executionID)
 }
 
+func animationFrameHost(host browser.Host) (browser.AnimationFrameHost, error) {
+	frameHost, ok := host.(browser.AnimationFrameHost)
+	if !ok {
+		return nil, fmt.Errorf("V8 host does not support animation frames")
+	}
+	return frameHost, nil
+}
+
+//export goGossamerV8HostRequestAnimationFrame
+func goGossamerV8HostRequestAnimationFrame(
+	executionID C.uint64_t,
+	callback C.uint64_t,
+	frameOut *C.uint64_t,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		frameHost, err := animationFrameHost(host)
+		if err != nil {
+			return err
+		}
+		frame, err := frameHost.RequestAnimationFrame(browser.ValueHandle(callback))
+		if err != nil {
+			return err
+		}
+		if frameOut != nil {
+			*frameOut = C.uint64_t(frame)
+		}
+		return nil
+	}, executionID)
+}
+
+//export goGossamerV8HostCancelAnimationFrame
+func goGossamerV8HostCancelAnimationFrame(
+	executionID C.uint64_t,
+	frame C.uint64_t,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		frameHost, err := animationFrameHost(host)
+		if err != nil {
+			return err
+		}
+		return frameHost.CancelAnimationFrame(browser.AnimationFrameID(frame))
+	}, executionID)
+}
+
+//export goGossamerV8HostPerformanceNow
+func goGossamerV8HostPerformanceNow(
+	executionID C.uint64_t,
+	millisecondsOut *C.double,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		frameHost, err := animationFrameHost(host)
+		if err != nil {
+			return err
+		}
+		if millisecondsOut != nil {
+			*millisecondsOut = C.double(frameHost.PerformanceNow())
+		}
+		return nil
+	}, executionID)
+}
+
 //export goGossamerV8HostRetainNodeWrapper
 func goGossamerV8HostRetainNodeWrapper(
 	executionID C.uint64_t,

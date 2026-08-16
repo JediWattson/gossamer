@@ -285,6 +285,34 @@ func (realm *Realm) Invoke(host browser.Host, callback browser.ValueHandle) erro
 	return errors.Join(operationErr, realm.drainCollectedWrappersLocked(host))
 }
 
+func (realm *Realm) InvokeAnimationFrame(host browser.Host, callback browser.ValueHandle, timestamp float64) error {
+	if realm == nil {
+		return ErrRealmClosed
+	}
+	realm.mutex.Lock()
+	defer realm.mutex.Unlock()
+	if realm.isClosed || realm.pointer == nil {
+		return ErrRealmClosed
+	}
+	if err := realm.drainCollectedWrappersLocked(host); err != nil {
+		return err
+	}
+	executionID := registerHostExecution(host)
+	defer unregisterHostExecution(executionID)
+	var failure *C.char
+	var operationErr error
+	if C.gossamer_v8_go_realm_invoke_animation_frame(
+		realm.pointer,
+		C.uint64_t(executionID),
+		C.uint64_t(callback),
+		C.double(timestamp),
+		&failure,
+	) == 0 {
+		operationErr = takeError(failure)
+	}
+	return errors.Join(operationErr, realm.drainCollectedWrappersLocked(host))
+}
+
 func (realm *Realm) DrainMicrotasks(host browser.Host) error {
 	if realm == nil {
 		return ErrRealmClosed

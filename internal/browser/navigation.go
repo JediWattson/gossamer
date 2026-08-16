@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"time"
 
 	"github.com/JediWattson/gossamer/internal/dom"
 	htmlparser "github.com/JediWattson/gossamer/internal/html"
@@ -383,6 +384,7 @@ func (page *Page) commitNavigationDocument(
 	oldDocumentCancel := page.documentCancel
 	documentContext, documentCancel := context.WithCancel(context.Background())
 	timers := page.takeTimersLocked()
+	animationRefs := page.takeAnimationFramesLocked()
 	children := page.takeChildFramesLocked()
 	oldGeneration := page.documentGeneration
 	page.script = replacementScript
@@ -393,6 +395,8 @@ func (page *Page) commitNavigationDocument(
 	page.scrollX = 0
 	page.scrollY = 0
 	page.elementScroll = make(map[dom.NodeID]scrollOffset)
+	page.timeOrigin = time.Now()
+	page.lastFrameTime = 0
 	page.computedStyle = computedStyleState{}
 	page.layout = layoutState{}
 	page.styleRevision++
@@ -425,6 +429,7 @@ func (page *Page) commitNavigationDocument(
 		oldDocumentCancel()
 	}
 	cleanupErr := page.releaseTimers(timers)
+	cleanupErr = errors.Join(cleanupErr, page.releaseAnimationFrames(animationRefs))
 	for _, child := range children {
 		cleanupErr = errors.Join(cleanupErr, child.Close())
 	}

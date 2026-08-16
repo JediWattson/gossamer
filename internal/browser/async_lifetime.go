@@ -8,8 +8,9 @@ import (
 )
 
 const (
-	browserTimerHostClass    memory.HostClass = 2
-	browserCallbackHostClass memory.HostClass = 3
+	browserTimerHostClass          memory.HostClass = 2
+	browserCallbackHostClass       memory.HostClass = 3
+	browserAnimationFrameHostClass memory.HostClass = 4
 )
 
 func (page *Page) releaseAsyncRef(ref memory.Ref) error {
