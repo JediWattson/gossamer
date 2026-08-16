@@ -2,6 +2,7 @@ package style
 
 import (
 	"image/color"
+	"strings"
 	"testing"
 
 	"github.com/JediWattson/gossamer/internal/css"
@@ -83,7 +84,6 @@ func TestPropertyValuesPreserveTokenBoundariesAndRejectUnsupportedForms(t *testi
 		{Property: "background-color", Value: `red blue`},
 		{Property: "width", Value: `1/**/px`},
 		{Property: "width", Value: `1 px`},
-		{Property: "width", Value: `calc(1px + 1px)`},
 		{Property: "color", Value: `rgb(255 0 0)`},
 		{Property: "display", Value: "block\u00a0"},
 		{Property: "font-weight", Value: "400.0"},
@@ -93,6 +93,97 @@ func TestPropertyValuesPreserveTokenBoundariesAndRejectUnsupportedForms(t *testi
 		if validComputedDeclaration(declaration, viewport) {
 			t.Errorf("%s: %s unexpectedly accepted", declaration.Property, declaration.Value)
 		}
+	}
+}
+
+func TestLengthMathParsesResolvesAndSerializesTypedExpressions(t *testing.T) {
+	t.Parallel()
+
+	viewport := Viewport{Width: 800, Height: 600, InitialFontSize: 16}
+	tests := []struct {
+		source      string
+		emBase      float64
+		percentBase float64
+		wantValue   float64
+		wantCSS     string
+	}{
+		{source: "calc(100% - 2em + 10vw)", emBase: 10, percentBase: 200, wantValue: 260, wantCSS: "calc(100% + 10vw - 20px)"},
+		{source: "min(50%, 120px)", percentBase: 300, wantValue: 120, wantCSS: "min(50%, 120px)"},
+		{source: "max(10px, 2vw)", percentBase: 300, wantValue: 16, wantCSS: "max(10px, 2vw)"},
+		{source: "clamp(100px, 50%, 400px)", percentBase: 600, wantValue: 300, wantCSS: "clamp(100px, 50%, 400px)"},
+		{source: "calc(2 * (10px + 5%))", percentBase: 200, wantValue: 40, wantCSS: "calc(10% + 20px)"},
+		{source: "calc(min(50%, 400px) - 2em)", emBase: 10, percentBase: 600, wantValue: 280, wantCSS: "calc(min(50%, 400px) - 20px)"},
+	}
+	for _, test := range tests {
+		t.Run(test.source, func(t *testing.T) {
+			parsed, ok := parseLength(test.source, test.emBase, test.emBase, viewport)
+			if !ok {
+				t.Fatalf("parseLength(%q) rejected", test.source)
+			}
+			resolved, ok := parsed.Resolve(test.percentBase, float64(viewport.Width), float64(viewport.Height))
+			if !ok || resolved != test.wantValue {
+				t.Fatalf("Resolve(%q) = %v, %t, want %v, true", test.source, resolved, ok, test.wantValue)
+			}
+			if got := serializeComputedLength(parsed); got != test.wantCSS {
+				t.Fatalf("serialize(%q) = %q, want %q", test.source, got, test.wantCSS)
+			}
+		})
+	}
+}
+
+func TestLengthMathRejectsInvalidOrUnboundedExpressions(t *testing.T) {
+	t.Parallel()
+
+	viewport := Viewport{Width: 800, Height: 600, InitialFontSize: 16}
+	invalid := []string{
+		"calc()",
+		"calc(1px+ 2px)",
+		"calc(1px +2px)",
+		"calc(1px + 2)",
+		"calc(1px * 2px)",
+		"calc(1px / 0)",
+		"calc(1e308px * 1e308)",
+		"calc(auto + 1px)",
+		"min()",
+		"min(1px,)",
+		"min(1px, 2)",
+		"clamp(1px, 2px)",
+		"clamp(1px, 2px, 3px, 4px)",
+	}
+	for _, source := range invalid {
+		if parsed, ok := parseLength(source, 16, 16, viewport); ok {
+			t.Errorf("parseLength(%q) = %#v, true; want rejection", source, parsed)
+		}
+	}
+
+	var expression strings.Builder
+	expression.WriteString("calc(1px")
+	for index := 0; index < maxLengthMathNodes; index++ {
+		expression.WriteString(" + 1px")
+	}
+	expression.WriteByte(')')
+	if _, ok := parseLength(expression.String(), 16, 16, viewport); ok {
+		t.Fatal("expression beyond the CSS math node budget was accepted")
+	}
+}
+
+func TestLengthMathFlowsThroughPropertyValidation(t *testing.T) {
+	t.Parallel()
+
+	viewport := Viewport{Width: 800, Height: 600, InitialFontSize: 16}
+	for _, declaration := range []css.Declaration{
+		{Property: "width", Value: "calc(100% - 20px)"},
+		{Property: "height", Value: "min(50vh, 400px)"},
+		{Property: "margin", Value: "calc(1em - 20px) auto"},
+		{Property: "padding-left", Value: "max(0px, 2vw)"},
+		{Property: "border-width", Value: "clamp(1px, 0.5vw, 5px)"},
+	} {
+		if !validComputedDeclaration(declaration, viewport) {
+			t.Errorf("%s: %s was rejected", declaration.Property, declaration.Value)
+		}
+	}
+	if validComputedDeclaration(css.Declaration{Property: "border-width", Value: "calc(1px + 2%)"}, viewport) {
+		t.Fatal("percentage border width was accepted")
 	}
 }
 

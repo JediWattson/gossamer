@@ -118,18 +118,10 @@ func styleEnvironment(viewport Viewport) computed.Environment {
 }
 
 func resolveLength(value length, percentBase float64, viewport Viewport, autoValue float64) float64 {
-	switch value.Unit() {
-	case lengthPX:
-		return value.Value()
-	case lengthPercent:
-		return percentBase * value.Value() / 100
-	case lengthVW:
-		return float64(viewport.Width) * value.Value() / 100
-	case lengthVH:
-		return float64(viewport.Height) * value.Value() / 100
-	default:
-		return autoValue
+	if resolved, ok := value.Resolve(percentBase, float64(viewport.Width), float64(viewport.Height)); ok {
+		return resolved
 	}
+	return autoValue
 }
 
 func isBlockLevel(display displayMode) bool {

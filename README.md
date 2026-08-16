@@ -252,8 +252,9 @@ The following are intentionally still outside the current milestone:
   element reconstruction, templates, SVG/MathML, and encoding sniffing
 - Flexbox, Grid, table layout, floats, positioned layout, and retained inline
   boxes
-- `calc()` and related functions, gradients, background images, border radii,
-  shadows, transforms, and generated content
+- The remaining CSS math grammar beyond the current bounded length
+  `calc()`/`min()`/`max()`/`clamp()` slice, plus gradients, background images,
+  border radii, shadows, transforms, and generated content
 - Escaped literal dots in layer-name segments, `@font-face`, keyframes,
   arbitrary or repeated non-leading `&` nesting selectors, and the remaining
   media-query and `@supports` syntax beyond the current
@@ -265,11 +266,12 @@ behavior; `inline-block` currently degrades to inline. Screenshots clip to one
 800 x 600 viewport. Unsupported CSS is skipped, and failed stylesheets or
 images degrade independently so the rest of a page can still render.
 
-The first `getComputedStyle()` surface is layout-independent. It reports the
-typed computed values Gossamer currently owns, so percentages, viewport units,
-and `auto` are not converted to box-dependent used pixels. Unsupported
-pseudo-elements return an empty live declaration; pseudo-element layout and
-generated boxes remain future work.
+The first `getComputedStyle()` surface reports typed computed values and uses a
+separate synchronous layout snapshot for width and the currently definite
+height cases. Other box-dependent values, percentage heights, ordinary inline
+elements, and `display:none` retain their layout-independent serialization.
+Unsupported pseudo-elements return an empty live declaration; pseudo-element
+layout and generated boxes remain future work.
 
 ## Development
 

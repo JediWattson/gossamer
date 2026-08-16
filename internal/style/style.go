@@ -163,6 +163,10 @@ const (
 	LengthPercent
 	LengthVW
 	LengthVH
+	// LengthCalculated is a bounded immutable CSS math expression. Callers
+	// resolve it with the percentage base and viewport rather than inspecting a
+	// single scalar unit.
+	LengthCalculated
 )
 
 type lengthUnit = LengthUnit
@@ -173,11 +177,13 @@ const (
 	lengthPercent = LengthPercent
 	lengthVW      = LengthVW
 	lengthVH      = LengthVH
+	lengthCalc    = LengthCalculated
 )
 
 type Length struct {
-	value float64
-	unit  LengthUnit
+	value       float64
+	unit        LengthUnit
+	calculation *lengthExpression
 }
 
 type length = Length
@@ -189,6 +195,40 @@ func (length Length) Unit() LengthUnit { return length.unit }
 func (length Length) IsAuto() bool { return length.unit == LengthAuto }
 
 func (length Length) IsPercent() bool { return length.unit == LengthPercent }
+
+// DependsOnPercent reports whether resolving the value needs a containing
+// block percentage base. It is used by layout where percentage heights remain
+// auto until a definite containing-block height is available.
+func (length Length) DependsOnPercent() bool {
+	if length.unit == LengthPercent {
+		return true
+	}
+	return length.calculation != nil && length.calculation.dependsOnPercent()
+}
+
+// Resolve evaluates a non-auto length against its used-value inputs. The
+// boolean is false for auto and for a non-finite result.
+func (length Length) Resolve(percentBase, viewportWidth, viewportHeight float64) (float64, bool) {
+	var resolved float64
+	switch length.unit {
+	case LengthPX:
+		resolved = length.value
+	case LengthPercent:
+		resolved = percentBase * length.value / 100
+	case LengthVW:
+		resolved = viewportWidth * length.value / 100
+	case LengthVH:
+		resolved = viewportHeight * length.value / 100
+	case LengthCalculated:
+		if length.calculation == nil {
+			return 0, false
+		}
+		resolved = length.calculation.resolve(percentBase, viewportWidth, viewportHeight)
+	default:
+		return 0, false
+	}
+	return resolved, isFinite(resolved)
+}
 
 func (side BorderSide) Width() Length { return side.width }
 
@@ -1293,7 +1333,7 @@ func parseFontShorthand(source string, viewport Viewport) (size, lineHeight, wei
 	lineHeight = "normal"
 	for index := 0; index < len(value.terms); index++ {
 		term := value.terms[index]
-		parsedSize, validSize := parseLengthComponent(term, 1, viewport)
+		parsedSize, validSize := parseLengthComponent(term, value.source, 1, viewport)
 		if !validSize || parsedSize.unit == lengthAuto || !nonNegativeLength(parsedSize) {
 			if !parseFontPrefixComponent(term, &weight) {
 				return "", "", "", "", false
@@ -1455,7 +1495,7 @@ func parseBorderShorthand(source string, fontSize float64, viewport Viewport) (b
 	seenStyle := false
 	seenColor := false
 	for _, term := range value.terms {
-		if width, ok := parseBorderWidthComponent(term, fontSize, viewport); ok && !seenWidth {
+		if width, ok := parseBorderWidthComponent(term, value.source, fontSize, viewport); ok && !seenWidth {
 			result.width = width
 			seenWidth = true
 			continue
@@ -1484,10 +1524,10 @@ func parseBorderWidth(source string, fontSize float64, viewport Viewport) (lengt
 	if !ok {
 		return length{}, false
 	}
-	return parseBorderWidthComponent(component, fontSize, viewport)
+	return parseBorderWidthComponent(component, value.source, fontSize, viewport)
 }
 
-func parseBorderWidthComponent(component css.ComponentValue, fontSize float64, viewport Viewport) (length, bool) {
+func parseBorderWidthComponent(component css.ComponentValue, source string, fontSize float64, viewport Viewport) (length, bool) {
 	keyword, _ := componentKeyword(component)
 	switch keyword {
 	case "thin":
@@ -1497,8 +1537,8 @@ func parseBorderWidthComponent(component css.ComponentValue, fontSize float64, v
 	case "thick":
 		return px(5), true
 	}
-	parsed, ok := parseLengthComponent(component, fontSize, viewport)
-	if !ok || parsed.unit == lengthAuto || parsed.unit == lengthPercent || !nonNegativeLength(parsed) {
+	parsed, ok := parseLengthComponent(component, source, fontSize, viewport)
+	if !ok || parsed.unit == lengthAuto || parsed.DependsOnPercent() || !nonNegativeLength(parsed) {
 		return length{}, false
 	}
 	return parsed, true
@@ -1511,7 +1551,7 @@ func parseBorderWidths(source string, fontSize float64, viewport Viewport) ([4]l
 	}
 	parsed := make([]length, len(value.terms))
 	for index, term := range value.terms {
-		parsedValue, ok := parseBorderWidthComponent(term, fontSize, viewport)
+		parsedValue, ok := parseBorderWidthComponent(term, value.source, fontSize, viewport)
 		if !ok {
 			return [4]length{}, false
 		}
@@ -1674,7 +1714,7 @@ func parseBoxLengths(source string, fontSize float64, viewport Viewport) ([4]len
 	}
 	parsed := make([]length, len(value.terms))
 	for index, term := range value.terms {
-		parsedValue, ok := parseLengthComponent(term, fontSize, viewport)
+		parsedValue, ok := parseLengthComponent(term, value.source, fontSize, viewport)
 		if !ok {
 			return [4]length{}, false
 		}
@@ -1716,22 +1756,14 @@ func parseLength(source string, emBase, _ float64, viewport Viewport) (length, b
 	if !ok {
 		return length{}, false
 	}
-	return parseLengthComponent(component, emBase, viewport)
+	return parseLengthComponent(component, value.source, emBase, viewport)
 }
 
 func resolveLength(value length, percentBase float64, viewport Viewport, autoValue float64) float64 {
-	switch value.unit {
-	case lengthPX:
-		return value.value
-	case lengthPercent:
-		return percentBase * value.value / 100
-	case lengthVW:
-		return float64(viewport.Width) * value.value / 100
-	case lengthVH:
-		return float64(viewport.Height) * value.value / 100
-	default:
-		return autoValue
+	if resolved, ok := value.Resolve(percentBase, float64(viewport.Width), float64(viewport.Height)); ok {
+		return resolved
 	}
+	return autoValue
 }
 
 func parseColor(source string) (color.NRGBA, bool) {
@@ -1773,7 +1805,7 @@ func px(value float64) length {
 }
 
 func nonNegativeLength(value length) bool {
-	return value.unit == lengthAuto || value.value >= 0
+	return value.unit == lengthAuto || value.unit == lengthCalc || value.value >= 0
 }
 
 func isFinite(value float64) bool {

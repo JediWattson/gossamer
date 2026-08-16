@@ -100,7 +100,17 @@ for every supported property independently of layout.
 
 ### 4. Values and units
 
-- Add typed math for `calc()`, `min()`, `max()`, and `clamp()`.
+Current foundation: length-bearing properties accept bounded, typed
+`calc()`, `min()`, `max()`, and `clamp()` expressions over px, em/rem,
+percentages, and viewport units. Simple arithmetic is folded without an
+allocation; mixed expressions remain immutable in computed-style snapshots,
+serialize deterministically through CSSOM, and resolve only in layout once the
+percentage base and viewport are known. Invalid dimensions, division by zero,
+missing binary-operator whitespace, percentage border widths, and expressions
+beyond the independent math-node budget fail closed.
+
+- Extend CSS math beyond the current length-percentage subset as number,
+  angle, time, resolution, transform, and color consumers arrive.
 - Expand absolute, font-relative, viewport, percentage, angle, time, and
   resolution units.
 - Add complete color parsing, current color, system colors, and color

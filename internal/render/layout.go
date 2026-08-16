@@ -245,7 +245,7 @@ func (context *layoutContext) layoutBlock(node *styledNode, containingX, content
 	contentHeight := math.Max(0, cursorY-box.ContentBounds.Y)
 	// Percentage heights remain auto until the containing-block height is
 	// definite. This layout slice does not yet pass definite heights downward.
-	if style.Height().Unit() != lengthAuto && style.Height().Unit() != lengthPercent {
+	if style.Height().Unit() != lengthAuto && !style.Height().DependsOnPercent() {
 		contentHeight = math.Max(0, resolveLength(style.Height(), 0, context.viewport, contentHeight))
 	}
 	box.ContentBounds.Height = contentHeight
@@ -549,7 +549,7 @@ func (context *layoutContext) replacedDimensions(style computedStyle, decoded im
 	widthSpecified := style.Width().Unit() != lengthAuto
 	// Percentage heights resolve to auto while the containing block has the
 	// auto height used by this layout slice.
-	heightSpecified := style.Height().Unit() != lengthAuto && style.Height().Unit() != lengthPercent
+	heightSpecified := style.Height().Unit() != lengthAuto && !style.Height().DependsOnPercent()
 	if !hasNaturalSize && !(widthSpecified && heightSpecified) {
 		return 0, 0, false
 	}
@@ -580,10 +580,10 @@ func (context *layoutContext) replacedDimensions(style computedStyle, decoded im
 
 func (context *layoutContext) resolvePadding(style computedStyle, availableWidth float64) Edges {
 	return Edges{
-		Top:    resolveLength(style.PaddingTop(), availableWidth, context.viewport, 0),
-		Right:  resolveLength(style.PaddingRight(), availableWidth, context.viewport, 0),
-		Bottom: resolveLength(style.PaddingBottom(), availableWidth, context.viewport, 0),
-		Left:   resolveLength(style.PaddingLeft(), availableWidth, context.viewport, 0),
+		Top:    math.Max(0, resolveLength(style.PaddingTop(), availableWidth, context.viewport, 0)),
+		Right:  math.Max(0, resolveLength(style.PaddingRight(), availableWidth, context.viewport, 0)),
+		Bottom: math.Max(0, resolveLength(style.PaddingBottom(), availableWidth, context.viewport, 0)),
+		Left:   math.Max(0, resolveLength(style.PaddingLeft(), availableWidth, context.viewport, 0)),
 	}
 }
 
@@ -693,7 +693,7 @@ func (builder *inlineTokenBuilder) addText(source string, node *dom.Node, style 
 }
 
 func hasExplicitImageDimensions(style computedStyle) bool {
-	return style.Width().Unit() != lengthAuto && style.Height().Unit() != lengthAuto && style.Height().Unit() != lengthPercent
+	return style.Width().Unit() != lengthAuto && style.Height().Unit() != lengthAuto && !style.Height().DependsOnPercent()
 }
 
 func findStyledElement(root *styledNode, name string) *styledNode {

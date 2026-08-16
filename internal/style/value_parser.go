@@ -110,14 +110,21 @@ func valueContainsKeyword(source, expected string) bool {
 	return false
 }
 
-func parseLengthComponent(component css.ComponentValue, emBase float64, viewport Viewport) (length, bool) {
+func parseLengthComponent(component css.ComponentValue, source string, emBase float64, viewport Viewport) (length, bool) {
+	if component.Kind == css.ComponentFunction {
+		return parseLengthMath(component, source, emBase, viewport)
+	}
 	token, ok := componentToken(component)
 	if !ok {
 		return length{}, false
 	}
+	return parseSimpleLengthToken(token, emBase, viewport, true)
+}
+
+func parseSimpleLengthToken(token css.Token, emBase float64, viewport Viewport, allowAuto bool) (length, bool) {
 	switch token.Kind {
 	case css.TokenIdent:
-		if lowerASCIIValue(token.Value) == "auto" {
+		if allowAuto && lowerASCIIValue(token.Value) == "auto" {
 			return length{unit: lengthAuto}, true
 		}
 	case css.TokenNumber:

@@ -54,6 +54,9 @@ func serializeComputedNumber(value float64) string {
 }
 
 func serializeComputedLength(value Length) string {
+	if value.unit == LengthCalculated && value.calculation != nil {
+		return serializeLengthExpression(*value.calculation, false)
+	}
 	suffix := ""
 	switch value.unit {
 	case LengthAuto:
