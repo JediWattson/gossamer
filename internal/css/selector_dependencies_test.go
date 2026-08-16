@@ -52,3 +52,31 @@ func TestStylesheetSelectorDependenciesIncludeEverySelectorListBranch(t *testing
 		t.Fatal("universal first branch suppressed later selector dependencies")
 	}
 }
+
+func TestStylesheetSelectorDependenciesFlagCrossSubtreeInvalidation(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		source      string
+		wantSibling bool
+		wantGlobal  bool
+	}{
+		{name: "nth filter", source: `li:nth-child(2 of .pick) { color:red }`, wantSibling: true},
+		{name: "target relocation", source: `:target { color:red }`, wantGlobal: true},
+		{name: "default control", source: `input:default { color:red }`, wantGlobal: true},
+		{name: "valid form", source: `form:valid { color:red }`, wantGlobal: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			stylesheet, err := Parse(test.source)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dependencies := stylesheet.SelectorDependencies()
+			if got := dependencies.DependsOnSiblings(); got != test.wantSibling {
+				t.Fatalf("DependsOnSiblings() = %t, want %t", got, test.wantSibling)
+			}
+			if got := dependencies.DependsOnDescendants(); got != test.wantGlobal {
+				t.Fatalf("DependsOnDescendants() = %t, want %t", got, test.wantGlobal)
+			}
+		})
+	}
+}

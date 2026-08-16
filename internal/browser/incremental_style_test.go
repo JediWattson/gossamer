@@ -60,11 +60,15 @@ func TestPageReusesStyleStorageForProvenStyleNeutralMutations(t *testing.T) {
 		t.Fatal(err)
 	}
 	page.dirty = true
-	if _, err := page.ComputedStyle(handle); err != nil {
+	computed, err := page.ComputedStyle(handle)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if page.computedStyle.incremental {
-		t.Fatal("selector-dependent attribute reused stale style storage")
+	if !page.computedStyle.incremental {
+		t.Fatal("selector-dependent attribute did not use targeted subtree restyle")
+	}
+	if computed.Color().R != 0xff || computed.Color().G != 0 || computed.Color().B != 0 {
+		t.Fatalf("targeted subtree color = %#v, want red", computed.Color())
 	}
 }
 
@@ -93,5 +97,35 @@ func TestPageMutationJournalGapFallsBackToFullStylePass(t *testing.T) {
 	}
 	if page.computedStyle.mutationSequence != page.document.MutationSequence() {
 		t.Fatal("full fallback did not advance the browser mutation cursor")
+	}
+}
+
+func TestPageRelationalSelectorMutationFallsBackToFullStylePass(t *testing.T) {
+	engine, page, target := computedStyleTestPage(t, `
+		<html><head><style>body:has(.on) { color:red }</style></head>
+		<body id="subject"><div id="target"></div></body></html>
+	`)
+	defer engine.Close()
+	subject, ok := page.document.ElementByID("subject")
+	if !ok {
+		t.Fatal("subject element is unavailable")
+	}
+	handle := NodeHandle{Document: page.DocumentGeneration(), Node: subject}
+	if _, err := page.ComputedStyle(handle); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.document.SetAttribute(target, "class", "on"); err != nil {
+		t.Fatal(err)
+	}
+	page.dirty = true
+	computed, err := page.ComputedStyle(handle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.computedStyle.incremental {
+		t.Fatal(":has mutation incorrectly used bounded subtree restyle")
+	}
+	if computed.Color().R != 0xff || computed.Color().G != 0 || computed.Color().B != 0 {
+		t.Fatalf("full fallback color = %#v, want red", computed.Color())
 	}
 }

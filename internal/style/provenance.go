@@ -324,6 +324,99 @@ func indexStableProvenance(root *styledNode, access *dom.ReadAccess) provenanceS
 	return builder.finish()
 }
 
+// restyleStableProvenance rebuilds the compact source arena from live records
+// while replacing dirty subtrees. Re-interning unaffected records prevents
+// repeated incremental edits from retaining superseded declaration strings.
+func restyleStableProvenance(
+	previous provenanceStore,
+	roots []*styledNode,
+	parents []*styledNode,
+	access *dom.ReadAccess,
+) provenanceStore {
+	dirty := make(map[dom.NodeID]struct{})
+	var markDirty func(*styledNode)
+	markDirty = func(node *styledNode) {
+		if node == nil {
+			return
+		}
+		if id, ok := access.ID(node.node); ok {
+			dirty[id] = struct{}{}
+		}
+		for _, child := range node.children {
+			markDirty(child)
+		}
+	}
+	for _, root := range roots {
+		markDirty(root)
+	}
+
+	builder := newProvenanceBuilder(access)
+	builder.store.byID = make(map[dom.NodeID]nodeProvenance, len(previous.byID))
+	ids := make([]dom.NodeID, 0, len(previous.byID))
+	for id := range previous.byID {
+		if _, replaced := dirty[id]; !replaced {
+			ids = append(ids, id)
+		}
+	}
+	sort.Slice(ids, func(left, right int) bool { return ids[left] < ids[right] })
+	for _, id := range ids {
+		builder.store.byID[id] = builder.recompact(previous, previous.byID[id])
+	}
+
+	var visit func(*styledNode, *styledNode)
+	visit = func(node, parent *styledNode) {
+		if node == nil || node.node == nil {
+			return
+		}
+		if id, ok := access.ID(node.node); ok {
+			compacted := builder.compact(node, parent)
+			if isElementStyleParent(parent) {
+				compacted.parentID, _ = access.ID(parent.node)
+			}
+			builder.store.byID[id] = compacted
+		}
+		for _, child := range node.children {
+			visit(child, node)
+		}
+	}
+	for index, root := range roots {
+		var parent *styledNode
+		if index < len(parents) {
+			parent = parents[index]
+		}
+		visit(root, parent)
+	}
+	return builder.finish()
+}
+
+func (builder *provenanceBuilder) recompact(previous provenanceStore, source nodeProvenance) nodeProvenance {
+	destination := nodeProvenance{
+		ordinary: make([]explanationRecord, len(source.ordinary)),
+		parentID: source.parentID,
+	}
+	for index, record := range source.ordinary {
+		if record.present() {
+			destination.ordinary[index] = builder.compactExplanation(previous.expand("", "", record))
+		}
+	}
+	if len(source.custom) == 0 {
+		return destination
+	}
+	properties := make([]string, 0, len(source.custom))
+	for property := range source.custom {
+		properties = append(properties, property)
+	}
+	sort.Strings(properties)
+	destination.custom = make(map[string]explanationRecord, len(properties))
+	for _, property := range properties {
+		record := source.custom[property]
+		if record.present() {
+			destination.custom[property] = builder.compactExplanation(previous.expand(property, "", record))
+		}
+	}
+	return destination
+}
+
 func isElementStyleParent(parent *styledNode) bool {
 	return parent != nil && parent.node != nil && parent.node.Type == dom.ElementNode
 }

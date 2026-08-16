@@ -565,15 +565,22 @@ mutation journal records mutation-time connectedness and fails closed when its
 history is truncated. When every retained record is disconnected or proven
 style-neutral, the browser advances only an immutable snapshot header while
 sharing its computed/provenance storage; a full-pass oracle, fuzz target, and
-benchmark guard that fast path. Connected tree changes and selector-relevant
-mutations still rebuild style globally, and layout and paint still rebuild
+benchmark guard that fast path. Selector-relevant attribute, inline-style,
+presentational-hint, text-direction, `:empty`, and bounded native-state changes
+now recompute immutable target subtrees; sibling combinators and `nth(... of S)`
+expand the root to the element parent. Dirty roots are deduplicated, pseudo
+slots are replaced rather than patched, and compact provenance is re-interned
+without retaining superseded declaration strings. Relational/global selector
+dependencies, stylesheet-owner changes, journal gaps, and connected tree
+changes fail closed to the full pass. Deterministic cases, repeated-snapshot
+immutability checks, a randomized full-pass dump oracle, and a targeted-versus-
+full benchmark guard the browser integration. Layout and paint still rebuild
 globally after connected mutations.
 
 - Extend parsed-rule caches with script-visible stylesheet identities and
   generation-aware rule handles.
-- Extend selector candidate indexes with property/state dependency tracking.
-- Classify connected mutations, then introduce subtree restyle against the
-  full-document rebuild as an executable correctness oracle.
+- Extend selector and property indexes into precise mutation-to-property
+  damage summaries without weakening the current conservative fallback.
 - Add incremental layout and paint damage only after style invalidation is
   proven equivalent.
 - Introduce parallel work solely where profiles show independent, bounded

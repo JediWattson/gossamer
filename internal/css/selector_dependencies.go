@@ -134,9 +134,13 @@ func collectPseudoDependencies(pseudo pseudoClassSelector, dependencies *Selecto
 		collectSelectorDependencies(nested, dependencies)
 	}
 	switch pseudo.name {
-	case "root", "first-child", "last-child", "only-child", "first-of-type", "last-of-type", "only-of-type",
-		"nth-child", "nth-last-child", "nth-of-type", "nth-last-of-type":
+	case "root", "first-child", "last-child", "only-child", "first-of-type", "last-of-type", "only-of-type":
 		dependencies.childList = true
+	case "nth-child", "nth-last-child", "nth-of-type", "nth-last-of-type":
+		dependencies.childList = true
+		// An attribute mutation can change membership in an nth-* `of S`
+		// filter and therefore the match result of following siblings.
+		dependencies.siblings = true
 	case "empty":
 		dependencies.childList = true
 		dependencies.characterData = true
@@ -148,6 +152,9 @@ func collectPseudoDependencies(pseudo pseudoClassSelector, dependencies *Selecto
 		dependencies.addAttributes("href")
 	case "target":
 		dependencies.addAttributes("id")
+		// TargetID resolution searches the whole document. Reassigning an ID can
+		// move :target between otherwise unrelated subtrees.
+		dependencies.relational = true
 	case "checked":
 		dependencies.addAttributes("checked", "selected", "type")
 		dependencies.formState = true
@@ -173,12 +180,14 @@ func collectPseudoDependencies(pseudo pseudoClassSelector, dependencies *Selecto
 		dependencies.addAttributes("checked", "selected", "type", "command", "commandfor", "form", "id")
 		dependencies.childList = true
 		dependencies.ancestors = true
+		dependencies.relational = true
 	case "indeterminate":
 		dependencies.addAttributes("checked", "form", "id", "name", "type", "value")
 		dependencies.formState = true
 		dependencies.checkedState = true
 		dependencies.indeterminateState = true
 		dependencies.childList = true
+		dependencies.relational = true
 	case "valid", "invalid", "user-valid", "user-invalid", "in-range", "out-of-range":
 		dependencies.addAttributes(
 			"checked", "disabled", "form", "id", "max", "maxlength", "min", "minlength", "multiple",
@@ -195,6 +204,7 @@ func collectPseudoDependencies(pseudo pseudoClassSelector, dependencies *Selecto
 		}
 		dependencies.childList = true
 		dependencies.ancestors = true
+		dependencies.relational = true
 	case "lang":
 		dependencies.addAttributes("lang", "xml:lang")
 		dependencies.ancestors = true

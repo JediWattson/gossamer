@@ -977,6 +977,26 @@ func ComputeReadView(view dom.ReadView, input Input) (*Snapshot, error) {
 	if root == nil || root.Type != dom.DocumentNode {
 		return nil, fmt.Errorf("%w: read view root must be a document node", dom.ErrInvalidDocument)
 	}
+	input = prepareReadViewInput(root, access, input)
+	styledRoot := buildStyleTree(root, input)
+	snapshot := &Snapshot{
+		documentIdentity:     access.Identity(),
+		version:              access.Version(),
+		environment:          input.Environment,
+		byID:                 make(map[dom.NodeID]ComputedStyle),
+		byPseudoID:           make(map[stablePseudoKey]ComputedStyle),
+		mutationDependencies: compileSnapshotMutationDependencies(input),
+	}
+	indexStableStyles(styledRoot, snapshot.byID, access)
+	indexStablePseudoStyles(styledRoot, snapshot.byPseudoID, access)
+	snapshot.provenance = indexStableProvenance(styledRoot, access)
+	snapshot.rootID, _ = access.ID(root)
+	return snapshot, nil
+}
+
+// prepareReadViewInput resolves browser-owned stable selector subjects once
+// inside the coherent DOM read shared by both full and incremental passes.
+func prepareReadViewInput(root *dom.Node, access *dom.ReadAccess, input Input) Input {
 	input.selectorContext = css.MatchContext{
 		Hovered:         resolveSelectorStateNode(access, input.SelectorState.Hovered),
 		Active:          resolveSelectorStateNode(access, input.SelectorState.Active),
@@ -992,20 +1012,7 @@ func ComputeReadView(view dom.ReadView, input Input) (*Snapshot, error) {
 			return ok
 		}
 	}
-	styledRoot := buildStyleTree(root, input)
-	snapshot := &Snapshot{
-		documentIdentity:     access.Identity(),
-		version:              access.Version(),
-		environment:          input.Environment,
-		byID:                 make(map[dom.NodeID]ComputedStyle),
-		byPseudoID:           make(map[stablePseudoKey]ComputedStyle),
-		mutationDependencies: compileSnapshotMutationDependencies(input),
-	}
-	indexStableStyles(styledRoot, snapshot.byID, access)
-	indexStablePseudoStyles(styledRoot, snapshot.byPseudoID, access)
-	snapshot.provenance = indexStableProvenance(styledRoot, access)
-	snapshot.rootID, _ = access.ID(root)
-	return snapshot, nil
+	return input
 }
 
 func resolveSelectorStateNodes(access *dom.ReadAccess, ids []dom.NodeID) map[*dom.Node]struct{} {
@@ -1224,6 +1231,11 @@ func buildStyleTree(document *dom.Node, input Input) *styledNode {
 	if document == nil {
 		return nil
 	}
+	context := buildCascadeStyleContext(document, input)
+	return styleNode(document, nil, &context, input.Environment)
+}
+
+func buildCascadeStyleContext(document *dom.Node, input Input) cascadeStyleContext {
 	authorSheets := collectAuthorStyles(document, input.Stylesheets, input.Environment)
 	userSheets := inputStylesheets(input.UserStylesheets, SourceUserStylesheet)
 	userAgentSheets := append([]stylesheetSource{{
@@ -1253,7 +1265,7 @@ func buildStyleTree(document *dom.Node, input Input) *styledNode {
 			}
 		}
 	}
-	return styleNode(document, nil, &context, input.Environment)
+	return context
 }
 
 func inputStylesheets(stylesheets []css.Stylesheet, kind SourceKind) []stylesheetSource {

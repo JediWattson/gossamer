@@ -91,6 +91,32 @@ func ComputeStyleSnapshotFromReadView(view dom.ReadView, viewport Viewport, reso
 	})
 }
 
+// RestyleStyleSnapshotFromReadView incrementally updates an immutable style
+// snapshot for a coherent mutation-journal suffix. It returns reused=false
+// when the renderer must run ComputeStyleSnapshotFromReadView instead.
+func RestyleStyleSnapshotFromReadView(
+	view dom.ReadView,
+	viewport Viewport,
+	resources Resources,
+	previous *computed.Snapshot,
+	records []dom.MutationRecord,
+) (*computed.Snapshot, bool, error) {
+	if viewport.Width <= 0 || viewport.Height <= 0 {
+		return nil, false, fmt.Errorf("render: invalid viewport %dx%d", viewport.Width, viewport.Height)
+	}
+	if previous == nil {
+		return nil, false, nil
+	}
+	return previous.RestyleReadViewAfterMutations(view, computed.Input{
+		Environment:          styleEnvironment(viewport),
+		Stylesheets:          resources.Stylesheets,
+		InlineDeclarations:   resources.InlineDeclarations,
+		UserStylesheets:      resources.UserStylesheets,
+		UserAgentStylesheets: resources.UserAgentStylesheets,
+		SelectorState:        resources.SelectorState,
+	}, records)
+}
+
 // RenderWithStyleSnapshot lays out and paints document using an already
 // computed immutable style snapshot. The snapshot must belong to document and
 // the supplied viewport; decoded images continue to come from resources.

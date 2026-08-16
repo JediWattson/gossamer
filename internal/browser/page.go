@@ -792,6 +792,9 @@ func (page *Page) styleSnapshotForViewLocked(view dom.ReadView, resources render
 		state.styleRevision == page.styleRevision {
 		return state.snapshot, nil
 	}
+	var mutationRecords []dom.MutationRecord
+	var mutationSequence uint64
+	mutationRecordsAvailable := false
 	if state.snapshot != nil && state.document == page.documentGeneration && state.styleRevision == page.styleRevision {
 		access, accessErr := view.Acquire()
 		if accessErr != nil {
@@ -800,6 +803,9 @@ func (page *Page) styleSnapshotForViewLocked(view dom.ReadView, resources render
 		records, latest, recordsErr := access.MutationRecordsSince(state.mutationSequence)
 		access.Close()
 		if recordsErr == nil {
+			mutationRecords = records
+			mutationSequence = latest
+			mutationRecordsAvailable = true
 			rebound, reused, rebindErr := state.snapshot.RebindReadViewAfterMutations(view, records)
 			if rebindErr != nil {
 				return nil, rebindErr
@@ -827,6 +833,22 @@ func (page *Page) styleSnapshotForViewLocked(view dom.ReadView, resources render
 		return nil, err
 	}
 	resources.SelectorState = selectorState
+	if mutationRecordsAvailable {
+		snapshot, reused, restyleErr := render.RestyleStyleSnapshotFromReadView(
+			view, page.viewport, resources, state.snapshot, mutationRecords,
+		)
+		if restyleErr != nil {
+			return nil, restyleErr
+		}
+		if reused {
+			page.computedStyle = computedStyleState{
+				snapshot: snapshot, document: page.documentGeneration,
+				documentVersion: view.Version(), styleRevision: page.styleRevision,
+				mutationSequence: mutationSequence, incremental: true,
+			}
+			return snapshot, nil
+		}
+	}
 	snapshot, err := render.ComputeStyleSnapshotFromReadView(view, page.viewport, resources)
 	if err != nil {
 		return nil, err
