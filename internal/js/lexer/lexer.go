@@ -39,6 +39,7 @@ func Lex(source string) ([]Token, error) {
 	}
 	input := &scanner{source: source, line: 1, column: 1}
 	tokens := make([]Token, 0, len(source)/3+1)
+	allowRegExp := true
 	for {
 		if err := input.skipTrivia(); err != nil {
 			return nil, err
@@ -59,6 +60,10 @@ func Lex(source string) ([]Token, error) {
 			token, err = input.scanNumber(start)
 		case r == '\'' || r == '"':
 			token, err = input.scanString(start, r)
+		case r == '`':
+			token, err = input.scanTemplate(start)
+		case r == '/' && allowRegExp && !strings.HasPrefix(input.source[input.offset:], "/="):
+			token, err = input.scanRegExp(start)
 		default:
 			token, err = input.scanPunctuator(start)
 		}
@@ -66,6 +71,17 @@ func Lex(source string) ([]Token, error) {
 			return nil, err
 		}
 		tokens = append(tokens, token)
+		allowRegExp = !tokenEndsExpression(token.Kind)
+	}
+}
+
+func tokenEndsExpression(kind Kind) bool {
+	switch kind {
+	case Identifier, Number, String, RegExp, True, False, Null, This,
+		RightParen, RightBracket, RightBrace, PlusPlus, MinusMinus:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -332,7 +348,7 @@ func (input *scanner) scanString(start Position, quote rune) (Token, error) {
 		switch escape {
 		case '\n', '\r':
 			// Line continuation contributes no character.
-		case '\'', '"', '\\':
+		case '\'', '"', '\\', '/':
 			decoded.WriteRune(escape)
 		case 'n':
 			decoded.WriteByte('\n')
@@ -365,6 +381,95 @@ func (input *scanner) scanString(start Position, quote rune) (Token, error) {
 		}
 	}
 	return Token{}, input.problem(start, "unterminated string literal")
+}
+
+func (input *scanner) scanTemplate(start Position) (Token, error) {
+	_, _ = input.advance()
+	var decoded strings.Builder
+	for input.offset < len(input.source) {
+		if strings.HasPrefix(input.source[input.offset:], "${") {
+			return Token{}, input.problem(start, "template substitutions are not implemented")
+		}
+		r, err := input.advance()
+		if err != nil {
+			return Token{}, err
+		}
+		if r == '`' {
+			return Token{Kind: String, Lexeme: input.source[start.Offset:input.offset], Text: decoded.String(), Span: Span{Start: start, End: input.position()}}, nil
+		}
+		if r != '\\' {
+			decoded.WriteRune(r)
+			continue
+		}
+		escape, err := input.advance()
+		if err != nil {
+			return Token{}, err
+		}
+		switch escape {
+		case '\n', '\r':
+		case '`', '\\', '$':
+			decoded.WriteRune(escape)
+		case 'n':
+			decoded.WriteByte('\n')
+		case 'r':
+			decoded.WriteByte('\r')
+		case 't':
+			decoded.WriteByte('\t')
+		default:
+			return Token{}, input.problem(start, fmt.Sprintf("unsupported template escape \\%c", escape))
+		}
+	}
+	return Token{}, input.problem(start, "unterminated template literal")
+}
+
+func (input *scanner) scanRegExp(start Position) (Token, error) {
+	_, _ = input.advance()
+	patternStart := input.offset
+	escaped := false
+	inClass := false
+	for input.offset < len(input.source) {
+		r, err := input.advance()
+		if err != nil {
+			return Token{}, err
+		}
+		if r == '\n' || r == '\r' {
+			return Token{}, input.problem(start, "unterminated regular expression literal")
+		}
+		if escaped {
+			escaped = false
+			continue
+		}
+		if r == '\\' {
+			escaped = true
+			continue
+		}
+		if r == '[' {
+			inClass = true
+			continue
+		}
+		if r == ']' {
+			inClass = false
+			continue
+		}
+		if r != '/' || inClass {
+			continue
+		}
+		patternEnd := input.offset - 1
+		flagsStart := input.offset
+		for input.offset < len(input.source) {
+			flag, _ := input.peekRune()
+			if !unicode.IsLetter(flag) {
+				break
+			}
+			_, _ = input.advance()
+		}
+		return Token{
+			Kind: RegExp, Lexeme: input.source[start.Offset:input.offset],
+			Text: input.source[patternStart:patternEnd], Flags: input.source[flagsStart:input.offset],
+			Span: Span{Start: start, End: input.position()},
+		}, nil
+	}
+	return Token{}, input.problem(start, "unterminated regular expression literal")
 }
 
 func (input *scanner) consumeHex(start Position, count int) (uint64, error) {
@@ -417,7 +522,10 @@ func (input *scanner) scanPunctuator(start Position) (Token, error) {
 		text string
 		kind Kind
 	}{
-		{"===", StrictEqual}, {"!==", StrictNotEqual}, {">>>", UnsignedShiftRight},
+		{">>>=", UnsignedShiftRightAssign}, {"===", StrictEqual}, {"!==", StrictNotEqual},
+		{"<<=", ShiftLeftAssign}, {">>=", ShiftRightAssign}, {">>>", UnsignedShiftRight},
+		{"+=", PlusAssign}, {"-=", MinusAssign}, {"*=", StarAssign}, {"/=", SlashAssign},
+		{"%=", PercentAssign}, {"&=", AmpersandAssign}, {"|=", PipeAssign}, {"^=", CaretAssign},
 		{"++", PlusPlus}, {"--", MinusMinus}, {"==", EqualEqual}, {"!=", BangEqual},
 		{"<=", LessEqual}, {">=", GreaterEqual}, {"<<", ShiftLeft}, {">>", ShiftRight},
 		{"&&", AndAnd}, {"||", OrOr}, {"??", Nullish}, {"=>", Arrow},
@@ -425,7 +533,7 @@ func (input *scanner) scanPunctuator(start Position) (Token, error) {
 		{"[", LeftBracket}, {"]", RightBracket}, {";", Semicolon}, {",", Comma},
 		{".", Dot}, {":", Colon}, {"?", Question}, {"=", Assign}, {"+", Plus},
 		{"-", Minus}, {"*", Star}, {"/", Slash}, {"%", Percent}, {"!", Bang},
-		{"<", Less}, {">", Greater}, {"&", Ampersand}, {"|", Pipe}, {"^", Caret},
+		{"<", Less}, {">", Greater}, {"&", Ampersand}, {"|", Pipe}, {"^", Caret}, {"~", Tilde},
 	}
 	for _, candidate := range table {
 		if strings.HasPrefix(input.source[input.offset:], candidate.text) {

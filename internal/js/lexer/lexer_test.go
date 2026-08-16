@@ -71,6 +71,29 @@ func TestLexRecognizesLongestOperatorsAndEscapes(t *testing.T) {
 	}
 }
 
+func TestLexRecognizesReactFrontendTokens(t *testing.T) {
+	t.Parallel()
+
+	tokens, err := lexer.Lex("for (let key in value) key += /[=:]/g.test(`name`); total >>>= 1;")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []lexer.Kind{
+		lexer.For, lexer.LeftParen, lexer.Let, lexer.Identifier, lexer.In, lexer.Identifier, lexer.RightParen,
+		lexer.Identifier, lexer.PlusAssign, lexer.RegExp, lexer.Dot, lexer.Identifier, lexer.LeftParen,
+		lexer.String, lexer.RightParen, lexer.Semicolon, lexer.Identifier, lexer.UnsignedShiftRightAssign,
+		lexer.Number, lexer.Semicolon, lexer.EOF,
+	}
+	for index, kind := range want {
+		if tokens[index].Kind != kind {
+			t.Fatalf("token %d = %s, want %s", index, tokens[index].Kind, kind)
+		}
+	}
+	if tokens[9].Text != "[=:]" || tokens[9].Flags != "g" || tokens[13].Text != "name" {
+		t.Fatalf("literal tokens = %#v and %#v", tokens[9], tokens[13])
+	}
+}
+
 func TestLexRejectsMalformedInputPrecisely(t *testing.T) {
 	t.Parallel()
 
@@ -82,7 +105,7 @@ func TestLexRejectsMalformedInputPrecisely(t *testing.T) {
 		"0b2",
 		"1name",
 		"\"\\u{110000}\"",
-		"`template`",
+		"`template ${value}`",
 		string([]byte{0xff}),
 	} {
 		_, err := lexer.Lex(source)

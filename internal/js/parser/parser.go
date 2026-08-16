@@ -74,6 +74,12 @@ func (input *parser) parseStatement() (ast.Statement, error) {
 		return input.parseIfStatement()
 	case lexer.While:
 		return input.parseWhileStatement()
+	case lexer.Do:
+		return input.parseDoWhileStatement()
+	case lexer.For:
+		return input.parseForStatement()
+	case lexer.Switch:
+		return input.parseSwitchStatement()
 	case lexer.Break:
 		return input.parseSimpleControlStatement(true)
 	case lexer.Continue:
@@ -83,6 +89,9 @@ func (input *parser) parseStatement() (ast.Statement, error) {
 	case lexer.Try:
 		return input.parseTryStatement()
 	default:
+		if input.check(lexer.Identifier) && input.peek(1).Kind == lexer.Colon {
+			return input.parseLabeledStatement()
+		}
 		return input.parseExpressionStatement()
 	}
 }
@@ -108,6 +117,11 @@ func (input *parser) parseBlock() (*ast.BlockStatement, error) {
 }
 
 func (input *parser) parseVariableDeclaration() (ast.Statement, error) {
+	declaration, err := input.parseVariableDeclarationTerminated(true)
+	return declaration, err
+}
+
+func (input *parser) parseVariableDeclarationTerminated(terminated bool) (*ast.VariableDeclaration, error) {
 	start := input.advance()
 	kind := ast.VariableLet
 	switch start.Kind {
@@ -141,9 +155,13 @@ func (input *parser) parseVariableDeclaration() (ast.Statement, error) {
 			break
 		}
 	}
-	end, err := input.finishStatement()
-	if err != nil {
-		return nil, err
+	end := declarations[len(declarations)-1].Span()
+	if terminated {
+		var err error
+		end, err = input.finishStatement()
+		if err != nil {
+			return nil, err
+		}
 	}
 	return &ast.VariableDeclaration{
 		Base: ast.Base{Range: join(start.Span, end)}, Kind: kind, Declarations: declarations,
@@ -258,17 +276,188 @@ func (input *parser) parseWhileStatement() (ast.Statement, error) {
 	return &ast.WhileStatement{Base: ast.Base{Range: join(start.Span, body.Span())}, Test: test, Body: body}, nil
 }
 
+func (input *parser) parseDoWhileStatement() (ast.Statement, error) {
+	start := input.advance()
+	body, err := input.parseStatement()
+	if err != nil {
+		return nil, err
+	}
+	if _, err := input.consume(lexer.While, "expected 'while' after do body"); err != nil {
+		return nil, err
+	}
+	if _, err := input.consume(lexer.LeftParen, "expected '(' after while"); err != nil {
+		return nil, err
+	}
+	test, err := input.parseExpression()
+	if err != nil {
+		return nil, err
+	}
+	if _, err := input.consume(lexer.RightParen, "expected ')' after do-while condition"); err != nil {
+		return nil, err
+	}
+	end, err := input.finishStatement()
+	if err != nil {
+		return nil, err
+	}
+	return &ast.DoWhileStatement{Base: ast.Base{Range: join(start.Span, end)}, Body: body, Test: test}, nil
+}
+
+func (input *parser) parseForStatement() (ast.Statement, error) {
+	start := input.advance()
+	if _, err := input.consume(lexer.LeftParen, "expected '(' after for"); err != nil {
+		return nil, err
+	}
+	var declaration *ast.VariableDeclaration
+	var initializer ast.Expression
+	var err error
+	if input.check(lexer.Let) || input.check(lexer.Const) || input.check(lexer.Var) {
+		declaration, err = input.parseVariableDeclarationTerminated(false)
+	} else if input.check(lexer.Identifier) && (input.peek(1).Kind == lexer.In || input.peek(1).Kind == lexer.Identifier && input.peek(1).Text == "of") {
+		initializer = identifier(input.advance())
+	} else if !input.check(lexer.Semicolon) {
+		initializer, err = input.parseExpression()
+	}
+	if err != nil {
+		return nil, err
+	}
+	if input.match(lexer.In) || input.matchContextual("of") {
+		of := input.previous().Kind == lexer.Identifier
+		if declaration != nil && len(declaration.Declarations) != 1 {
+			return nil, input.errorAt(input.previous(), "for-in/of declaration requires one binding")
+		}
+		if declaration == nil && !ast.IsAssignmentTarget(initializer) {
+			return nil, input.errorAt(input.previous(), "for-in/of left side is not assignable")
+		}
+		right, err := input.parseExpression()
+		if err != nil {
+			return nil, err
+		}
+		if _, err := input.consume(lexer.RightParen, "expected ')' after for-in/of header"); err != nil {
+			return nil, err
+		}
+		body, err := input.parseStatement()
+		if err != nil {
+			return nil, err
+		}
+		return &ast.ForInStatement{
+			Base: ast.Base{Range: join(start.Span, body.Span())}, LeftDeclaration: declaration,
+			LeftExpression: initializer, Right: right, Body: body, Of: of,
+		}, nil
+	}
+	if _, err := input.consume(lexer.Semicolon, "expected ';' after for initializer"); err != nil {
+		return nil, err
+	}
+	var test ast.Expression
+	if !input.check(lexer.Semicolon) {
+		test, err = input.parseExpression()
+		if err != nil {
+			return nil, err
+		}
+	}
+	if _, err := input.consume(lexer.Semicolon, "expected ';' after for condition"); err != nil {
+		return nil, err
+	}
+	var update ast.Expression
+	if !input.check(lexer.RightParen) {
+		update, err = input.parseExpression()
+		if err != nil {
+			return nil, err
+		}
+	}
+	if _, err := input.consume(lexer.RightParen, "expected ')' after for clauses"); err != nil {
+		return nil, err
+	}
+	body, err := input.parseStatement()
+	if err != nil {
+		return nil, err
+	}
+	return &ast.ForStatement{
+		Base: ast.Base{Range: join(start.Span, body.Span())}, InitDeclaration: declaration,
+		InitExpression: initializer, Test: test, Update: update, Body: body,
+	}, nil
+}
+
+func (input *parser) parseSwitchStatement() (ast.Statement, error) {
+	start := input.advance()
+	if _, err := input.consume(lexer.LeftParen, "expected '(' after switch"); err != nil {
+		return nil, err
+	}
+	discriminant, err := input.parseExpression()
+	if err != nil {
+		return nil, err
+	}
+	if _, err := input.consume(lexer.RightParen, "expected ')' after switch value"); err != nil {
+		return nil, err
+	}
+	if _, err := input.consume(lexer.LeftBrace, "expected '{' after switch"); err != nil {
+		return nil, err
+	}
+	cases := make([]*ast.SwitchCase, 0)
+	seenDefault := false
+	for !input.check(lexer.RightBrace) && !input.check(lexer.EOF) {
+		caseStart := input.current()
+		var test ast.Expression
+		if input.match(lexer.Case) {
+			test, err = input.parseExpression()
+			if err != nil {
+				return nil, err
+			}
+		} else if input.match(lexer.Default) {
+			if seenDefault {
+				return nil, input.errorAt(caseStart, "switch has more than one default")
+			}
+			seenDefault = true
+		} else {
+			return nil, input.errorAt(caseStart, "expected case or default in switch")
+		}
+		colon, err := input.consume(lexer.Colon, "expected ':' after switch case")
+		if err != nil {
+			return nil, err
+		}
+		consequent := make([]ast.Statement, 0)
+		end := colon.Span
+		for !input.check(lexer.Case) && !input.check(lexer.Default) && !input.check(lexer.RightBrace) && !input.check(lexer.EOF) {
+			statement, err := input.parseStatement()
+			if err != nil {
+				return nil, err
+			}
+			consequent = append(consequent, statement)
+			end = statement.Span()
+		}
+		cases = append(cases, &ast.SwitchCase{Base: ast.Base{Range: join(caseStart.Span, end)}, Test: test, Consequent: consequent})
+	}
+	close, err := input.consume(lexer.RightBrace, "expected '}' after switch")
+	if err != nil {
+		return nil, err
+	}
+	return &ast.SwitchStatement{Base: ast.Base{Range: join(start.Span, close.Span)}, Discriminant: discriminant, Cases: cases}, nil
+}
+
+func (input *parser) parseLabeledStatement() (ast.Statement, error) {
+	labelToken := input.advance()
+	input.advance() // colon
+	body, err := input.parseStatement()
+	if err != nil {
+		return nil, err
+	}
+	return &ast.LabeledStatement{Base: ast.Base{Range: join(labelToken.Span, body.Span())}, Label: identifier(labelToken), Body: body}, nil
+}
+
 func (input *parser) parseSimpleControlStatement(isBreak bool) (ast.Statement, error) {
 	start := input.advance()
+	var label *ast.Identifier
+	if input.check(lexer.Identifier) && input.current().Span.Start.Line == start.Span.End.Line {
+		label = identifier(input.advance())
+	}
 	end, err := input.finishStatement()
 	if err != nil {
 		return nil, err
 	}
 	base := ast.Base{Range: join(start.Span, end)}
 	if isBreak {
-		return &ast.BreakStatement{Base: base}, nil
+		return &ast.BreakStatement{Base: base, Label: label}, nil
 	}
-	return &ast.ContinueStatement{Base: base}, nil
+	return &ast.ContinueStatement{Base: base, Label: label}, nil
 }
 
 func (input *parser) parseThrowStatement() (ast.Statement, error) {
@@ -346,25 +535,52 @@ func (input *parser) parseExpressionStatement() (ast.Statement, error) {
 }
 
 func (input *parser) parseExpression() (ast.Expression, error) {
-	return input.parseAssignment()
+	first, err := input.parseAssignment()
+	if err != nil || !input.match(lexer.Comma) {
+		return first, err
+	}
+	expressions := []ast.Expression{first}
+	for {
+		next, err := input.parseAssignment()
+		if err != nil {
+			return nil, err
+		}
+		expressions = append(expressions, next)
+		if !input.match(lexer.Comma) {
+			break
+		}
+	}
+	return &ast.SequenceExpression{
+		Base: ast.Base{Range: join(first.Span(), expressions[len(expressions)-1].Span())}, Expressions: expressions,
+	}, nil
 }
 
 func (input *parser) parseAssignment() (ast.Expression, error) {
+	if input.isArrowFunctionStart() {
+		return input.parseArrowFunction()
+	}
 	left, err := input.parseConditional()
 	if err != nil {
 		return nil, err
 	}
-	if !input.match(lexer.Assign) {
+	if !input.match(
+		lexer.Assign, lexer.PlusAssign, lexer.MinusAssign, lexer.StarAssign, lexer.SlashAssign,
+		lexer.PercentAssign, lexer.AmpersandAssign, lexer.PipeAssign, lexer.CaretAssign,
+		lexer.ShiftLeftAssign, lexer.ShiftRightAssign, lexer.UnsignedShiftRightAssign,
+	) {
 		return left, nil
 	}
+	operator := input.previous()
 	if !ast.IsAssignmentTarget(left) {
-		return nil, input.errorAt(input.previous(), "invalid assignment target")
+		return nil, input.errorAt(operator, "invalid assignment target")
 	}
 	right, err := input.parseAssignment()
 	if err != nil {
 		return nil, err
 	}
-	return &ast.AssignmentExpression{Base: ast.Base{Range: join(left.Span(), right.Span())}, Left: left, Right: right}, nil
+	return &ast.AssignmentExpression{
+		Base: ast.Base{Range: join(left.Span(), right.Span())}, Operator: operator.Kind, Left: left, Right: right,
+	}, nil
 }
 
 func (input *parser) parseConditional() (ast.Expression, error) {
@@ -417,7 +633,7 @@ func (input *parser) parseEquality() (ast.Expression, error) {
 }
 
 func (input *parser) parseRelational() (ast.Expression, error) {
-	return input.parseBinary(input.parseShift, lexer.Less, lexer.LessEqual, lexer.Greater, lexer.GreaterEqual)
+	return input.parseBinary(input.parseShift, lexer.Less, lexer.LessEqual, lexer.Greater, lexer.GreaterEqual, lexer.In, lexer.Instanceof)
 }
 
 func (input *parser) parseShift() (ast.Expression, error) {
@@ -451,7 +667,7 @@ func (input *parser) parseBinary(next func() (ast.Expression, error), operators 
 }
 
 func (input *parser) parseUnary() (ast.Expression, error) {
-	if input.match(lexer.Bang, lexer.Minus, lexer.Plus, lexer.Typeof, lexer.Delete) {
+	if input.match(lexer.Bang, lexer.Minus, lexer.Plus, lexer.Typeof, lexer.Delete, lexer.Void, lexer.Tilde) {
 		operator := input.previous()
 		argument, err := input.parseUnary()
 		if err != nil {
@@ -541,7 +757,7 @@ func (input *parser) parseMembers(expression ast.Expression) (ast.Expression, er
 	for {
 		if input.match(lexer.Dot) {
 			property := input.current()
-			if property.Kind != lexer.Identifier && (property.Kind < lexer.Let || property.Kind > lexer.Delete) {
+			if !isPropertyName(property.Kind) {
 				return nil, input.errorAt(property, "expected property name after '.'")
 			}
 			input.advance()
@@ -567,6 +783,80 @@ func (input *parser) parseMembers(expression ast.Expression) (ast.Expression, er
 		}
 		return expression, nil
 	}
+}
+
+func (input *parser) isArrowFunctionStart() bool {
+	if input.check(lexer.Identifier) {
+		return input.peek(1).Kind == lexer.Arrow
+	}
+	if !input.check(lexer.LeftParen) {
+		return false
+	}
+	index := input.index + 1
+	if index < len(input.tokens) && input.tokens[index].Kind == lexer.RightParen {
+		index++
+		return index < len(input.tokens) && input.tokens[index].Kind == lexer.Arrow
+	}
+	for index < len(input.tokens) {
+		if input.tokens[index].Kind != lexer.Identifier {
+			return false
+		}
+		index++
+		if index < len(input.tokens) && input.tokens[index].Kind == lexer.RightParen {
+			index++
+			return index < len(input.tokens) && input.tokens[index].Kind == lexer.Arrow
+		}
+		if index >= len(input.tokens) || input.tokens[index].Kind != lexer.Comma {
+			return false
+		}
+		index++
+	}
+	return false
+}
+
+func (input *parser) parseArrowFunction() (ast.Expression, error) {
+	start := input.current().Span
+	parameters := make([]*ast.Identifier, 0)
+	if input.match(lexer.LeftParen) {
+		if !input.check(lexer.RightParen) {
+			for {
+				parameter, err := input.consume(lexer.Identifier, "expected arrow parameter")
+				if err != nil {
+					return nil, err
+				}
+				parameters = append(parameters, identifier(parameter))
+				if !input.match(lexer.Comma) {
+					break
+				}
+			}
+		}
+		if _, err := input.consume(lexer.RightParen, "expected ')' after arrow parameters"); err != nil {
+			return nil, err
+		}
+	} else {
+		parameter, err := input.consume(lexer.Identifier, "expected arrow parameter")
+		if err != nil {
+			return nil, err
+		}
+		parameters = append(parameters, identifier(parameter))
+	}
+	if _, err := input.consume(lexer.Arrow, "expected '=>' after arrow parameters"); err != nil {
+		return nil, err
+	}
+	if input.check(lexer.LeftBrace) {
+		body, err := input.parseBlock()
+		if err != nil {
+			return nil, err
+		}
+		return &ast.ArrowFunctionExpression{Base: ast.Base{Range: join(start, body.Span())}, Parameters: parameters, Body: body}, nil
+	}
+	expression, err := input.parseAssignment()
+	if err != nil {
+		return nil, err
+	}
+	return &ast.ArrowFunctionExpression{
+		Base: ast.Base{Range: join(start, expression.Span())}, Parameters: parameters, Expression: expression,
+	}, nil
 }
 
 func (input *parser) parseArgumentsAfterOpen() ([]ast.Expression, lexer.Span, error) {
@@ -603,6 +893,8 @@ func (input *parser) parsePrimary() (ast.Expression, error) {
 		return &ast.BoolLiteral{Base: ast.Base{Range: token.Span}, Value: token.Kind == lexer.True}, nil
 	case lexer.Null:
 		return &ast.NullLiteral{Base: ast.Base{Range: token.Span}}, nil
+	case lexer.RegExp:
+		return &ast.RegExpLiteral{Base: ast.Base{Range: token.Span}, Pattern: token.Text, Flags: token.Flags}, nil
 	case lexer.This:
 		return &ast.ThisExpression{Base: ast.Base{Range: token.Span}}, nil
 	case lexer.LeftParen:
@@ -658,7 +950,7 @@ func (input *parser) parseObjectLiteral(open lexer.Token) (ast.Expression, error
 	properties := make([]*ast.ObjectProperty, 0)
 	for !input.check(lexer.RightBrace) {
 		key := input.advance()
-		if key.Kind != lexer.Identifier && key.Kind != lexer.String && key.Kind != lexer.Number {
+		if !isPropertyName(key.Kind) && key.Kind != lexer.String && key.Kind != lexer.Number {
 			return nil, input.errorAt(key, "object property requires identifier, String, or number key")
 		}
 		keyText := key.Text
@@ -694,6 +986,10 @@ func (input *parser) parseObjectLiteral(open lexer.Token) (ast.Expression, error
 		return nil, err
 	}
 	return &ast.ObjectLiteral{Base: ast.Base{Range: join(open.Span, close.Span)}, Properties: properties}, nil
+}
+
+func isPropertyName(kind lexer.Kind) bool {
+	return kind == lexer.Identifier || kind >= lexer.Let && kind <= lexer.Void
 }
 
 func (input *parser) parseFunctionExpression(start lexer.Token) (ast.Expression, error) {
@@ -735,6 +1031,14 @@ func (input *parser) match(kinds ...lexer.Kind) bool {
 	return false
 }
 
+func (input *parser) matchContextual(text string) bool {
+	if input.current().Kind == lexer.Identifier && input.current().Text == text {
+		input.advance()
+		return true
+	}
+	return false
+}
+
 func contains(kinds []lexer.Kind, kind lexer.Kind) bool {
 	for _, candidate := range kinds {
 		if candidate == kind {
@@ -745,6 +1049,14 @@ func contains(kinds []lexer.Kind, kind lexer.Kind) bool {
 }
 
 func (input *parser) check(kind lexer.Kind) bool { return input.current().Kind == kind }
+
+func (input *parser) peek(distance int) lexer.Token {
+	index := input.index + distance
+	if index < 0 || index >= len(input.tokens) {
+		return input.tokens[len(input.tokens)-1]
+	}
+	return input.tokens[index]
+}
 
 func (input *parser) consume(kind lexer.Kind, message string) (lexer.Token, error) {
 	if input.check(kind) {

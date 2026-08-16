@@ -102,11 +102,69 @@ type WhileStatement struct {
 
 func (*WhileStatement) statementNode() {}
 
-type BreakStatement struct{ Base }
+type DoWhileStatement struct {
+	Base
+	Body Statement
+	Test Expression
+}
+
+func (*DoWhileStatement) statementNode() {}
+
+type ForStatement struct {
+	Base
+	InitDeclaration *VariableDeclaration
+	InitExpression  Expression
+	Test            Expression
+	Update          Expression
+	Body            Statement
+}
+
+func (*ForStatement) statementNode() {}
+
+type ForInStatement struct {
+	Base
+	LeftDeclaration *VariableDeclaration
+	LeftExpression  Expression
+	Right           Expression
+	Body            Statement
+	Of              bool
+}
+
+func (*ForInStatement) statementNode() {}
+
+type SwitchCase struct {
+	Base
+	Test       Expression
+	Consequent []Statement
+}
+
+type SwitchStatement struct {
+	Base
+	Discriminant Expression
+	Cases        []*SwitchCase
+}
+
+func (*SwitchStatement) statementNode() {}
+
+type LabeledStatement struct {
+	Base
+	Label *Identifier
+	Body  Statement
+}
+
+func (*LabeledStatement) statementNode() {}
+
+type BreakStatement struct {
+	Base
+	Label *Identifier
+}
 
 func (*BreakStatement) statementNode() {}
 
-type ContinueStatement struct{ Base }
+type ContinueStatement struct {
+	Base
+	Label *Identifier
+}
 
 func (*ContinueStatement) statementNode() {}
 
@@ -163,6 +221,14 @@ func (*BoolLiteral) expressionNode() {}
 type NullLiteral struct{ Base }
 
 func (*NullLiteral) expressionNode() {}
+
+type RegExpLiteral struct {
+	Base
+	Pattern string
+	Flags   string
+}
+
+func (*RegExpLiteral) expressionNode() {}
 
 type ThisExpression struct{ Base }
 
@@ -227,11 +293,19 @@ func (*ConditionalExpression) expressionNode() {}
 
 type AssignmentExpression struct {
 	Base
-	Left  Expression
-	Right Expression
+	Operator lexer.Kind
+	Left     Expression
+	Right    Expression
 }
 
 func (*AssignmentExpression) expressionNode() {}
+
+type SequenceExpression struct {
+	Base
+	Expressions []Expression
+}
+
+func (*SequenceExpression) expressionNode() {}
 
 type MemberExpression struct {
 	Base
@@ -266,6 +340,15 @@ type FunctionExpression struct {
 }
 
 func (*FunctionExpression) expressionNode() {}
+
+type ArrowFunctionExpression struct {
+	Base
+	Parameters []*Identifier
+	Body       *BlockStatement
+	Expression Expression
+}
+
+func (*ArrowFunctionExpression) expressionNode() {}
 
 func IsAssignmentTarget(expression Expression) bool {
 	switch expression.(type) {
