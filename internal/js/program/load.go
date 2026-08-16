@@ -108,6 +108,13 @@ func (loader *programLoader) loadConstant(constant Constant) (memory.Value, erro
 			return memory.Value{}, err
 		}
 		return memory.RefValue(ref), nil
+	case ConstantRegExp:
+		pattern, err := loader.loadString(constant.String())
+		if err != nil {
+			return memory.Value{}, err
+		}
+		ref, err := loader.context.NewRegExp(pattern, constant.Flags())
+		return memory.RefValue(ref), err
 	case ConstantFunction:
 		ref, err := loader.loadFunction(constant.Function(), memory.NullValue())
 		if err != nil {

@@ -38,6 +38,7 @@ box.read() === 42 &&
 inherited.read() === 7 &&
 Object.getPrototypeOf(box) === Box.prototype &&
 Object.getPrototypeOf(values) === Array.prototype &&
+box instanceof Box && values instanceof Array &&
 pushed === 3 && popped === 3 &&
 values.join("-") === "1-2" && sliced.join(":") === "1:2" &&
 Object.keys(descriptorTarget).length === 0 &&

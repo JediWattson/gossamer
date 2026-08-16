@@ -80,6 +80,10 @@ const (
 	OpToNumber
 	OpEqual
 	OpNotEqual
+	OpDupPair
+	OpOwnKeys
+	OpIn
+	OpInstanceOf
 )
 
 func (opcode Opcode) String() string {
@@ -230,11 +234,19 @@ func (opcode Opcode) String() string {
 		return "Equal"
 	case OpNotEqual:
 		return "NotEqual"
+	case OpDupPair:
+		return "DupPair"
+	case OpOwnKeys:
+		return "OwnKeys"
+	case OpIn:
+		return "In"
+	case OpInstanceOf:
+		return "InstanceOf"
 	default:
 		return fmt.Sprintf("Opcode(%d)", opcode)
 	}
 }
 
 func (opcode Opcode) valid() bool {
-	return opcode >= OpConstant && opcode <= OpNotEqual
+	return opcode >= OpConstant && opcode <= OpInstanceOf
 }

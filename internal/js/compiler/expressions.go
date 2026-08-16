@@ -40,6 +40,12 @@ func (compiler *functionCompiler) compileExpression(expression ast.Expression) e
 		return compiler.emit(browserruntime.Instruction{Op: opcode}, expression.Span())
 	case *ast.NullLiteral:
 		return compiler.emit(browserruntime.Instruction{Op: browserruntime.OpNull}, expression.Span())
+	case *ast.RegExpLiteral:
+		index, err := compiler.addConstant(program.RegExp(expression.Pattern, expression.Flags))
+		if err != nil {
+			return err
+		}
+		return compiler.emit(browserruntime.Instruction{Op: browserruntime.OpConstant, A: index}, expression.Span())
 	case *ast.ThisExpression:
 		return compiler.emit(browserruntime.Instruction{Op: browserruntime.OpLoadThis}, expression.Span())
 	case *ast.ArrayLiteral:
@@ -56,6 +62,18 @@ func (compiler *functionCompiler) compileExpression(expression ast.Expression) e
 		return compiler.compileConditional(expression)
 	case *ast.AssignmentExpression:
 		return compiler.compileAssignment(expression)
+	case *ast.SequenceExpression:
+		for index, item := range expression.Expressions {
+			if err := compiler.compileExpression(item); err != nil {
+				return err
+			}
+			if index+1 != len(expression.Expressions) {
+				if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpPop}, item.Span()); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
 	case *ast.MemberExpression:
 		return compiler.compileMember(expression)
 	case *ast.CallExpression:
@@ -64,9 +82,30 @@ func (compiler *functionCompiler) compileExpression(expression ast.Expression) e
 		return compiler.compileNew(expression)
 	case *ast.FunctionExpression:
 		return compiler.compileFunctionExpression(expression)
+	case *ast.ArrowFunctionExpression:
+		return compiler.compileArrowFunctionExpression(expression)
 	default:
 		return compiler.problem(expression.Span(), fmt.Sprintf("unsupported expression %T", expression))
 	}
+}
+
+func (compiler *functionCompiler) compileArrowFunctionExpression(expression *ast.ArrowFunctionExpression) error {
+	body := expression.Body
+	if body == nil {
+		body = &ast.BlockStatement{
+			Base: ast.Base{Range: expression.Expression.Span()},
+			Body: []ast.Statement{&ast.ReturnStatement{Base: ast.Base{Range: expression.Expression.Span()}, Argument: expression.Expression}},
+		}
+	}
+	function, err := compiler.compileNestedFunction("", expression.Parameters, body, expression.Span())
+	if err != nil {
+		return err
+	}
+	constant, err := compiler.addFunctionConstant(function)
+	if err != nil {
+		return err
+	}
+	return compiler.emit(browserruntime.Instruction{Op: browserruntime.OpCreateClosure, A: constant}, expression.Span())
 }
 
 func (compiler *functionCompiler) compileCall(call *ast.CallExpression) error {
@@ -208,6 +247,66 @@ func (compiler *functionCompiler) compileMemberKey(member *ast.MemberExpression)
 }
 
 func (compiler *functionCompiler) compileAssignment(assignment *ast.AssignmentExpression) error {
+	operator := assignment.Operator
+	if operator == 0 {
+		operator = lexer.Assign
+	}
+	if operator != lexer.Assign {
+		binary, ok := assignmentBinaryOperator(operator)
+		if !ok {
+			return compiler.problem(assignment.Span(), fmt.Sprintf("unsupported assignment operator %s", operator))
+		}
+		opcode, ok := binaryOpcode(binary)
+		if !ok {
+			return compiler.problem(assignment.Span(), fmt.Sprintf("unsupported compound operator %s", operator))
+		}
+		switch target := assignment.Left.(type) {
+		case *ast.Identifier:
+			binding, exists := compiler.resolve(target.Name)
+			if !exists {
+				return compiler.problem(target.Span(), fmt.Sprintf("unknown binding %q", target.Name))
+			}
+			if !binding.mutable {
+				return compiler.problem(target.Span(), fmt.Sprintf("cannot assign to const binding %q", target.Name))
+			}
+			name, err := compiler.stringConstant(target.Name)
+			if err != nil {
+				return err
+			}
+			if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpLoadBinding, A: name}, target.Span()); err != nil {
+				return err
+			}
+			if err := compiler.compileExpression(assignment.Right); err != nil {
+				return err
+			}
+			if err := compiler.emit(browserruntime.Instruction{Op: opcode}, assignment.Span()); err != nil {
+				return err
+			}
+			return compiler.emit(browserruntime.Instruction{Op: browserruntime.OpStoreBinding, A: name}, assignment.Span())
+		case *ast.MemberExpression:
+			if err := compiler.compileExpression(target.Object); err != nil {
+				return err
+			}
+			if err := compiler.compileMemberKey(target); err != nil {
+				return err
+			}
+			if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpDupPair}, target.Span()); err != nil {
+				return err
+			}
+			if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpGetProperty}, target.Span()); err != nil {
+				return err
+			}
+			if err := compiler.compileExpression(assignment.Right); err != nil {
+				return err
+			}
+			if err := compiler.emit(browserruntime.Instruction{Op: opcode}, assignment.Span()); err != nil {
+				return err
+			}
+			return compiler.emit(browserruntime.Instruction{Op: browserruntime.OpSetProperty}, assignment.Span())
+		default:
+			return compiler.problem(assignment.Left.Span(), "unsupported compound assignment target")
+		}
+	}
 	switch target := assignment.Left.(type) {
 	case *ast.Identifier:
 		binding, exists := compiler.resolve(target.Name)
@@ -238,6 +337,35 @@ func (compiler *functionCompiler) compileAssignment(assignment *ast.AssignmentEx
 		return compiler.emit(browserruntime.Instruction{Op: browserruntime.OpSetProperty}, assignment.Span())
 	default:
 		return compiler.problem(assignment.Left.Span(), "unsupported assignment target")
+	}
+}
+
+func assignmentBinaryOperator(operator lexer.Kind) (lexer.Kind, bool) {
+	switch operator {
+	case lexer.PlusAssign:
+		return lexer.Plus, true
+	case lexer.MinusAssign:
+		return lexer.Minus, true
+	case lexer.StarAssign:
+		return lexer.Star, true
+	case lexer.SlashAssign:
+		return lexer.Slash, true
+	case lexer.PercentAssign:
+		return lexer.Percent, true
+	case lexer.AmpersandAssign:
+		return lexer.Ampersand, true
+	case lexer.PipeAssign:
+		return lexer.Pipe, true
+	case lexer.CaretAssign:
+		return lexer.Caret, true
+	case lexer.ShiftLeftAssign:
+		return lexer.ShiftLeft, true
+	case lexer.ShiftRightAssign:
+		return lexer.ShiftRight, true
+	case lexer.UnsignedShiftRightAssign:
+		return lexer.UnsignedShiftRight, true
+	default:
+		return 0, false
 	}
 }
 
@@ -318,6 +446,28 @@ func (compiler *functionCompiler) compileUnary(unary *ast.UnaryExpression) error
 		}
 		return compiler.emit(browserruntime.Instruction{Op: browserruntime.OpToNumber}, unary.Span())
 	}
+	if unary.Operator == lexer.Void {
+		if err := compiler.compileExpression(unary.Argument); err != nil {
+			return err
+		}
+		if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpPop}, unary.Argument.Span()); err != nil {
+			return err
+		}
+		return compiler.emit(browserruntime.Instruction{Op: browserruntime.OpUndefined}, unary.Span())
+	}
+	if unary.Operator == lexer.Tilde {
+		if err := compiler.compileExpression(unary.Argument); err != nil {
+			return err
+		}
+		minusOne, err := compiler.addConstant(program.Number(-1))
+		if err != nil {
+			return err
+		}
+		if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpConstant, A: minusOne}, unary.Span()); err != nil {
+			return err
+		}
+		return compiler.emit(browserruntime.Instruction{Op: browserruntime.OpBitwiseXor}, unary.Span())
+	}
 	if err := compiler.compileExpression(unary.Argument); err != nil {
 		return err
 	}
@@ -391,6 +541,10 @@ func binaryOpcode(operator lexer.Kind) (browserruntime.Opcode, bool) {
 		return browserruntime.OpGreaterThan, true
 	case lexer.GreaterEqual:
 		return browserruntime.OpGreaterThanOrEqual, true
+	case lexer.In:
+		return browserruntime.OpIn, true
+	case lexer.Instanceof:
+		return browserruntime.OpInstanceOf, true
 	default:
 		return 0, false
 	}

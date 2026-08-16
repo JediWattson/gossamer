@@ -26,18 +26,28 @@ func (compiler *functionCompiler) compileStatement(statement ast.Statement) erro
 		return compiler.compileIf(statement)
 	case *ast.WhileStatement:
 		return compiler.compileWhile(statement)
+	case *ast.DoWhileStatement:
+		return compiler.compileDoWhile(statement, "")
+	case *ast.ForStatement:
+		return compiler.compileFor(statement, "")
+	case *ast.ForInStatement:
+		return compiler.compileForIn(statement, "")
+	case *ast.SwitchStatement:
+		return compiler.compileSwitch(statement, "")
+	case *ast.LabeledStatement:
+		return compiler.compileLabeled(statement)
 	case *ast.BreakStatement:
-		if len(compiler.loops) == 0 {
-			return compiler.problem(statement.Span(), "break is only valid inside a loop")
+		target, found := compiler.resolveControlTarget(statement.Label, false)
+		if !found {
+			return compiler.problem(statement.Span(), "break has no matching target")
 		}
-		target := compiler.loops[len(compiler.loops)-1]
-		return compiler.emitCompletion(browserruntime.OpBreak, target.breakLabel, target.environmentDepth, target.handlerDepth, statement.Span())
+		return compiler.emitCompletion(browserruntime.OpBreak, target.breakLabel, target.breakEnvironmentDepth, target.handlerDepth, statement.Span())
 	case *ast.ContinueStatement:
-		if len(compiler.loops) == 0 {
-			return compiler.problem(statement.Span(), "continue is only valid inside a loop")
+		target, found := compiler.resolveControlTarget(statement.Label, true)
+		if !found {
+			return compiler.problem(statement.Span(), "continue has no matching loop target")
 		}
-		target := compiler.loops[len(compiler.loops)-1]
-		return compiler.emitCompletion(browserruntime.OpContinue, target.continueLabel, target.environmentDepth, target.handlerDepth, statement.Span())
+		return compiler.emitCompletion(browserruntime.OpContinue, target.continueLabel, target.continueEnvironmentDepth, target.handlerDepth, statement.Span())
 	case *ast.FunctionDeclaration:
 		// Function declarations are instantiated in the containing Function
 		// scope before any statement executes.
@@ -164,6 +174,10 @@ func (compiler *functionCompiler) compileIf(statement *ast.IfStatement) error {
 }
 
 func (compiler *functionCompiler) compileWhile(statement *ast.WhileStatement) error {
+	return compiler.compileWhileLabeled(statement, "")
+}
+
+func (compiler *functionCompiler) compileWhileLabeled(statement *ast.WhileStatement, name string) error {
 	start := compiler.builder.NewLabel()
 	end := compiler.builder.NewLabel()
 	if err := compiler.builder.Mark(start); err != nil {
@@ -176,9 +190,9 @@ func (compiler *functionCompiler) compileWhile(statement *ast.WhileStatement) er
 		return err
 	}
 	compiler.loops = append(compiler.loops, loopTarget{
-		breakLabel: end, continueLabel: start,
-		environmentDepth: compiler.environmentDepth,
-		handlerDepth:     compiler.handlerDepth,
+		name: name, breakLabel: end, continueLabel: start,
+		breakEnvironmentDepth: compiler.environmentDepth, continueEnvironmentDepth: compiler.environmentDepth,
+		handlerDepth: compiler.handlerDepth,
 	})
 	err := compiler.compileStatement(statement.Body)
 	compiler.loops = compiler.loops[:len(compiler.loops)-1]
@@ -192,6 +206,436 @@ func (compiler *functionCompiler) compileWhile(statement *ast.WhileStatement) er
 		return fmt.Errorf("%w: %v", ErrCompile, err)
 	}
 	return nil
+}
+
+func (compiler *functionCompiler) compileDoWhile(statement *ast.DoWhileStatement, name string) error {
+	start := compiler.builder.NewLabel()
+	condition := compiler.builder.NewLabel()
+	end := compiler.builder.NewLabel()
+	if err := compiler.mark(start); err != nil {
+		return err
+	}
+	compiler.loops = append(compiler.loops, loopTarget{
+		name: name, breakLabel: end, continueLabel: condition,
+		breakEnvironmentDepth: compiler.environmentDepth, continueEnvironmentDepth: compiler.environmentDepth,
+		handlerDepth: compiler.handlerDepth,
+	})
+	err := compiler.compileStatement(statement.Body)
+	compiler.loops = compiler.loops[:len(compiler.loops)-1]
+	if err != nil {
+		return err
+	}
+	if err := compiler.mark(condition); err != nil {
+		return err
+	}
+	if err := compiler.compileExpression(statement.Test); err != nil {
+		return err
+	}
+	if err := compiler.emitJump(browserruntime.OpJumpIfTrue, start, statement.Test.Span()); err != nil {
+		return err
+	}
+	return compiler.mark(end)
+}
+
+func (compiler *functionCompiler) compileFor(statement *ast.ForStatement, name string) error {
+	outerDepth := compiler.environmentDepth
+	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpEnterScope}, statement.Span()); err != nil {
+		return err
+	}
+	compiler.environmentDepth++
+	compiler.pushScope()
+	defer compiler.popScope()
+	if declaration := statement.InitDeclaration; declaration != nil && declaration.Kind != ast.VariableVar {
+		for _, item := range declaration.Declarations {
+			if err := compiler.declare(item.Name.Name, declaration.Kind == ast.VariableLet, item.Name.Span()); err != nil {
+				return err
+			}
+			nameConstant, err := compiler.stringConstant(item.Name.Name)
+			if err != nil {
+				return err
+			}
+			mutable := uint32(0)
+			if declaration.Kind == ast.VariableLet {
+				mutable = 1
+			}
+			if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpDeclareBinding, A: nameConstant, B: mutable}, item.Name.Span()); err != nil {
+				return err
+			}
+		}
+	}
+	if statement.InitDeclaration != nil {
+		if err := compiler.compileVariableDeclaration(statement.InitDeclaration); err != nil {
+			return err
+		}
+	} else if statement.InitExpression != nil {
+		if err := compiler.compileExpression(statement.InitExpression); err != nil {
+			return err
+		}
+		if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpPop}, statement.InitExpression.Span()); err != nil {
+			return err
+		}
+	}
+
+	condition := compiler.builder.NewLabel()
+	update := compiler.builder.NewLabel()
+	cleanup := compiler.builder.NewLabel()
+	end := compiler.builder.NewLabel()
+	if err := compiler.mark(condition); err != nil {
+		return err
+	}
+	if statement.Test != nil {
+		if err := compiler.compileExpression(statement.Test); err != nil {
+			return err
+		}
+		if err := compiler.emitJump(browserruntime.OpJumpIfFalse, cleanup, statement.Test.Span()); err != nil {
+			return err
+		}
+	}
+	compiler.loops = append(compiler.loops, loopTarget{
+		name: name, breakLabel: end, continueLabel: update,
+		breakEnvironmentDepth: outerDepth, continueEnvironmentDepth: compiler.environmentDepth,
+		handlerDepth: compiler.handlerDepth,
+	})
+	err := compiler.compileStatement(statement.Body)
+	compiler.loops = compiler.loops[:len(compiler.loops)-1]
+	if err != nil {
+		return err
+	}
+	if err := compiler.mark(update); err != nil {
+		return err
+	}
+	if statement.Update != nil {
+		if err := compiler.compileExpression(statement.Update); err != nil {
+			return err
+		}
+		if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpPop}, statement.Update.Span()); err != nil {
+			return err
+		}
+	}
+	if err := compiler.emitJump(browserruntime.OpJump, condition, statement.Span()); err != nil {
+		return err
+	}
+	if err := compiler.mark(cleanup); err != nil {
+		return err
+	}
+	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpLeaveScope}, statement.Span()); err != nil {
+		return err
+	}
+	compiler.environmentDepth--
+	return compiler.mark(end)
+}
+
+func (compiler *functionCompiler) compileForIn(statement *ast.ForInStatement, label string) error {
+	outerDepth := compiler.environmentDepth
+	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpEnterScope}, statement.Span()); err != nil {
+		return err
+	}
+	compiler.environmentDepth++
+	iterableName := compiler.temporaryName("for.iterable")
+	indexName := compiler.temporaryName("for.index")
+	if err := compiler.compileExpression(statement.Right); err != nil {
+		return err
+	}
+	if !statement.Of {
+		if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpOwnKeys}, statement.Right.Span()); err != nil {
+			return err
+		}
+	}
+	if err := compiler.initializeTemporary(iterableName, statement.Span()); err != nil {
+		return err
+	}
+	zero, err := compiler.addConstant(program.Number(0))
+	if err != nil {
+		return err
+	}
+	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpConstant, A: zero}, statement.Span()); err != nil {
+		return err
+	}
+	if err := compiler.initializeTemporary(indexName, statement.Span()); err != nil {
+		return err
+	}
+
+	condition := compiler.builder.NewLabel()
+	advance := compiler.builder.NewLabel()
+	cleanup := compiler.builder.NewLabel()
+	end := compiler.builder.NewLabel()
+	if err := compiler.mark(condition); err != nil {
+		return err
+	}
+	if err := compiler.loadTemporary(indexName, statement.Span()); err != nil {
+		return err
+	}
+	if err := compiler.loadTemporary(iterableName, statement.Span()); err != nil {
+		return err
+	}
+	length, err := compiler.stringConstant("length")
+	if err != nil {
+		return err
+	}
+	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpConstant, A: length}, statement.Span()); err != nil {
+		return err
+	}
+	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpGetProperty}, statement.Span()); err != nil {
+		return err
+	}
+	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpLessThan}, statement.Span()); err != nil {
+		return err
+	}
+	if err := compiler.emitJump(browserruntime.OpJumpIfFalse, cleanup, statement.Span()); err != nil {
+		return err
+	}
+	if err := compiler.loadTemporary(iterableName, statement.Span()); err != nil {
+		return err
+	}
+	if err := compiler.loadTemporary(indexName, statement.Span()); err != nil {
+		return err
+	}
+	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpGetProperty}, statement.Span()); err != nil {
+		return err
+	}
+
+	iterationScope := statement.LeftDeclaration != nil && statement.LeftDeclaration.Kind != ast.VariableVar
+	if iterationScope {
+		if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpEnterScope}, statement.Span()); err != nil {
+			return err
+		}
+		compiler.environmentDepth++
+		compiler.pushScope()
+	}
+	if err := compiler.initializeForBinding(statement); err != nil {
+		return err
+	}
+	compiler.loops = append(compiler.loops, loopTarget{
+		name: label, breakLabel: end, continueLabel: advance,
+		breakEnvironmentDepth: outerDepth, continueEnvironmentDepth: outerDepth + 1,
+		handlerDepth: compiler.handlerDepth,
+	})
+	err = compiler.compileStatement(statement.Body)
+	compiler.loops = compiler.loops[:len(compiler.loops)-1]
+	if err != nil {
+		return err
+	}
+	if iterationScope {
+		compiler.popScope()
+		if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpLeaveScope}, statement.Span()); err != nil {
+			return err
+		}
+		compiler.environmentDepth--
+	}
+	if err := compiler.mark(advance); err != nil {
+		return err
+	}
+	if err := compiler.loadTemporary(indexName, statement.Span()); err != nil {
+		return err
+	}
+	one, err := compiler.addConstant(program.Number(1))
+	if err != nil {
+		return err
+	}
+	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpConstant, A: one}, statement.Span()); err != nil {
+		return err
+	}
+	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpAdd}, statement.Span()); err != nil {
+		return err
+	}
+	indexConstant, err := compiler.stringConstant(indexName)
+	if err != nil {
+		return err
+	}
+	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpStoreBinding, A: indexConstant}, statement.Span()); err != nil {
+		return err
+	}
+	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpPop}, statement.Span()); err != nil {
+		return err
+	}
+	if err := compiler.emitJump(browserruntime.OpJump, condition, statement.Span()); err != nil {
+		return err
+	}
+	if err := compiler.mark(cleanup); err != nil {
+		return err
+	}
+	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpLeaveScope}, statement.Span()); err != nil {
+		return err
+	}
+	compiler.environmentDepth--
+	return compiler.mark(end)
+}
+
+func (compiler *functionCompiler) initializeForBinding(statement *ast.ForInStatement) error {
+	if declaration := statement.LeftDeclaration; declaration != nil {
+		item := declaration.Declarations[0]
+		name, err := compiler.stringConstant(item.Name.Name)
+		if err != nil {
+			return err
+		}
+		if declaration.Kind == ast.VariableVar {
+			if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpStoreBinding, A: name}, item.Span()); err != nil {
+				return err
+			}
+			return compiler.emit(browserruntime.Instruction{Op: browserruntime.OpPop}, item.Span())
+		}
+		if err := compiler.declare(item.Name.Name, declaration.Kind == ast.VariableLet, item.Name.Span()); err != nil {
+			return err
+		}
+		mutable := uint32(0)
+		if declaration.Kind == ast.VariableLet {
+			mutable = 1
+		}
+		if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpDeclareBinding, A: name, B: mutable}, item.Span()); err != nil {
+			return err
+		}
+		if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpInitializeBinding, A: name}, item.Span()); err != nil {
+			return err
+		}
+		return compiler.emit(browserruntime.Instruction{Op: browserruntime.OpPop}, item.Span())
+	}
+	identifier, ok := statement.LeftExpression.(*ast.Identifier)
+	if !ok {
+		return compiler.problem(statement.LeftExpression.Span(), "for-in/of assignment currently requires an identifier")
+	}
+	name, err := compiler.stringConstant(identifier.Name)
+	if err != nil {
+		return err
+	}
+	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpStoreBinding, A: name}, identifier.Span()); err != nil {
+		return err
+	}
+	return compiler.emit(browserruntime.Instruction{Op: browserruntime.OpPop}, identifier.Span())
+}
+
+func (compiler *functionCompiler) compileSwitch(statement *ast.SwitchStatement, name string) error {
+	outerDepth := compiler.environmentDepth
+	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpEnterScope}, statement.Span()); err != nil {
+		return err
+	}
+	compiler.environmentDepth++
+	discriminant := compiler.temporaryName("switch")
+	if err := compiler.compileExpression(statement.Discriminant); err != nil {
+		return err
+	}
+	if err := compiler.initializeTemporary(discriminant, statement.Span()); err != nil {
+		return err
+	}
+	labels := make([]browserruntime.Label, len(statement.Cases))
+	defaultLabel := browserruntime.Label(0)
+	for index, item := range statement.Cases {
+		labels[index] = compiler.builder.NewLabel()
+		if item.Test == nil {
+			defaultLabel = labels[index]
+			continue
+		}
+		if err := compiler.loadTemporary(discriminant, item.Span()); err != nil {
+			return err
+		}
+		if err := compiler.compileExpression(item.Test); err != nil {
+			return err
+		}
+		if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpStrictEqual}, item.Span()); err != nil {
+			return err
+		}
+		if err := compiler.emitJump(browserruntime.OpJumpIfTrue, labels[index], item.Span()); err != nil {
+			return err
+		}
+	}
+	cleanup := compiler.builder.NewLabel()
+	end := compiler.builder.NewLabel()
+	if defaultLabel != 0 {
+		if err := compiler.emitJump(browserruntime.OpJump, defaultLabel, statement.Span()); err != nil {
+			return err
+		}
+	} else if err := compiler.emitJump(browserruntime.OpJump, cleanup, statement.Span()); err != nil {
+		return err
+	}
+	compiler.loops = append(compiler.loops, loopTarget{
+		name: name, breakLabel: end, breakEnvironmentDepth: outerDepth,
+		continueEnvironmentDepth: compiler.environmentDepth, handlerDepth: compiler.handlerDepth,
+	})
+	for index, item := range statement.Cases {
+		if err := compiler.mark(labels[index]); err != nil {
+			return err
+		}
+		for _, child := range item.Consequent {
+			if err := compiler.compileStatement(child); err != nil {
+				return err
+			}
+		}
+	}
+	compiler.loops = compiler.loops[:len(compiler.loops)-1]
+	if err := compiler.mark(cleanup); err != nil {
+		return err
+	}
+	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpLeaveScope}, statement.Span()); err != nil {
+		return err
+	}
+	compiler.environmentDepth--
+	return compiler.mark(end)
+}
+
+func (compiler *functionCompiler) compileLabeled(statement *ast.LabeledStatement) error {
+	name := statement.Label.Name
+	switch body := statement.Body.(type) {
+	case *ast.WhileStatement:
+		return compiler.compileWhileLabeled(body, name)
+	case *ast.DoWhileStatement:
+		return compiler.compileDoWhile(body, name)
+	case *ast.ForStatement:
+		return compiler.compileFor(body, name)
+	case *ast.ForInStatement:
+		return compiler.compileForIn(body, name)
+	case *ast.SwitchStatement:
+		return compiler.compileSwitch(body, name)
+	default:
+		end := compiler.builder.NewLabel()
+		compiler.loops = append(compiler.loops, loopTarget{
+			name: name, breakLabel: end, breakEnvironmentDepth: compiler.environmentDepth,
+			continueEnvironmentDepth: compiler.environmentDepth, handlerDepth: compiler.handlerDepth,
+		})
+		err := compiler.compileStatement(body)
+		compiler.loops = compiler.loops[:len(compiler.loops)-1]
+		if err != nil {
+			return err
+		}
+		return compiler.mark(end)
+	}
+}
+
+func (compiler *functionCompiler) resolveControlTarget(label *ast.Identifier, continuing bool) (loopTarget, bool) {
+	for index := len(compiler.loops) - 1; index >= 0; index-- {
+		target := compiler.loops[index]
+		if label != nil && target.name != label.Name {
+			continue
+		}
+		if continuing && target.continueLabel == 0 {
+			if label != nil {
+				return loopTarget{}, false
+			}
+			continue
+		}
+		return target, true
+	}
+	return loopTarget{}, false
+}
+
+func (compiler *functionCompiler) initializeTemporary(name string, span lexer.Span) error {
+	constant, err := compiler.stringConstant(name)
+	if err != nil {
+		return err
+	}
+	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpDeclareBinding, A: constant, B: 1}, span); err != nil {
+		return err
+	}
+	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpInitializeBinding, A: constant}, span); err != nil {
+		return err
+	}
+	return compiler.emit(browserruntime.Instruction{Op: browserruntime.OpPop}, span)
+}
+
+func (compiler *functionCompiler) loadTemporary(name string, span lexer.Span) error {
+	constant, err := compiler.stringConstant(name)
+	if err != nil {
+		return err
+	}
+	return compiler.emit(browserruntime.Instruction{Op: browserruntime.OpLoadBinding, A: constant}, span)
 }
 
 func (compiler *functionCompiler) compileHoistedFunction(declaration *ast.FunctionDeclaration, initialize bool) error {

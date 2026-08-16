@@ -123,10 +123,12 @@ var nativeGlobalBindings = map[string]bool{
 }
 
 type loopTarget struct {
-	breakLabel       browserruntime.Label
-	continueLabel    browserruntime.Label
-	environmentDepth int
-	handlerDepth     int
+	name                     string
+	breakLabel               browserruntime.Label
+	continueLabel            browserruntime.Label
+	breakEnvironmentDepth    int
+	continueEnvironmentDepth int
+	handlerDepth             int
 }
 
 type functionCompiler struct {
@@ -140,12 +142,14 @@ type functionCompiler struct {
 	inFunction       bool
 	environmentDepth int
 	handlerDepth     int
+	nextTemporary    uint64
 }
 
 type constantKey struct {
 	kind     program.ConstantKind
 	bits     uint64
 	text     string
+	flags    string
 	function uint32
 	boolean  bool
 }
@@ -251,6 +255,9 @@ func (compiler *functionCompiler) addConstant(constant program.Constant) (uint32
 		key.bits = math.Float64bits(constant.Number())
 	case program.ConstantString:
 		key.text = constant.String()
+	case program.ConstantRegExp:
+		key.text = constant.String()
+		key.flags = constant.Flags()
 	case program.ConstantFunction:
 		key.function = constant.Function()
 	}
@@ -268,6 +275,11 @@ func (compiler *functionCompiler) addConstant(constant program.Constant) (uint32
 
 func (compiler *functionCompiler) stringConstant(value string) (uint32, error) {
 	return compiler.addConstant(program.String(value))
+}
+
+func (compiler *functionCompiler) temporaryName(kind string) string {
+	compiler.nextTemporary++
+	return fmt.Sprintf("\x00gossamer.%s.%d", kind, compiler.nextTemporary)
 }
 
 func (compiler *functionCompiler) declare(name string, mutable bool, span lexer.Span) error {

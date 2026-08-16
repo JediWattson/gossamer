@@ -200,6 +200,26 @@ func collectHoistedDeclarations(statements []ast.Statement) []hoistedDeclaration
 			}
 		case *ast.WhileStatement:
 			visit(statement.Body)
+		case *ast.DoWhileStatement:
+			visit(statement.Body)
+		case *ast.ForStatement:
+			if statement.InitDeclaration != nil {
+				visit(statement.InitDeclaration)
+			}
+			visit(statement.Body)
+		case *ast.ForInStatement:
+			if statement.LeftDeclaration != nil {
+				visit(statement.LeftDeclaration)
+			}
+			visit(statement.Body)
+		case *ast.SwitchStatement:
+			for _, switchCase := range statement.Cases {
+				for _, child := range switchCase.Consequent {
+					visit(child)
+				}
+			}
+		case *ast.LabeledStatement:
+			visit(statement.Body)
 		case *ast.TryStatement:
 			visit(statement.Body)
 			if statement.Handler != nil {

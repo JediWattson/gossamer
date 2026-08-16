@@ -97,6 +97,57 @@ func (execution *execution) getProperty(base, key memory.Value) (memory.Value, b
 	}
 }
 
+func (execution *execution) hasProperty(base, key memory.Value) (bool, error) {
+	_, found, err := execution.getProperty(base, key)
+	return found, err
+}
+
+func (execution *execution) instanceOf(value, constructor memory.Value) (bool, error) {
+	constructorRef, err := requireRef(constructor, "instanceof constructor")
+	if err != nil {
+		return false, err
+	}
+	descriptor, err := execution.context.DerefFunction(constructorRef)
+	if err != nil {
+		return false, ErrNotCallable
+	}
+	_ = descriptor
+	prototypeName, err := execution.context.NewString("prototype")
+	if err != nil {
+		return false, err
+	}
+	prototype, found, err := execution.getProperty(constructor, memory.RefValue(prototypeName))
+	if err != nil {
+		return false, err
+	}
+	if !found || !prototype.IsRef() {
+		return false, ErrOperandType
+	}
+	if !value.IsRef() {
+		return false, nil
+	}
+	header, err := execution.context.DerefObjectHeader(value.Ref())
+	if err != nil {
+		return false, nil
+	}
+	seen := make(map[memory.Ref]struct{})
+	for header.Prototype.IsRef() {
+		current := header.Prototype.Ref()
+		if current == prototype.Ref() {
+			return true, nil
+		}
+		if _, duplicate := seen[current]; duplicate {
+			return false, memory.ErrPrototypeCycle
+		}
+		seen[current] = struct{}{}
+		header, err = execution.context.DerefObjectHeader(current)
+		if err != nil {
+			return false, err
+		}
+	}
+	return false, nil
+}
+
 func (execution *execution) getNamedProperty(base memory.Value, ref, name memory.Ref) (memory.Value, bool, error) {
 	_, descriptor, found, err := resolveObjectProperty(execution.context, ref, name)
 	if err != nil {

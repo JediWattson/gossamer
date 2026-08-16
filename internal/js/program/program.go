@@ -8,6 +8,7 @@ import (
 	"math"
 
 	browserruntime "github.com/JediWattson/gossamer/internal/runtime"
+	"github.com/JediWattson/gossamer/internal/runtime/memory"
 )
 
 var ErrInvalidProgram = errors.New("js/program: invalid program")
@@ -20,6 +21,7 @@ const (
 	ConstantBool
 	ConstantNumber
 	ConstantString
+	ConstantRegExp
 	ConstantFunction
 )
 
@@ -29,20 +31,25 @@ type Constant struct {
 	boolean  bool
 	number   float64
 	text     string
+	flags    string
 	function uint32
 }
 
-func Undefined() Constant            { return Constant{kind: ConstantUndefined} }
-func Null() Constant                 { return Constant{kind: ConstantNull} }
-func Bool(value bool) Constant       { return Constant{kind: ConstantBool, boolean: value} }
-func Number(value float64) Constant  { return Constant{kind: ConstantNumber, number: value} }
-func String(value string) Constant   { return Constant{kind: ConstantString, text: value} }
+func Undefined() Constant           { return Constant{kind: ConstantUndefined} }
+func Null() Constant                { return Constant{kind: ConstantNull} }
+func Bool(value bool) Constant      { return Constant{kind: ConstantBool, boolean: value} }
+func Number(value float64) Constant { return Constant{kind: ConstantNumber, number: value} }
+func String(value string) Constant  { return Constant{kind: ConstantString, text: value} }
+func RegExp(pattern, flags string) Constant {
+	return Constant{kind: ConstantRegExp, text: pattern, flags: flags}
+}
 func Function(index uint32) Constant { return Constant{kind: ConstantFunction, function: index} }
 
 func (constant Constant) Kind() ConstantKind { return constant.kind }
 func (constant Constant) Bool() bool         { return constant.boolean }
 func (constant Constant) Number() float64    { return constant.number }
 func (constant Constant) String() string     { return constant.text }
+func (constant Constant) Flags() string      { return constant.flags }
 func (constant Constant) Function() uint32   { return constant.function }
 
 // FunctionTemplate is the mutable constructor input for one immutable
@@ -119,6 +126,10 @@ func validateFunction(function FunctionTemplate, functionCount, index int) error
 	for constantIndex, constant := range function.Constants {
 		switch constant.kind {
 		case ConstantUndefined, ConstantNull, ConstantBool, ConstantNumber, ConstantString:
+		case ConstantRegExp:
+			if _, err := memory.ParseRegExpFlags(constant.flags); err != nil {
+				return fmt.Errorf("%w: function %d constant %d: %v", ErrInvalidProgram, index, constantIndex, err)
+			}
 		case ConstantFunction:
 			if uint64(constant.function) >= uint64(functionCount) {
 				return fmt.Errorf("%w: function %d constant %d references function %d", ErrInvalidProgram, index, constantIndex, constant.function)
