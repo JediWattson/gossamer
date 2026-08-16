@@ -162,7 +162,11 @@ Realm teardown against the stock engine. See
 [`docs/stock-v8-integration.md`](docs/stock-v8-integration.md). The expanded
 DOM milestones, including Range, Selection, and mutation-aware traversal, and
 their precise compatibility limits are tracked in
-[`docs/dom-compatibility.md`](docs/dom-compatibility.md).
+[`docs/dom-compatibility.md`](docs/dom-compatibility.md). The milestone 26
+release gate adds focused Web Platform behavior, cross-Realm transfer, repeated
+form submissions, 200 document replacements, explicit leak assertions, and
+performance budgets; see
+[`docs/conformance-gate.md`](docs/conformance-gate.md).
 
 ## What works today
 

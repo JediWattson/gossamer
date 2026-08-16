@@ -5,7 +5,7 @@ DOM compatibility gate verifies that this split remains observable as one DOM:
 canonical V8 wrappers carry numeric `NodeHandle` values, while Go owns node
 identity, mutation, form state, construction regions, and queue ARC.
 
-## Completed milestones 8-15
+## Selected completed milestones 8-26
 
 | Milestone | Native surface | Regression boundary |
 | --- | --- | --- |
@@ -17,12 +17,16 @@ identity, mutation, form state, construction regions, and queue ARC.
 | 13. Construction | Inert `template.content`, deep template cloning, `splitText`, `normalize`, same-document import/adopt, `Range`, `TreeWalker`, `NodeIterator`, `NodeFilter` | Template ownership is a semantic lifetime edge rather than a DOM parent edge; facade-only roots survive forced GC |
 | 14. React gate | Pinned production React 19.2.7 render and reconciliation over the native DOM | Controlled text, textarea, checkbox, radio, and select state; delegated input; observer delivery; keyed identity; forty churn cycles; unmount; forced GC; zero ownership after Realm teardown |
 | 15. Range and selection | Cross-container partial cloning/extraction/deletion, UTF-16 character-data boundaries, text-boundary insertion, canonical document/window `Selection`, mutation-aware filtered traversal | Fully selected nodes preserve identity during extraction, selection-only detached roots survive GC, reject prunes while skip promotes descendants, and traversal cursors adjust through insertion/removal |
+| 24. Cross-Realm transfer | Child Page/Realm ownership, pointer-free import/adopt, structured clone, transferable ArrayBuffers, native `postMessage` | No Go pointer crosses a Realm; parent replacement closes children and transferred buffers detach atomically |
+| 25. Form navigation | Constraint validation, `requestSubmit`, `submit`, `FormData`, cancelable events, GET/POST encoding, history/location, Realm replacement, final paint | Invalid or canceled submissions do not navigate; success invalidates the old generation and tears its Realm down in bulk |
+| 26. Release gate | Focused WPT-aligned behavior, pinned React, forced GC, cross-Realm messaging, 25 submissions, 200 replacements | Bounded runtime/wrapper churn and zero native ownership after teardown |
 
 Run the gate against the locally built stock V8:
 
 ```sh
 GOCACHE=/tmp/gossamer-go-cache ./tools/v8/test.sh -count=1
 GOCACHE=/tmp/gossamer-go-cache go test ./...
+GOCACHE=/tmp/gossamer-go-cache ./tools/v8/gate.sh
 ```
 
 The React test is a compatibility gate, not an alternate DOM implementation.
@@ -50,9 +54,9 @@ and ownership barriers before a separate render task publishes a frame.
   Realms remain separate isolates, so a JavaScript wrapper itself cannot be
   passed directly between iframe globals; cross-Realm data uses the native
   structured-clone/`postMessage` seam and fresh target wrappers.
-- This gate does not claim Shadow DOM, custom elements, full form
-  validation/submission, navigation globals, geometry, accessibility, or the
-  complete Web Platform test surface.
+- This gate does not claim Shadow DOM, custom elements, multipart/file form
+  submission, every validation constraint, navigation globals, geometry,
+  accessibility, or the complete Web Platform test surface.
 
 These limits are intentional compatibility boundaries. New DOM work should
 add a focused Go test, a stock-V8 behavior test, a forced-GC lifetime check
