@@ -69,6 +69,8 @@ type Realm struct {
 	activeTask       browserruntime.TaskID
 	bindings         *browserBindings
 	host             browser.Host
+	nextCallback     browser.ValueHandle
+	timerCallbacks   map[browser.TimerID]browser.ValueHandle
 
 	evaluations uint64
 	checkpoints uint64
@@ -90,8 +92,9 @@ func (engine *Engine) NewRealm() (browser.JSRealm, error) {
 		return nil, ErrEngineClosed
 	}
 	realm := &Realm{
-		engine:      engine,
-		interpreter: browserruntime.NewInterpreter(engine.config.Interpreter),
+		engine:         engine,
+		interpreter:    browserruntime.NewInterpreter(engine.config.Interpreter),
+		timerCallbacks: make(map[browser.TimerID]browser.ValueHandle),
 	}
 	if err := realm.installBrowserNatives(); err != nil {
 		return nil, err
@@ -257,7 +260,7 @@ func (realm *Realm) DispatchEvent(browser.Host, browser.InputEvent) (browser.Eve
 	return browser.EventDispatchResult{}, nil
 }
 
-func (realm *Realm) Invoke(_ browser.Host, handle browser.ValueHandle) error {
+func (realm *Realm) Invoke(host browser.Host, handle browser.ValueHandle) error {
 	if realm == nil {
 		return ErrRealmClosed
 	}
@@ -266,7 +269,17 @@ func (realm *Realm) Invoke(_ browser.Host, handle browser.ValueHandle) error {
 	if realm.closed {
 		return ErrRealmClosed
 	}
-	return fmt.Errorf("%w: %d", ErrUnknownValueHandle, handle)
+	realm.host = host
+	defer func() { realm.host = nil }()
+	task, err := runtimeTask(host)
+	if err != nil {
+		return err
+	}
+	scope, err := realm.beginTaskLocked(task)
+	if err != nil {
+		return err
+	}
+	return realm.invokeCallbackLocked(scope, handle)
 }
 
 func (realm *Realm) Profile() RealmProfile {
@@ -309,6 +322,7 @@ func (realm *Realm) Close() error {
 	activeTask := realm.activeTask
 	realm.persistent = nil
 	realm.persistentRegion = 0
+	realm.timerCallbacks = nil
 	realm.clearActiveLocked()
 	realm.mutex.Unlock()
 
