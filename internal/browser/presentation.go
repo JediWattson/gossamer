@@ -1,6 +1,7 @@
 package browser
 
 import (
+	"image"
 	"net/url"
 	"strings"
 
@@ -13,6 +14,29 @@ import (
 type PageMetadata struct {
 	Title      string
 	FaviconURL *url.URL
+}
+
+// Favicon returns the immutable decoded favicon currently associated with the
+// document. The shell may read it while composing copied pixels; native
+// backends never receive the image or a DOM identity.
+func (page *Page) Favicon() image.Image {
+	if page == nil {
+		return nil
+	}
+	page.mutex.RLock()
+	defer page.mutex.RUnlock()
+	if page.closed || page.document == nil {
+		return nil
+	}
+	node := faviconNode(page.document.Root())
+	if node == nil {
+		return nil
+	}
+	id, ok := page.document.ID(node)
+	if !ok {
+		return nil
+	}
+	return page.resources.images[id]
 }
 
 func (page *Page) Metadata() PageMetadata {
@@ -46,6 +70,27 @@ func pageMetadata(document *dom.Document, location *url.URL) PageMetadata {
 		}
 	}
 	return metadata
+}
+
+func faviconNode(root *dom.Node) *dom.Node {
+	var result *dom.Node
+	var walk func(*dom.Node)
+	walk = func(node *dom.Node) {
+		if node == nil {
+			return
+		}
+		if node.Type == dom.ElementNode && strings.EqualFold(node.Data, "link") {
+			rel, _ := nodeAttribute(node, "rel")
+			if containsHTMLToken(rel, "icon") {
+				result = node
+			}
+		}
+		for _, child := range node.Children {
+			walk(child)
+		}
+	}
+	walk(root)
+	return result
 }
 
 func documentTitle(root *dom.Node) string {

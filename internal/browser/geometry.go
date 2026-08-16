@@ -66,6 +66,71 @@ func (page *Page) QueueViewportScrollTo(x, y float64) (browserruntime.TaskID, er
 	return task, err
 }
 
+// QueueScrollAt routes wheel/trackpad deltas to the nearest scrollable element
+// under the pointer, falling back to the root viewport. Hit testing and the
+// scroll mutation execute together on the ordered Page task queue.
+func (page *Page) QueueScrollAt(x, y, deltaX, deltaY float64) (browserruntime.TaskID, error) {
+	if page == nil {
+		return 0, fmt.Errorf("browser: nil page")
+	}
+	for _, value := range []float64{x, y, deltaX, deltaY} {
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			return 0, fmt.Errorf("browser: invalid scroll coordinate or delta")
+		}
+	}
+	task, _, err := page.browser.scheduler.EnqueueExternalTask(page.Realm, func(context *browserruntime.TaskContext) error {
+		page.mutex.Lock()
+		if page.closed {
+			page.mutex.Unlock()
+			return ErrPageClosed
+		}
+		generation := page.documentGeneration
+		target, hit := page.hitTestLocked(x, y)
+		viewportX, viewportY := page.scrollX, page.scrollY
+		var scrollTarget NodeHandle
+		var scrollX, scrollY float64
+		if hit && page.computedStyle.snapshot != nil {
+			candidate := target.Node
+			for candidate != dom.InvalidNodeID {
+				style, ok := page.computedStyle.snapshot.LookupID(candidate)
+				if ok && (overflowScrollable(style.OverflowX()) || overflowScrollable(style.OverflowY())) {
+					handle := NodeHandle{Document: generation, Node: candidate}
+					geometry, geometryErr := page.elementGeometryLocked(handle)
+					if geometryErr != nil {
+						page.mutex.Unlock()
+						return geometryErr
+					}
+					if geometry.ScrollWidth > geometry.ClientWidth || geometry.ScrollHeight > geometry.ClientHeight {
+						scrollTarget = handle
+						scrollX, scrollY = geometry.ScrollLeft, geometry.ScrollTop
+						break
+					}
+				}
+				parent, found, parentErr := page.document.RelatedNode(candidate, dom.ParentElement)
+				if parentErr != nil || !found {
+					break
+				}
+				candidate = parent
+			}
+		}
+		page.mutex.Unlock()
+		host := &taskHost{page: page, task: context, generation: generation, autoRender: true}
+		if scrollTarget.Node != dom.InvalidNodeID {
+			changed, scrollErr := host.ScrollElement(scrollTarget, scrollX+deltaX, scrollY+deltaY)
+			if scrollErr != nil || !changed {
+				return scrollErr
+			}
+		} else {
+			changed, scrollErr := host.ScrollViewport(viewportX+deltaX, viewportY+deltaY)
+			if scrollErr != nil || !changed {
+				return scrollErr
+			}
+		}
+		return host.finish()
+	})
+	return task, err
+}
+
 type scrollOffset struct {
 	x float64
 	y float64

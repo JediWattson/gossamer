@@ -32,24 +32,60 @@ const (
 // reused for address-bar and reload navigation; nil keeps Page's default HTTP
 // loader behavior.
 type ShellConfig struct {
-	Title   string
-	Loader  browser.DocumentLoader
-	OpenTab PageOpener
+	Title    string
+	Loader   browser.DocumentLoader
+	OpenTab  PageOpener
+	Download DownloadHandler
+	Session  SessionStore
 }
 
 type shellLayout struct {
-	window         image.Rectangle
-	tabs           []shellTabLayout
-	newTab         image.Rectangle
-	back           image.Rectangle
-	forward        image.Rectangle
-	reload         image.Rectangle
-	address        image.Rectangle
-	content        image.Rectangle
-	rail           image.Rectangle
-	railDisclosure image.Rectangle
-	inspector      image.Rectangle
+	window          image.Rectangle
+	tabs            []shellTabLayout
+	newTab          image.Rectangle
+	tabOverflowBack image.Rectangle
+	tabOverflowNext image.Rectangle
+	firstVisibleTab int
+	back            image.Rectangle
+	forward         image.Rectangle
+	reload          image.Rectangle
+	address         image.Rectangle
+	content         image.Rectangle
+	rail            image.Rectangle
+	railPanels      [5]image.Rectangle
+	railDisclosure  image.Rectangle
+	inspector       image.Rectangle
+	errorBanner     image.Rectangle
+	errorRetry      image.Rectangle
 }
+
+type inspectorPanel uint8
+
+const (
+	inspectorDOM inspectorPanel = iota
+	inspectorStyles
+	inspectorLayout
+	inspectorNetwork
+	inspectorMemory
+)
+
+type shellFocus uint8
+
+const (
+	shellFocusNone shellFocus = iota
+	shellFocusTab
+	shellFocusBack
+	shellFocusForward
+	shellFocusReload
+	shellFocusAddress
+	shellFocusNewTab
+	shellFocusInspectorDOM
+	shellFocusInspectorStyles
+	shellFocusInspectorLayout
+	shellFocusInspectorNetwork
+	shellFocusInspectorMemory
+	shellFocusContent
+)
 
 type shellTabLayout struct {
 	body  image.Rectangle
@@ -79,11 +115,18 @@ type shellScrollbars struct {
 }
 
 type graphiteShell struct {
-	loader    browser.DocumentLoader
-	opener    PageOpener
-	fonts     *shellFontBook
-	tabs      []graphiteTab
-	activeTab int
+	loader         browser.DocumentLoader
+	opener         PageOpener
+	fonts          *shellFontBook
+	tabs           []graphiteTab
+	activeTab      int
+	hoveredTab     int
+	tabOffset      int
+	tabDrag        shellTabDrag
+	closedTabs     []closedGraphiteTab
+	downloader     DownloadHandler
+	sessionStore   SessionStore
+	pendingSession *SessionSnapshot
 
 	width  int
 	height int
@@ -93,6 +136,8 @@ type graphiteShell struct {
 	addressFocused bool
 	selectAll      bool
 	inspectorOpen  bool
+	inspectorPanel inspectorPanel
+	chromeFocus    shellFocus
 	loading        bool
 	canGoBack      bool
 	canGoForward   bool
@@ -116,6 +161,8 @@ func newGraphiteShell(page *browser.Page, config ShellConfig) (*graphiteShell, e
 	shell := &graphiteShell{
 		loader:         config.Loader,
 		opener:         config.OpenTab,
+		downloader:     config.Download,
+		sessionStore:   config.Session,
 		fonts:          fonts,
 		address:        location,
 		lastPageURL:    location,
@@ -125,6 +172,7 @@ func newGraphiteShell(page *browser.Page, config ShellConfig) (*graphiteShell, e
 		suppressedKeys: make(map[string]bool),
 		revision:       1,
 		activeTab:      0,
+		hoveredTab:     -1,
 	}
 	shell.tabs = []graphiteTab{{page: page, state: shell.capturePageState()}}
 	return shell, nil
@@ -152,10 +200,10 @@ func (shell *graphiteShell) initialWindowSize(viewport render.Viewport) (int, in
 }
 
 func (shell *graphiteShell) layout() shellLayout {
-	return graphiteLayout(shell.width, shell.height, shell.inspectorOpen, len(shell.tabs), shell.opener != nil && len(shell.tabs) < maximumGraphiteTabs)
+	return graphiteLayout(shell.width, shell.height, shell.inspectorOpen, len(shell.tabs), shell.activeTab, shell.tabOffset, shell.opener != nil && len(shell.tabs) < maximumGraphiteTabs)
 }
 
-func graphiteLayout(width, height int, inspectorOpen bool, tabCount int, showNewTab bool) shellLayout {
+func graphiteLayout(width, height int, inspectorOpen bool, tabCount, activeTab, requestedOffset int, showNewTab bool) shellLayout {
 	if width < 1 {
 		width = 1
 	}
@@ -187,7 +235,16 @@ func graphiteLayout(width, height int, inspectorOpen bool, tabCount int, showNew
 		address:        image.Rect(addressLeft, 44, addressRight, 78),
 		content:        image.Rect(0, chromeBottom, contentRight, height),
 		rail:           image.Rect(contentRight, 0, width, height),
-		railDisclosure: image.Rect(contentRight, 208, width, 252),
+		railDisclosure: image.Rect(contentRight, 272, width, 316),
+	}
+	for index := range layout.railPanels {
+		top := 48 + index*40
+		layout.railPanels[index] = image.Rect(contentRight, top, width, top+40)
+	}
+	if !layout.content.Empty() {
+		bannerBottom := minInt(layout.content.Max.Y, layout.content.Min.Y+52)
+		layout.errorBanner = image.Rect(layout.content.Min.X, layout.content.Min.Y, layout.content.Max.X, bannerBottom)
+		layout.errorRetry = image.Rect(maxInt(layout.content.Min.X, layout.content.Max.X-84), layout.content.Min.Y+10, layout.content.Max.X-12, bannerBottom-10)
 	}
 	if tabCount < 1 {
 		tabCount = 1
@@ -198,17 +255,35 @@ func graphiteLayout(width, height int, inspectorOpen bool, tabCount int, showNew
 	if showNewTab {
 		newTabWidth = 38
 	}
-	available := contentRight - tabStart - 10 - newTabWidth - tabGap*(tabCount-1)
-	if available < tabCount {
-		available = tabCount
+	availableWidth := contentRight - tabStart - 10 - newTabWidth
+	visibleCount := tabCount
+	const minimumTabWidth = 72
+	if visibleCount > 1 && availableWidth < visibleCount*minimumTabWidth+tabGap*(visibleCount-1) {
+		availableWidth -= 48
+		visibleCount = maxInt(1, (availableWidth+tabGap)/(minimumTabWidth+tabGap))
+		layout.tabOverflowBack = image.Rect(contentRight-newTabWidth-48, 7, contentRight-newTabWidth-26, 33)
+		layout.tabOverflowNext = image.Rect(contentRight-newTabWidth-24, 7, contentRight-newTabWidth-2, 33)
 	}
-	tabWidth := available / tabCount
+	first := maxInt(0, minInt(requestedOffset, maxInt(0, tabCount-visibleCount)))
+	if activeTab < first {
+		first = activeTab
+	}
+	if activeTab >= first+visibleCount {
+		first = activeTab - visibleCount + 1
+	}
+	first = maxInt(0, first)
+	layout.firstVisibleTab = first
+	available := availableWidth - tabGap*maxInt(0, visibleCount-1)
+	if available < visibleCount {
+		available = visibleCount
+	}
+	tabWidth := available / maxInt(1, visibleCount)
 	if tabWidth > 272 {
 		tabWidth = 272
 	}
 	layout.tabs = make([]shellTabLayout, tabCount)
 	x := tabStart
-	for index := 0; index < tabCount; index++ {
+	for index := first; index < minInt(tabCount, first+visibleCount); index++ {
 		bodyLeft := minInt(x, contentRight)
 		bodyRight := minInt(x+tabWidth, contentRight)
 		if bodyRight < bodyLeft {
@@ -222,8 +297,14 @@ func graphiteLayout(width, height int, inspectorOpen bool, tabCount int, showNew
 		layout.tabs[index] = shellTabLayout{body: body, close: close}
 		x += tabWidth + tabGap
 	}
-	if showNewTab && x < contentRight {
-		layout.newTab = image.Rect(x+2, 7, minInt(x+32, contentRight-4), 33)
+	if showNewTab {
+		newTabLeft := x + 2
+		if !layout.tabOverflowNext.Empty() {
+			newTabLeft = contentRight - newTabWidth + 4
+		}
+		if newTabLeft < contentRight {
+			layout.newTab = image.Rect(newTabLeft, 7, minInt(newTabLeft+30, contentRight-4), 33)
+		}
 	}
 	if inspectorOpen {
 		panelWidth := 280
@@ -257,7 +338,9 @@ func (shell *graphiteShell) syncPage(page *browser.Page) {
 	}
 	if shell.navigation != 0 && snapshot.ID == shell.navigation && navigationTerminal(snapshot.State) {
 		shell.navigation = 0
-		if snapshot.Err != nil {
+		if snapshot.State == browser.NavigationCanceled {
+			shell.navigationErr = ""
+		} else if snapshot.Err != nil {
 			shell.navigationErr = snapshot.Err.Error()
 		} else {
 			shell.navigationErr = ""
@@ -330,6 +413,26 @@ func (shell *graphiteShell) handleEvent(
 		}
 	}
 	if event.Kind == EventKeyDown {
+		if event.Modifiers.Ctrl && !event.Modifiers.Meta && !event.Modifiers.Alt && event.Key == "F6" {
+			shell.focusChrome(event.Modifiers.Shift)
+			shell.suppress(event)
+			return true, translated, false, nil
+		}
+		if shell.chromeFocus != shellFocusNone {
+			handled, focusErr := shell.handleChromeFocusKey(ctx, page, event)
+			if handled || focusErr != nil {
+				shell.suppress(event)
+				return true, translated, false, focusErr
+			}
+		}
+		if event.Key == "Escape" && shell.loading && !shell.addressFocused {
+			shell.suppress(event)
+			return true, translated, false, shell.stopNavigation(page)
+		}
+		if event.Modifiers.Meta && event.Modifiers.Shift && strings.EqualFold(event.Key, "t") {
+			shell.suppress(event)
+			return true, translated, false, shell.reopenClosedTab(ctx)
+		}
 		if event.Modifiers.Meta && strings.EqualFold(event.Key, "t") {
 			shell.suppress(event)
 			return true, translated, false, shell.openTab(ctx)
@@ -369,6 +472,9 @@ func (shell *graphiteShell) handleEvent(
 		}
 		if event.Modifiers.Meta && strings.EqualFold(event.Key, "r") {
 			shell.suppress(event)
+			if shell.loading {
+				return true, translated, false, shell.stopNavigation(page)
+			}
 			return true, translated, false, shell.reload(ctx, page)
 		}
 		if shell.addressFocused {
@@ -379,6 +485,30 @@ func (shell *graphiteShell) handleEvent(
 
 	if isPointerEvent(event.Kind) {
 		point := image.Pt(int(event.X), int(event.Y))
+		hoveredTab := -1
+		for index, tab := range layout.tabs {
+			if !tab.body.Empty() && point.In(tab.body) {
+				hoveredTab = index
+				break
+			}
+		}
+		if event.Kind == EventPointerMove && shell.hoveredTab != hoveredTab {
+			shell.hoveredTab = hoveredTab
+			shell.revision++
+		}
+		if event.Kind == EventPointerMove && shell.tabDrag.active && (event.Buttons != 0 || shell.tabDrag.dragging) {
+			if absInt(point.X-shell.tabDrag.startX) >= 6 {
+				shell.tabDrag.dragging = true
+			}
+			if shell.tabDrag.dragging && hoveredTab >= 0 && hoveredTab != shell.tabDrag.index {
+				shell.moveTab(shell.tabDrag.index, hoveredTab)
+			}
+			return true, translated, false, nil
+		}
+		if event.Kind == EventPointerUp && shell.tabDrag.active {
+			shell.tabDrag = shellTabDrag{}
+			return true, translated, false, nil
+		}
 		if handled, scrollbarErr := shell.handleScrollbarEvent(page, layout, point, event.Kind); handled || scrollbarErr != nil {
 			return handled, translated, false, scrollbarErr
 		}
@@ -388,8 +518,22 @@ func (shell *graphiteShell) handleEvent(
 				shell.selectAll = false
 				shell.revision++
 			}
+			if event.Kind == EventPointerDown && shell.chromeFocus != shellFocusContent {
+				shell.chromeFocus = shellFocusContent
+				shell.revision++
+			}
 			translated.X -= float64(layout.content.Min.X)
 			translated.Y -= float64(layout.content.Min.Y)
+			if event.Kind == EventPointerMove {
+				hover, ok := page.HitTest(translated.X, translated.Y)
+				if !ok {
+					hover = browser.NodeHandle{}
+				}
+				if state.hoverTarget != hover {
+					state.hoverTarget = hover
+					shell.revision++
+				}
+			}
 			return false, translated, false, nil
 		}
 		if event.Kind == EventPointerDown || event.Kind == EventPointerUp {
@@ -398,31 +542,62 @@ func (shell *graphiteShell) handleEvent(
 			state.pressedButton = 0
 		}
 		if event.Kind == EventPointerDown {
+			for index, panel := range layout.railPanels {
+				if point.In(panel) {
+					shell.chromeFocus = shellFocusInspectorDOM + shellFocus(index)
+					shell.inspectorPanel = inspectorPanel(index)
+					shell.inspectorOpen = true
+					shell.revision++
+					return true, translated, false, nil
+				}
+			}
 			for index, tab := range layout.tabs {
 				if !tab.close.Empty() && point.In(tab.close) {
 					last, closeErr := shell.closeTab(index)
 					return true, translated, last, closeErr
 				}
 				if point.In(tab.body) {
+					shell.chromeFocus = shellFocusTab
 					shell.switchTab(index)
+					shell.tabDrag = shellTabDrag{index: index, startX: point.X, active: true}
 					return true, translated, false, nil
 				}
 			}
 			if !layout.newTab.Empty() && point.In(layout.newTab) {
+				shell.chromeFocus = shellFocusNewTab
 				return true, translated, false, shell.openTab(ctx)
+			}
+			if !layout.tabOverflowBack.Empty() && point.In(layout.tabOverflowBack) {
+				shell.tabOffset = maxInt(0, layout.firstVisibleTab-1)
+				shell.revision++
+				return true, translated, false, nil
+			}
+			if !layout.tabOverflowNext.Empty() && point.In(layout.tabOverflowNext) {
+				shell.tabOffset = minInt(maxInt(0, len(shell.tabs)-1), layout.firstVisibleTab+1)
+				shell.revision++
+				return true, translated, false, nil
 			}
 			if point.In(layout.address) {
 				shell.focusAddress()
 				return true, translated, false, nil
 			}
 			if point.In(layout.back) {
+				shell.chromeFocus = shellFocusBack
 				return true, translated, false, shell.navigateHistory(ctx, page, -1)
 			}
 			if point.In(layout.forward) {
+				shell.chromeFocus = shellFocusForward
 				return true, translated, false, shell.navigateHistory(ctx, page, 1)
 			}
 			if point.In(layout.reload) {
+				shell.chromeFocus = shellFocusReload
+				if shell.loading {
+					return true, translated, false, shell.stopNavigation(page)
+				}
 				return true, translated, false, shell.reload(ctx, page)
+			}
+			if shell.navigationErr != "" && point.In(layout.errorRetry) {
+				return true, translated, false, shell.retryNavigation(ctx, page)
 			}
 			if point.In(layout.railDisclosure) {
 				shell.inspectorOpen = !shell.inspectorOpen
@@ -432,10 +607,24 @@ func (shell *graphiteShell) handleEvent(
 		}
 		return true, translated, false, nil
 	}
-
-	if event.Kind == EventScroll && shell.addressFocused {
+	if event.Kind == EventScroll {
+		// Older and deterministic backends may not report the pointer location
+		// for wheel input. Preserve their root-scroll behavior while native
+		// Cocoa events use their real coordinates for element routing.
+		if event.X == 0 && event.Y == 0 && !shell.addressFocused {
+			translated.X = 0
+			translated.Y = 0
+			return false, translated, false, nil
+		}
+		point := image.Pt(int(event.X), int(event.Y))
+		if point.In(layout.content) && !point.In(layout.inspector) {
+			translated.X -= float64(layout.content.Min.X)
+			translated.Y -= float64(layout.content.Min.Y)
+			return false, translated, false, nil
+		}
 		return true, translated, false, nil
 	}
+
 	return false, translated, false, nil
 }
 
@@ -596,6 +785,7 @@ func scrollbarThumb(track image.Rectangle, viewport, extent, offset float64, ver
 
 func (shell *graphiteShell) focusAddress() {
 	shell.addressFocused = true
+	shell.chromeFocus = shellFocusAddress
 	shell.selectAll = true
 	shell.navigationErr = ""
 	shell.revision++
@@ -616,12 +806,14 @@ func (shell *graphiteShell) handleAddressKey(
 	switch event.Key {
 	case "Enter":
 		shell.addressFocused = false
+		shell.chromeFocus = shellFocusContent
 		shell.selectAll = false
 		*state = inputState{}
 		return shell.navigate(ctx, page, shell.address)
 	case "Escape":
 		shell.address = shell.lastPageURL
 		shell.addressFocused = false
+		shell.chromeFocus = shellFocusNone
 		shell.selectAll = false
 		shell.navigationErr = ""
 		shell.revision++

@@ -11,6 +11,7 @@ import "C"
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"image"
 	"strings"
@@ -19,6 +20,55 @@ import (
 
 type cocoaBackend struct {
 	window *C.gossamer_cocoa_window
+}
+
+func (backend *cocoaBackend) UpdateAccessibility(snapshot AccessibilitySnapshot) error {
+	if backend == nil || backend.window == nil {
+		return fmt.Errorf("window: Cocoa backend is not open")
+	}
+	payload, err := json.Marshal(snapshot)
+	if err != nil {
+		return fmt.Errorf("window: encode Cocoa accessibility snapshot: %w", err)
+	}
+	nativePayload := C.CString(string(payload))
+	defer C.free(unsafe.Pointer(nativePayload))
+	var nativeError *C.char
+	if C.gossamer_cocoa_set_accessibility(backend.window, nativePayload, &nativeError) == 0 {
+		return cocoaError(nativeError, "set Cocoa accessibility tree")
+	}
+	C.free(unsafe.Pointer(nativeError))
+	return nil
+}
+
+func (backend *cocoaBackend) ShowContextMenu(menu ContextMenu) (ContextAction, error) {
+	if backend == nil || backend.window == nil {
+		return ContextActionNone, fmt.Errorf("window: Cocoa backend is not open")
+	}
+	actions := make([]ContextAction, 0, len(menu.Items))
+	labels := make([]string, 0, len(menu.Items))
+	for _, item := range menu.Items {
+		if !item.Enabled || item.Action == ContextActionNone || strings.TrimSpace(item.Label) == "" {
+			continue
+		}
+		actions = append(actions, item.Action)
+		labels = append(labels, strings.ReplaceAll(item.Label, "\n", " "))
+	}
+	if len(actions) == 0 {
+		return ContextActionNone, nil
+	}
+	nativeItems := C.CString(strings.Join(labels, "\n"))
+	defer C.free(unsafe.Pointer(nativeItems))
+	var selection C.int
+	var nativeError *C.char
+	if C.gossamer_cocoa_context_menu(backend.window, C.double(menu.X), C.double(menu.Y), nativeItems, &selection, &nativeError) == 0 {
+		return ContextActionNone, cocoaError(nativeError, "show Cocoa context menu")
+	}
+	C.free(unsafe.Pointer(nativeError))
+	index := int(selection) - 1
+	if index < 0 || index >= len(actions) {
+		return ContextActionNone, nil
+	}
+	return actions[index], nil
 }
 
 // NewNativeBackend returns the macOS AppKit backend. Run keeps every method on
@@ -85,6 +135,32 @@ func (backend *cocoaBackend) Present(frame *image.RGBA) error {
 	return nil
 }
 
+func (backend *cocoaBackend) SetTitle(title string) error {
+	if backend == nil || backend.window == nil {
+		return fmt.Errorf("window: Cocoa backend is not open")
+	}
+	nativeTitle := C.CString(title)
+	defer C.free(unsafe.Pointer(nativeTitle))
+	var nativeError *C.char
+	if C.gossamer_cocoa_set_title(backend.window, nativeTitle, &nativeError) == 0 {
+		return cocoaError(nativeError, "set Cocoa window title")
+	}
+	C.free(unsafe.Pointer(nativeError))
+	return nil
+}
+
+func (backend *cocoaBackend) SetCursor(cursor Cursor) error {
+	if backend == nil || backend.window == nil {
+		return fmt.Errorf("window: Cocoa backend is not open")
+	}
+	var nativeError *C.char
+	if C.gossamer_cocoa_set_cursor(backend.window, C.int(cursor), &nativeError) == 0 {
+		return cocoaError(nativeError, "set Cocoa cursor")
+	}
+	C.free(unsafe.Pointer(nativeError))
+	return nil
+}
+
 func (backend *cocoaBackend) Close() error {
 	if backend != nil && backend.window != nil {
 		C.gossamer_cocoa_close(backend.window)
@@ -136,6 +212,7 @@ func cocoaKey(keyCode uint16, characters string) (string, string) {
 		53: {"Escape", "Escape"}, 117: {"Delete", "Delete"},
 		123: {"ArrowLeft", "ArrowLeft"}, 124: {"ArrowRight", "ArrowRight"},
 		125: {"ArrowDown", "ArrowDown"}, 126: {"ArrowUp", "ArrowUp"},
+		97: {"F6", "F6"},
 	}
 	if value, ok := special[keyCode]; ok {
 		return value[1], value[0]

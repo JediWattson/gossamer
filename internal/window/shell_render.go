@@ -8,8 +8,10 @@ import (
 	"io"
 	"math"
 	"strings"
+	"unicode/utf16"
 
 	"github.com/JediWattson/gossamer/internal/browser"
+	computed "github.com/JediWattson/gossamer/internal/style"
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/gofont/gobold"
 	"golang.org/x/image/font/gofont/goregular"
@@ -132,6 +134,12 @@ func (shell *graphiteShell) compose(pageCanvas *image.RGBA, page *browser.Page) 
 	if err := shell.drawScrollbars(canvas, layout, page); err != nil {
 		return nil, err
 	}
+	if err := shell.drawPageStatus(canvas, layout, page); err != nil {
+		return nil, err
+	}
+	if err := shell.drawInteractionOverlay(canvas, layout, page); err != nil {
+		return nil, err
+	}
 
 	fillRect(canvas, image.Rect(0, 0, layout.rail.Min.X, graphiteTabHeight), graphitePalette.top)
 	fillRect(canvas, image.Rect(0, graphiteTabHeight, layout.rail.Min.X, graphiteChromeHeight), graphitePalette.surface)
@@ -150,10 +158,9 @@ func (shell *graphiteShell) compose(pageCanvas *image.RGBA, page *browser.Page) 
 		return nil, err
 	}
 	if shell.loading {
-		lineRight := layout.content.Max.X
-		if lineRight > 180 {
-			lineRight = 180
-		}
+		progress := shellNavigationProgress(page.Navigation())
+		lineRight := layout.content.Min.X + int(math.Round(float64(layout.content.Dx())*progress))
+		lineRight = maxInt(layout.content.Min.X+2, minInt(layout.content.Max.X, lineRight))
 		fillRect(canvas, image.Rect(0, graphiteChromeHeight-2, lineRight, graphiteChromeHeight), graphitePalette.teal)
 	}
 	return canvas, nil
@@ -198,14 +205,24 @@ func (shell *graphiteShell) drawTabs(canvas *image.RGBA, layout shellLayout) err
 		if active {
 			fill = graphitePalette.surface
 			textColor = graphitePalette.pearl
+		} else if index == shell.hoveredTab {
+			fill = graphitePalette.raised
+			textColor = graphitePalette.pearl
 		}
 		fillTopRoundedRect(canvas, tabLayout.body, graphiteTabTopRadius, fill)
+		if shell.chromeFocus == shellFocusTab && active {
+			strokeRoundedRect(canvas, tabLayout.body.Inset(2), graphiteTabTopRadius-2, 1, graphitePalette.teal)
+		}
 		if active {
 			fillRect(canvas, image.Rect(tabLayout.body.Min.X, tabLayout.body.Max.Y-1, tabLayout.body.Max.X, tabLayout.body.Max.Y), graphitePalette.tealDim)
 		}
 		textLeft := tabLayout.body.Min.X + 8
 		if tabLayout.body.Dx() >= 52 {
-			drawKnot(canvas, image.Pt(tabLayout.body.Min.X+16, tabLayout.body.Min.Y+14), 8)
+			if favicon := shell.tabs[index].page.Favicon(); favicon != nil {
+				drawScaledImage(canvas, image.Rect(tabLayout.body.Min.X+8, tabLayout.body.Min.Y+6, tabLayout.body.Min.X+24, tabLayout.body.Min.Y+22), favicon)
+			} else {
+				drawKnot(canvas, image.Pt(tabLayout.body.Min.X+16, tabLayout.body.Min.Y+14), 8)
+			}
 			textLeft = tabLayout.body.Min.X + 34
 		}
 		textRight := tabLayout.body.Max.X - 6
@@ -227,6 +244,10 @@ func (shell *graphiteShell) drawTabs(canvas *image.RGBA, layout shellLayout) err
 	if !layout.newTab.Empty() {
 		drawPlus(canvas, center(layout.newTab), graphitePalette.muted)
 	}
+	if !layout.tabOverflowBack.Empty() {
+		drawChevron(canvas, center(layout.tabOverflowBack), false, graphitePalette.muted)
+		drawChevron(canvas, center(layout.tabOverflowNext), true, graphitePalette.muted)
+	}
 	return nil
 }
 
@@ -241,7 +262,18 @@ func (shell *graphiteShell) drawToolbar(canvas *image.RGBA, layout shellLayout) 
 	}
 	drawChevron(canvas, center(layout.back), false, backColor)
 	drawChevron(canvas, center(layout.forward), true, forwardColor)
-	drawReload(canvas, center(layout.reload), graphitePalette.muted)
+	for focus, bounds := range map[shellFocus]image.Rectangle{
+		shellFocusBack: layout.back, shellFocusForward: layout.forward, shellFocusReload: layout.reload,
+	} {
+		if shell.chromeFocus == focus {
+			strokeRoundedRect(canvas, bounds.Inset(3), 8, 1, graphitePalette.teal)
+		}
+	}
+	if shell.loading {
+		drawStop(canvas, center(layout.reload), graphitePalette.muted)
+	} else {
+		drawReload(canvas, center(layout.reload), graphitePalette.muted)
+	}
 
 	addressFill := graphitePalette.ink
 	addressBorder := graphitePalette.border
@@ -253,7 +285,16 @@ func (shell *graphiteShell) drawToolbar(canvas *image.RGBA, layout shellLayout) 
 	}
 	fillRoundedRect(canvas, layout.address, graphiteAddressRadius, addressFill)
 	strokeRoundedRect(canvas, layout.address, graphiteAddressRadius, 1, addressBorder)
-	drawShield(canvas, image.Pt(layout.address.Min.X+17, center(layout.address).Y), graphitePalette.teal)
+	securityColor := graphitePalette.dim
+	switch shellSecurityFor(shell.activePage(), shell.navigationErr) {
+	case shellSecuritySecure:
+		securityColor = graphitePalette.teal
+	case shellSecurityInsecure:
+		securityColor = graphitePalette.violet
+	case shellSecurityError:
+		securityColor = graphitePalette.danger
+	}
+	drawShield(canvas, image.Pt(layout.address.Min.X+17, center(layout.address).Y), securityColor)
 	addressClip := image.Rect(layout.address.Min.X+33, layout.address.Min.Y+2, layout.address.Max.X-12, layout.address.Max.Y-2)
 	addressText := shell.address
 	textColor := graphitePalette.pearl
@@ -273,12 +314,153 @@ func (shell *graphiteShell) drawToolbar(canvas *image.RGBA, layout shellLayout) 
 	return nil
 }
 
+func (shell *graphiteShell) drawPageStatus(canvas *image.RGBA, layout shellLayout, page *browser.Page) error {
+	if page == nil || page.URL() == nil {
+		panel := layout.content.Inset(24)
+		if panel.Empty() {
+			return nil
+		}
+		centerPoint := center(panel)
+		drawKnot(canvas, image.Pt(centerPoint.X, centerPoint.Y-28), 20)
+		if err := shell.fonts.draw(canvas, panel, "NEW STRAND", centerPoint.X-48, centerPoint.Y+14, 14, graphitePalette.pearl, true); err != nil {
+			return err
+		}
+		return shell.fonts.draw(canvas, panel, "Search or enter an address above", centerPoint.X-112, centerPoint.Y+40, 12, graphitePalette.muted, false)
+	}
+	if shell.navigationErr == "" || layout.errorBanner.Empty() {
+		return nil
+	}
+	fillRectAlpha(canvas, layout.errorBanner, color.NRGBA{R: 0x35, G: 0x13, B: 0x1b, A: 0xf2})
+	messageClip := layout.errorBanner.Inset(12)
+	messageClip.Max.X = layout.errorRetry.Min.X - 8
+	message := shell.navigationErr
+	if len(message) > 72 {
+		message = message[:69] + "..."
+	}
+	if err := shell.fonts.draw(canvas, messageClip, message, messageClip.Min.X, layout.errorBanner.Min.Y+31, 12, graphitePalette.pearl, false); err != nil {
+		return err
+	}
+	fillRoundedRect(canvas, layout.errorRetry, 8, graphitePalette.raised)
+	return shell.fonts.draw(canvas, layout.errorRetry, "Retry", layout.errorRetry.Min.X+18, layout.errorRetry.Min.Y+21, 12, graphitePalette.pearl, true)
+}
+
+func (shell *graphiteShell) drawInteractionOverlay(canvas *image.RGBA, layout shellLayout, page *browser.Page) error {
+	if shell == nil || page == nil {
+		return nil
+	}
+	state := shell.activeInputState()
+	if state == nil {
+		return nil
+	}
+	if state.hoverTarget.Node != 0 {
+		shell.drawElementScrollbarOverlay(canvas, layout, page, state.hoverTarget)
+	}
+	focus := state.focusTarget
+	if focus.Node == 0 {
+		if active, ok := page.ActiveElementHandle(); ok {
+			focus = active
+		}
+	}
+	if focus.Node == 0 {
+		return nil
+	}
+	presentation, err := page.TextControlPresentation(focus)
+	if err != nil {
+		return nil
+	}
+	geometry, err := page.ElementGeometry(focus)
+	if err != nil || geometry.Rect.Width <= 2 || geometry.Rect.Height <= 2 {
+		return nil
+	}
+	control := image.Rect(
+		layout.content.Min.X+int(math.Round(geometry.Rect.X)),
+		layout.content.Min.Y+int(math.Round(geometry.Rect.Y)),
+		layout.content.Min.X+int(math.Round(geometry.Rect.X+geometry.Rect.Width)),
+		layout.content.Min.Y+int(math.Round(geometry.Rect.Y+geometry.Rect.Height)),
+	).Intersect(layout.content)
+	if control.Empty() {
+		return nil
+	}
+	inner := control.Inset(4)
+	if inner.Empty() {
+		return nil
+	}
+	value := presentation.Value
+	if presentation.Password {
+		value = strings.Repeat("•", len([]rune(value)))
+	}
+	if presentation.Multiline {
+		value = strings.Split(value, "\n")[0]
+	}
+	units := utf16.Encode([]rune(presentation.Value))
+	length := maxInt(1, len(units))
+	start := maxInt(0, minInt(length, presentation.SelectionStart))
+	end := maxInt(0, minInt(length, presentation.SelectionEnd))
+	if end < start {
+		start, end = end, start
+	}
+	textWidth := maxInt(1, inner.Dx()-2)
+	xForOffset := func(offset int) int {
+		return inner.Min.X + int(math.Round(float64(textWidth)*float64(offset)/float64(length)))
+	}
+	if start != end {
+		selection := image.Rect(xForOffset(start), inner.Min.Y, xForOffset(end), inner.Max.Y)
+		fillRectAlpha(canvas, selection, color.NRGBA{R: 0x2b, G: 0x79, B: 0x7b, A: 0x88})
+	} else {
+		caretX := xForOffset(start)
+		fillRect(canvas, image.Rect(caretX, inner.Min.Y+1, caretX+1, inner.Max.Y-1), graphitePalette.teal)
+	}
+	baseline := minInt(inner.Max.Y-2, inner.Min.Y+15)
+	return shell.fonts.draw(canvas, inner, value, inner.Min.X, baseline, 12, graphitePalette.pearl, false)
+}
+
+func (shell *graphiteShell) drawElementScrollbarOverlay(canvas *image.RGBA, layout shellLayout, page *browser.Page, handle browser.NodeHandle) {
+	geometry, err := page.ElementGeometry(handle)
+	if err != nil || geometry.Rect.Width <= 0 || geometry.Rect.Height <= 0 || geometry.ScrollHeight <= geometry.ClientHeight {
+		return
+	}
+	track := image.Rect(
+		layout.content.Min.X+int(math.Round(geometry.Rect.X+geometry.Rect.Width))-7,
+		layout.content.Min.Y+int(math.Round(geometry.Rect.Y))+2,
+		layout.content.Min.X+int(math.Round(geometry.Rect.X+geometry.Rect.Width))-2,
+		layout.content.Min.Y+int(math.Round(geometry.Rect.Y+geometry.Rect.Height))-2,
+	).Intersect(layout.content)
+	if track.Empty() {
+		return
+	}
+	thumb := scrollbarThumb(track, geometry.ClientHeight, geometry.ScrollHeight, geometry.ScrollTop, true)
+	fillRoundedRect(canvas, track, 2, graphitePalette.ink)
+	fillRoundedRect(canvas, thumb, 2, graphitePalette.dim)
+}
+
+func drawScaledImage(destination *image.RGBA, bounds image.Rectangle, source image.Image) {
+	if destination == nil || source == nil || bounds.Empty() || source.Bounds().Empty() {
+		return
+	}
+	sourceBounds := source.Bounds()
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		sourceY := sourceBounds.Min.Y + (y-bounds.Min.Y)*sourceBounds.Dy()/bounds.Dy()
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			if image.Pt(x, y).In(destination.Bounds()) {
+				sourceX := sourceBounds.Min.X + (x-bounds.Min.X)*sourceBounds.Dx()/bounds.Dx()
+				destination.Set(x, y, source.At(sourceX, sourceY))
+			}
+		}
+	}
+}
+
 func (shell *graphiteShell) drawRail(canvas *image.RGBA, layout shellLayout, page *browser.Page) error {
 	centerX := center(layout.rail).X
 	drawKnot(canvas, image.Pt(centerX, 22), 9)
-	drawRailGlyph(canvas, image.Pt(centerX, 72), "nodes", graphitePalette.teal)
-	drawRailGlyph(canvas, image.Pt(centerX, 120), "list", graphitePalette.muted)
-	drawRailGlyph(canvas, image.Pt(centerX, 168), "pulse", graphitePalette.violet)
+	kinds := [...]string{"nodes", "list", "box", "pulse", "memory"}
+	for index, bounds := range layout.railPanels {
+		stroke := graphitePalette.muted
+		if shell.inspectorOpen && shell.inspectorPanel == inspectorPanel(index) {
+			stroke = graphitePalette.teal
+			fillRect(canvas, image.Rect(bounds.Min.X, bounds.Min.Y, bounds.Min.X+2, bounds.Max.Y), graphitePalette.teal)
+		}
+		drawRailGlyph(canvas, center(bounds), kinds[index], stroke)
+	}
 	disclosureColor := graphitePalette.muted
 	if shell.inspectorOpen {
 		disclosureColor = graphitePalette.teal
@@ -302,51 +484,170 @@ func (shell *graphiteShell) drawInspector(canvas *image.RGBA, layout shellLayout
 	content := panel.Inset(18)
 	content.Max.Y = panel.Max.Y - 12
 	y := panel.Min.Y + 28
+	titles := [...]string{"DOM", "COMPUTED STYLE", "LAYOUT", "NETWORK", "MEMORY + OWNERSHIP"}
 	drawKnot(canvas, image.Pt(content.Min.X+10, y-5), 10)
-	if err := shell.fonts.draw(canvas, content, "GOSSAMER", content.Min.X+32, y, 13, graphitePalette.pearl, true); err != nil {
+	if err := shell.fonts.draw(canvas, content, titles[shell.inspectorPanel], content.Min.X+32, y, 13, graphitePalette.pearl, true); err != nil {
 		return err
 	}
 	y += 34
-	if err := shell.drawInspectorLabel(canvas, content, &y, "ENGINE SOCKET", graphitePalette.teal); err != nil {
-		return err
-	}
-	if err := shell.drawInspectorValue(canvas, content, &y, "Active", "V8 reference"); err != nil {
-		return err
-	}
-	if err := shell.drawInspectorValue(canvas, content, &y, "Target", "Strand"); err != nil {
-		return err
-	}
-	y += 12
-	if err := shell.drawInspectorLabel(canvas, content, &y, "GO KERNEL", graphitePalette.violet); err != nil {
-		return err
-	}
-	profile := page.Realm.Profile()
-	navigation := page.Navigation()
-	values := [][2]string{
-		{"Navigation", shellNavigationLabel(navigation)},
-		{"Regions", fmt.Sprint(profile.Memory.LiveRegions)},
-		{"Native objects", fmt.Sprint(profile.Memory.LiveHostObjects)},
-		{"Ownership claims", fmt.Sprint(profile.Ownership.LiveObjects)},
-		{"Queue depth", fmt.Sprint(profile.TaskDepth + profile.MicrotaskDepth)},
-	}
-	for _, value := range values {
-		if err := shell.drawInspectorValue(canvas, content, &y, value[0], value[1]); err != nil {
+	target := shell.inspectorTarget(page)
+	if node, err := page.InspectorNode(target); err == nil {
+		label := "<" + node.Name + ">"
+		if err := shell.drawInspectorValue(canvas, content, &y, "Selected", label); err != nil {
 			return err
 		}
+		y += 8
 	}
-	if shell.navigationErr != "" {
-		y += 10
-		if err := shell.fonts.draw(canvas, content, "NAVIGATION ERROR", content.Min.X, y, 10, graphitePalette.danger, true); err != nil {
-			return err
-		}
-		y += 18
-		message := shell.navigationErr
-		if len(message) > 64 {
-			message = message[:61] + "..."
-		}
-		return shell.fonts.draw(canvas, content, message, content.Min.X, y, 11, graphitePalette.muted, false)
+	switch shell.inspectorPanel {
+	case inspectorDOM:
+		return shell.drawDOMInspector(canvas, content, &y, page)
+	case inspectorStyles:
+		return shell.drawStyleInspector(canvas, content, &y, page, target)
+	case inspectorLayout:
+		return shell.drawLayoutInspector(canvas, content, &y, page, target)
+	case inspectorNetwork:
+		return shell.drawNetworkInspector(canvas, content, &y, page)
+	case inspectorMemory:
+		return shell.drawMemoryInspector(canvas, content, &y, page)
 	}
 	return nil
+}
+
+func (shell *graphiteShell) inspectorTarget(page *browser.Page) browser.NodeHandle {
+	if state := shell.activeInputState(); state != nil {
+		if state.hoverTarget.Node != 0 {
+			return state.hoverTarget
+		}
+		if state.focusTarget.Node != 0 {
+			return state.focusTarget
+		}
+	}
+	if active, ok := page.ActiveElementHandle(); ok {
+		return active
+	}
+	root, _ := page.DocumentElementHandle()
+	return root
+}
+
+func (shell *graphiteShell) drawDOMInspector(canvas *image.RGBA, clip image.Rectangle, y *int, page *browser.Page) error {
+	lines, err := page.InspectorDOMLines(18)
+	if err != nil {
+		return shell.drawInspectorError(canvas, clip, y, err)
+	}
+	for _, line := range lines {
+		if *y > clip.Max.Y-8 {
+			break
+		}
+		if len(line) > 42 {
+			line = line[:39] + "..."
+		}
+		if err := shell.fonts.draw(canvas, clip, line, clip.Min.X, *y, 10, graphitePalette.pearl, false); err != nil {
+			return err
+		}
+		*y += 17
+	}
+	return nil
+}
+
+func (shell *graphiteShell) drawStyleInspector(canvas *image.RGBA, clip image.Rectangle, y *int, page *browser.Page, target browser.NodeHandle) error {
+	style, err := page.ComputedStyle(target)
+	if err != nil {
+		return shell.drawInspectorError(canvas, clip, y, err)
+	}
+	for _, name := range computed.ComputedPropertyNames(style) {
+		if *y > clip.Max.Y-8 {
+			break
+		}
+		value, found := computed.ComputedPropertyValue(style, name)
+		if !found {
+			continue
+		}
+		if len(value) > 18 {
+			value = value[:15] + "..."
+		}
+		if err := shell.drawInspectorValue(canvas, clip, y, name, value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (shell *graphiteShell) drawLayoutInspector(canvas *image.RGBA, clip image.Rectangle, y *int, page *browser.Page, target browser.NodeHandle) error {
+	geometry, err := page.ElementGeometry(target)
+	if err != nil {
+		return shell.drawInspectorError(canvas, clip, y, err)
+	}
+	values := [][2]string{
+		{"Position", fmt.Sprintf("%.0f, %.0f", geometry.Rect.X, geometry.Rect.Y)},
+		{"Size", fmt.Sprintf("%.0f x %.0f", geometry.Rect.Width, geometry.Rect.Height)},
+		{"Client", fmt.Sprintf("%.0f x %.0f", geometry.ClientWidth, geometry.ClientHeight)},
+		{"Offset", fmt.Sprintf("%.0f x %.0f", geometry.OffsetWidth, geometry.OffsetHeight)},
+		{"Scroll size", fmt.Sprintf("%.0f x %.0f", geometry.ScrollWidth, geometry.ScrollHeight)},
+		{"Scroll offset", fmt.Sprintf("%.0f, %.0f", geometry.ScrollLeft, geometry.ScrollTop)},
+		{"Client rects", fmt.Sprint(len(geometry.ClientRects))},
+	}
+	return shell.drawInspectorValues(canvas, clip, y, values)
+}
+
+func (shell *graphiteShell) drawNetworkInspector(canvas *image.RGBA, clip image.Rectangle, y *int, page *browser.Page) error {
+	navigation := page.Navigation()
+	location := "about:blank"
+	if navigation.URL != nil {
+		location = navigation.URL.String()
+	} else if page.URL() != nil {
+		location = page.URL().String()
+	}
+	values := [][2]string{
+		{"State", shellNavigationLabel(navigation)},
+		{"URL", location},
+		{"Resources", fmt.Sprintf("%d total / %d pending", navigation.ResourcesTotal, navigation.ResourcesPending)},
+		{"Resource errors", fmt.Sprint(navigation.ResourcesFailed)},
+		{"Scripts", fmt.Sprintf("%d total / %d pending", navigation.ScriptsTotal, navigation.ScriptsPending)},
+		{"Script errors", fmt.Sprint(navigation.ScriptsFailed)},
+	}
+	if navigation.Err != nil {
+		values = append(values, [2]string{"Error", navigation.Err.Error()})
+	}
+	return shell.drawInspectorValues(canvas, clip, y, values)
+}
+
+func (shell *graphiteShell) drawMemoryInspector(canvas *image.RGBA, clip image.Rectangle, y *int, page *browser.Page) error {
+	profile := page.Realm.Profile()
+	values := [][2]string{
+		{"Regions", fmt.Sprint(profile.Memory.LiveRegions)},
+		{"Live bytes", fmt.Sprint(profile.Memory.LiveBytes)},
+		{"Native objects", fmt.Sprint(profile.Memory.LiveHostObjects)},
+		{"Ownership claims", fmt.Sprint(profile.Ownership.LiveObjects)},
+		{"Allocations", fmt.Sprint(profile.Memory.Allocations)},
+		{"Frees", fmt.Sprint(profile.Memory.Frees)},
+		{"Bulk releases", fmt.Sprint(profile.Memory.BulkRegionReleases)},
+		{"Promotions", fmt.Sprint(profile.Memory.AutomaticPromotions)},
+		{"Queue depth", fmt.Sprint(profile.TaskDepth + profile.MicrotaskDepth)},
+	}
+	return shell.drawInspectorValues(canvas, clip, y, values)
+}
+
+func (shell *graphiteShell) drawInspectorValues(canvas *image.RGBA, clip image.Rectangle, y *int, values [][2]string) error {
+	for _, value := range values {
+		if *y > clip.Max.Y-8 {
+			break
+		}
+		if len(value[1]) > 24 {
+			value[1] = value[1][:21] + "..."
+		}
+		if err := shell.drawInspectorValue(canvas, clip, y, value[0], value[1]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (shell *graphiteShell) drawInspectorError(canvas *image.RGBA, clip image.Rectangle, y *int, cause error) error {
+	message := cause.Error()
+	if len(message) > 36 {
+		message = message[:33] + "..."
+	}
+	return shell.fonts.draw(canvas, clip, message, clip.Min.X, *y, 10, graphitePalette.danger, false)
 }
 
 func (shell *graphiteShell) drawInspectorLabel(canvas *image.RGBA, clip image.Rectangle, y *int, label string, labelColor color.NRGBA) error {
@@ -619,6 +920,10 @@ func drawReload(dst *image.RGBA, middle image.Point, stroke color.NRGBA) {
 	drawThickLine(dst, middle.Add(image.Pt(8, -6)), middle.Add(image.Pt(8, -2)), 2, stroke)
 }
 
+func drawStop(dst *image.RGBA, middle image.Point, fill color.NRGBA) {
+	fillRoundedRect(dst, image.Rect(middle.X-5, middle.Y-5, middle.X+5, middle.Y+5), 2, fill)
+}
+
 func drawShield(dst *image.RGBA, middle image.Point, stroke color.NRGBA) {
 	points := []image.Point{
 		middle.Add(image.Pt(0, -7)), middle.Add(image.Pt(6, -4)), middle.Add(image.Pt(5, 3)),
@@ -646,6 +951,18 @@ func drawRailGlyph(dst *image.RGBA, middle image.Point, kind string, stroke colo
 			middle.Add(image.Pt(2, 7)), middle.Add(image.Pt(5, -2)), middle.Add(image.Pt(8, -2)),
 		}
 		drawPolyline(dst, points, 1, stroke)
+	case "box":
+		drawPolyline(dst, []image.Point{
+			middle.Add(image.Pt(-7, -6)), middle.Add(image.Pt(7, -6)), middle.Add(image.Pt(7, 6)),
+			middle.Add(image.Pt(-7, 6)), middle.Add(image.Pt(-7, -6)),
+		}, 1, stroke)
+		fillRect(dst, image.Rect(middle.X-3, middle.Y-2, middle.X+4, middle.Y+3), stroke)
+	case "memory":
+		for y := -5; y <= 5; y += 5 {
+			drawThickLine(dst, middle.Add(image.Pt(-7, y)), middle.Add(image.Pt(7, y)), 2, stroke)
+		}
+		drawThickLine(dst, middle.Add(image.Pt(-5, -7)), middle.Add(image.Pt(-5, 7)), 1, stroke)
+		drawThickLine(dst, middle.Add(image.Pt(5, -7)), middle.Add(image.Pt(5, 7)), 1, stroke)
 	}
 }
 

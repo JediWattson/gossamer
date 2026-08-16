@@ -111,6 +111,35 @@ func TestNavigationSequencesDocumentResourcesAndRenderThroughRealmTasks(t *testi
 	}
 }
 
+func TestCancelNavigationStopsCurrentDocumentLoad(t *testing.T) {
+	t.Parallel()
+
+	engine, err := browser.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close()
+	initialURL, _ := url.Parse("https://example.test/initial")
+	page, err := engine.NewPage(dom.NewDocument(), initialURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := newSupersedingDocumentLoader()
+	navigation, err := page.Navigate(context.Background(), "https://example.test/a", client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitSignal(t, client.firstStarted, "blocked document request")
+	if err := page.CancelNavigation(navigation); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := page.Navigation()
+	if snapshot.ID != navigation || snapshot.State != browser.NavigationCanceled || !errors.Is(snapshot.Err, context.Canceled) {
+		t.Fatalf("canceled navigation = %#v", snapshot)
+	}
+	close(client.firstRelease)
+}
+
 func TestNewNavigationRejectsLateDocumentCompletionAndOldNodeHandles(t *testing.T) {
 	t.Parallel()
 

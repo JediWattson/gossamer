@@ -34,6 +34,16 @@ int gossamer_cocoa_next_event(gossamer_cocoa_window *window,
 int gossamer_cocoa_present(gossamer_cocoa_window *window,
                            const uint8_t *pixels, int width, int height,
                            int stride, char **error);
+int gossamer_cocoa_set_title(gossamer_cocoa_window *window, const char *title,
+                             char **error);
+int gossamer_cocoa_set_cursor(gossamer_cocoa_window *window, int cursor,
+                              char **error);
+int gossamer_cocoa_context_menu(gossamer_cocoa_window *window, double x,
+                                double y, const char *items, int *selection,
+                                char **error);
+int gossamer_cocoa_set_accessibility(gossamer_cocoa_window *window,
+                                     const char *snapshot_json,
+                                     char **error);
 void gossamer_cocoa_close(gossamer_cocoa_window *window);
 int gossamer_cocoa_read_clipboard(char **value, char **error);
 int gossamer_cocoa_write_clipboard(const char *value, char **error);

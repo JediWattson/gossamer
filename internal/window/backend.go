@@ -80,3 +80,55 @@ type ClipboardBackend interface {
 	ReadClipboardText() (string, error)
 	WriteClipboardText(string) error
 }
+
+// TitleBackend is an optional native capability for keeping the operating
+// system window title synchronized with the active browser tab.
+type TitleBackend interface {
+	SetTitle(string) error
+}
+
+type Cursor uint8
+
+const (
+	CursorDefault Cursor = iota
+	CursorPointer
+	CursorText
+	CursorResizeHorizontal
+	CursorResizeVertical
+)
+
+// CursorBackend is an optional native capability. Cursor selection remains a
+// Go shell decision derived from copied geometry and stable NodeHandles.
+type CursorBackend interface {
+	SetCursor(Cursor) error
+}
+
+type ContextAction string
+
+const (
+	ContextActionNone     ContextAction = ""
+	ContextActionBack     ContextAction = "back"
+	ContextActionForward  ContextAction = "forward"
+	ContextActionReload   ContextAction = "reload"
+	ContextActionOpenLink ContextAction = "open-link-new-tab"
+	ContextActionCopyLink ContextAction = "copy-link"
+	ContextActionDownload ContextAction = "download"
+)
+
+type ContextMenuItem struct {
+	Action  ContextAction
+	Label   string
+	Enabled bool
+}
+
+type ContextMenu struct {
+	X, Y  float64
+	Items []ContextMenuItem
+}
+
+// ContextMenuBackend optionally presents a native menu and returns only the
+// selected action token. The target NodeHandle and action execution remain in
+// the Go browser shell.
+type ContextMenuBackend interface {
+	ShowContextMenu(ContextMenu) (ContextAction, error)
+}

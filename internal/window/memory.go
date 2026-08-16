@@ -11,13 +11,131 @@ import (
 // loop without depending on a display server. Presented images are cloned so
 // tests observe the same ownership boundary as a native front buffer.
 type MemoryBackend struct {
-	mutex     sync.Mutex
-	events    []Event
-	frames    []*image.RGBA
-	config    Config
-	clipboard string
-	open      bool
-	closed    bool
+	mutex          sync.Mutex
+	events         []Event
+	frames         []*image.RGBA
+	config         Config
+	titles         []string
+	cursors        []Cursor
+	menus          []ContextMenu
+	contextActions []ContextAction
+	accessibility  []AccessibilitySnapshot
+	clipboard      string
+	open           bool
+	closed         bool
+}
+
+func (backend *MemoryBackend) UpdateAccessibility(snapshot AccessibilitySnapshot) error {
+	if backend == nil {
+		return fmt.Errorf("window: nil memory backend")
+	}
+	backend.mutex.Lock()
+	defer backend.mutex.Unlock()
+	if !backend.open || backend.closed {
+		return fmt.Errorf("window: memory backend is not open")
+	}
+	copySnapshot := snapshot
+	copySnapshot.Nodes = append([]AccessibilityNode(nil), snapshot.Nodes...)
+	backend.accessibility = append(backend.accessibility, copySnapshot)
+	return nil
+}
+
+func (backend *MemoryBackend) AccessibilitySnapshots() []AccessibilitySnapshot {
+	if backend == nil {
+		return nil
+	}
+	backend.mutex.Lock()
+	defer backend.mutex.Unlock()
+	result := make([]AccessibilitySnapshot, len(backend.accessibility))
+	for index, snapshot := range backend.accessibility {
+		result[index] = snapshot
+		result[index].Nodes = append([]AccessibilityNode(nil), snapshot.Nodes...)
+	}
+	return result
+}
+
+func (backend *MemoryBackend) QueueContextAction(action ContextAction) {
+	if backend == nil {
+		return
+	}
+	backend.mutex.Lock()
+	backend.contextActions = append(backend.contextActions, action)
+	backend.mutex.Unlock()
+}
+
+func (backend *MemoryBackend) ShowContextMenu(menu ContextMenu) (ContextAction, error) {
+	if backend == nil {
+		return ContextActionNone, fmt.Errorf("window: nil memory backend")
+	}
+	backend.mutex.Lock()
+	defer backend.mutex.Unlock()
+	copyMenu := menu
+	copyMenu.Items = append([]ContextMenuItem(nil), menu.Items...)
+	backend.menus = append(backend.menus, copyMenu)
+	if len(backend.contextActions) == 0 {
+		return ContextActionNone, nil
+	}
+	action := backend.contextActions[0]
+	backend.contextActions = backend.contextActions[1:]
+	return action, nil
+}
+
+func (backend *MemoryBackend) ContextMenus() []ContextMenu {
+	if backend == nil {
+		return nil
+	}
+	backend.mutex.Lock()
+	defer backend.mutex.Unlock()
+	result := make([]ContextMenu, len(backend.menus))
+	for index, menu := range backend.menus {
+		result[index] = menu
+		result[index].Items = append([]ContextMenuItem(nil), menu.Items...)
+	}
+	return result
+}
+
+func (backend *MemoryBackend) SetCursor(cursor Cursor) error {
+	if backend == nil {
+		return fmt.Errorf("window: nil memory backend")
+	}
+	backend.mutex.Lock()
+	defer backend.mutex.Unlock()
+	if !backend.open || backend.closed {
+		return fmt.Errorf("window: memory backend is not open")
+	}
+	backend.cursors = append(backend.cursors, cursor)
+	return nil
+}
+
+func (backend *MemoryBackend) Cursors() []Cursor {
+	if backend == nil {
+		return nil
+	}
+	backend.mutex.Lock()
+	defer backend.mutex.Unlock()
+	return append([]Cursor(nil), backend.cursors...)
+}
+
+func (backend *MemoryBackend) SetTitle(title string) error {
+	if backend == nil {
+		return fmt.Errorf("window: nil memory backend")
+	}
+	backend.mutex.Lock()
+	defer backend.mutex.Unlock()
+	if !backend.open || backend.closed {
+		return fmt.Errorf("window: memory backend is not open")
+	}
+	backend.titles = append(backend.titles, title)
+	return nil
+}
+
+func (backend *MemoryBackend) Titles() []string {
+	if backend == nil {
+		return nil
+	}
+	backend.mutex.Lock()
+	defer backend.mutex.Unlock()
+	return append([]string(nil), backend.titles...)
 }
 
 func (backend *MemoryBackend) ReadClipboardText() (string, error) {

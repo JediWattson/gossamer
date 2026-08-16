@@ -295,6 +295,32 @@ func (page *Page) Navigation() NavigationSnapshot {
 	return snapshot
 }
 
+// CancelNavigation stops the current non-terminal navigation without closing
+// the Page or changing its committed history entry. Native browser chrome uses
+// this for a loading Stop control; cancellation still crosses the Page lock
+// and the navigation context owned by the browser kernel.
+func (page *Page) CancelNavigation(id NavigationID) error {
+	if page == nil {
+		return fmt.Errorf("browser: nil page")
+	}
+	page.mutex.Lock()
+	defer page.mutex.Unlock()
+	if page.closed {
+		return ErrPageClosed
+	}
+	if id == 0 || page.navigation.id == 0 {
+		return ErrNoNavigation
+	}
+	if page.navigation.id != id {
+		return fmt.Errorf("%w: navigation %d is no longer current", ErrNavigationSuperseded, id)
+	}
+	if page.navigation.state.terminal() {
+		return nil
+	}
+	page.cancelNavigationLocked(context.Canceled)
+	return nil
+}
+
 func (page *Page) DocumentGeneration() DocumentGeneration {
 	if page == nil {
 		return 0
@@ -393,8 +419,17 @@ func prepareNavigation(ctx context.Context, rawURL string, client DocumentLoader
 		return preparedNavigation{}, fmt.Errorf("browser: discover page scripts: %w", err)
 	}
 	fetcher, _ := client.(resource.Fetcher)
-	if len(requests) != 0 && fetcher == nil {
-		return preparedNavigation{}, ErrResourceLoaderUnavailable
+	if fetcher == nil && len(requests) != 0 {
+		available := requests[:0]
+		for _, request := range requests {
+			if !request.optional {
+				available = append(available, request)
+			}
+		}
+		requests = available
+		if len(requests) != 0 {
+			return preparedNavigation{}, ErrResourceLoaderUnavailable
+		}
 	}
 	return preparedNavigation{
 		document:        document,

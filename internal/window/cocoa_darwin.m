@@ -51,6 +51,13 @@ static void gossamer_queue_text_event(struct gossamer_cocoa_window *state,
 }
 @end
 
+@interface GossamerMenuTarget : NSObject {
+ @public
+  NSInteger _selection;
+}
+- (void)choose:(id)sender;
+@end
+
 struct gossamer_cocoa_window {
   NSWindow *window;
   GossamerView *view;
@@ -290,6 +297,13 @@ static void gossamer_draw_frame(CGContextRef context, CGRect bounds,
 }
 @end
 
+@implementation GossamerMenuTarget
+- (void)choose:(id)sender {
+  if ([sender isKindOfClass:[NSMenuItem class]])
+    _selection = [(NSMenuItem *)sender tag];
+}
+@end
+
 gossamer_cocoa_window *gossamer_cocoa_open(const char *title, int width,
                                             int height, char **error) {
   @autoreleasepool {
@@ -347,6 +361,165 @@ gossamer_cocoa_window *gossamer_cocoa_open(const char *title, int width,
     state->last_width = width;
     state->last_height = height;
     return state;
+  }
+}
+
+int gossamer_cocoa_set_title(gossamer_cocoa_window *state, const char *title,
+                             char **error) {
+  @autoreleasepool {
+    if (error != NULL)
+      *error = NULL;
+    if (state == NULL || state->window == nil) {
+      gossamer_set_error(error, @"native window is not open");
+      return 0;
+    }
+    NSString *value = title == NULL ? @"Gossamer"
+                                     : [NSString stringWithUTF8String:title];
+    [state->window setTitle:value == nil ? @"Gossamer" : value];
+    return 1;
+  }
+}
+
+int gossamer_cocoa_set_cursor(gossamer_cocoa_window *state, int cursor,
+                              char **error) {
+  @autoreleasepool {
+    if (error != NULL)
+      *error = NULL;
+    if (state == NULL || state->window == nil) {
+      gossamer_set_error(error, @"native window is not open");
+      return 0;
+    }
+    NSCursor *native = [NSCursor arrowCursor];
+    switch (cursor) {
+    case 1: native = [NSCursor pointingHandCursor]; break;
+    case 2: native = [NSCursor IBeamCursor]; break;
+    case 3: native = [NSCursor resizeLeftRightCursor]; break;
+    case 4: native = [NSCursor resizeUpDownCursor]; break;
+    default: break;
+    }
+    [native set];
+    return 1;
+  }
+}
+
+int gossamer_cocoa_context_menu(gossamer_cocoa_window *state, double x,
+                                double y, const char *items, int *selection,
+                                char **error) {
+  @autoreleasepool {
+    if (error != NULL)
+      *error = NULL;
+    if (selection != NULL)
+      *selection = 0;
+    if (state == NULL || state->view == nil || items == NULL) {
+      gossamer_set_error(error, @"native window, view, or menu items are null");
+      return 0;
+    }
+    NSString *source = [NSString stringWithUTF8String:items];
+    if (source == nil) {
+      gossamer_set_error(error, @"context menu labels are not UTF-8");
+      return 0;
+    }
+    GossamerMenuTarget *target = [[GossamerMenuTarget alloc] init];
+    NSMenu *menu = [[NSMenu alloc] initWithTitle:@""];
+    NSArray<NSString *> *labels = [source componentsSeparatedByString:@"\n"];
+    NSInteger tag = 1;
+    for (NSString *label in labels) {
+      if ([label length] == 0)
+        continue;
+      NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:label
+                                                   action:@selector(choose:)
+                                            keyEquivalent:@""];
+      [item setTarget:target];
+      [item setTag:tag++];
+      [menu addItem:item];
+      [item release];
+    }
+    NSPoint point = NSMakePoint(x, NSHeight([state->view bounds]) - y);
+    [menu popUpMenuPositioningItem:nil atLocation:point inView:state->view];
+    if (selection != NULL)
+      *selection = (int)target->_selection;
+    [menu release];
+    [target release];
+    return 1;
+  }
+}
+
+static NSAccessibilityRole gossamer_accessibility_role(NSString *role) {
+  if ([role isEqualToString:@"application"])
+    return NSAccessibilityApplicationRole;
+  if ([role isEqualToString:@"tab-list"])
+    return NSAccessibilityTabGroupRole;
+  if ([role isEqualToString:@"tab"])
+    return NSAccessibilityRadioButtonRole;
+  if ([role isEqualToString:@"button"])
+    return NSAccessibilityButtonRole;
+  if ([role isEqualToString:@"text-field"])
+    return NSAccessibilityTextFieldRole;
+  if ([role isEqualToString:@"web-area"])
+    return NSAccessibilityWebAreaRole;
+  return NSAccessibilityGroupRole;
+}
+
+int gossamer_cocoa_set_accessibility(gossamer_cocoa_window *state,
+                                     const char *snapshot_json,
+                                     char **error) {
+  @autoreleasepool {
+    if (error != NULL)
+      *error = NULL;
+    if (state == NULL || state->view == nil || snapshot_json == NULL) {
+      gossamer_set_error(error, @"native view or accessibility snapshot is null");
+      return 0;
+    }
+    NSData *data = [NSData dataWithBytes:snapshot_json
+                                  length:strlen(snapshot_json)];
+    NSError *decodeError = nil;
+    NSDictionary *snapshot = [NSJSONSerialization JSONObjectWithData:data
+                                                              options:0
+                                                                error:&decodeError];
+    if (![snapshot isKindOfClass:[NSDictionary class]]) {
+      gossamer_set_error(error, decodeError == nil
+                                    ? @"accessibility snapshot is not an object"
+                                    : [decodeError localizedDescription]);
+      return 0;
+    }
+    NSArray *nodes = [snapshot objectForKey:@"nodes"];
+    if (![nodes isKindOfClass:[NSArray class]]) {
+      gossamer_set_error(error, @"accessibility snapshot nodes are missing");
+      return 0;
+    }
+    NSMutableArray *children = [NSMutableArray arrayWithCapacity:[nodes count]];
+    NSRect viewBounds = [state->view bounds];
+    for (NSDictionary *node in nodes) {
+      if (![node isKindOfClass:[NSDictionary class]] ||
+          [[node objectForKey:@"id"] isEqualToString:@"graphite"])
+        continue;
+      NSAccessibilityElement *element = [[[NSAccessibilityElement alloc] init] autorelease];
+      [element setAccessibilityParent:state->view];
+      [element setAccessibilityRole:gossamer_accessibility_role([node objectForKey:@"role"])];
+      NSString *label = [node objectForKey:@"label"];
+      if ([label isKindOfClass:[NSString class]])
+        [element setAccessibilityLabel:label];
+      NSString *value = [node objectForKey:@"value"];
+      if ([value isKindOfClass:[NSString class]] && [value length] != 0)
+        [element setAccessibilityValue:value];
+      [element setAccessibilityEnabled:[[node objectForKey:@"enabled"] boolValue]];
+      [element setAccessibilitySelected:[[node objectForKey:@"selected"] boolValue]];
+      double x = [[node objectForKey:@"x"] doubleValue];
+      double y = [[node objectForKey:@"y"] doubleValue];
+      double width = [[node objectForKey:@"width"] doubleValue];
+      double height = [[node objectForKey:@"height"] doubleValue];
+      NSRect local = NSMakeRect(x, NSHeight(viewBounds) - y - height,
+                                width, height);
+      NSRect windowRect = [state->view convertRect:local toView:nil];
+      [element setAccessibilityFrame:[state->window convertRectToScreen:windowRect]];
+      [children addObject:element];
+    }
+    [state->view setAccessibilityRole:NSAccessibilityGroupRole];
+    [state->view setAccessibilityLabel:@"Gossamer browser"];
+    [state->view setAccessibilityChildren:children];
+    NSAccessibilityPostNotification(state->view,
+                                    NSAccessibilityLayoutChangedNotification);
+    return 1;
   }
 }
 
@@ -439,6 +612,7 @@ int gossamer_cocoa_next_event(gossamer_cocoa_window *state,
       break;
     case NSEventTypeScrollWheel:
       event->kind = GOSSAMER_EVENT_SCROLL;
+      gossamer_event_location(state, native, event);
       event->delta_x = -[native scrollingDeltaX];
       event->delta_y = -[native scrollingDeltaY];
       break;

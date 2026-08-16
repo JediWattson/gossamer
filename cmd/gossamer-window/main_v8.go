@@ -25,6 +25,7 @@ func main() {
 
 	icuData := flag.String("icu-data", os.Getenv("GOSSAMER_V8_ICU_DATA"), "path to the pinned V8 build's icudtl.dat")
 	title := flag.String("title", "", "native window title")
+	sessionFile := flag.String("session-file", "", "optional path for Graphite tab-session restore")
 	flag.Parse()
 	if flag.NArg() != 1 {
 		fatalf("usage: gossamer-window [flags] <absolute-http-or-https-url>")
@@ -54,10 +55,15 @@ func main() {
 	if windowTitle == "" {
 		windowTitle = "Gossamer — " + rawURL
 	}
+	var sessionStore window.SessionStore
+	if strings.TrimSpace(*sessionFile) != "" {
+		sessionStore = window.FileSessionStore{Path: *sessionFile}
+	}
 	if err := window.RunBrowser(ctx, page, window.NewNativeBackend(), window.ShellConfig{
 		Title:   windowTitle,
 		Loader:  documentLoader,
 		OpenTab: browserRuntime.NewBlankPage,
+		Session: sessionStore,
 	}); err != nil {
 		fatalf("run interactive window: %v", err)
 	}

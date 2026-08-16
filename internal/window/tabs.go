@@ -10,6 +10,18 @@ import (
 )
 
 const maximumGraphiteTabs = 8
+const maximumClosedGraphiteTabs = 10
+
+type shellTabDrag struct {
+	index    int
+	startX   int
+	dragging bool
+	active   bool
+}
+
+type closedGraphiteTab struct {
+	url string
+}
 
 // PageOpener creates one already-rendered blank Page for a new Graphite tab.
 // The returned Page must belong to the same Browser as the initial Page so its
@@ -121,6 +133,30 @@ func (shell *graphiteShell) switchTab(index int) {
 	shell.saveActiveTab()
 	shell.activeTab = index
 	shell.applyPageState(shell.tabs[index].state)
+	shell.tabOffset = minInt(shell.tabOffset, index)
+	shell.revision++
+}
+
+func (shell *graphiteShell) moveTab(from, to int) {
+	if shell == nil || from < 0 || from >= len(shell.tabs) || to < 0 || to >= len(shell.tabs) || from == to {
+		return
+	}
+	moving := shell.tabs[from]
+	if from < to {
+		copy(shell.tabs[from:to], shell.tabs[from+1:to+1])
+	} else {
+		copy(shell.tabs[to+1:from+1], shell.tabs[to:from])
+	}
+	shell.tabs[to] = moving
+	if shell.activeTab == from {
+		shell.activeTab = to
+	} else if from < shell.activeTab && to >= shell.activeTab {
+		shell.activeTab--
+	} else if from > shell.activeTab && to <= shell.activeTab {
+		shell.activeTab++
+	}
+	shell.tabDrag.index = to
+	shell.hoveredTab = to
 	shell.revision++
 }
 
@@ -174,6 +210,16 @@ func (shell *graphiteShell) closeTab(index int) (last bool, err error) {
 	}
 	shell.saveActiveTab()
 	closing := shell.tabs[index]
+	closedURL := ""
+	if closing.page != nil && closing.page.URL() != nil {
+		closedURL = closing.page.URL().String()
+	}
+	if closedURL != "" {
+		shell.closedTabs = append(shell.closedTabs, closedGraphiteTab{url: closedURL})
+		if len(shell.closedTabs) > maximumClosedGraphiteTabs {
+			shell.closedTabs = append([]closedGraphiteTab(nil), shell.closedTabs[len(shell.closedTabs)-maximumClosedGraphiteTabs:]...)
+		}
+	}
 	shell.tabs = append(shell.tabs[:index], shell.tabs[index+1:]...)
 	if closing.page != nil {
 		err = closing.page.Close()
@@ -192,8 +238,27 @@ func (shell *graphiteShell) closeTab(index int) (last bool, err error) {
 		return false, errors.Join(err, fmt.Errorf("window: invalid active tab after close"))
 	}
 	shell.applyPageState(shell.tabs[shell.activeTab].state)
+	shell.hoveredTab = -1
+	shell.tabDrag = shellTabDrag{}
 	shell.revision++
 	return false, err
+}
+
+func (shell *graphiteShell) reopenClosedTab(ctx context.Context) error {
+	if shell == nil || shell.opener == nil || len(shell.closedTabs) == 0 || len(shell.tabs) >= maximumGraphiteTabs {
+		return nil
+	}
+	last := len(shell.closedTabs) - 1
+	closed := shell.closedTabs[last]
+	shell.closedTabs = shell.closedTabs[:last]
+	if err := shell.openTab(ctx); err != nil {
+		shell.closedTabs = append(shell.closedTabs, closed)
+		return err
+	}
+	if closed.url == "" {
+		return nil
+	}
+	return shell.navigate(ctx, shell.activePage(), closed.url)
 }
 
 func (shell *graphiteShell) closeOwnedTabs() error {

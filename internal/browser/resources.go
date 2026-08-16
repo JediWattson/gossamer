@@ -29,6 +29,7 @@ type navigationResourceRequest struct {
 	kind                 resource.Kind
 	url                  *url.URL
 	node                 dom.NodeID
+	optional             bool
 	stylesheetGeneration uint64
 	stylesheetSource     string
 	stylesheetBase       *url.URL
@@ -132,9 +133,10 @@ func discoverNavigationResources(document *dom.Document, location *url.URL) ([]n
 			return nil, fmt.Errorf("browser: discovered resource node is not indexed")
 		}
 		requests = append(requests, navigationResourceRequest{
-			kind: reference.Kind,
-			url:  cloneURL(reference.URL),
-			node: id,
+			kind:     reference.Kind,
+			url:      cloneURL(reference.URL),
+			node:     id,
+			optional: reference.Kind == resource.Image && reference.Node.Data == "link",
 		})
 	}
 	return requests, nil
@@ -293,7 +295,14 @@ func isRenderedReference(reference resource.Reference) bool {
 	case resource.Stylesheet:
 		return reference.Node.Data == "link" && reference.Attribute == "href" && activeStylesheetLink(reference.Node)
 	case resource.Image:
-		return reference.Node.Data == "img" && reference.Attribute == "src"
+		if reference.Node.Data == "img" && reference.Attribute == "src" {
+			return true
+		}
+		if reference.Node.Data == "link" && reference.Attribute == "href" {
+			rel, _ := nodeAttribute(reference.Node, "rel")
+			return containsHTMLToken(rel, "icon")
+		}
+		return false
 	default:
 		return false
 	}

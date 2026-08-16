@@ -29,11 +29,15 @@ func RunBrowser(ctx context.Context, page *browser.Page, backend Backend, config
 		return err
 	}
 	defer func() { result = errors.Join(result, shell.close()) }()
+	if err := shell.loadSession(ctx); err != nil {
+		return fmt.Errorf("window: load session: %w", err)
+	}
 	title := config.Title
 	if title == "" {
 		title = "Gossamer"
 	}
-	return runSession(ctx, page, backend, Config{Title: title}, shell)
+	result = runSession(ctx, page, backend, Config{Title: title}, shell)
+	return errors.Join(result, shell.saveSession(context.WithoutCancel(ctx)))
 }
 
 func runSession(ctx context.Context, page *browser.Page, backend Backend, config Config, shell *graphiteShell) (result error) {
@@ -51,6 +55,9 @@ func runSession(ctx context.Context, page *browser.Page, backend Backend, config
 	height := frame.Viewport.Height
 	if shell != nil {
 		width, height = shell.initialWindowSize(frame.Viewport)
+		if err := shell.restoreSession(ctx); err != nil {
+			return fmt.Errorf("window: restore session: %w", err)
+		}
 	}
 	config.Width = width
 	config.Height = height
@@ -63,6 +70,11 @@ func runSession(ctx context.Context, page *browser.Page, backend Backend, config
 
 	var presented *render.Frame
 	var presentedShellRevision uint64
+	var accessibilityRevision uint64
+	var accessibilityFrame *render.Frame
+	compositor := newSessionCompositor(nil)
+	lastWindowTitle := config.Title
+	lastCursor := CursorDefault
 	state := inputState{}
 	for {
 		activePage := page
@@ -76,6 +88,7 @@ func runSession(ctx context.Context, page *browser.Page, backend Backend, config
 		if activePage == nil || activeState == nil {
 			return fmt.Errorf("window: browser shell has no active tab")
 		}
+		compositor.prune(pages)
 		for _, currentPage := range pages {
 			if err := pumpPageTasks(ctx, currentPage); err != nil {
 				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -86,11 +99,28 @@ func runSession(ctx context.Context, page *browser.Page, backend Backend, config
 		}
 		if shell != nil {
 			shell.syncPage(activePage)
+			if title := shell.windowTitle(); title != lastWindowTitle {
+				if titleBackend, ok := backend.(TitleBackend); ok {
+					if err := titleBackend.SetTitle(title); err != nil {
+						return fmt.Errorf("window: update title: %w", err)
+					}
+				}
+				lastWindowTitle = title
+			}
 		}
 		frame = activePage.Frame()
+		if shell != nil && (shell.revision != accessibilityRevision || frame != accessibilityFrame) {
+			if accessibilityBackend, ok := backend.(AccessibilityBackend); ok {
+				if err := accessibilityBackend.UpdateAccessibility(shell.accessibilitySnapshot()); err != nil {
+					return fmt.Errorf("window: update accessibility: %w", err)
+				}
+			}
+			accessibilityRevision = shell.revision
+			accessibilityFrame = frame
+		}
 		shellChanged := shell != nil && shell.revision != presentedShellRevision
 		if frame != nil && (frame != presented || shellChanged) {
-			canvas, err := render.Rasterize(frame)
+			canvas, err := compositor.pageCanvas(activePage, frame)
 			if err != nil {
 				return fmt.Errorf("window: rasterize frame: %w", err)
 			}
@@ -118,6 +148,29 @@ func runSession(ctx context.Context, page *browser.Page, backend Backend, config
 		}
 		if event.Kind == EventClose {
 			return nil
+		}
+		if shell != nil && event.Kind == EventPointerDown && event.Button == 1 {
+			handled, contextErr := shell.handleContextMenu(ctx, activePage, backend, event)
+			if contextErr != nil {
+				return contextErr
+			}
+			if handled {
+				continue
+			}
+		}
+		if event.Kind == EventPointerMove {
+			cursor := pageCursorAt(activePage, event.X, event.Y)
+			if shell != nil {
+				cursor = shell.cursorAt(activePage, event)
+			}
+			if cursor != lastCursor {
+				if cursorBackend, ok := backend.(CursorBackend); ok {
+					if err := cursorBackend.SetCursor(cursor); err != nil {
+						return fmt.Errorf("window: update cursor: %w", err)
+					}
+				}
+				lastCursor = cursor
+			}
 		}
 		if shell != nil {
 			handled, translated, closeWindow, err := shell.handleEvent(ctx, activePage, event, activeState)
@@ -199,6 +252,7 @@ func routeClipboardShortcut(page *browser.Page, backend Backend, event Event, st
 
 type inputState struct {
 	focusTarget   browser.NodeHandle
+	hoverTarget   browser.NodeHandle
 	pressedTarget browser.NodeHandle
 	pressedButton int
 	pressed       bool
@@ -264,7 +318,7 @@ func routeEvent(page *browser.Page, event Event, state *inputState) error {
 		}
 		return upErr
 	case EventScroll:
-		_, err := page.QueueViewportScrollBy(event.DeltaX, event.DeltaY)
+		_, err := page.QueueScrollAt(event.X, event.Y, event.DeltaX, event.DeltaY)
 		return err
 	case EventKeyDown, EventKeyUp:
 		target, ok := keyboardTarget(page, state.focusTarget)

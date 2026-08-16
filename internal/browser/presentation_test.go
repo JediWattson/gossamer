@@ -1,10 +1,14 @@
 package browser_test
 
 import (
+	"context"
+	"io"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/JediWattson/gossamer/internal/browser"
+	"github.com/JediWattson/gossamer/internal/loader"
 )
 
 func TestPageMetadataTracksLiveTitleAndResolvedFavicon(t *testing.T) {
@@ -49,5 +53,25 @@ func TestPageMetadataTracksLiveTitleAndResolvedFavicon(t *testing.T) {
 	}
 	if err := page.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestOptionalFaviconDoesNotRequireSubresourceFetcher(t *testing.T) {
+	t.Parallel()
+
+	browserRuntime, err := browser.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer browserRuntime.Close()
+	page, err := browserRuntime.LoadPage(context.Background(), "https://metadata.gossamer.test/", stubDocumentLoader{response: &loader.Response{
+		StatusCode: 200,
+		Body:       io.NopCloser(strings.NewReader(`<html><head><link rel="icon" href="favicon.png"></head><body>loaded</body></html>`)),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata := page.Metadata(); metadata.FaviconURL == nil || metadata.FaviconURL.String() != "https://metadata.gossamer.test/favicon.png" {
+		t.Fatalf("favicon metadata = %#v", metadata)
 	}
 }
