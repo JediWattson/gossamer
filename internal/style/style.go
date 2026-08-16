@@ -84,6 +84,60 @@ const (
 	DisplayNone
 )
 
+// DisplayOutside identifies how a generated box participates in its parent's
+// formatting context. DisplayOutsideNone is used only by display:none.
+type DisplayOutside uint8
+
+const (
+	DisplayOutsideNone DisplayOutside = iota
+	DisplayOutsideInline
+	DisplayOutsideBlock
+)
+
+// DisplayInside identifies the formatting context established for a box's
+// contents. Inline-block establishes an independent flow root while block and
+// inline keep the ordinary flow context.
+type DisplayInside uint8
+
+const (
+	DisplayInsideNone DisplayInside = iota
+	DisplayInsideFlow
+	DisplayInsideFlowRoot
+	DisplayInsideFlex
+)
+
+// Outside returns the computed outer display role.
+func (display DisplayMode) Outside() DisplayOutside {
+	switch display {
+	case DisplayInline, DisplayInlineBlock, DisplayInlineFlex:
+		return DisplayOutsideInline
+	case DisplayBlock, DisplayListItem, DisplayFlex:
+		return DisplayOutsideBlock
+	default:
+		return DisplayOutsideNone
+	}
+}
+
+// Inside returns the computed inner formatting context.
+func (display DisplayMode) Inside() DisplayInside {
+	switch display {
+	case DisplayInline, DisplayBlock, DisplayListItem:
+		return DisplayInsideFlow
+	case DisplayInlineBlock:
+		return DisplayInsideFlowRoot
+	case DisplayFlex, DisplayInlineFlex:
+		return DisplayInsideFlex
+	default:
+		return DisplayInsideNone
+	}
+}
+
+// GeneratesBox reports whether the computed display value creates a principal
+// box in the current formatting model.
+func (display DisplayMode) GeneratesBox() bool {
+	return display.Outside() != DisplayOutsideNone
+}
+
 type displayMode = DisplayMode
 
 const (

@@ -412,6 +412,36 @@ func TestStableIDSnapshotRemainsImmutableAcrossDetachAndReconnection(t *testing.
 	assertStableIDStyle(t, before, child, childID, color.NRGBA{R: 0xff, A: 0xff})
 }
 
+func TestDisplayModePreservesOuterAndInnerRoles(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		mode    style.DisplayMode
+		outside style.DisplayOutside
+		inside  style.DisplayInside
+		box     bool
+	}{
+		{style.DisplayInline, style.DisplayOutsideInline, style.DisplayInsideFlow, true},
+		{style.DisplayInlineBlock, style.DisplayOutsideInline, style.DisplayInsideFlowRoot, true},
+		{style.DisplayBlock, style.DisplayOutsideBlock, style.DisplayInsideFlow, true},
+		{style.DisplayListItem, style.DisplayOutsideBlock, style.DisplayInsideFlow, true},
+		{style.DisplayFlex, style.DisplayOutsideBlock, style.DisplayInsideFlex, true},
+		{style.DisplayInlineFlex, style.DisplayOutsideInline, style.DisplayInsideFlex, true},
+		{style.DisplayNone, style.DisplayOutsideNone, style.DisplayInsideNone, false},
+	}
+	for _, test := range tests {
+		if got := test.mode.Outside(); got != test.outside {
+			t.Errorf("%v outside = %v, want %v", test.mode, got, test.outside)
+		}
+		if got := test.mode.Inside(); got != test.inside {
+			t.Errorf("%v inside = %v, want %v", test.mode, got, test.inside)
+		}
+		if got := test.mode.GeneratesBox(); got != test.box {
+			t.Errorf("%v GeneratesBox = %t, want %t", test.mode, got, test.box)
+		}
+	}
+}
+
 func styleTestSnapshot(t *testing.T, document *dom.Document) *style.Snapshot {
 	t.Helper()
 	var snapshot *style.Snapshot

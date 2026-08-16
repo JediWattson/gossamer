@@ -547,7 +547,7 @@ func TestStockV8GetComputedStyleIsFreshLiveAndReadOnly(t *testing.T) {
 			.parent { color: #123456; }
 			.target { display: block; width: 25%; background-color: #010203; --accent: ready; }
 			.target::before { content:"generated"; color:#008000; }
-		</style></head><body class="parent"><div id="target" class="target">text</div></body></html>`},
+		</style></head><body class="parent"><div id="target" class="target">text</div><span id="atomic" style="display:inline-block"><span style="display:block;width:40px;height:10px"></span></span></body></html>`},
 	)
 	if err != nil {
 		t.Fatalf("LoadPage: %v", err)
@@ -576,6 +576,19 @@ func TestStockV8GetComputedStyleIsFreshLiveAndReadOnly(t *testing.T) {
 				}
 				if (computed.length < 30 || computed.item(computed.length) !== "") {
 					throw new Error("computed property enumeration is incomplete");
+				}
+				const atomicElement = document.getElementById("atomic");
+				const atomic = getComputedStyle(atomicElement);
+				if (atomic.display !== "inline-block" || atomic.width !== "40px" || atomic.height !== "10px") {
+					throw new Error("inline-block used geometry is not exposed through computed style");
+				}
+				atomicElement.style.width = "55px";
+				if (atomic.width !== "55px") {
+					throw new Error("retained inline-block computed style did not relayout synchronously");
+				}
+				atomicElement.style.removeProperty("width");
+				if (atomic.width !== "40px") {
+					throw new Error("inline-block shrink-to-fit geometry was not restored");
 				}
 				if (computed[0] !== computed.item(0) || computed[computed.length] !== undefined ||
 					!(0 in computed) || !Object.keys(computed).includes("0") ||

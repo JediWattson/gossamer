@@ -13,10 +13,11 @@ import (
 )
 
 type layoutContext struct {
-	viewport Viewport
-	fonts    *fontBook
-	styles   map[*dom.Node]computedStyle
-	images   map[*dom.Node]image.Image
+	viewport       Viewport
+	fonts          *fontBook
+	styles         map[*dom.Node]computedStyle
+	images         map[*dom.Node]image.Image
+	intrinsicCache map[intrinsicCacheKey]intrinsicWidths
 }
 
 type inlineToken struct {
@@ -24,6 +25,7 @@ type inlineToken struct {
 	node         *dom.Node
 	pseudo       computed.PseudoElement
 	style        computedStyle
+	atomic       *styledNode
 	image        image.Image
 	replaced     bool
 	opacity      float64
@@ -37,21 +39,30 @@ type inlinePiece struct {
 	node     *dom.Node
 	pseudo   computed.PseudoElement
 	style    computedStyle
+	box      *Box
 	image    image.Image
 	replaced bool
 	opacity  float64
 	x        float64
 	width    float64
 	height   float64
+	baseline float64
 	metrics  textMetrics
+}
+
+type inlineLayout struct {
+	fragments []InlineFragment
+	flow      []flowItem
+	height    float64
 }
 
 func layoutDocument(root *styledNode, viewport Viewport, images map[*dom.Node]image.Image, fonts *fontBook) (*Box, map[*dom.Node]computedStyle, error) {
 	context := &layoutContext{
-		viewport: viewport,
-		fonts:    fonts,
-		styles:   make(map[*dom.Node]computedStyle),
-		images:   images,
+		viewport:       viewport,
+		fonts:          fonts,
+		styles:         make(map[*dom.Node]computedStyle),
+		images:         images,
+		intrinsicCache: make(map[intrinsicCacheKey]intrinsicWidths),
 	}
 	context.indexStyles(root)
 
@@ -204,7 +215,7 @@ func (context *layoutContext) layoutBlockSized(node *styledNode, containingX, co
 		Y:     box.Bounds.Y + border.Top + padding.Top,
 		Width: width,
 	}
-	if style.Display() == displayFlex {
+	if style.Display().Inside() == computed.DisplayInsideFlex {
 		contentHeight, err := context.layoutFlexContainer(node, box, width)
 		if err != nil {
 			return nil, err
@@ -227,7 +238,7 @@ func (context *layoutContext) layoutBlockSized(node *styledNode, containingX, co
 			index++
 			continue
 		}
-		if isBlockLevel(child.style.Display()) {
+		if isBlockFlowChild(child) {
 			topMargin := resolveLength(child.style.MarginTop(), width, context.viewport, 0)
 			gap := math.Max(previousBottomMargin, topMargin)
 			// A first block child's top margin collapses through an auto-height
@@ -250,35 +261,31 @@ func (context *layoutContext) layoutBlockSized(node *styledNode, containingX, co
 
 		end := index
 		for end < len(node.children) &&
-			!isBlockLevel(node.children[end].style.Display()) &&
+			!isBlockFlowChild(node.children[end]) &&
 			!isOutOfFlow(node.children[end].style.Position()) {
 			end++
 		}
-		fragments, height, err := context.layoutInline(node.children[index:end], box.ContentBounds.X, cursorY, width, node.style.TextAlignment())
+		inline, err := context.layoutInline(node.children[index:end], box.ContentBounds.X, cursorY, width, node.style.TextAlignment())
 		if err != nil {
 			return nil, err
 		}
-		if len(fragments) != 0 {
+		if len(inline.flow) != 0 {
 			if hasContent {
 				cursorY += previousBottomMargin
-				for fragmentIndex := range fragments {
-					fragment := &fragments[fragmentIndex]
-					switch fragment.Kind {
-					case TextFragmentKind:
-						fragment.Text.BaselineY += previousBottomMargin
-					case ImageFragmentKind:
-						fragment.Image.Bounds.Y += previousBottomMargin
-					}
+				translateInlineLayout(&inline, 0, previousBottomMargin)
+			}
+			box.Fragments = append(box.Fragments, inline.fragments...)
+			for _, item := range inline.flow {
+				box.flow = append(box.flow, item)
+				if item.box != nil {
+					box.Children = append(box.Children, item.box)
+					continue
+				}
+				if item.fragment.Kind == TextFragmentKind {
+					box.Text = append(box.Text, item.fragment.Text)
 				}
 			}
-			box.Fragments = append(box.Fragments, fragments...)
-			for _, fragment := range fragments {
-				box.flow = append(box.flow, flowItem{fragment: fragment})
-				if fragment.Kind == TextFragmentKind {
-					box.Text = append(box.Text, fragment.Text)
-				}
-			}
-			cursorY += height
+			cursorY += inline.height
 			previousBottomMargin = 0
 			hasContent = true
 		}
@@ -303,6 +310,10 @@ func (context *layoutContext) layoutBlockSized(node *styledNode, containingX, co
 	return context.finalizeBlock(node, box, availableWidth)
 }
 
+func isBlockFlowChild(node *styledNode) bool {
+	return node != nil && !node.generated && isBlockLevel(node.style.Display())
+}
+
 type flexLayoutItem struct {
 	node          *styledNode
 	box           *Box
@@ -316,7 +327,7 @@ type flexLayoutItem struct {
 func (context *layoutContext) layoutFlexContainer(node *styledNode, box *Box, contentWidth float64) (float64, error) {
 	items := make([]flexLayoutItem, 0, len(node.children))
 	for index, child := range node.children {
-		if child.node == nil || child.node.Type != dom.ElementNode ||
+		if child.generated || child.node == nil || child.node.Type != dom.ElementNode ||
 			child.style.Display() == displayNone || isOutOfFlow(child.style.Position()) {
 			continue
 		}
@@ -627,6 +638,9 @@ func (context *layoutContext) layoutPositionedDescendants(root *styledNode, root
 		if node == nil || node.style.Display() == displayNone {
 			return nil
 		}
+		if node.generated {
+			return nil
+		}
 		currentBox := boxes[layoutNodeKey{node: node.node, pseudo: node.pseudo}]
 		if isOutOfFlow(node.style.Position()) {
 			if parentBox == nil {
@@ -820,19 +834,43 @@ func (context *layoutContext) generatedListItemCount(container *dom.Node) int {
 	return count
 }
 
-func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width float64, alignment textAlignment) ([]InlineFragment, float64, error) {
+func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width float64, alignment textAlignment) (inlineLayout, error) {
 	builder := inlineTokenBuilder{images: context.images}
 	for _, node := range nodes {
 		builder.add(node, 1)
 	}
 	if len(builder.tokens) == 0 {
-		return nil, 0, nil
+		return inlineLayout{}, nil
 	}
 
-	var fragments []InlineFragment
+	var result inlineLayout
 	var line []inlinePiece
 	lineWidth := 0.0
 	cursorY := y
+	appendFragment := func(fragment InlineFragment) {
+		if fragment.Kind == TextFragmentKind && len(result.fragments) != 0 && len(result.flow) != 0 {
+			previous := &result.fragments[len(result.fragments)-1]
+			flow := &result.flow[len(result.flow)-1]
+			if flow.box == nil && flow.fragment.Kind == TextFragmentKind && previous.Kind == TextFragmentKind {
+				text := fragment.Text
+				if previous.Text.Node == text.Node &&
+					previous.Text.Pseudo == text.Pseudo &&
+					previous.Text.BaselineY == text.BaselineY &&
+					previous.Text.FontSize == text.FontSize &&
+					previous.Text.FontFamily == text.FontFamily &&
+					previous.Text.FontWeight == text.FontWeight &&
+					previous.Text.FontStyle == text.FontStyle &&
+					previous.Text.Color == text.Color {
+					previous.Text.Text += text.Text
+					previous.Text.Width += text.Width
+					flow.fragment = *previous
+					return
+				}
+			}
+		}
+		result.fragments = append(result.fragments, fragment)
+		result.flow = append(result.flow, flowItem{fragment: fragment})
+	}
 	flushLine := func() {
 		if len(line) == 0 {
 			return
@@ -860,8 +898,15 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 			// distinct computed values.
 		}
 		for _, piece := range line {
+			if piece.box != nil {
+				targetX := x + lineOffset + piece.x
+				targetY := baseline - piece.baseline
+				translateLayoutBox(piece.box, targetX, targetY)
+				result.flow = append(result.flow, flowItem{box: piece.box})
+				continue
+			}
 			if piece.replaced {
-				fragments = append(fragments, InlineFragment{
+				appendFragment(InlineFragment{
 					Kind: ImageFragmentKind,
 					Image: ImageFragment{
 						Node:    piece.node,
@@ -890,22 +935,7 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 				Visible:    piece.style.Visibility() == visibilityVisible,
 				Underline:  piece.style.Underline(),
 			}
-			if len(fragments) != 0 && fragments[len(fragments)-1].Kind == TextFragmentKind {
-				previous := &fragments[len(fragments)-1].Text
-				if previous.Node == text.Node &&
-					previous.Pseudo == text.Pseudo &&
-					previous.BaselineY == text.BaselineY &&
-					previous.FontSize == text.FontSize &&
-					previous.FontFamily == text.FontFamily &&
-					previous.FontWeight == text.FontWeight &&
-					previous.FontStyle == text.FontStyle &&
-					previous.Color == text.Color {
-					previous.Text += text.Text
-					previous.Width += text.Width
-					continue
-				}
-			}
-			fragments = append(fragments, InlineFragment{Kind: TextFragmentKind, Text: text})
+			appendFragment(InlineFragment{Kind: TextFragmentKind, Text: text})
 		}
 		cursorY += lineHeight
 		line = nil
@@ -927,9 +957,20 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 		}
 		lastWasBreak = false
 		wordMetrics := textMetrics{}
+		var atomicBox *Box
+		atomicHeight := 0.0
+		atomicBaseline := 0.0
 		imageWidth := 0.0
 		imageHeight := 0.0
-		if token.replaced {
+		if token.atomic != nil {
+			var err error
+			atomicBox, wordMetrics.width, atomicHeight, atomicBaseline, err = context.layoutAtomicInline(token.atomic, width, token.opacity)
+			if err != nil {
+				return inlineLayout{}, err
+			}
+			wordMetrics.ascent = atomicBaseline
+			wordMetrics.descent = math.Max(0, atomicHeight-atomicBaseline)
+		} else if token.replaced {
 			var ok bool
 			imageWidth, imageHeight, ok = context.replacedDimensions(token.style, token.image, width, 0, 0)
 			if !ok {
@@ -940,7 +981,7 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 			var err error
 			wordMetrics, err = context.fonts.metrics(token.text, token.style.FontSize(), token.style.FontWeight(), token.style.FontStyle(), token.style.FontFamily())
 			if err != nil {
-				return nil, 0, err
+				return inlineLayout{}, err
 			}
 		}
 		prefix := ""
@@ -948,7 +989,7 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 		if token.leadingSpace && len(line) != 0 {
 			spaceMetrics, err := context.fonts.metrics(" ", token.style.FontSize(), token.style.FontWeight(), token.style.FontStyle(), token.style.FontFamily())
 			if err != nil {
-				return nil, 0, err
+				return inlineLayout{}, err
 			}
 			prefix = " "
 			prefixWidth = spaceMetrics.width
@@ -957,6 +998,21 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 			flushLine()
 			prefix = ""
 			prefixWidth = 0
+		}
+		if atomicBox != nil {
+			line = append(line, inlinePiece{
+				node:     token.node,
+				pseudo:   token.pseudo,
+				style:    token.style,
+				box:      atomicBox,
+				x:        lineWidth + prefixWidth,
+				width:    wordMetrics.width,
+				height:   atomicHeight,
+				baseline: atomicBaseline,
+				metrics:  wordMetrics,
+			})
+			lineWidth += prefixWidth + wordMetrics.width
+			continue
 		}
 		if token.replaced {
 			line = append(line, inlinePiece{
@@ -976,7 +1032,7 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 		pieceText := prefix + token.text
 		pieceMetrics, err := context.fonts.metrics(pieceText, token.style.FontSize(), token.style.FontWeight(), token.style.FontStyle(), token.style.FontFamily())
 		if err != nil {
-			return nil, 0, err
+			return inlineLayout{}, err
 		}
 		line = append(line, inlinePiece{text: pieceText, node: token.node, pseudo: token.pseudo, style: token.style, opacity: token.opacity, x: lineWidth, width: pieceMetrics.width, metrics: pieceMetrics})
 		lineWidth += pieceMetrics.width
@@ -986,7 +1042,308 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 	} else {
 		flushLine()
 	}
-	return fragments, cursorY - y, nil
+	result.height = cursorY - y
+	return result, nil
+}
+
+type intrinsicWidths struct {
+	minimum   float64
+	preferred float64
+}
+
+type intrinsicCacheKey struct {
+	node           *styledNode
+	availableWidth float64
+}
+
+func (context *layoutContext) layoutAtomicInline(node *styledNode, availableWidth, opacity float64) (*Box, float64, float64, float64, error) {
+	style := node.style
+	marginLeft := resolveLength(style.MarginLeft(), availableWidth, context.viewport, 0)
+	marginRight := resolveLength(style.MarginRight(), availableWidth, context.viewport, 0)
+	marginTop := resolveLength(style.MarginTop(), availableWidth, context.viewport, 0)
+	marginBottom := resolveLength(style.MarginBottom(), availableWidth, context.viewport, 0)
+
+	var box *Box
+	var err error
+	if style.Width().Unit() == lengthAuto {
+		padding := context.resolvePadding(style, availableWidth)
+		border := context.resolveBorder(style, availableWidth)
+		horizontalInsets := padding.Left + padding.Right + border.Left + border.Right
+		intrinsic, measureErr := context.intrinsicContentWidths(node, availableWidth)
+		if measureErr != nil {
+			return nil, 0, 0, 0, measureErr
+		}
+		availableContent := math.Max(0, availableWidth-marginLeft-marginRight-horizontalInsets)
+		contentWidth := math.Min(math.Max(intrinsic.minimum, availableContent), intrinsic.preferred)
+		box, err = context.layoutBlockSized(node, 0, marginTop, availableWidth, &contentWidth)
+	} else {
+		box, err = context.layoutBlock(node, 0, marginTop, availableWidth)
+	}
+	if err != nil {
+		return nil, 0, 0, 0, err
+	}
+	// Auto inline-axis margins on an inline-level atomic box compute to zero;
+	// layoutBlock's block-formatting centering rule must not leak across this
+	// outer display boundary.
+	translateLayoutBox(box, marginLeft-box.Bounds.X, 0)
+	box.paintOpacity = opacity
+	box.hasOpacity = true
+
+	outerWidth := math.Max(0, marginLeft+box.Bounds.Width+marginRight)
+	outerHeight := math.Max(0, marginTop+box.Bounds.Height+marginBottom)
+	baseline := outerHeight
+	if style.OverflowX() == computed.OverflowVisible && style.OverflowY() == computed.OverflowVisible {
+		if candidate, ok := lastBoxBaseline(box); ok {
+			baseline = clamp(candidate, 0, outerHeight)
+		}
+	}
+	return box, outerWidth, outerHeight, baseline, nil
+}
+
+func (context *layoutContext) intrinsicContentWidths(node *styledNode, availableWidth float64) (intrinsicWidths, error) {
+	key := intrinsicCacheKey{node: node, availableWidth: availableWidth}
+	if cached, ok := context.intrinsicCache[key]; ok {
+		return cached, nil
+	}
+	measured, err := context.intrinsicContentWidthsUncached(node, availableWidth)
+	if err == nil {
+		context.intrinsicCache[key] = measured
+	}
+	return measured, err
+}
+
+func (context *layoutContext) intrinsicContentWidthsUncached(node *styledNode, availableWidth float64) (intrinsicWidths, error) {
+	if node == nil {
+		return intrinsicWidths{}, nil
+	}
+	if node.generated {
+		metrics, err := context.fonts.metrics(node.generatedText, node.style.FontSize(), node.style.FontWeight(), node.style.FontStyle(), node.style.FontFamily())
+		if err != nil {
+			return intrinsicWidths{}, err
+		}
+		return intrinsicWidths{minimum: metrics.width, preferred: metrics.width}, nil
+	}
+	if node.style.Display().Inside() == computed.DisplayInsideFlex {
+		return context.intrinsicFlexContentWidths(node, availableWidth)
+	}
+
+	var result intrinsicWidths
+	var inlineGroup []*styledNode
+	flushInline := func() error {
+		if len(inlineGroup) == 0 {
+			return nil
+		}
+		measured, err := context.intrinsicInlineWidths(inlineGroup, availableWidth)
+		if err != nil {
+			return err
+		}
+		result.minimum = math.Max(result.minimum, measured.minimum)
+		result.preferred = math.Max(result.preferred, measured.preferred)
+		inlineGroup = inlineGroup[:0]
+		return nil
+	}
+	for _, child := range node.children {
+		if child == nil || child.style.Display() == displayNone || isOutOfFlow(child.style.Position()) {
+			continue
+		}
+		if !isBlockFlowChild(child) {
+			inlineGroup = append(inlineGroup, child)
+			continue
+		}
+		if err := flushInline(); err != nil {
+			return intrinsicWidths{}, err
+		}
+		measured, err := context.intrinsicOuterWidths(child, availableWidth)
+		if err != nil {
+			return intrinsicWidths{}, err
+		}
+		result.minimum = math.Max(result.minimum, measured.minimum)
+		result.preferred = math.Max(result.preferred, measured.preferred)
+	}
+	if err := flushInline(); err != nil {
+		return intrinsicWidths{}, err
+	}
+	return result, nil
+}
+
+func (context *layoutContext) intrinsicOuterWidths(node *styledNode, availableWidth float64) (intrinsicWidths, error) {
+	if node == nil || node.style.Display() == displayNone {
+		return intrinsicWidths{}, nil
+	}
+	style := node.style
+	padding := context.resolvePadding(style, availableWidth)
+	border := context.resolveBorder(style, availableWidth)
+	horizontalInsets := padding.Left + padding.Right + border.Left + border.Right
+	margins := resolveLength(style.MarginLeft(), availableWidth, context.viewport, 0) +
+		resolveLength(style.MarginRight(), availableWidth, context.viewport, 0)
+
+	if node.node != nil && node.node.Type == dom.ElementNode && node.node.Data == "img" {
+		width, _, ok := context.replacedDimensions(style, context.images[node.node], availableWidth, horizontalInsets, 0)
+		if !ok {
+			return intrinsicWidths{}, nil
+		}
+		outer := math.Max(0, width+horizontalInsets+margins)
+		return intrinsicWidths{minimum: outer, preferred: outer}, nil
+	}
+	if style.Width().Unit() != lengthAuto {
+		content := resolveLength(style.Width(), availableWidth, context.viewport, 0)
+		if style.BoxSizing() == boxSizingBorderBox {
+			content = math.Max(0, content-horizontalInsets)
+		}
+		content = context.constrainWidth(style, content, availableWidth, horizontalInsets)
+		outer := math.Max(0, content+horizontalInsets+margins)
+		return intrinsicWidths{minimum: outer, preferred: outer}, nil
+	}
+
+	content, err := context.intrinsicContentWidths(node, availableWidth)
+	if err != nil {
+		return intrinsicWidths{}, err
+	}
+	content.minimum = context.constrainWidth(style, content.minimum, availableWidth, horizontalInsets)
+	content.preferred = context.constrainWidth(style, content.preferred, availableWidth, horizontalInsets)
+	if content.preferred < content.minimum {
+		content.preferred = content.minimum
+	}
+	content.minimum += horizontalInsets + margins
+	content.preferred += horizontalInsets + margins
+	return content, nil
+}
+
+func (context *layoutContext) intrinsicInlineWidths(nodes []*styledNode, availableWidth float64) (intrinsicWidths, error) {
+	builder := inlineTokenBuilder{images: context.images}
+	for _, node := range nodes {
+		builder.add(node, 1)
+	}
+	var result intrinsicWidths
+	lineWidth := 0.0
+	segmentWidth := 0.0
+	finishLine := func() {
+		result.preferred = math.Max(result.preferred, lineWidth)
+		result.minimum = math.Max(result.minimum, segmentWidth)
+		lineWidth = 0
+		segmentWidth = 0
+	}
+	for _, token := range builder.tokens {
+		if token.lineBreak {
+			finishLine()
+			continue
+		}
+		measured := intrinsicWidths{}
+		switch {
+		case token.atomic != nil:
+			var err error
+			measured, err = context.intrinsicOuterWidths(token.atomic, availableWidth)
+			if err != nil {
+				return intrinsicWidths{}, err
+			}
+		case token.replaced:
+			width, _, ok := context.replacedDimensions(token.style, token.image, availableWidth, 0, 0)
+			if !ok {
+				continue
+			}
+			measured = intrinsicWidths{minimum: width, preferred: width}
+		default:
+			metrics, err := context.fonts.metrics(token.text, token.style.FontSize(), token.style.FontWeight(), token.style.FontStyle(), token.style.FontFamily())
+			if err != nil {
+				return intrinsicWidths{}, err
+			}
+			measured = intrinsicWidths{minimum: metrics.width, preferred: metrics.width}
+		}
+		spaceWidth := 0.0
+		if token.leadingSpace && lineWidth != 0 {
+			metrics, err := context.fonts.metrics(" ", token.style.FontSize(), token.style.FontWeight(), token.style.FontStyle(), token.style.FontFamily())
+			if err != nil {
+				return intrinsicWidths{}, err
+			}
+			spaceWidth = metrics.width
+		}
+		lineWidth += spaceWidth + measured.preferred
+		if token.wrapBefore && segmentWidth != 0 {
+			result.minimum = math.Max(result.minimum, segmentWidth)
+			segmentWidth = measured.minimum
+		} else {
+			segmentWidth += spaceWidth + measured.minimum
+		}
+	}
+	finishLine()
+	return result, nil
+}
+
+func (context *layoutContext) intrinsicFlexContentWidths(node *styledNode, availableWidth float64) (intrinsicWidths, error) {
+	var result intrinsicWidths
+	count := 0
+	row := node.style.FlexDirection() == computed.FlexDirectionRow || node.style.FlexDirection() == computed.FlexDirectionRowReverse
+	for _, child := range node.children {
+		if child == nil || child.generated || child.style.Display() == displayNone || isOutOfFlow(child.style.Position()) {
+			continue
+		}
+		measured, err := context.intrinsicOuterWidths(child, availableWidth)
+		if err != nil {
+			return intrinsicWidths{}, err
+		}
+		if row {
+			result.minimum = math.Max(result.minimum, measured.minimum)
+			result.preferred += measured.preferred
+		} else {
+			result.minimum = math.Max(result.minimum, measured.minimum)
+			result.preferred = math.Max(result.preferred, measured.preferred)
+		}
+		count++
+	}
+	if row && count > 1 {
+		gap := math.Max(0, resolveLength(node.style.ColumnGap(), availableWidth, context.viewport, 0))
+		result.preferred += float64(count-1) * gap
+	}
+	if result.preferred < result.minimum {
+		result.preferred = result.minimum
+	}
+	return result, nil
+}
+
+func translateInlineLayout(layout *inlineLayout, deltaX, deltaY float64) {
+	if layout == nil || (deltaX == 0 && deltaY == 0) {
+		return
+	}
+	for index := range layout.fragments {
+		translateInlineFragment(&layout.fragments[index], deltaX, deltaY)
+	}
+	for index := range layout.flow {
+		if layout.flow[index].box != nil {
+			translateLayoutBox(layout.flow[index].box, deltaX, deltaY)
+		} else {
+			translateInlineFragment(&layout.flow[index].fragment, deltaX, deltaY)
+		}
+	}
+}
+
+func lastBoxBaseline(box *Box) (float64, bool) {
+	if box == nil {
+		return 0, false
+	}
+	for index := len(box.flow) - 1; index >= 0; index-- {
+		item := box.flow[index]
+		if item.box != nil {
+			if baseline, ok := lastBoxBaseline(item.box); ok {
+				return baseline, true
+			}
+			continue
+		}
+		switch item.fragment.Kind {
+		case TextFragmentKind:
+			return item.fragment.Text.BaselineY, true
+		case ImageFragmentKind:
+			return item.fragment.Image.Bounds.Y + item.fragment.Image.Bounds.Height, true
+		}
+	}
+	for index := len(box.Children) - 1; index >= 0; index-- {
+		if box.Children[index].positioned {
+			continue
+		}
+		if baseline, ok := lastBoxBaseline(box.Children[index]); ok {
+			return baseline, true
+		}
+	}
+	return 0, false
 }
 
 func (context *layoutContext) replacedDimensions(style computedStyle, decoded image.Image, availableWidth, horizontalInsets, verticalInsets float64) (float64, float64, bool) {
@@ -1111,9 +1468,27 @@ func (builder *inlineTokenBuilder) add(node *styledNode, inheritedOpacity float6
 	if node == nil || node.style.Display() == displayNone {
 		return
 	}
+	if node.generated {
+		// The synthetic text is the pseudo box's content, not a second styled
+		// box. Its parent's opacity has already been flattened for inline
+		// pseudos or will group the containing atomic/block pseudo box.
+		builder.addText(node.generatedText, node.node, node.pseudo, node.style, inheritedOpacity)
+		return
+	}
 	opacity := clamp(inheritedOpacity*node.style.Opacity(), 0, 1)
-	if node.pseudo != computed.PseudoElementNone {
-		builder.addText(node.generatedText, node.node, node.pseudo, node.style, opacity)
+	if isAtomicInline(node.style.Display()) {
+		leadingSpace := builder.pendingSpace && builder.hasContent
+		builder.tokens = append(builder.tokens, inlineToken{
+			node:         node.node,
+			pseudo:       node.pseudo,
+			style:        node.style,
+			atomic:       node,
+			opacity:      opacity,
+			leadingSpace: leadingSpace,
+			wrapBefore:   whiteSpaceAllowsSoftWrap(node.style.WhiteSpace()) && builder.hasContent,
+		})
+		builder.pendingSpace = false
+		builder.hasContent = true
 		return
 	}
 	if node.node.Type == dom.ElementNode && node.node.Data == "br" {

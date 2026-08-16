@@ -319,8 +319,11 @@ The following are intentionally still outside the current milestone:
   declaration/logical/`selector()` subset
 - SVG, AVIF, video, canvas, browser controls, and accessibility trees
 
-Only `inline`, `block`, `list-item`, and `none` have dedicated display
-behavior; `inline-block` currently degrades to inline. Preserved whitespace
+Outer and inner display roles are retained for `inline`, `block`, `list-item`,
+`inline-block`, `flex`, and `inline-flex`. Inline-block and inline-flex boxes
+participate atomically in line layout with shrink-to-fit sizing, baseline
+alignment, box-model paint, geometry, and hit testing. Ordinary inline elements
+still flatten into runs rather than retained inline boxes. Preserved whitespace
 uses the current simple glyph metrics and an eight-space tab approximation;
 full Unicode line breaking, bidi, shaping, and CSS Text 4 controls remain
 future work. Screenshots clip to one 800 x 600 viewport. Unsupported CSS is

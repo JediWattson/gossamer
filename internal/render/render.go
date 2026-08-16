@@ -377,9 +377,13 @@ func paintBox(list *DisplayList, box *Box, styles map[*dom.Node]computedStyle) {
 		style, hasStyle = styles[box.Node]
 	}
 	visible := hasStyle && style.Visibility() == visibilityVisible
-	grouped := hasStyle && style.Opacity() < 1
+	opacity := style.Opacity()
+	if box.hasOpacity {
+		opacity = box.paintOpacity
+	}
+	grouped := hasStyle && opacity < 1
 	if grouped {
-		list.Commands = append(list.Commands, Command{Kind: BeginOpacityCommand, Node: box.Node, Pseudo: box.Pseudo, Opacity: style.Opacity()})
+		list.Commands = append(list.Commands, Command{Kind: BeginOpacityCommand, Node: box.Node, Pseudo: box.Pseudo, Opacity: opacity})
 	}
 	background, hasBackground := style.Background()
 	if visible && hasBackground && box.Bounds.Width > 0 && box.Bounds.Height > 0 {

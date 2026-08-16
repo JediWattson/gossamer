@@ -22,6 +22,7 @@ func TestPageComputedStylePropertyResolvesWidthAndSupportedHeightFromCachedLayou
 			<div id="border-box" style="box-sizing:border-box;width:100px;height:80px;padding:10px;border:5px solid"></div>
 			<span id="inline" style="width:50px;height:20px">inline</span>
 			<span id="inline-block" style="display:inline-block;width:60px;height:30px">inline block</span>
+			<span id="inline-block-auto" style="display:inline-block"><span style="display:block;width:40px;height:10px"></span></span>
 			<div id="none" style="display:none;width:70px;height:40px"></div>
 			<img id="image">
 		</body></html>
@@ -55,6 +56,9 @@ func TestPageComputedStylePropertyResolvesWidthAndSupportedHeightFromCachedLayou
 	assertResolvedProperty(t, page, borderBox, "height", "80px")
 	assertResolvedProperty(t, page, NodeHandle{Document: generation, Node: mustPageElementID(t, page, "inline")}, "width", "50px")
 	assertResolvedProperty(t, page, NodeHandle{Document: generation, Node: mustPageElementID(t, page, "inline-block")}, "width", "60px")
+	inlineBlockAuto := NodeHandle{Document: generation, Node: mustPageElementID(t, page, "inline-block-auto")}
+	assertResolvedProperty(t, page, inlineBlockAuto, "width", "40px")
+	assertResolvedProperty(t, page, inlineBlockAuto, "height", "10px")
 	assertResolvedProperty(t, page, NodeHandle{Document: generation, Node: mustPageElementID(t, page, "none")}, "width", "70px")
 
 	if err := page.Render(); err != nil {

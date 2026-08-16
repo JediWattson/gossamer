@@ -113,13 +113,15 @@ func TestRenderTextAlignPositionsLinesWithinContentBox(t *testing.T) {
 	}
 }
 
-func TestRenderInlineBlockUsesCurrentInlineFlow(t *testing.T) {
+func TestRenderInlineBlockCreatesAtomicFormattingRoot(t *testing.T) {
 	t.Parallel()
 
 	document, body := boxModelDocument()
 	container := dom.NewElement("div", dom.Attribute{Name: "style", Value: "width: 200px"})
-	inlineBlock := dom.NewElement("span", dom.Attribute{Name: "style", Value: "display: inline-block"})
-	inlineBlock.AppendChild(dom.NewText("First "))
+	inlineBlock := dom.NewElement("span", dom.Attribute{Name: "style", Value: "display:inline-block;width:60px;height:24px;margin:0 5px 0 3px;padding:4px;border:2px solid #000;background:#123456;opacity:.5"})
+	innerBlock := dom.NewElement("strong", dom.Attribute{Name: "style", Value: "display:block"})
+	innerBlock.AppendChild(dom.NewText("First"))
+	inlineBlock.AppendChild(innerBlock)
 	inline := dom.NewElement("span")
 	inline.AppendChild(dom.NewText("Second"))
 	container.AppendChild(inlineBlock)
@@ -136,8 +138,100 @@ func TestRenderInlineBlockUsesCurrentInlineFlow(t *testing.T) {
 		t.Fatalf("inline fragments = First:%v Second:%v", first, second)
 	}
 	assertNear(t, "inline-block baseline", first.BaselineY, second.BaselineY)
-	if second.X <= first.X {
-		t.Errorf("second inline x = %.2f, want after inline-block x %.2f", second.X, first.X)
+	box := findBox(frame.Root, inlineBlock)
+	innerBox := findBox(frame.Root, innerBlock)
+	if box == nil || innerBox == nil {
+		t.Fatalf("atomic boxes = inline:%#v inner:%#v", box, innerBox)
+	}
+	assertNear(t, "inline-block content width", box.ContentBounds.Width, 60)
+	assertNear(t, "inline-block content height", box.ContentBounds.Height, 24)
+	if innerBox.Bounds.X < box.ContentBounds.X || innerBox.Bounds.X+innerBox.Bounds.Width > box.ContentBounds.X+box.ContentBounds.Width {
+		t.Errorf("inner block bounds %#v escape inline-block content %#v", innerBox.Bounds, box.ContentBounds)
+	}
+	if second.X < box.Bounds.X+box.Bounds.Width+5 {
+		t.Errorf("second inline x = %.2f, want after inline-block margin edge %.2f", second.X, box.Bounds.X+box.Bounds.Width+5)
+	}
+	if hit := render.HitTest(frame, box.Bounds.X+1, box.Bounds.Y+1); hit != inlineBlock {
+		t.Fatalf("inline-block border hit = %p, want %p", hit, inlineBlock)
+	}
+	wantBackground := color.NRGBA{R: 0x12, G: 0x34, B: 0x56, A: 0xff}
+	opacityIndex, backgroundIndex, firstTextIndex, secondTextIndex := -1, -1, -1, -1
+	for index, command := range frame.DisplayList.Commands {
+		if command.Kind == render.BeginOpacityCommand && command.Node == inlineBlock && command.Opacity == .5 {
+			opacityIndex = index
+		}
+		if command.Kind == render.FillRectCommand && command.Node == inlineBlock && command.Color == wantBackground {
+			backgroundIndex = index
+		}
+		if command.Kind == render.DrawTextCommand && command.Text == "First" {
+			firstTextIndex = index
+		}
+		if command.Kind == render.DrawTextCommand && command.Text == "Second" {
+			secondTextIndex = index
+		}
+	}
+	if opacityIndex < 0 || backgroundIndex <= opacityIndex || firstTextIndex <= backgroundIndex || secondTextIndex <= firstTextIndex {
+		t.Fatalf("atomic paint order = opacity:%d background:%d first:%d second:%d", opacityIndex, backgroundIndex, firstTextIndex, secondTextIndex)
+	}
+}
+
+func TestRenderInlineBlockOverflowBaselineUsesBottomMarginEdge(t *testing.T) {
+	t.Parallel()
+
+	document, body := boxModelDocument()
+	container := dom.NewElement("div", dom.Attribute{Name: "style", Value: "width:200px"})
+	atomic := dom.NewElement("span", dom.Attribute{Name: "style", Value: "display:inline-block;width:40px;height:30px;margin-bottom:3px;overflow:hidden"})
+	atomic.AppendChild(dom.NewText("inside"))
+	after := dom.NewElement("span")
+	after.AppendChild(dom.NewText("after"))
+	container.AppendChild(atomic)
+	container.AppendChild(after)
+	body.AppendChild(container)
+
+	frame, err := render.Render(document, render.Viewport{Width: 240, Height: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	box := findBox(frame.Root, atomic)
+	fragment := findTextFragment(collectTextFragments(frame.Root), "after")
+	if box == nil || fragment == nil {
+		t.Fatalf("overflow baseline fixtures = box:%#v after:%#v", box, fragment)
+	}
+	assertNear(t, "overflow inline-block baseline", fragment.BaselineY, box.Bounds.Y+box.Bounds.Height+3)
+}
+
+func TestRenderInlineBlockShrinkToFitAndWrapsAtomically(t *testing.T) {
+	t.Parallel()
+
+	document, body := boxModelDocument()
+	container := dom.NewElement("div", dom.Attribute{Name: "style", Value: "width:120px"})
+	auto := dom.NewElement("span", dom.Attribute{Name: "style", Value: "display:inline-block"})
+	auto.AppendChild(dom.NewText("short"))
+	first := dom.NewElement("span", dom.Attribute{Name: "style", Value: "display:inline-block;width:80px;height:10px"})
+	second := dom.NewElement("span", dom.Attribute{Name: "style", Value: "display:inline-block;width:80px;height:10px"})
+	container.AppendChild(auto)
+	container.AppendChild(dom.NewElement("br"))
+	container.AppendChild(first)
+	container.AppendChild(second)
+	body.AppendChild(container)
+
+	frame, err := render.Render(document, render.Viewport{Width: 240, Height: 160})
+	if err != nil {
+		t.Fatal(err)
+	}
+	autoBox := findBox(frame.Root, auto)
+	firstBox := findBox(frame.Root, first)
+	secondBox := findBox(frame.Root, second)
+	if autoBox == nil || firstBox == nil || secondBox == nil {
+		t.Fatalf("inline-block boxes = auto:%#v first:%#v second:%#v", autoBox, firstBox, secondBox)
+	}
+	if autoBox.ContentBounds.Width <= 0 || autoBox.ContentBounds.Width >= 120 {
+		t.Fatalf("auto inline-block width = %.2f, want shrink-to-fit below containing width", autoBox.ContentBounds.Width)
+	}
+	assertNear(t, "first explicit inline-block width", firstBox.ContentBounds.Width, 80)
+	assertNear(t, "second explicit inline-block width", secondBox.ContentBounds.Width, 80)
+	if secondBox.Bounds.Y <= firstBox.Bounds.Y {
+		t.Fatalf("second inline-block y = %.2f, want wrapped below first y %.2f", secondBox.Bounds.Y, firstBox.Bounds.Y)
 	}
 }
 

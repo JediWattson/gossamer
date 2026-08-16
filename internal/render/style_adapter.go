@@ -90,6 +90,7 @@ const (
 type styledNode struct {
 	node          *dom.Node
 	pseudo        css.PseudoElement
+	generated     bool
 	generatedText string
 	style         computedStyle
 	children      []*styledNode
@@ -170,7 +171,19 @@ func projectPseudoStyle(
 	if !generated {
 		return nil
 	}
-	return &styledNode{node: origin, pseudo: pseudo, generatedText: text, style: value}
+	textNode := &styledNode{
+		node:          origin,
+		pseudo:        pseudo,
+		generated:     true,
+		generatedText: text,
+		style:         value,
+	}
+	return &styledNode{
+		node:     origin,
+		pseudo:   pseudo,
+		style:    value,
+		children: []*styledNode{textNode},
+	}
 }
 
 func styleEnvironment(viewport Viewport) computed.Environment {
@@ -190,7 +203,12 @@ func resolveLength(value length, percentBase float64, viewport Viewport, autoVal
 }
 
 func isBlockLevel(display displayMode) bool {
-	return display == displayBlock || display == displayListItem || display == displayFlex
+	return display.Outside() == computed.DisplayOutsideBlock
+}
+
+func isAtomicInline(display displayMode) bool {
+	return display.Outside() == computed.DisplayOutsideInline &&
+		display.Inside() != computed.DisplayInsideFlow
 }
 
 func isOutOfFlow(position positionMode) bool {

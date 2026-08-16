@@ -95,10 +95,14 @@ func TestLayoutSnapshotOnlyIndexesPrincipalBoxesAndInlineReplacedContent(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	for name, id := range map[string]dom.NodeID{"inline": inline, "inline-block": inlineBlock, "display:none": none} {
+	for name, id := range map[string]dom.NodeID{"inline": inline, "display:none": none} {
 		if _, found := layout.GeometryID(id); found {
 			t.Errorf("%s unexpectedly has principal geometry", name)
 		}
+	}
+	inlineBlockGeometry, found := layout.GeometryID(inlineBlock)
+	if !found || inlineBlockGeometry.ContentBounds.Width != 60 || inlineBlockGeometry.ContentBounds.Height != 30 {
+		t.Fatalf("inline-block geometry = %#v, %t; want 60x30 principal content box", inlineBlockGeometry, found)
 	}
 	geometry, found := layout.GeometryID(imageID)
 	if !found || geometry.ContentBounds.Width != 13 || geometry.ContentBounds.Height != 7 {

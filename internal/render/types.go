@@ -92,6 +92,8 @@ type Box struct {
 	zIndexAuto    bool
 	style         computedStyle
 	hasStyle      bool
+	paintOpacity  float64
+	hasOpacity    bool
 }
 
 type flowItem struct {

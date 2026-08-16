@@ -58,3 +58,33 @@ func TestFlexLayoutDistributesMainAxisAndSharesVisualOrderWithHitTesting(t *test
 		t.Fatalf("flex hit = %#v, want item c %#v", hit, c)
 	}
 }
+
+func TestInlineFlexUsesAtomicInlineOuterDisplay(t *testing.T) {
+	t.Parallel()
+	document, err := htmlparser.Parse(strings.NewReader(`<!doctype html><html><body style="margin:0">
+		<div style="width:200px"><span id="flex" style="display:inline-flex;column-gap:10px;background:#123456"><span id="a" style="display:block;width:30px;height:20px"></span><span id="b" style="display:block;width:40px;height:20px"></span></span><span id="after">after</span></div>
+	</body></html>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame, err := render.Render(document, render.Viewport{Width: 240, Height: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	flex := findStaticPageElementByID(document, "flex")
+	a := findStaticPageElementByID(document, "a")
+	b := findStaticPageElementByID(document, "b")
+	flexGeometry, ok := frame.Layout.Geometry(flex)
+	if !ok {
+		t.Fatal("inline-flex has no atomic principal geometry")
+	}
+	assertNear(t, "inline-flex shrink-to-fit width", flexGeometry.ContentBounds.Width, 80)
+	aGeometry, _ := frame.Layout.Geometry(a)
+	bGeometry, _ := frame.Layout.Geometry(b)
+	assertNear(t, "inline-flex first item x", aGeometry.Bounds.X, flexGeometry.ContentBounds.X)
+	assertNear(t, "inline-flex second item x", bGeometry.Bounds.X, aGeometry.Bounds.X+aGeometry.Bounds.Width+10)
+	after := findTextFragment(collectTextFragments(frame.Root), "after")
+	if after == nil || after.X < flexGeometry.Bounds.X+flexGeometry.Bounds.Width {
+		t.Fatalf("following inline text = %#v, want after atomic inline-flex box %#v", after, flexGeometry.Bounds)
+	}
+}

@@ -50,11 +50,12 @@ func TestGeneratedBlockPseudoHasSeparateGeometryPaintAndOriginHitTarget(t *testi
 
 	document, target := pseudoRenderDocument(`
 		#target::before {
-			content:"";
+			content:"block";
 			display:block;
 			width:50%;
 			height:12px;
 			background-color:#ff0000;
+			opacity:.5;
 		}
 	`, "body")
 	frame, err := render.Render(document, render.Viewport{Width: 320, Height: 180})
@@ -77,14 +78,24 @@ func TestGeneratedBlockPseudoHasSeparateGeometryPaintAndOriginHitTarget(t *testi
 	}
 
 	painted := false
+	grouped := false
 	for _, command := range frame.DisplayList.Commands {
 		if command.Kind == render.FillRectCommand && command.Node == target && command.Pseudo == css.PseudoElementBefore && command.Color == (color.NRGBA{R: 0xff, A: 0xff}) {
 			painted = true
-			break
+		}
+		if command.Kind == render.BeginOpacityCommand && command.Node == target && command.Pseudo == css.PseudoElementBefore && command.Opacity == .5 {
+			grouped = true
 		}
 	}
 	if !painted {
 		t.Fatal("pseudo background was not painted with pseudo ownership")
+	}
+	if !grouped {
+		t.Fatal("block pseudo opacity was not applied once at its atomic box")
+	}
+	fragment := findTextFragment(collectTextFragments(frame.Root), "block")
+	if fragment == nil || fragment.Pseudo != css.PseudoElementBefore || fragment.Color.A != 0xff {
+		t.Fatalf("block pseudo text fragment = %#v, want generated ::before text", fragment)
 	}
 	hit := render.HitTest(frame,
 		pseudoGeometry.Bounds.X+pseudoGeometry.Bounds.Width/2,

@@ -47,27 +47,31 @@ func hitTestVisualBox(box *Box, x, y float64, transforms map[*dom.Node]VisualTra
 			return node
 		}
 	}
-	for index := len(box.Children) - 1; index >= 0; index-- {
-		if box.Children[index].positioned {
-			continue
-		}
-		if node := hitTestVisualBox(box.Children[index], x, y, transforms); node != nil {
-			return node
-		}
-	}
-	for index := len(box.Fragments) - 1; index >= 0; index-- {
-		fragment := box.Fragments[index]
-		switch fragment.Kind {
-		case ImageFragmentKind:
-			transform := transforms[fragment.Image.Node]
-			if (!transform.HasClip || containsPoint(transform.Clip, x, y)) && containsPoint(translatedRect(fragment.Image.Bounds, transform), x, y) {
-				return fragment.Image.Node
+	if len(box.flow) != 0 {
+		for index := len(box.flow) - 1; index >= 0; index-- {
+			item := box.flow[index]
+			if item.box != nil {
+				if node := hitTestVisualBox(item.box, x, y, transforms); node != nil {
+					return node
+				}
+				continue
 			}
-		case TextFragmentKind:
-			transform := transforms[fragment.Text.Node]
-			bounds := Rect{X: fragment.Text.X, Y: fragment.Text.BaselineY - fragment.Text.Height, Width: fragment.Text.Width, Height: fragment.Text.Height}
-			if (!transform.HasClip || containsPoint(transform.Clip, x, y)) && containsPoint(translatedRect(bounds, transform), x, y) {
-				return fragment.Text.Node
+			if node := hitTestVisualFragment(item.fragment, x, y, transforms); node != nil {
+				return node
+			}
+		}
+	} else {
+		for index := len(box.Children) - 1; index >= 0; index-- {
+			if box.Children[index].positioned {
+				continue
+			}
+			if node := hitTestVisualBox(box.Children[index], x, y, transforms); node != nil {
+				return node
+			}
+		}
+		for index := len(box.Fragments) - 1; index >= 0; index-- {
+			if node := hitTestVisualFragment(box.Fragments[index], x, y, transforms); node != nil {
+				return node
 			}
 		}
 	}
@@ -78,6 +82,23 @@ func hitTestVisualBox(box *Box, x, y float64, transforms map[*dom.Node]VisualTra
 	}
 	if containsPoint(translatedRect(box.Bounds, boxTransform), x, y) {
 		return box.Node
+	}
+	return nil
+}
+
+func hitTestVisualFragment(fragment InlineFragment, x, y float64, transforms map[*dom.Node]VisualTransform) *dom.Node {
+	switch fragment.Kind {
+	case ImageFragmentKind:
+		transform := transforms[fragment.Image.Node]
+		if (!transform.HasClip || containsPoint(transform.Clip, x, y)) && containsPoint(translatedRect(fragment.Image.Bounds, transform), x, y) {
+			return fragment.Image.Node
+		}
+	case TextFragmentKind:
+		transform := transforms[fragment.Text.Node]
+		bounds := Rect{X: fragment.Text.X, Y: fragment.Text.BaselineY - fragment.Text.Height, Width: fragment.Text.Width, Height: fragment.Text.Height}
+		if (!transform.HasClip || containsPoint(transform.Clip, x, y)) && containsPoint(translatedRect(bounds, transform), x, y) {
+			return fragment.Text.Node
+		}
 	}
 	return nil
 }
@@ -98,30 +119,31 @@ func hitTestBox(box *Box, x, y float64) *dom.Node {
 			return node
 		}
 	}
-	for index := len(box.Children) - 1; index >= 0; index-- {
-		if box.Children[index].positioned {
-			continue
-		}
-		if node := hitTestBox(box.Children[index], x, y); node != nil {
-			return node
-		}
-	}
-	for index := len(box.Fragments) - 1; index >= 0; index-- {
-		fragment := box.Fragments[index]
-		switch fragment.Kind {
-		case ImageFragmentKind:
-			if containsPoint(fragment.Image.Bounds, x, y) {
-				return fragment.Image.Node
+	if len(box.flow) != 0 {
+		for index := len(box.flow) - 1; index >= 0; index-- {
+			item := box.flow[index]
+			if item.box != nil {
+				if node := hitTestBox(item.box, x, y); node != nil {
+					return node
+				}
+				continue
 			}
-		case TextFragmentKind:
-			bounds := Rect{
-				X:      fragment.Text.X,
-				Y:      fragment.Text.BaselineY - fragment.Text.Height,
-				Width:  fragment.Text.Width,
-				Height: fragment.Text.Height,
+			if node := hitTestFragment(item.fragment, x, y); node != nil {
+				return node
 			}
-			if containsPoint(bounds, x, y) {
-				return fragment.Text.Node
+		}
+	} else {
+		for index := len(box.Children) - 1; index >= 0; index-- {
+			if box.Children[index].positioned {
+				continue
+			}
+			if node := hitTestBox(box.Children[index], x, y); node != nil {
+				return node
+			}
+		}
+		for index := len(box.Fragments) - 1; index >= 0; index-- {
+			if node := hitTestFragment(box.Fragments[index], x, y); node != nil {
+				return node
 			}
 		}
 	}
@@ -132,6 +154,26 @@ func hitTestBox(box *Box, x, y float64) *dom.Node {
 	}
 	if containsPoint(box.Bounds, x, y) {
 		return box.Node
+	}
+	return nil
+}
+
+func hitTestFragment(fragment InlineFragment, x, y float64) *dom.Node {
+	switch fragment.Kind {
+	case ImageFragmentKind:
+		if containsPoint(fragment.Image.Bounds, x, y) {
+			return fragment.Image.Node
+		}
+	case TextFragmentKind:
+		bounds := Rect{
+			X:      fragment.Text.X,
+			Y:      fragment.Text.BaselineY - fragment.Text.Height,
+			Width:  fragment.Text.Width,
+			Height: fragment.Text.Height,
+		}
+		if containsPoint(bounds, x, y) {
+			return fragment.Text.Node
+		}
 	}
 	return nil
 }

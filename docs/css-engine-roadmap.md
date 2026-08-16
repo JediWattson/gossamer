@@ -276,19 +276,27 @@ unknown state never silently matches.
 Current foundation: block overflow containers now use typed `overflow-x` and
 `overflow-y` computed values. Page-owned stable-ID offsets project immutable
 layout through nested scrollport clips for geometry, paint, and hit testing.
-Scrollbar layout, inline fragmentation, anchoring, snapping, and advanced
-formatting contexts remain pending.
+Computed display retains separate outer and inner roles. `inline-block` and
+`inline-flex` now create atomic inline formatting roots with bounded cached
+intrinsic measurement, shrink-to-fit auto width, baseline participation,
+box-model paint, stable-ID geometry, and flow-ordered hit testing. Block
+children no longer escape those roots, and live computed width/height reads use
+their retained geometry. Relative, absolute, and fixed positioning, basic
+stacking order, and single-line row/column flex layout also have tested
+foundations. Scrollbar layout, inline fragmentation, anchoring, snapping, and
+advanced formatting contexts remain pending.
 
 - Complete inline formatting with retained inline boxes, whitespace, bidi,
   shaping, line breaking, and vertical alignment.
-- Add floats, positioning, stacking contexts, overflow and scrolling, tables,
-  flexbox, grid, multicolumn, and fragmentation in measured slices.
+- Correct percentage heights, margin collapsing, and justified line layout.
+- Extend positioning, stacking contexts, overflow/scrolling, and Flexbox in
+  measured slices; add floats as a dedicated compatibility slice.
 - Keep computed values separate from used values that depend on geometry.
 
 Acceptance: each formatting context has geometry fixtures and paint-order
 tests before it participates in general page rendering.
 
-### 8. CSSOM and incremental restyle
+### 8. CSSOM and invalidation
 
 Current foundation: `element.style` remains a live mutable view of the DOM
 attribute, while `getComputedStyle()` returns a fresh read-only declaration
@@ -311,12 +319,40 @@ frame; other pseudo-elements remain empty.
   changes and record whether they touch the connected tree.
 - Initially map every connected mutation to global style/layout/paint
   invalidation, coalesced at the Page task boundary.
-- Add selector/property dependency indexes and subtree restyle only after
-  profiling proves the full rebuild is a bottleneck.
 
 Acceptance: `setAttribute`, `className`, `element.style`, stylesheet text, and
 tree mutations are immediately visible to JavaScript and publish at most one
 new frame after the current task and microtask checkpoint.
+
+### 9. Tables, Grid, and advanced formatting
+
+- Implement CSS table wrappers, anonymous table boxes, row/column sizing, and
+  HTML table fixup before exposing table geometry broadly.
+- Add Grid track sizing and placement, followed by intrinsic sizing and
+  alignment.
+- Add multicolumn and fragmentation only after their block/inline consumers
+  are retained and testable.
+- Keep each formatting context as an independent computed-to-used vertical
+  slice with geometry and paint-order fixtures.
+
+Acceptance: tables and Grid agree across anonymous-box construction, intrinsic
+sizing, placement, overflow, hit testing, and display-list order before they
+participate in general page rendering.
+
+### 10. Incremental restyle and performance
+
+- Cache parsed rules and declarations by stable sheet/element generation.
+- Add selector candidate indexes and property/state dependency tracking.
+- Classify connected mutations, then introduce subtree restyle against the
+  full-document rebuild as an executable correctness oracle.
+- Add incremental layout and paint damage only after style invalidation is
+  proven equivalent.
+- Introduce parallel work solely where profiles show independent, bounded
+  tasks with a measurable gain.
+
+Acceptance: incremental results are byte-for-byte equivalent to a full rebuild,
+benchmarks demonstrate the improvement, and adversarial CSS/DOM inputs retain
+hard memory and operation limits.
 
 ## Validation policy
 
