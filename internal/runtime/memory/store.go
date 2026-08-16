@@ -1407,23 +1407,7 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 		case HeapString:
 			// Immutable payload was cloned during allocation.
 		case HeapObject:
-			prototype := remapValue(sourceSlot.Object.Prototype, mapping)
-			if err := store.setPrototypeLocked(to, copyRef, prototype, true); err != nil {
-				_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
-				return nil, err
-			}
-			for _, property := range sourceSlot.Object.Properties {
-				name := mapping[property.Name]
-				descriptor := property
-				descriptor.Name = Ref{}
-				descriptor.Value = remapValue(property.Value, mapping)
-				descriptor.Getter = remapValue(property.Getter, mapping)
-				descriptor.Setter = remapValue(property.Setter, mapping)
-				if err := store.definePropertyLocked(to, copyRef, name, descriptor, true); err != nil {
-					_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
-					return nil, err
-				}
-			}
+			// The shared object header is copied after the typed payload.
 		case HeapArray:
 			if err := store.setArrayLengthLocked(to, copyRef, sourceSlot.Array.Length, true); err != nil {
 				_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
@@ -1455,6 +1439,7 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 			}
 		case HeapFunction:
 			function := cloneFunction(sourceSlot.Function)
+			function.ObjectHeader = ObjectHeader{}
 			function.Name = remapValue(function.Name, mapping)
 			function.Environment = remapValue(function.Environment, mapping)
 			for index, constant := range function.Constants {
@@ -1534,6 +1519,7 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 			}
 		case HeapError:
 			value := cloneError(sourceSlot.Error)
+			value.ObjectHeader = ObjectHeader{}
 			value.Message = remapValue(value.Message, mapping)
 			value.Stack = remapValue(value.Stack, mapping)
 			if value.HasCause {
@@ -1565,12 +1551,35 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 			_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
 			return nil, fmt.Errorf("%w: cannot copy heap kind %d", ErrTypeMismatch, sourceSlot.Kind)
 		}
+		if sourceHeader, objectLike := objectHeaderForSlot(sourceSlot); objectLike {
+			if err := store.copyObjectHeaderLocked(to, copyRef, *sourceHeader, mapping); err != nil {
+				_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
+				return nil, err
+			}
+		}
 	}
 	result := make([]Ref, len(roots))
 	for index, root := range roots {
 		result[index] = mapping[root]
 	}
 	return result, nil
+}
+
+func (store *Store) copyObjectHeaderLocked(to ownership.OwnerID, copyRef Ref, source ObjectHeader, mapping map[Ref]Ref) error {
+	if err := store.setPrototypeLocked(to, copyRef, remapValue(source.Prototype, mapping), true); err != nil {
+		return err
+	}
+	for _, property := range source.Properties {
+		descriptor := property
+		descriptor.Name = Ref{}
+		descriptor.Value = remapValue(property.Value, mapping)
+		descriptor.Getter = remapValue(property.Getter, mapping)
+		descriptor.Setter = remapValue(property.Setter, mapping)
+		if err := store.definePropertyLocked(to, copyRef, mapping[property.Name], descriptor, true); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func remapValue(value Value, mapping map[Ref]Ref) Value {

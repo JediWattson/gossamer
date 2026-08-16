@@ -213,3 +213,56 @@ func TestNativeObjectRejectsPrototypeCycles(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestSharedObjectHeadersSurviveGraphPromotion(t *testing.T) {
+	t.Parallel()
+
+	store := memory.NewStore(nil)
+	defer store.Close()
+	owner := realmOwner(26)
+	region := mustRegion(t, store, owner)
+	prototype, _ := store.AllocObject(owner, region)
+	name, _ := store.AllocString(owner, region, "marker")
+	array, _ := store.AllocArray(owner, region, 0)
+	function, _ := store.AllocBytecodeFunction(owner, region, memory.NullValue(), memory.NullValue(), 0, nil, nil)
+	promise, _ := store.AllocPromise(owner, region)
+	mapRef, _ := store.AllocMap(owner, region)
+	setRef, _ := store.AllocSet(owner, region)
+	errorRef, _ := store.AllocError(owner, region, memory.ErrorType, memory.NullValue())
+	objects := []memory.Ref{array, function, promise, mapRef, setRef, errorRef}
+	for _, object := range objects {
+		if err := store.SetPrototype(owner, object, memory.RefValue(prototype)); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.DefineProperty(owner, object, name, memory.DataProperty(memory.NumberValue(42), true, true, true)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	root, _ := store.AllocCell(owner, region)
+	for index, object := range objects {
+		if err := store.Set(owner, root, index, memory.RefValue(object)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	promoted, err := store.Promote(owner, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := realmOwner(27)
+	copyRoot, err := store.Deref(reader, promoted[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index, value := range copyRoot.Fields {
+		header, err := store.DerefObjectHeader(reader, value.Ref())
+		if err != nil {
+			t.Fatalf("header %d: %v", index, err)
+		}
+		if !header.Prototype.IsRef() || header.Prototype.Ref() == prototype || len(header.Properties) != 1 || header.Properties[0].Value.Number() != 42 {
+			t.Fatalf("header %d = %#v", index, header)
+		}
+	}
+	if err := store.CheckInvariants(); err != nil {
+		t.Fatal(err)
+	}
+}

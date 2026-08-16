@@ -10,10 +10,15 @@ type ArrayElement struct {
 // Array owns a JavaScript-shaped uint32 length and sorted sparse elements.
 // Index math and named properties remain higher-level language semantics.
 type Array struct {
+	ObjectHeader
 	Length   uint32
 	Elements []ArrayElement
 }
 
 func cloneArray(array Array) Array {
-	return Array{Length: array.Length, Elements: append([]ArrayElement(nil), array.Elements...)}
+	return Array{
+		ObjectHeader: cloneObjectHeader(array.ObjectHeader),
+		Length:       array.Length,
+		Elements:     append([]ArrayElement(nil), array.Elements...),
+	}
 }

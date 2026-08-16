@@ -38,6 +38,8 @@ type TaskContext struct {
 	Region       ownership.RegionID
 	MemoryRegion memory.RegionID
 	Refs         []memory.Ref
+
+	intrinsics *Intrinsics
 }
 
 func (context *TaskContext) NewObject() (ownership.ObjectID, error) {
@@ -90,7 +92,11 @@ func (context *TaskContext) NewHeapObject() (memory.Ref, error) {
 	if context == nil || context.Realm == nil {
 		return memory.Ref{}, fmt.Errorf("runtime: nil task context")
 	}
-	return context.Realm.store.AllocObject(context.Owner, context.MemoryRegion)
+	ref, err := context.Realm.store.AllocObject(context.Owner, context.MemoryRegion)
+	if err == nil && context.intrinsics != nil {
+		err = context.SetPrototype(ref, memory.RefValue(context.intrinsics.ObjectPrototype))
+	}
+	return ref, err
 }
 
 func (context *TaskContext) DerefObject(ref memory.Ref) (memory.Object, error) {
@@ -98,6 +104,13 @@ func (context *TaskContext) DerefObject(ref memory.Ref) (memory.Object, error) {
 		return memory.Object{}, fmt.Errorf("runtime: nil task context")
 	}
 	return context.Realm.store.DerefObject(context.Owner, ref)
+}
+
+func (context *TaskContext) DerefObjectHeader(ref memory.Ref) (memory.ObjectHeader, error) {
+	if context == nil || context.Realm == nil {
+		return memory.ObjectHeader{}, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.DerefObjectHeader(context.Owner, ref)
 }
 
 func (context *TaskContext) SetPrototype(object memory.Ref, prototype memory.Value) error {
@@ -146,7 +159,11 @@ func (context *TaskContext) NewArray(length uint32) (memory.Ref, error) {
 	if context == nil || context.Realm == nil {
 		return memory.Ref{}, fmt.Errorf("runtime: nil task context")
 	}
-	return context.Realm.store.AllocArray(context.Owner, context.MemoryRegion, length)
+	ref, err := context.Realm.store.AllocArray(context.Owner, context.MemoryRegion, length)
+	if err == nil && context.intrinsics != nil {
+		err = context.SetPrototype(ref, memory.RefValue(context.intrinsics.ArrayPrototype))
+	}
+	return ref, err
 }
 
 func (context *TaskContext) DerefArray(ref memory.Ref) (memory.Array, error) {
@@ -230,14 +247,45 @@ func (context *TaskContext) NewBytecodeFunction(name, environment memory.Value, 
 	if context == nil || context.Realm == nil {
 		return memory.Ref{}, fmt.Errorf("runtime: nil task context")
 	}
-	return context.Realm.store.AllocBytecodeFunction(context.Owner, context.MemoryRegion, name, environment, arity, code, constants)
+	ref, err := context.Realm.store.AllocBytecodeFunction(context.Owner, context.MemoryRegion, name, environment, arity, code, constants)
+	if err != nil || context.intrinsics == nil {
+		return ref, err
+	}
+	if err := context.intrinsics.initializeFunction(context, ref, name, arity, true); err != nil {
+		_ = context.Realm.store.Free(context.Owner, ref)
+		return memory.Ref{}, err
+	}
+	return ref, nil
 }
 
 func (context *TaskContext) NewNativeFunction(name, environment memory.Value, arity uint32, nativeID uint64) (memory.Ref, error) {
 	if context == nil || context.Realm == nil {
 		return memory.Ref{}, fmt.Errorf("runtime: nil task context")
 	}
-	return context.Realm.store.AllocNativeFunction(context.Owner, context.MemoryRegion, name, environment, arity, nativeID)
+	ref, err := context.Realm.store.AllocNativeFunction(context.Owner, context.MemoryRegion, name, environment, arity, nativeID)
+	if err != nil || context.intrinsics == nil {
+		return ref, err
+	}
+	if err := context.intrinsics.initializeFunction(context, ref, name, arity, false); err != nil {
+		_ = context.Realm.store.Free(context.Owner, ref)
+		return memory.Ref{}, err
+	}
+	return ref, nil
+}
+
+func (context *TaskContext) NewNativeConstructor(name, environment memory.Value, arity uint32, nativeID uint64) (memory.Ref, error) {
+	if context == nil || context.Realm == nil {
+		return memory.Ref{}, fmt.Errorf("runtime: nil task context")
+	}
+	ref, err := context.Realm.store.AllocNativeConstructor(context.Owner, context.MemoryRegion, name, environment, arity, nativeID)
+	if err != nil || context.intrinsics == nil {
+		return ref, err
+	}
+	if err := context.intrinsics.initializeFunction(context, ref, name, arity, true); err != nil {
+		_ = context.Realm.store.Free(context.Owner, ref)
+		return memory.Ref{}, err
+	}
+	return ref, nil
 }
 
 func (context *TaskContext) DerefFunction(ref memory.Ref) (memory.Function, error) {
@@ -251,7 +299,11 @@ func (context *TaskContext) NewPromise() (memory.Ref, error) {
 	if context == nil || context.Realm == nil {
 		return memory.Ref{}, fmt.Errorf("runtime: nil task context")
 	}
-	return context.Realm.store.AllocPromise(context.Owner, context.MemoryRegion)
+	ref, err := context.Realm.store.AllocPromise(context.Owner, context.MemoryRegion)
+	if err == nil && context.intrinsics != nil {
+		err = context.SetPrototype(ref, memory.RefValue(context.intrinsics.PromisePrototype))
+	}
+	return ref, err
 }
 
 func (context *TaskContext) DerefPromise(ref memory.Ref) (memory.Promise, error) {
@@ -398,7 +450,11 @@ func (context *TaskContext) NewMap() (memory.Ref, error) {
 	if context == nil || context.Realm == nil {
 		return memory.Ref{}, fmt.Errorf("runtime: nil task context")
 	}
-	return context.Realm.store.AllocMap(context.Owner, context.MemoryRegion)
+	ref, err := context.Realm.store.AllocMap(context.Owner, context.MemoryRegion)
+	if err == nil && context.intrinsics != nil {
+		err = context.SetPrototype(ref, memory.RefValue(context.intrinsics.MapPrototype))
+	}
+	return ref, err
 }
 
 func (context *TaskContext) DerefMap(ref memory.Ref) (memory.Map, error) {
@@ -440,7 +496,11 @@ func (context *TaskContext) NewSet() (memory.Ref, error) {
 	if context == nil || context.Realm == nil {
 		return memory.Ref{}, fmt.Errorf("runtime: nil task context")
 	}
-	return context.Realm.store.AllocSet(context.Owner, context.MemoryRegion)
+	ref, err := context.Realm.store.AllocSet(context.Owner, context.MemoryRegion)
+	if err == nil && context.intrinsics != nil {
+		err = context.SetPrototype(ref, memory.RefValue(context.intrinsics.SetPrototype))
+	}
+	return ref, err
 }
 
 func (context *TaskContext) DerefSet(ref memory.Ref) (memory.Set, error) {
@@ -622,7 +682,28 @@ func (context *TaskContext) NewError(kind memory.ErrorKind, message memory.Value
 	if context == nil || context.Realm == nil {
 		return memory.Ref{}, fmt.Errorf("runtime: nil task context")
 	}
-	return context.Realm.store.AllocError(context.Owner, context.MemoryRegion, kind, message)
+	ref, err := context.Realm.store.AllocError(context.Owner, context.MemoryRegion, kind, message)
+	if err != nil || context.intrinsics == nil {
+		return ref, err
+	}
+	prototype := context.intrinsics.ErrorPrototype
+	switch kind {
+	case memory.ErrorType:
+		prototype = context.intrinsics.TypeErrorPrototype
+	case memory.ErrorRange:
+		prototype = context.intrinsics.RangeErrorPrototype
+	case memory.ErrorReference:
+		prototype = context.intrinsics.ReferenceErrorPrototype
+	}
+	if err := context.SetPrototype(ref, memory.RefValue(prototype)); err != nil {
+		return memory.Ref{}, err
+	}
+	if message.Kind() != memory.ValueNull {
+		if err := defineData(context, ref, "message", message, true, false, true); err != nil {
+			return memory.Ref{}, err
+		}
+	}
+	return ref, nil
 }
 
 func (context *TaskContext) DerefError(ref memory.Ref) (memory.ErrorObject, error) {

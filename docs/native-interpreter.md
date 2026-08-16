@@ -1,10 +1,10 @@
 # Native interpreter kernel
 
-Gossamer's first Go interpreter executes hand-assembled native Function
-descriptors against a `runtime.TaskContext`. It proves that executable frames
-can use RegionStore values without inventing a second lifetime model. Stock V8
-remains the browser's JavaScript engine; this kernel does not parse or execute
-JavaScript source.
+Gossamer's Go interpreter executes checked native Function descriptors against
+a `runtime.TaskContext`. The native lexer, parser, compiler, and portable
+Program loader now provide a bounded source-to-bytecode path. Stock V8 remains
+the browser's JavaScript engine because this kernel is not selected by the
+browser Realm adapter yet.
 
 ## Bytecode contract
 
@@ -29,15 +29,18 @@ adding ownership claims or reference-count traffic.
 
 - Stack and literals: `Constant`, `Argument`, `Undefined`, `Null`, `True`,
   `False`, `Pop`, `Dup`, and `Return`.
-- Objects and Arrays: allocation, own property get/set/delete, indexed
-  get/set/delete, and length get/set.
+- Objects and Arrays: allocation, descriptor-backed prototype traversal,
+  accessor execution, named property get/set/delete, indexed get/set/delete,
+  and length get/set.
 - Contexts: load, declare, initialize, and store bindings plus `LoadThis`.
-- Operators: numeric arithmetic, remainder, unary increment/decrement/negate,
-  signed and unsigned bitwise operations, strict equality, numeric relational
-  comparisons, logical not, String concatenation, and `typeof`.
+- Operators: JavaScript primitive coercion, arithmetic, remainder, unary
+  increment/decrement/negate/plus, signed and unsigned bitwise operations,
+  strict and loose equality, relational comparisons, String concatenation,
+  logical not, and `typeof`.
 - Control flow: unconditional, truthy, falsey, and nullish jumps.
 - Functions: bytecode calls, registered numeric native calls, captured closure
-  creation, and construction with explicit `this`.
+  creation, Function object metadata, and construction through the Function's
+  actual `prototype` property with explicit `this`.
 - Exceptions: thrown Values, nested catch handlers, rethrow, and finally
   unwinding on normal and exceptional paths.
 
@@ -64,10 +67,9 @@ task region, and reads the immutable promoted graph from the microtask.
 
 ## Deliberate boundaries
 
-This is not an ECMAScript implementation. It does not provide source parsing,
-automatic coercion, prototype-chain lookup, descriptors, accessors, implicit
-promotion of bare return values, asynchronous opcodes, structured clone,
-browser method opcodes, or V8 replacement. RegionStore now has opaque
-HostObjects for browser facade identity, but invoking browser behavior remains
-an embedder boundary. The Store's existing copy-on-escape barrier still governs
-writes into longer-lived native owners.
+This is not an ECMAScript implementation. It does not provide implicit
+promotion of bare return values, complete built-in coverage, modules,
+generators, async Functions, browser method opcodes, or V8 replacement.
+RegionStore has opaque HostObjects for browser facade identity, but invoking
+browser behavior remains an embedder boundary. The Store's existing
+copy-on-escape barrier still governs writes into longer-lived native owners.

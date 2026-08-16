@@ -190,6 +190,9 @@ func (store *Store) initializeErrorLocked(owner ownership.OwnerID, ref Ref, valu
 	if value.Kind.Name() == "" {
 		return fmt.Errorf("%w: kind %d", ErrInvalidError, value.Kind)
 	}
+	if value.ObjectHeader.Prototype == (Value{}) {
+		value.ObjectHeader.Prototype = NullValue()
+	}
 	if value.Kind != ErrorAggregate && len(value.Errors) != 0 {
 		return fmt.Errorf("%w: %s cannot retain aggregate members", ErrInvalidError, value.Kind.Name())
 	}

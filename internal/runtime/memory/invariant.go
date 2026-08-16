@@ -192,7 +192,8 @@ func (store *Store) CheckInvariants() error {
 						return invariantError("Object %s has stale prototype %s", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, prototype)
 					}
 					prototypeSlot := &prototypeRegion.Slots[prototype.Slot]
-					if !prototypeSlot.Occupied || prototypeSlot.Generation != prototype.Gen || prototypeSlot.Kind != HeapObject {
+					_, objectLike := objectHeaderForSlot(prototypeSlot)
+					if !prototypeSlot.Occupied || prototypeSlot.Generation != prototype.Gen || !objectLike {
 						return invariantError("Object %s has non-Object prototype %s", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, prototype)
 					}
 				}
@@ -498,6 +499,13 @@ func (store *Store) CheckInvariants() error {
 			default:
 				return invariantError("R%d occupied slot %d has unknown heap kind %d", id, index, slot.Kind)
 			}
+			if slot.Kind != HeapObject {
+				if _, objectLike := objectHeaderForSlot(slot); objectLike {
+					if err := store.checkObjectHeaderLocked(Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot); err != nil {
+						return err
+					}
+				}
+			}
 		}
 	}
 	pooledSlotCapacity := uint64(0)
@@ -662,19 +670,19 @@ func slotHasOtherPayload(slot *Slot, kind HeapKind) bool {
 	if kind != HeapString && slot.String.Text != "" {
 		return true
 	}
-	if kind != HeapObject && (slot.Object.Prototype != (Value{}) || len(slot.Object.Properties) != 0) {
+	if kind != HeapObject && !objectHeaderStorageEmpty(slot.Object.ObjectHeader) {
 		return true
 	}
-	if kind != HeapArray && (slot.Array.Length != 0 || len(slot.Array.Elements) != 0) {
+	if kind != HeapArray && (!objectHeaderStorageEmpty(slot.Array.ObjectHeader) || slot.Array.Length != 0 || len(slot.Array.Elements) != 0) {
 		return true
 	}
 	if kind != HeapContext && (slot.Context.Parent != (Value{}) || len(slot.Context.Bindings) != 0) {
 		return true
 	}
-	if kind != HeapFunction && (slot.Function.Kind != 0 || slot.Function.Name != (Value{}) || slot.Function.Environment != (Value{}) || slot.Function.Arity != 0 || len(slot.Function.Code) != 0 || len(slot.Function.Constants) != 0 || slot.Function.NativeID != 0) {
+	if kind != HeapFunction && (!objectHeaderStorageEmpty(slot.Function.ObjectHeader) || slot.Function.Kind != 0 || slot.Function.Name != (Value{}) || slot.Function.Environment != (Value{}) || slot.Function.Arity != 0 || slot.Function.Constructible || len(slot.Function.Code) != 0 || len(slot.Function.Constants) != 0 || slot.Function.NativeID != 0) {
 		return true
 	}
-	if kind != HeapPromise && (slot.Promise.State != PromisePending || slot.Promise.Result != (Value{}) || len(slot.Promise.Reactions) != 0 || slot.Promise.Handled) {
+	if kind != HeapPromise && (!objectHeaderStorageEmpty(slot.Promise.ObjectHeader) || slot.Promise.State != PromisePending || slot.Promise.Result != (Value{}) || len(slot.Promise.Reactions) != 0 || slot.Promise.Handled) {
 		return true
 	}
 	if kind != HeapBigInt && (slot.BigInt.Negative || len(slot.BigInt.Magnitude) != 0) {
@@ -689,10 +697,10 @@ func slotHasOtherPayload(slot *Slot, kind HeapKind) bool {
 	if kind != HeapTypedArray && slot.TypedArray != (TypedArray{}) {
 		return true
 	}
-	if kind != HeapMap && len(slot.Map.Entries) != 0 {
+	if kind != HeapMap && (!objectHeaderStorageEmpty(slot.Map.ObjectHeader) || len(slot.Map.Entries) != 0) {
 		return true
 	}
-	if kind != HeapSet && len(slot.Set.Values) != 0 {
+	if kind != HeapSet && (!objectHeaderStorageEmpty(slot.Set.ObjectHeader) || len(slot.Set.Values) != 0) {
 		return true
 	}
 	if kind != HeapDate && slot.Date.Milliseconds != 0 {
@@ -701,7 +709,7 @@ func slotHasOtherPayload(slot *Slot, kind HeapKind) bool {
 	if kind != HeapRegExp && slot.RegExp != (RegExp{}) {
 		return true
 	}
-	if kind != HeapError && (slot.Error.Kind != 0 || slot.Error.Message != (Value{}) || slot.Error.Stack != (Value{}) || slot.Error.Cause != (Value{}) || slot.Error.HasCause || len(slot.Error.Errors) != 0) {
+	if kind != HeapError && (!objectHeaderStorageEmpty(slot.Error.ObjectHeader) || slot.Error.Kind != 0 || slot.Error.Message != (Value{}) || slot.Error.Stack != (Value{}) || slot.Error.Cause != (Value{}) || slot.Error.HasCause || len(slot.Error.Errors) != 0) {
 		return true
 	}
 	if kind != HeapWeakMap && len(slot.WeakMap.Entries) != 0 {
@@ -714,6 +722,68 @@ func slotHasOtherPayload(slot *Slot, kind HeapKind) bool {
 		return true
 	}
 	return false
+}
+
+func (store *Store) checkObjectHeaderLocked(ref Ref, slot *Slot) error {
+	header, ok := objectHeaderForSlot(slot)
+	if !ok {
+		return invariantError("%s is not object-like", ref)
+	}
+	if header.Prototype.Kind() != ValueNull && !header.Prototype.IsRef() {
+		return invariantError("%s has invalid prototype kind %d", ref, header.Prototype.Kind())
+	}
+	if header.Prototype.IsRef() {
+		prototype := header.Prototype.Ref()
+		prototypeRegion := store.regions[prototype.Region]
+		if prototypeRegion == nil || prototypeRegion.State == RegionDestroyed || uint64(prototype.Slot) >= uint64(len(prototypeRegion.Slots)) {
+			return invariantError("%s has stale prototype %s", ref, prototype)
+		}
+		prototypeSlot := &prototypeRegion.Slots[prototype.Slot]
+		_, objectLike := objectHeaderForSlot(prototypeSlot)
+		if !prototypeSlot.Occupied || prototypeSlot.Generation != prototype.Gen || !objectLike {
+			return invariantError("%s has non-Object prototype %s", ref, prototype)
+		}
+	}
+	names := make(map[string]struct{}, len(header.Properties))
+	for propertyIndex, property := range header.Properties {
+		if property.Kind != PropertyData && property.Kind != PropertyAccessor {
+			return invariantError("%s property %d has invalid descriptor kind %d", ref, propertyIndex, property.Kind)
+		}
+		if property.Kind == PropertyData && (property.Getter.Kind() != ValueUndefined || property.Setter.Kind() != ValueUndefined) {
+			return invariantError("%s data property %d retains accessors", ref, propertyIndex)
+		}
+		if property.Kind == PropertyAccessor && (property.Value.Kind() != ValueUndefined || property.Writable) {
+			return invariantError("%s accessor property %d retains data state", ref, propertyIndex)
+		}
+		if property.Kind == PropertyAccessor {
+			for _, callable := range []Value{property.Getter, property.Setter} {
+				if callable.Kind() == ValueUndefined {
+					continue
+				}
+				callableRegion := store.regions[callable.Ref().Region]
+				if callableRegion == nil || uint64(callable.Ref().Slot) >= uint64(len(callableRegion.Slots)) {
+					return invariantError("%s accessor property %d has stale Function %s", ref, propertyIndex, callable.Ref())
+				}
+				callableSlot := &callableRegion.Slots[callable.Ref().Slot]
+				if !callableSlot.Occupied || callableSlot.Generation != callable.Ref().Gen || callableSlot.Kind != HeapFunction {
+					return invariantError("%s accessor property %d has non-Function %s", ref, propertyIndex, callable.Ref())
+				}
+			}
+		}
+		targetRegion := store.regions[property.Name.Region]
+		if targetRegion == nil || targetRegion.State == RegionDestroyed || uint64(property.Name.Slot) >= uint64(len(targetRegion.Slots)) {
+			return invariantError("%s property %d has stale name %s", ref, propertyIndex, property.Name)
+		}
+		nameSlot := &targetRegion.Slots[property.Name.Slot]
+		if !nameSlot.Occupied || nameSlot.Generation != property.Name.Gen || nameSlot.Kind != HeapString {
+			return invariantError("%s property %d has non-String name %s", ref, propertyIndex, property.Name)
+		}
+		if _, duplicate := names[nameSlot.String.Text]; duplicate {
+			return invariantError("%s has duplicate property %q", ref, nameSlot.String.Text)
+		}
+		names[nameSlot.String.Text] = struct{}{}
+	}
+	return nil
 }
 
 func (store *Store) checkOptionalTypedRefLocked(value Value, kind HeapKind, label string) error {

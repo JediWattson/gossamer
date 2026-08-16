@@ -84,7 +84,25 @@ const (
 	bindingLexical bindingKind = iota + 1
 	bindingParameter
 	bindingHoisted
+	bindingGlobal
 )
+
+var nativeGlobalBindings = map[string]bool{
+	"undefined":      false,
+	"NaN":            false,
+	"Infinity":       false,
+	"Object":         true,
+	"Function":       true,
+	"Array":          true,
+	"String":         true,
+	"Error":          true,
+	"TypeError":      true,
+	"RangeError":     true,
+	"ReferenceError": true,
+	"Map":            true,
+	"Set":            true,
+	"Promise":        true,
+}
 
 type loopTarget struct {
 	breakLabel       browserruntime.Label
@@ -259,6 +277,9 @@ func (compiler *functionCompiler) resolve(name string) (binding, bool) {
 				return result, true
 			}
 		}
+	}
+	if mutable, exists := nativeGlobalBindings[name]; exists {
+		return binding{mutable: mutable, kind: bindingGlobal}, true
 	}
 	return binding{}, false
 }

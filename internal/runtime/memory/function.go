@@ -13,23 +13,27 @@ const (
 // Ref; Environment is null or a Context Ref. Constants may contain scalars or
 // arbitrary heap Refs.
 type Function struct {
-	Kind        FunctionKind
-	Name        Value
-	Environment Value
-	Arity       uint32
-	Code        []byte
-	Constants   []Value
-	NativeID    uint64
+	ObjectHeader
+	Kind          FunctionKind
+	Name          Value
+	Environment   Value
+	Arity         uint32
+	Constructible bool
+	Code          []byte
+	Constants     []Value
+	NativeID      uint64
 }
 
 func cloneFunction(function Function) Function {
 	return Function{
-		Kind:        function.Kind,
-		Name:        function.Name,
-		Environment: function.Environment,
-		Arity:       function.Arity,
-		Code:        append([]byte(nil), function.Code...),
-		Constants:   append([]Value(nil), function.Constants...),
-		NativeID:    function.NativeID,
+		ObjectHeader:  cloneObjectHeader(function.ObjectHeader),
+		Kind:          function.Kind,
+		Name:          function.Name,
+		Environment:   function.Environment,
+		Arity:         function.Arity,
+		Constructible: function.Constructible,
+		Code:          append([]byte(nil), function.Code...),
+		Constants:     append([]Value(nil), function.Constants...),
+		NativeID:      function.NativeID,
 	}
 }

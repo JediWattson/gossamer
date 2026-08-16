@@ -19,29 +19,14 @@ func (execution *execution) getProperty(base, key memory.Value) (memory.Value, b
 		return memory.Value{}, false, err
 	}
 	switch kind {
-	case memory.HeapObject:
+	case memory.HeapObject, memory.HeapFunction, memory.HeapPromise, memory.HeapMap, memory.HeapSet:
 		name, err := execution.propertyName(key)
 		if err != nil {
 			return memory.Value{}, false, err
 		}
-		_, descriptor, found, err := resolveObjectProperty(context, ref, name)
-		if err != nil || !found {
-			return memory.Value{}, found, err
-		}
-		if descriptor.Kind == memory.PropertyData {
-			return descriptor.Value, true, nil
-		}
-		if descriptor.Getter.Kind() == memory.ValueUndefined {
-			return memory.UndefinedValue(), true, nil
-		}
-		getter, err := requireRef(descriptor.Getter, "property getter")
-		if err != nil {
-			return memory.Value{}, false, err
-		}
-		value, err := execution.call(getter, base, nil, callAny)
-		return value, true, err
+		return execution.getNamedProperty(base, ref, name)
 	case memory.HeapArray:
-		index, length, err := execution.arrayPropertyKey(key)
+		index, length, indexed, name, err := execution.arrayPropertyKey(key)
 		if err != nil {
 			return memory.Value{}, false, err
 		}
@@ -52,11 +37,17 @@ func (execution *execution) getProperty(base, key memory.Value) (memory.Value, b
 			}
 			return memory.NumberValue(float64(array.Length)), true, nil
 		}
-		return context.ArrayElement(ref, index)
+		if indexed {
+			return context.ArrayElement(ref, index)
+		}
+		return execution.getNamedProperty(base, ref, name)
 	case memory.HeapError:
 		name, err := execution.propertyName(key)
 		if err != nil {
 			return memory.Value{}, false, err
+		}
+		if value, found, err := execution.getNamedProperty(base, ref, name); err != nil || found {
+			return value, found, err
 		}
 		keyText, err := context.DerefString(name)
 		if err != nil {
@@ -80,6 +71,25 @@ func (execution *execution) getProperty(base, key memory.Value) (memory.Value, b
 	}
 }
 
+func (execution *execution) getNamedProperty(base memory.Value, ref, name memory.Ref) (memory.Value, bool, error) {
+	_, descriptor, found, err := resolveObjectProperty(execution.context, ref, name)
+	if err != nil || !found {
+		return memory.Value{}, found, err
+	}
+	if descriptor.Kind == memory.PropertyData {
+		return descriptor.Value, true, nil
+	}
+	if descriptor.Getter.Kind() == memory.ValueUndefined {
+		return memory.UndefinedValue(), true, nil
+	}
+	getter, err := requireRef(descriptor.Getter, "property getter")
+	if err != nil {
+		return memory.Value{}, false, err
+	}
+	value, err := execution.call(getter, base, nil, callAny)
+	return value, true, err
+}
+
 func (execution *execution) setPropertyValue(base, key, value memory.Value) error {
 	context := execution.context
 	ref, err := requireRef(base, "property base")
@@ -91,7 +101,7 @@ func (execution *execution) setPropertyValue(base, key, value memory.Value) erro
 		return err
 	}
 	switch kind {
-	case memory.HeapObject:
+	case memory.HeapObject, memory.HeapFunction, memory.HeapPromise, memory.HeapMap, memory.HeapSet, memory.HeapError:
 		name, err := execution.propertyName(key)
 		if err != nil {
 			return err
@@ -122,7 +132,7 @@ func (execution *execution) setPropertyValue(base, key, value memory.Value) erro
 		}
 		return context.SetProperty(ref, name, value)
 	case memory.HeapArray:
-		index, length, err := execution.arrayPropertyKey(key)
+		index, length, indexed, name, err := execution.arrayPropertyKey(key)
 		if err != nil {
 			return err
 		}
@@ -133,10 +143,40 @@ func (execution *execution) setPropertyValue(base, key, value memory.Value) erro
 			}
 			return context.SetArrayLength(ref, lengthValue)
 		}
-		return context.SetArrayElement(ref, index, value)
+		if indexed {
+			return context.SetArrayElement(ref, index, value)
+		}
+		return execution.setNamedProperty(base, ref, name, value)
 	default:
 		return fmt.Errorf("%w: HeapKind(%d) has no properties", ErrOperandType, kind)
 	}
+}
+
+func (execution *execution) setNamedProperty(base memory.Value, ref, name memory.Ref, value memory.Value) error {
+	context := execution.context
+	holder, descriptor, found, err := resolveObjectProperty(context, ref, name)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return context.SetProperty(ref, name, value)
+	}
+	if descriptor.Kind == memory.PropertyAccessor {
+		if descriptor.Setter.Kind() == memory.ValueUndefined {
+			return memory.ErrReadOnlyProperty
+		}
+		setter, err := requireRef(descriptor.Setter, "property setter")
+		if err != nil {
+			return err
+		}
+		_, err = execution.call(setter, base, []memory.Value{value}, callAny)
+		return err
+	}
+	if !descriptor.Writable {
+		return memory.ErrReadOnlyProperty
+	}
+	_ = holder
+	return context.SetProperty(ref, name, value)
 }
 
 func resolveObjectProperty(context *TaskContext, object, name memory.Ref) (memory.Ref, memory.Property, bool, error) {
@@ -154,7 +194,7 @@ func resolveObjectProperty(context *TaskContext, object, name memory.Ref) (memor
 		if found {
 			return current, descriptor, true, nil
 		}
-		snapshot, err := context.DerefObject(current)
+		snapshot, err := context.DerefObjectHeader(current)
 		if err != nil {
 			return memory.Ref{}, memory.Property{}, false, err
 		}
@@ -176,7 +216,7 @@ func (execution *execution) deletePropertyValue(base, key memory.Value) (bool, e
 		return false, err
 	}
 	switch kind {
-	case memory.HeapObject:
+	case memory.HeapObject, memory.HeapFunction, memory.HeapPromise, memory.HeapMap, memory.HeapSet, memory.HeapError:
 		name, err := execution.propertyName(key)
 		if err != nil {
 			return false, err
@@ -188,17 +228,25 @@ func (execution *execution) deletePropertyValue(base, key memory.Value) (bool, e
 		}
 		return context.DeleteProperty(ref, name)
 	case memory.HeapArray:
-		index, length, err := execution.arrayPropertyKey(key)
+		index, length, indexed, name, err := execution.arrayPropertyKey(key)
 		if err != nil {
 			return false, err
 		}
 		if length {
 			return false, nil
 		}
-		if _, err := context.DeleteArrayElement(ref, index); err != nil {
-			return false, err
+		if indexed {
+			if _, err := context.DeleteArrayElement(ref, index); err != nil {
+				return false, err
+			}
+			return true, nil
 		}
-		return true, nil
+		if _, found, err := context.GetOwnPropertyDescriptor(ref, name); err != nil {
+			return false, err
+		} else if !found {
+			return true, nil
+		}
+		return context.DeleteProperty(ref, name)
 	default:
 		return false, fmt.Errorf("%w: HeapKind(%d) has no properties", ErrOperandType, kind)
 	}
@@ -228,21 +276,21 @@ func (execution *execution) propertyName(key memory.Value) (memory.Ref, error) {
 	return execution.context.NewString(text)
 }
 
-func (execution *execution) arrayPropertyKey(key memory.Value) (index uint32, length bool, err error) {
-	name, err := execution.propertyName(key)
+func (execution *execution) arrayPropertyKey(key memory.Value) (index uint32, length, indexed bool, name memory.Ref, err error) {
+	name, err = execution.propertyName(key)
 	if err != nil {
-		return 0, false, err
+		return 0, false, false, memory.Ref{}, err
 	}
 	text, err := execution.context.DerefString(name)
 	if err != nil {
-		return 0, false, err
+		return 0, false, false, memory.Ref{}, err
 	}
 	if text == "length" {
-		return 0, true, nil
+		return 0, true, false, name, nil
 	}
 	parsed, parseErr := strconv.ParseUint(text, 10, 32)
 	if parseErr != nil || parsed == math.MaxUint32 || strconv.FormatUint(parsed, 10) != text {
-		return 0, false, fmt.Errorf("%w: Array property %q is not an index", ErrOperandType, text)
+		return 0, false, false, name, nil
 	}
-	return uint32(parsed), false, nil
+	return uint32(parsed), false, true, name, nil
 }

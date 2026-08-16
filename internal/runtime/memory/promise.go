@@ -21,6 +21,7 @@ type PromiseReaction struct {
 // Promise stores settlement and reactions but performs no scheduling. Realm
 // code explicitly drains reactions and queues their Functions.
 type Promise struct {
+	ObjectHeader
 	State     PromiseState
 	Result    Value
 	Reactions []PromiseReaction
@@ -35,9 +36,10 @@ type PromiseSettlement struct {
 
 func clonePromise(promise Promise) Promise {
 	return Promise{
-		State:     promise.State,
-		Result:    promise.Result,
-		Reactions: append([]PromiseReaction(nil), promise.Reactions...),
-		Handled:   promise.Handled,
+		ObjectHeader: cloneObjectHeader(promise.ObjectHeader),
+		State:        promise.State,
+		Result:       promise.Result,
+		Reactions:    append([]PromiseReaction(nil), promise.Reactions...),
+		Handled:      promise.Handled,
 	}
 }

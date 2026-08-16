@@ -137,18 +137,13 @@ func slotReferences(slot *Slot) []Value {
 	if slot.Kind == HeapCell {
 		return slot.Cell.Fields
 	}
+	values := objectHeaderReferences(slot)
 	if slot.Kind == HeapObject {
-		values := make([]Value, 0, 1+len(slot.Object.Properties)*4)
-		values = append(values, slot.Object.Prototype)
-		for _, property := range slot.Object.Properties {
-			values = append(values, RefValue(property.Name), property.Value, property.Getter, property.Setter)
-		}
 		return values
 	}
 	if slot.Kind == HeapArray {
-		values := make([]Value, len(slot.Array.Elements))
-		for index, element := range slot.Array.Elements {
-			values[index] = element.Value
+		for _, element := range slot.Array.Elements {
+			values = append(values, element.Value)
 		}
 		return values
 	}
@@ -164,13 +159,11 @@ func slotReferences(slot *Slot) []Value {
 		return values
 	}
 	if slot.Kind == HeapFunction {
-		values := make([]Value, 0, 2+len(slot.Function.Constants))
 		values = append(values, slot.Function.Name, slot.Function.Environment)
 		values = append(values, slot.Function.Constants...)
 		return values
 	}
 	if slot.Kind == HeapPromise {
-		values := make([]Value, 0, 1+len(slot.Promise.Reactions)*3)
 		if slot.Promise.State != PromisePending {
 			values = append(values, slot.Promise.Result)
 		}
@@ -189,14 +182,13 @@ func slotReferences(slot *Slot) []Value {
 		return []Value{RefValue(slot.TypedArray.Buffer)}
 	}
 	if slot.Kind == HeapMap {
-		values := make([]Value, 0, len(slot.Map.Entries)*2)
 		for _, entry := range slot.Map.Entries {
 			values = append(values, entry.Key, entry.Value)
 		}
 		return values
 	}
 	if slot.Kind == HeapSet {
-		return slot.Set.Values
+		return append(values, slot.Set.Values...)
 	}
 	if slot.Kind == HeapRegExp {
 		if slot.RegExp.Pattern == (Ref{}) {
@@ -205,7 +197,6 @@ func slotReferences(slot *Slot) []Value {
 		return []Value{RefValue(slot.RegExp.Pattern)}
 	}
 	if slot.Kind == HeapError {
-		values := make([]Value, 0, 2+len(slot.Error.Errors)+1)
 		values = append(values, slot.Error.Message, slot.Error.Stack)
 		if slot.Error.HasCause {
 			values = append(values, slot.Error.Cause)
@@ -216,8 +207,25 @@ func slotReferences(slot *Slot) []Value {
 	return nil
 }
 
+func objectHeaderReferences(slot *Slot) []Value {
+	header, ok := objectHeaderForSlot(slot)
+	if !ok {
+		return nil
+	}
+	values := make([]Value, 0, 1+len(header.Properties)*4)
+	values = append(values, header.Prototype)
+	for _, property := range header.Properties {
+		values = append(values, RefValue(property.Name), property.Value, property.Getter, property.Setter)
+	}
+	return values
+}
+
 func slotStorageEmpty(slot *Slot) bool {
-	return slot != nil && slot.Kind == HeapInvalid && len(slot.Cell.Fields) == 0 && slot.String.Text == "" && slot.Object.Prototype == (Value{}) && len(slot.Object.Properties) == 0 && slot.Array.Length == 0 && len(slot.Array.Elements) == 0 && slot.Context.Parent == (Value{}) && len(slot.Context.Bindings) == 0 && slot.Function.Kind == 0 && slot.Function.Name == (Value{}) && slot.Function.Environment == (Value{}) && slot.Function.Arity == 0 && len(slot.Function.Code) == 0 && len(slot.Function.Constants) == 0 && slot.Function.NativeID == 0 && slot.Promise.State == PromisePending && slot.Promise.Result == (Value{}) && len(slot.Promise.Reactions) == 0 && !slot.Promise.Handled && !slot.BigInt.Negative && len(slot.BigInt.Magnitude) == 0 && slot.Symbol.ID == 0 && slot.Symbol.Description == (Value{}) && len(slot.ArrayBuffer.Bytes) == 0 && !slot.ArrayBuffer.Detached && slot.TypedArray == (TypedArray{}) && len(slot.Map.Entries) == 0 && len(slot.Set.Values) == 0 && slot.Date.Milliseconds == 0 && slot.RegExp == (RegExp{}) && slot.Error.Kind == 0 && slot.Error.Message == (Value{}) && slot.Error.Stack == (Value{}) && slot.Error.Cause == (Value{}) && !slot.Error.HasCause && len(slot.Error.Errors) == 0 && len(slot.WeakMap.Entries) == 0 && len(slot.WeakSet.Keys) == 0 && slot.HostObject == (HostObject{})
+	return slot != nil && slot.Kind == HeapInvalid && len(slot.Cell.Fields) == 0 && slot.String.Text == "" && objectHeaderStorageEmpty(slot.Object.ObjectHeader) && slot.Array.Length == 0 && len(slot.Array.Elements) == 0 && objectHeaderStorageEmpty(slot.Array.ObjectHeader) && slot.Context.Parent == (Value{}) && len(slot.Context.Bindings) == 0 && slot.Function.Kind == 0 && slot.Function.Name == (Value{}) && slot.Function.Environment == (Value{}) && slot.Function.Arity == 0 && !slot.Function.Constructible && len(slot.Function.Code) == 0 && len(slot.Function.Constants) == 0 && slot.Function.NativeID == 0 && objectHeaderStorageEmpty(slot.Function.ObjectHeader) && slot.Promise.State == PromisePending && slot.Promise.Result == (Value{}) && len(slot.Promise.Reactions) == 0 && !slot.Promise.Handled && objectHeaderStorageEmpty(slot.Promise.ObjectHeader) && !slot.BigInt.Negative && len(slot.BigInt.Magnitude) == 0 && slot.Symbol.ID == 0 && slot.Symbol.Description == (Value{}) && len(slot.ArrayBuffer.Bytes) == 0 && !slot.ArrayBuffer.Detached && slot.TypedArray == (TypedArray{}) && len(slot.Map.Entries) == 0 && objectHeaderStorageEmpty(slot.Map.ObjectHeader) && len(slot.Set.Values) == 0 && objectHeaderStorageEmpty(slot.Set.ObjectHeader) && slot.Date.Milliseconds == 0 && slot.RegExp == (RegExp{}) && slot.Error.Kind == 0 && slot.Error.Message == (Value{}) && slot.Error.Stack == (Value{}) && slot.Error.Cause == (Value{}) && !slot.Error.HasCause && len(slot.Error.Errors) == 0 && objectHeaderStorageEmpty(slot.Error.ObjectHeader) && len(slot.WeakMap.Entries) == 0 && len(slot.WeakSet.Keys) == 0 && slot.HostObject == (HostObject{})
+}
+
+func objectHeaderStorageEmpty(header ObjectHeader) bool {
+	return header.Prototype == (Value{}) && len(header.Properties) == 0
 }
 
 func clearSlotPayload(slot *Slot) {
@@ -246,9 +254,10 @@ func clearSlotPayload(slot *Slot) {
 func initializeSlotPayload(slot *Slot, kind HeapKind) {
 	clearSlotPayload(slot)
 	slot.Kind = kind
+	if header, ok := objectHeaderForSlot(slot); ok {
+		header.Prototype = NullValue()
+	}
 	switch kind {
-	case HeapObject:
-		slot.Object.Prototype = NullValue()
 	case HeapContext:
 		slot.Context.Parent = NullValue()
 	}

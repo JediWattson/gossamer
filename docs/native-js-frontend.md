@@ -28,6 +28,10 @@ and ordinary task release invalidates every unpromoted loaded Ref.
 - dynamic named properties, numeric array elements, and Array `length`;
 - Object prototype-chain lookup plus RegionStore-owned data and accessor
   descriptors with writable, enumerable, and configurable attributes;
+- task-local native intrinsics with canonical Object, Function, Array, and
+  Error-family prototypes, constructor metadata, and global bindings;
+- `Object.create`, descriptor definition/inspection, prototype inspection and
+  mutation, `Object.keys`, plus Array `push`, `pop`, `join`, and `slice`;
 - assignment, deletion, and prefix/postfix identifier or property updates;
 - numeric, bitwise, strict comparison, logical, nullish, and conditional
   expressions, plus coercive arithmetic, relational comparison, unary `+`,
@@ -57,14 +61,19 @@ This is not yet an ECMAScript-compatible engine. In particular:
 - Annex B block-Function compatibility and the full global-environment split
   are not implemented; Function declarations use the containing Function or
   script scope;
-- Arrays support only canonical indices plus `length` rather than arbitrary
-  named properties or an Array prototype;
+- Arrays retain canonical sparse indices and `length` alongside ordinary named
+  properties and an Array prototype; the broader Array method surface remains
+  intentionally incomplete;
 - primitive coercion includes Boolean, Number, String, null, and undefined;
-  Object coercion supports explicit `valueOf`/`toString` hooks, but the default
-  Object prototype and its built-ins are not installed yet;
+  Object coercion uses explicit or inherited `valueOf`/`toString` hooks;
 - full BigInt/Symbol and built-in Object coercion, regex and template literals,
   modules, generators, async Functions, and Promise jobs are absent;
 - source evaluation is not wired into `browser.Engine` or `browser.JSRealm`.
+
+`runtime.Interpreter.Bootstrap` currently instantiates the native global
+Context and intrinsic graph inside one task region. This deliberately leaves
+cross-task Realm retention to the N11 engine adapter instead of bypassing the
+ownership model with hidden Go pointers.
 
 Unsupported constructs fail with source-ranged compiler diagnostics. There is
 no per-expression fallback to V8.

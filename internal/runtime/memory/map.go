@@ -7,9 +7,10 @@ type MapEntry struct {
 }
 
 type Map struct {
+	ObjectHeader
 	Entries []MapEntry
 }
 
 func cloneMap(value Map) Map {
-	return Map{Entries: append([]MapEntry(nil), value.Entries...)}
+	return Map{ObjectHeader: cloneObjectHeader(value.ObjectHeader), Entries: append([]MapEntry(nil), value.Entries...)}
 }

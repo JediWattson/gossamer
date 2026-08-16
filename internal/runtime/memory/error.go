@@ -37,6 +37,7 @@ func (kind ErrorKind) Name() string {
 }
 
 type ErrorObject struct {
+	ObjectHeader
 	Kind     ErrorKind
 	Message  Value
 	Stack    Value
@@ -47,11 +48,12 @@ type ErrorObject struct {
 
 func cloneError(value ErrorObject) ErrorObject {
 	return ErrorObject{
-		Kind:     value.Kind,
-		Message:  value.Message,
-		Stack:    value.Stack,
-		Cause:    value.Cause,
-		HasCause: value.HasCause,
-		Errors:   append([]Value(nil), value.Errors...),
+		ObjectHeader: cloneObjectHeader(value.ObjectHeader),
+		Kind:         value.Kind,
+		Message:      value.Message,
+		Stack:        value.Stack,
+		Cause:        value.Cause,
+		HasCause:     value.HasCause,
+		Errors:       append([]Value(nil), value.Errors...),
 	}
 }

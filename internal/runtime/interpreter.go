@@ -14,6 +14,7 @@ var (
 	ErrInstructionLimit = errors.New("runtime: instruction limit exceeded")
 	ErrCallDepth        = errors.New("runtime: call depth limit exceeded")
 	ErrNotCallable      = errors.New("runtime: value is not a callable Function")
+	ErrNotConstructor   = errors.New("runtime: Function is not a constructor")
 	ErrNativeFunction   = errors.New("runtime: native Function is not registered")
 	ErrOperandType      = errors.New("runtime: invalid operand type")
 	ErrExceptionState   = errors.New("runtime: invalid exception state")
@@ -29,6 +30,8 @@ type InterpreterConfig struct {
 // NativeFunction is an explicitly registered host callback. Native Function
 // heap payloads retain only its numeric ID, never this Go function value.
 type NativeFunction func(*TaskContext, memory.Value, []memory.Value) (memory.Value, error)
+
+type nativeFunction func(*execution, memory.Ref, memory.Function, memory.Value, []memory.Value) (memory.Value, error)
 
 // ThrownError carries an interpreter Value through Go call frames without
 // converting it into a host-language error object.
@@ -64,7 +67,9 @@ type Interpreter struct {
 	config InterpreterConfig
 
 	nativeMutex sync.RWMutex
-	natives     map[uint64]NativeFunction
+	natives     map[uint64]nativeFunction
+	builtinOnce sync.Once
+	builtinErr  error
 }
 
 func NewInterpreter(config InterpreterConfig) *Interpreter {
@@ -74,14 +79,29 @@ func NewInterpreter(config InterpreterConfig) *Interpreter {
 	if config.MaxCallDepth == 0 {
 		config.MaxCallDepth = 256
 	}
-	return &Interpreter{config: config, natives: make(map[uint64]NativeFunction)}
+	return &Interpreter{config: config, natives: make(map[uint64]nativeFunction)}
 }
 
 func (interpreter *Interpreter) RegisterNative(id uint64, function NativeFunction) error {
 	if interpreter == nil {
 		return fmt.Errorf("runtime: nil interpreter")
 	}
-	if id == 0 || function == nil {
+	if id == 0 || id >= nativeBuiltinBase || function == nil {
+		return fmt.Errorf("%w: ID %d", ErrNativeFunction, id)
+	}
+	interpreter.nativeMutex.Lock()
+	defer interpreter.nativeMutex.Unlock()
+	if _, exists := interpreter.natives[id]; exists {
+		return fmt.Errorf("%w: duplicate ID %d", ErrNativeFunction, id)
+	}
+	interpreter.natives[id] = func(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+		return function(execution.context, this, arguments)
+	}
+	return nil
+}
+
+func (interpreter *Interpreter) registerNative(id uint64, function nativeFunction) error {
+	if interpreter == nil || id == 0 || function == nil {
 		return fmt.Errorf("%w: ID %d", ErrNativeFunction, id)
 	}
 	interpreter.nativeMutex.Lock()
@@ -138,7 +158,7 @@ func (execution *execution) call(function memory.Ref, this memory.Value, argumen
 		if native == nil {
 			return memory.Value{}, fmt.Errorf("%w: ID %d", ErrNativeFunction, descriptor.NativeID)
 		}
-		return native(execution.context, this, append([]memory.Value(nil), arguments...))
+		return native(execution, function, descriptor, this, append([]memory.Value(nil), arguments...))
 	}
 	if descriptor.Kind != memory.FunctionBytecode {
 		return memory.Value{}, fmt.Errorf("%w: %s", ErrNotCallable, function)
@@ -571,9 +591,35 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 				mode = callNativeOnly
 			}
 			if instruction.Op == OpConstruct {
+				descriptor, descriptorErr := context.DerefFunction(callee)
+				if descriptorErr != nil {
+					return memory.Value{}, descriptorErr
+				}
+				if !descriptor.Constructible {
+					if handled, terminal := execution.routeFrameError(frame, ErrNotConstructor); handled {
+						continue
+					} else {
+						return memory.Value{}, terminal
+					}
+				}
 				constructed, err = context.NewHeapObject()
 				if err != nil {
 					return memory.Value{}, err
+				}
+				prototypeName, nameErr := context.NewString("prototype")
+				if nameErr != nil {
+					return memory.Value{}, nameErr
+				}
+				prototype, present, propertyErr := execution.getProperty(memory.RefValue(callee), memory.RefValue(prototypeName))
+				if propertyErr != nil {
+					return memory.Value{}, propertyErr
+				}
+				if present && prototype.IsRef() {
+					if _, headerErr := context.DerefObjectHeader(prototype.Ref()); headerErr == nil {
+						if err := context.SetPrototype(constructed, prototype); err != nil {
+							return memory.Value{}, err
+						}
+					}
 				}
 				this = memory.RefValue(constructed)
 			}

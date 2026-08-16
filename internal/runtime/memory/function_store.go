@@ -8,22 +8,32 @@ import (
 
 func (store *Store) AllocBytecodeFunction(owner ownership.OwnerID, regionID RegionID, name, environment Value, arity uint32, code []byte, constants []Value) (Ref, error) {
 	return store.allocFunction(owner, regionID, Function{
-		Kind:        FunctionBytecode,
-		Name:        name,
-		Environment: environment,
-		Arity:       arity,
-		Code:        append([]byte(nil), code...),
-		Constants:   append([]Value(nil), constants...),
+		Kind:          FunctionBytecode,
+		Name:          name,
+		Environment:   environment,
+		Arity:         arity,
+		Constructible: true,
+		Code:          append([]byte(nil), code...),
+		Constants:     append([]Value(nil), constants...),
 	})
 }
 
 func (store *Store) AllocNativeFunction(owner ownership.OwnerID, regionID RegionID, name, environment Value, arity uint32, nativeID uint64) (Ref, error) {
+	return store.allocNativeFunction(owner, regionID, name, environment, arity, nativeID, false)
+}
+
+func (store *Store) AllocNativeConstructor(owner ownership.OwnerID, regionID RegionID, name, environment Value, arity uint32, nativeID uint64) (Ref, error) {
+	return store.allocNativeFunction(owner, regionID, name, environment, arity, nativeID, true)
+}
+
+func (store *Store) allocNativeFunction(owner ownership.OwnerID, regionID RegionID, name, environment Value, arity uint32, nativeID uint64, constructible bool) (Ref, error) {
 	return store.allocFunction(owner, regionID, Function{
-		Kind:        FunctionNative,
-		Name:        name,
-		Environment: environment,
-		Arity:       arity,
-		NativeID:    nativeID,
+		Kind:          FunctionNative,
+		Name:          name,
+		Environment:   environment,
+		Arity:         arity,
+		Constructible: constructible,
+		NativeID:      nativeID,
 	})
 }
 
@@ -79,6 +89,9 @@ func (store *Store) initializeFunctionLocked(owner ownership.OwnerID, ref Ref, f
 	}
 	if function.Kind == FunctionNative && (function.NativeID == 0 || len(function.Code) != 0 || len(function.Constants) != 0) {
 		return fmt.Errorf("%w: native Function requires only a nonzero native ID", ErrInvalidFunction)
+	}
+	if function.ObjectHeader.Prototype == (Value{}) {
+		function.ObjectHeader.Prototype = NullValue()
 	}
 	if err := store.validateOptionalTypedValueLocked(owner, function.Name, HeapString, "Function name", internal); err != nil {
 		return err

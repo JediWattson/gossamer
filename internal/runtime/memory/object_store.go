@@ -38,6 +38,25 @@ func (store *Store) DerefObject(owner ownership.OwnerID, ref Ref) (Object, error
 	return cloneObject(slot.Object), nil
 }
 
+// DerefObjectHeader returns the prototype and named own properties for any
+// JavaScript object-like payload.
+func (store *Store) DerefObjectHeader(owner ownership.OwnerID, ref Ref) (ObjectHeader, error) {
+	if store == nil {
+		return ObjectHeader{}, fmt.Errorf("memory: nil store")
+	}
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+	_, slot, err := store.readSlotLocked(owner, ref)
+	if err != nil {
+		return ObjectHeader{}, err
+	}
+	header, ok := objectHeaderForSlot(slot)
+	if !ok {
+		return ObjectHeader{}, objectHeaderTypeError(ref, slot.Kind)
+	}
+	return cloneObjectHeader(*header), nil
+}
+
 // SetPrototype replaces object's direct prototype. The value must be null or
 // reference another native Object.
 func (store *Store) SetPrototype(owner ownership.OwnerID, object Ref, prototype Value) error {
@@ -54,8 +73,9 @@ func (store *Store) setPrototypeLocked(owner ownership.OwnerID, object Ref, prot
 	if err != nil {
 		return err
 	}
-	if slot.Kind != HeapObject {
-		return typeError(object, slot.Kind, HeapObject)
+	header, ok := objectHeaderForSlot(slot)
+	if !ok {
+		return objectHeaderTypeError(object, slot.Kind)
 	}
 	if prototype.Kind() != ValueNull {
 		if !prototype.IsRef() {
@@ -65,18 +85,18 @@ func (store *Store) setPrototypeLocked(owner ownership.OwnerID, object Ref, prot
 		if lookupErr != nil {
 			return lookupErr
 		}
-		if prototypeSlot.Kind != HeapObject {
-			return typeError(prototype.Ref(), prototypeSlot.Kind, HeapObject)
+		if _, ok := objectHeaderForSlot(prototypeSlot); !ok {
+			return objectHeaderTypeError(prototype.Ref(), prototypeSlot.Kind)
 		}
 		if err := store.rejectPrototypeCycleLocked(object, prototype.Ref()); err != nil {
 			return err
 		}
 	}
-	prototype, err = store.replaceValueLocked(owner, region, slot, slot.Object.Prototype, prototype, internal)
+	prototype, err = store.replaceValueLocked(owner, region, slot, header.Prototype, prototype, internal)
 	if err != nil {
 		return err
 	}
-	slot.Object.Prototype = prototype
+	header.Prototype = prototype
 	return nil
 }
 
@@ -97,8 +117,9 @@ func (store *Store) setPropertyLocked(owner ownership.OwnerID, object, name Ref,
 	if err != nil {
 		return err
 	}
-	if slot.Kind != HeapObject {
-		return typeError(object, slot.Kind, HeapObject)
+	header, ok := objectHeaderForSlot(slot)
+	if !ok {
+		return objectHeaderTypeError(object, slot.Kind)
 	}
 	nameText, err := store.stringTextLocked(owner, name, internal)
 	if err != nil {
@@ -109,7 +130,7 @@ func (store *Store) setPropertyLocked(owner ownership.OwnerID, object, name Ref,
 		return err
 	}
 	if index >= 0 {
-		property := slot.Object.Properties[index]
+		property := header.Properties[index]
 		if property.Kind == PropertyAccessor {
 			return fmt.Errorf("%w: %q", ErrAccessorProperty, nameText)
 		}
@@ -139,8 +160,9 @@ func (store *Store) definePropertyLocked(owner ownership.OwnerID, object, name R
 	if err != nil {
 		return err
 	}
-	if slot.Kind != HeapObject {
-		return typeError(object, slot.Kind, HeapObject)
+	header, ok := objectHeaderForSlot(slot)
+	if !ok {
+		return objectHeaderTypeError(object, slot.Kind)
 	}
 	nameText, err := store.stringTextLocked(owner, name, internal)
 	if err != nil {
@@ -162,7 +184,7 @@ func (store *Store) definePropertyLocked(owner ownership.OwnerID, object, name R
 		return err
 	}
 	if index >= 0 {
-		previous := slot.Object.Properties[index]
+		previous := header.Properties[index]
 		if !internal {
 			if err := compatiblePropertyDescriptor(previous, descriptor); err != nil {
 				return fmt.Errorf("%w: %q", err, nameText)
@@ -173,7 +195,7 @@ func (store *Store) definePropertyLocked(owner ownership.OwnerID, object, name R
 			return err
 		}
 		prepared.Name = previous.Name
-		slot.Object.Properties[index] = prepared
+		header.Properties[index] = prepared
 		return nil
 	}
 	preparedName, err := store.replaceValueLocked(owner, region, slot, Value{}, RefValue(name), internal)
@@ -186,7 +208,7 @@ func (store *Store) definePropertyLocked(owner ownership.OwnerID, object, name R
 		return err
 	}
 	prepared.Name = preparedName.Ref()
-	slot.Object.Properties = append(slot.Object.Properties, prepared)
+	header.Properties = append(header.Properties, prepared)
 	return nil
 }
 
@@ -272,8 +294,9 @@ func (store *Store) GetOwnPropertyDescriptor(owner ownership.OwnerID, object, na
 	if err != nil {
 		return Property{}, false, err
 	}
-	if slot.Kind != HeapObject {
-		return Property{}, false, typeError(object, slot.Kind, HeapObject)
+	header, ok := objectHeaderForSlot(slot)
+	if !ok {
+		return Property{}, false, objectHeaderTypeError(object, slot.Kind)
 	}
 	nameText, err := store.stringTextLocked(owner, name, false)
 	if err != nil {
@@ -286,7 +309,7 @@ func (store *Store) GetOwnPropertyDescriptor(owner ownership.OwnerID, object, na
 	if index < 0 {
 		return Property{}, false, nil
 	}
-	return slot.Object.Properties[index], true, nil
+	return header.Properties[index], true, nil
 }
 
 func (store *Store) DeleteProperty(owner ownership.OwnerID, object, name Ref) (bool, error) {
@@ -299,8 +322,9 @@ func (store *Store) DeleteProperty(owner ownership.OwnerID, object, name Ref) (b
 	if err != nil {
 		return false, err
 	}
-	if slot.Kind != HeapObject {
-		return false, typeError(object, slot.Kind, HeapObject)
+	header, ok := objectHeaderForSlot(slot)
+	if !ok {
+		return false, objectHeaderTypeError(object, slot.Kind)
 	}
 	nameText, err := store.stringTextLocked(owner, name, false)
 	if err != nil {
@@ -310,7 +334,7 @@ func (store *Store) DeleteProperty(owner ownership.OwnerID, object, name Ref) (b
 	if err != nil || index < 0 {
 		return false, err
 	}
-	property := slot.Object.Properties[index]
+	property := header.Properties[index]
 	if !property.Configurable {
 		return false, nil
 	}
@@ -322,9 +346,9 @@ func (store *Store) DeleteProperty(owner ownership.OwnerID, object, name Ref) (b
 			return false, err
 		}
 	}
-	copy(slot.Object.Properties[index:], slot.Object.Properties[index+1:])
-	slot.Object.Properties[len(slot.Object.Properties)-1] = Property{}
-	slot.Object.Properties = slot.Object.Properties[:len(slot.Object.Properties)-1]
+	copy(header.Properties[index:], header.Properties[index+1:])
+	header.Properties[len(header.Properties)-1] = Property{}
+	header.Properties = header.Properties[:len(header.Properties)-1]
 	return true, nil
 }
 
@@ -343,13 +367,14 @@ func (store *Store) rejectPrototypeCycleLocked(object, prototype Ref) error {
 		if err != nil {
 			return err
 		}
-		if slot.Kind != HeapObject {
-			return typeError(current, slot.Kind, HeapObject)
+		header, ok := objectHeaderForSlot(slot)
+		if !ok {
+			return objectHeaderTypeError(current, slot.Kind)
 		}
-		if slot.Object.Prototype.Kind() == ValueNull {
+		if header.Prototype.Kind() == ValueNull {
 			return nil
 		}
-		current = slot.Object.Prototype.Ref()
+		current = header.Prototype.Ref()
 	}
 }
 
@@ -365,7 +390,11 @@ func (store *Store) stringTextLocked(owner ownership.OwnerID, ref Ref, internal 
 }
 
 func (store *Store) findPropertyLocked(slot *Slot, name string) (int, error) {
-	for index, property := range slot.Object.Properties {
+	header, ok := objectHeaderForSlot(slot)
+	if !ok {
+		return -1, objectHeaderTypeError(Ref{}, slot.Kind)
+	}
+	for index, property := range header.Properties {
 		_, nameSlot, err := store.slotLocked(property.Name)
 		if err != nil {
 			return -1, err

@@ -53,14 +53,16 @@ the ordinary object and region write barriers account for that edge.
 
 ### Object
 
-Native Objects store a null-or-Object prototype and insertion-ordered own
-properties. Property names are native String refs; equal String contents select
-the same property even when they arrive through different Refs. Prototype,
-name, and value references all pass through the counted write barrier.
+Native Objects, Functions, Arrays, Errors, Maps, Sets, and Promises share a
+physical `ObjectHeader` containing a null-or-object-like prototype and
+insertion-ordered own properties. Property names are native String refs; equal
+String contents select the same property even when they arrive through
+different Refs. Prototype, name, and value references all pass through the
+counted write barrier.
 
 `SetProperty`, `GetOwnProperty`, and `DeleteProperty` deliberately implement
-own storage only. Prototype-chain lookup, descriptors, accessors, coercion, and
-ECMAScript key ordering belong above RegionStore.
+own storage only. Prototype-chain lookup, accessor invocation, coercion, and
+ECMAScript key ordering belong to the interpreter layer.
 
 ### Array
 
