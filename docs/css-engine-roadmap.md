@@ -218,10 +218,13 @@ applies, actual disabledness, textarea state, and inherited `contenteditable`
 editing hosts. `:placeholder-shown` follows applicable input/textarea controls
 and their dirty live values; ancestor and textarea scans share the fail-closed
 selector operation budget.
+`:default` now distinguishes markup default checkedness/selectedness from live
+state and finds the first submit button for an HTML form owner, including
+external `form` associations and tree-order changes under the same budget.
 
-- Add default/indeterminate and validation/range/user-interaction form-state
-  pseudo-classes, plus browser history plumbing for the matcher-level
-  visited-link hook.
+- Add indeterminate and validation/range/user-interaction form-state
+  pseudo-classes, plus browser history plumbing for the matcher-level visited
+  link hook.
 - Finish pseudo-elements and the remaining stateful selector grammar.
 - Add memoization and selector/property dependency indexes after profiling the
   now-bounded combinator backtracking paths.
