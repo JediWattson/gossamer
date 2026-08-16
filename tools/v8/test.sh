@@ -12,4 +12,4 @@ fi
 
 export GOSSAMER_V8_ICU_DATA="${V8_OUTPUT_DIR}/icudtl.dat"
 cd "${GOSSAMER_ROOT}"
-go test -tags=v8 ./internal/v8engine "$@"
+go test -tags=v8 ./internal/v8engine ./internal/engineparity "$@"
