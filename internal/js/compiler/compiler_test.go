@@ -80,6 +80,42 @@ while (i < 10) {
 	}
 }
 
+func TestCompileExecutesReactControlFlowAndOperators(t *testing.T) {
+	t.Parallel()
+
+	image, err := compiler.Compile(`
+let sum = 0;
+outer: for (var i = 0; i < 5; i++) {
+  if (i === 1) continue;
+  switch (i) {
+    case 2: sum += 10; break;
+    case 3: break outer;
+    default: sum += i;
+  }
+}
+let object = {a: 1, b: 2};
+for (var key in object) sum += object[key];
+let joined = "";
+for (let value of ["x", "y"]) joined = joined + value;
+let count = 0;
+do { count++; } while (count < 2);
+let bits = 7;
+bits &= 3;
+bits <<= 2;
+let add = value => value + 1;
+let sequence = (sum = sum + 1, sum + 1);
+sum === 14 && sequence === 15 && joined === "xy" && count === 2 && bits === 12 &&
+add(4) === 5 && "a" in object && typeof /x/g === "object";
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := execute(t, 829, image)
+	if result.Kind() != memory.ValueBool || !result.Bool() {
+		t.Fatalf("React control-flow result = %#v, want true", result)
+	}
+}
+
 func TestCompileExecutesStringObjectAndDeleteVerbs(t *testing.T) {
 	t.Parallel()
 

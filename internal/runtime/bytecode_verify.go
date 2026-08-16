@@ -120,6 +120,8 @@ func instructionStackEffect(instruction Instruction) (required, delta int, termi
 		return 1, -1, false, nil
 	case OpDup:
 		return 1, 1, false, nil
+	case OpDupPair:
+		return 2, 2, false, nil
 	case OpReturn:
 		return 0, 0, true, nil
 	case OpGetOwnProperty, OpDeleteOwnProperty, OpGetElement, OpDeleteElement,
@@ -128,6 +130,8 @@ func instructionStackEffect(instruction Instruction) (required, delta int, termi
 	case OpSetOwnProperty, OpSetElement, OpSetProperty:
 		return 3, -2, false, nil
 	case OpGetLength:
+		return 1, 0, false, nil
+	case OpOwnKeys:
 		return 1, 0, false, nil
 	case OpSetLength:
 		return 2, -1, false, nil
@@ -140,7 +144,8 @@ func instructionStackEffect(instruction Instruction) (required, delta int, termi
 		OpBitwiseAnd, OpBitwiseOr, OpBitwiseXor,
 		OpShiftLeft, OpShiftRight, OpUnsignedShiftRight,
 		OpStrictEqual, OpStrictNotEqual, OpEqual, OpNotEqual,
-		OpLessThan, OpLessThanOrEqual, OpGreaterThan, OpGreaterThanOrEqual:
+		OpLessThan, OpLessThanOrEqual, OpGreaterThan, OpGreaterThanOrEqual,
+		OpIn, OpInstanceOf:
 		return 2, -1, false, nil
 	case OpJump:
 		return 0, 0, false, nil

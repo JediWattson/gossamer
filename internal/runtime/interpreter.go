@@ -297,6 +297,13 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 				return memory.Value{}, err
 			}
 			frame.push(value)
+		case OpDupPair:
+			if len(frame.Stack) < 2 {
+				return memory.Value{}, ErrStackUnderflow
+			}
+			index := len(frame.Stack) - 2
+			frame.push(frame.Stack[index])
+			frame.push(frame.Stack[index+1])
 		case OpReturn:
 			value := memory.UndefinedValue()
 			if len(frame.Stack) == 0 {
@@ -475,6 +482,20 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 				return memory.Value{}, err
 			}
 			frame.push(memory.NumberValue(float64(snapshot.Length)))
+		case OpOwnKeys:
+			target, err := frame.pop()
+			if err != nil {
+				return memory.Value{}, err
+			}
+			keys, err := builtinObjectKeys(execution, memory.Ref{}, memory.Function{}, memory.UndefinedValue(), []memory.Value{target})
+			if err != nil {
+				if handled, terminal := execution.routeFrameError(frame, err); handled {
+					continue
+				} else {
+					return memory.Value{}, terminal
+				}
+			}
+			frame.push(keys)
 		case OpSetLength:
 			lengthValue, err := frame.pop()
 			if err != nil {
@@ -567,7 +588,8 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 			OpShiftLeft, OpShiftRight, OpUnsignedShiftRight,
 			OpLogicalNot, OpTypeOf, OpToNumber,
 			OpStrictEqual, OpStrictNotEqual, OpEqual, OpNotEqual,
-			OpLessThan, OpLessThanOrEqual, OpGreaterThan, OpGreaterThanOrEqual:
+			OpLessThan, OpLessThanOrEqual, OpGreaterThan, OpGreaterThanOrEqual,
+			OpIn, OpInstanceOf:
 			if err := executeOperator(execution, frame, instruction.Op); err != nil {
 				if handled, terminal := execution.routeFrameError(frame, err); handled {
 					continue
@@ -1172,6 +1194,28 @@ func executeOperator(execution *execution, frame *Frame, opcode Opcode) error {
 			equal = !equal
 		}
 		frame.push(memory.BoolValue(equal))
+		return nil
+	case OpIn:
+		right, left, err := popBinary(frame)
+		if err != nil {
+			return err
+		}
+		present, err := execution.hasProperty(right, left)
+		if err != nil {
+			return err
+		}
+		frame.push(memory.BoolValue(present))
+		return nil
+	case OpInstanceOf:
+		right, left, err := popBinary(frame)
+		if err != nil {
+			return err
+		}
+		result, err := execution.instanceOf(left, right)
+		if err != nil {
+			return err
+		}
+		frame.push(memory.BoolValue(result))
 		return nil
 	case OpAdd:
 		right, left, err := popBinary(frame)
