@@ -17,9 +17,10 @@ const (
 )
 
 type exceptionHandler struct {
-	kind       ExceptionHandlerKind
-	target     uint32
-	stackDepth int
+	kind             ExceptionHandlerKind
+	target           uint32
+	stackDepth       int
+	environmentDepth int
 }
 
 // RootSource exposes borrowed Refs without changing their ownership. Cycle
@@ -42,8 +43,10 @@ type Frame struct {
 	instructions []Instruction
 	ip           uint32
 	handlers     []exceptionHandler
+	environments []memory.Value
 	pending      *ThrownError
 	current      *ThrownError
+	returning    *memory.Value
 }
 
 func (frame *Frame) VisitRefs(visit func(memory.Ref) error) error {
@@ -55,15 +58,19 @@ func (frame *Frame) VisitRefs(visit func(memory.Ref) error) error {
 			return err
 		}
 	}
-	values := make([]memory.Value, 0, 2+len(frame.Arguments)+len(frame.Stack))
+	values := make([]memory.Value, 0, 2+len(frame.Arguments)+len(frame.Stack)+len(frame.environments))
 	values = append(values, frame.Environment, frame.This)
 	values = append(values, frame.Arguments...)
 	values = append(values, frame.Stack...)
+	values = append(values, frame.environments...)
 	if frame.pending != nil {
 		values = append(values, frame.pending.Value)
 	}
 	if frame.current != nil && frame.current != frame.pending {
 		values = append(values, frame.current.Value)
+	}
+	if frame.returning != nil {
+		values = append(values, *frame.returning)
 	}
 	for _, value := range values {
 		if value.IsRef() {

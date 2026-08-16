@@ -203,10 +203,26 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 			}
 			frame.push(value)
 		case OpReturn:
+			value := memory.UndefinedValue()
 			if len(frame.Stack) == 0 {
-				return memory.UndefinedValue(), nil
+				value = memory.UndefinedValue()
+			} else {
+				value, err = frame.pop()
+				if err != nil {
+					return memory.Value{}, err
+				}
 			}
-			return frame.pop()
+			frame.pending = nil
+			frame.current = nil
+			frame.returning = nil
+			handled, err := routeReturn(frame, value)
+			if err != nil {
+				return memory.Value{}, err
+			}
+			if handled {
+				continue
+			}
+			return value, nil
 		case OpNewObject:
 			ref, err := context.NewHeapObject()
 			if err != nil {
@@ -469,6 +485,7 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 			if err != nil {
 				return memory.Value{}, err
 			}
+			frame.returning = nil
 			handled, routed := routeThrown(frame, Throw(value))
 			if handled {
 				continue
@@ -476,9 +493,10 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 			return memory.Value{}, routed
 		case OpEnterTry:
 			frame.handlers = append(frame.handlers, exceptionHandler{
-				kind:       ExceptionHandlerKind(instruction.B),
-				target:     instruction.A,
-				stackDepth: len(frame.Stack),
+				kind:             ExceptionHandlerKind(instruction.B),
+				target:           instruction.A,
+				stackDepth:       len(frame.Stack),
+				environmentDepth: len(frame.environments),
 			})
 		case OpLeaveTry:
 			if len(frame.handlers) == 0 {
@@ -506,15 +524,43 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 				}
 				return memory.Value{}, routed
 			}
+			if frame.returning != nil {
+				value := *frame.returning
+				frame.returning = nil
+				handled, err := routeReturn(frame, value)
+				if err != nil {
+					return memory.Value{}, err
+				}
+				if handled {
+					continue
+				}
+				return value, nil
+			}
 		case OpRethrow:
 			if frame.current == nil {
 				return memory.Value{}, fmt.Errorf("%w: Rethrow without a current exception", ErrExceptionState)
 			}
+			frame.returning = nil
 			handled, routed := routeThrown(frame, frame.current)
 			if handled {
 				continue
 			}
 			return memory.Value{}, routed
+		case OpEnterScope:
+			environment, err := context.NewContext(frame.Environment)
+			if err != nil {
+				return memory.Value{}, err
+			}
+			frame.environments = append(frame.environments, frame.Environment)
+			frame.Environment = memory.RefValue(environment)
+		case OpLeaveScope:
+			if len(frame.environments) == 0 {
+				return memory.Value{}, fmt.Errorf("%w: LeaveScope without EnterScope", ErrExceptionState)
+			}
+			index := len(frame.environments) - 1
+			frame.Environment = frame.environments[index]
+			frame.environments[index] = memory.Value{}
+			frame.environments = frame.environments[:index]
 		default:
 			return memory.Value{}, fmt.Errorf("%w: unimplemented %s", ErrInvalidBytecode, instruction.Op)
 		}
@@ -625,10 +671,53 @@ func routeThrown(frame *Frame, err error) (bool, error) {
 	}
 	clear(frame.Stack[handler.stackDepth:])
 	frame.Stack = frame.Stack[:handler.stackDepth]
+	if err := restoreEnvironmentDepth(frame, handler.environmentDepth); err != nil {
+		return false, err
+	}
+	frame.returning = nil
 	frame.pending = thrown
 	frame.current = thrown
 	frame.ip = handler.target
 	return true, nil
+}
+
+func routeReturn(frame *Frame, value memory.Value) (bool, error) {
+	for index := len(frame.handlers) - 1; index >= 0; index-- {
+		handler := frame.handlers[index]
+		if handler.kind != HandlerFinally {
+			continue
+		}
+		clear(frame.handlers[index:])
+		frame.handlers = frame.handlers[:index]
+		if handler.stackDepth < 0 || handler.stackDepth > len(frame.Stack) {
+			return false, fmt.Errorf("%w: handler stack depth %d", ErrExceptionState, handler.stackDepth)
+		}
+		clear(frame.Stack[handler.stackDepth:])
+		frame.Stack = frame.Stack[:handler.stackDepth]
+		if err := restoreEnvironmentDepth(frame, handler.environmentDepth); err != nil {
+			return false, err
+		}
+		returned := value
+		frame.returning = &returned
+		frame.pending = nil
+		frame.current = nil
+		frame.ip = handler.target
+		return true, nil
+	}
+	return false, nil
+}
+
+func restoreEnvironmentDepth(frame *Frame, depth int) error {
+	if depth < 0 || depth > len(frame.environments) {
+		return fmt.Errorf("%w: handler environment depth %d", ErrExceptionState, depth)
+	}
+	for len(frame.environments) > depth {
+		index := len(frame.environments) - 1
+		frame.Environment = frame.environments[index]
+		frame.environments[index] = memory.Value{}
+		frame.environments = frame.environments[:index]
+	}
+	return nil
 }
 
 func popCallOperands(frame *Frame, count uint32) (memory.Ref, []memory.Value, error) {

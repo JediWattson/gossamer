@@ -58,11 +58,55 @@ func (compiler *functionCompiler) compileExpression(expression ast.Expression) e
 		return compiler.compileAssignment(expression)
 	case *ast.MemberExpression:
 		return compiler.compileMember(expression)
-	case *ast.CallExpression, *ast.NewExpression, *ast.FunctionExpression:
-		return compiler.problem(expression.Span(), fmt.Sprintf("%T requires the N6 function compiler", expression))
+	case *ast.CallExpression:
+		return compiler.compileCall(expression)
+	case *ast.NewExpression:
+		return compiler.compileNew(expression)
+	case *ast.FunctionExpression:
+		return compiler.compileFunctionExpression(expression)
 	default:
 		return compiler.problem(expression.Span(), fmt.Sprintf("unsupported expression %T", expression))
 	}
+}
+
+func (compiler *functionCompiler) compileCall(call *ast.CallExpression) error {
+	if err := compiler.compileExpression(call.Callee); err != nil {
+		return err
+	}
+	for _, argument := range call.Arguments {
+		if err := compiler.compileExpression(argument); err != nil {
+			return err
+		}
+	}
+	return compiler.emit(browserruntime.Instruction{Op: browserruntime.OpCall, A: uint32(len(call.Arguments))}, call.Span())
+}
+
+func (compiler *functionCompiler) compileNew(expression *ast.NewExpression) error {
+	if err := compiler.compileExpression(expression.Callee); err != nil {
+		return err
+	}
+	for _, argument := range expression.Arguments {
+		if err := compiler.compileExpression(argument); err != nil {
+			return err
+		}
+	}
+	return compiler.emit(browserruntime.Instruction{Op: browserruntime.OpConstruct, A: uint32(len(expression.Arguments))}, expression.Span())
+}
+
+func (compiler *functionCompiler) compileFunctionExpression(expression *ast.FunctionExpression) error {
+	name := ""
+	if expression.Name != nil {
+		name = expression.Name.Name
+	}
+	function, err := compiler.compileNestedFunction(name, expression.Parameters, expression.Body, expression.Span())
+	if err != nil {
+		return err
+	}
+	constant, err := compiler.addFunctionConstant(function)
+	if err != nil {
+		return err
+	}
+	return compiler.emit(browserruntime.Instruction{Op: browserruntime.OpCreateClosure, A: constant}, expression.Span())
 }
 
 func (compiler *functionCompiler) compileArray(array *ast.ArrayLiteral) error {

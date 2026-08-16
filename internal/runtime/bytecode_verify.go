@@ -127,7 +127,7 @@ func instructionStackEffect(instruction Instruction) (required, delta int, termi
 		return 1, 0, false, nil
 	case OpSetLength:
 		return 2, -1, false, nil
-	case OpDeclareBinding, OpEnterTry, OpLeaveTry, OpEnterFinally, OpEndFinally:
+	case OpDeclareBinding, OpEnterTry, OpLeaveTry, OpEnterFinally, OpEndFinally, OpEnterScope, OpLeaveScope:
 		return 0, 0, false, nil
 	case OpInitializeBinding, OpStoreBinding,
 		OpNegate, OpIncrement, OpDecrement, OpLogicalNot, OpTypeOf:

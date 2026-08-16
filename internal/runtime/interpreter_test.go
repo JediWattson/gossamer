@@ -986,3 +986,68 @@ func TestFrameVisitsBorrowedRefsWithoutCreatingOwnership(t *testing.T) {
 		}
 	}
 }
+
+func TestInterpreterCreatesAndRestoresExplicitLexicalScopes(t *testing.T) {
+	t.Parallel()
+
+	realm, err := browserruntime.NewRealm(708, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer realm.Close()
+	interpreter := browserruntime.NewInterpreter(browserruntime.InterpreterConfig{})
+	_, err = realm.EnqueueTask(func(task *browserruntime.TaskContext) error {
+		outer, err := task.NewContext(memory.NullValue())
+		if err != nil {
+			return err
+		}
+		name, err := task.NewString("value")
+		if err != nil {
+			return err
+		}
+		if err := task.DeclareBinding(outer, name, true); err != nil {
+			return err
+		}
+		if err := task.InitializeBinding(outer, name, memory.NumberValue(41)); err != nil {
+			return err
+		}
+		function, err := task.NewBytecodeFunction(
+			memory.NullValue(), memory.RefValue(outer), 0,
+			browserruntime.Assemble(
+				browserruntime.Instruction{Op: browserruntime.OpEnterScope},
+				browserruntime.Instruction{Op: browserruntime.OpLoadBinding, A: 0},
+				browserruntime.Instruction{Op: browserruntime.OpIncrement},
+				browserruntime.Instruction{Op: browserruntime.OpLeaveScope},
+				browserruntime.Instruction{Op: browserruntime.OpReturn},
+			),
+			[]memory.Value{memory.RefValue(name)},
+		)
+		if err != nil {
+			return err
+		}
+		result, err := interpreter.Execute(task, function)
+		if err != nil || result.Number() != 42 {
+			t.Fatalf("scoped result = %#v, %v", result, err)
+		}
+		invalid, err := task.NewBytecodeFunction(
+			memory.NullValue(), memory.RefValue(outer), 0,
+			browserruntime.Assemble(
+				browserruntime.Instruction{Op: browserruntime.OpLeaveScope},
+				browserruntime.Instruction{Op: browserruntime.OpReturn},
+			), nil,
+		)
+		if err != nil {
+			return err
+		}
+		if _, err := interpreter.Execute(task, invalid); !errors.Is(err, browserruntime.ErrExceptionState) {
+			t.Fatalf("unmatched LeaveScope error = %v", err)
+		}
+		return task.Realm.Store().CheckInvariants()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}

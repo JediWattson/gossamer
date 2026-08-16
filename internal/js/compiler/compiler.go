@@ -63,6 +63,15 @@ type imageCompiler struct {
 	functions []program.FunctionTemplate
 }
 
+func (compiler *imageCompiler) reserveFunction() (uint32, error) {
+	if uint64(len(compiler.functions)) > math.MaxUint32 {
+		return 0, &Error{Message: "too many Functions"}
+	}
+	index := uint32(len(compiler.functions))
+	compiler.functions = append(compiler.functions, program.FunctionTemplate{})
+	return index, nil
+}
+
 type binding struct {
 	mutable bool
 	span    lexer.Span
@@ -71,17 +80,20 @@ type binding struct {
 type loopTarget struct {
 	breakLabel    browserruntime.Label
 	continueLabel browserruntime.Label
+	scopeDepth    int
 }
 
 type functionCompiler struct {
-	owner      *imageCompiler
-	parent     *functionCompiler
-	builder    *browserruntime.BytecodeBuilder
-	constants  []program.Constant
-	constant   map[constantKey]uint32
-	bindings   map[string]binding
-	loops      []loopTarget
-	inFunction bool
+	owner          *imageCompiler
+	parent         *functionCompiler
+	builder        *browserruntime.BytecodeBuilder
+	constants      []program.Constant
+	constant       map[constantKey]uint32
+	scopes         []map[string]binding
+	loops          []loopTarget
+	inFunction     bool
+	finallyDepth   int
+	protectedDepth int
 }
 
 type constantKey struct {
@@ -95,7 +107,7 @@ type constantKey struct {
 func newFunctionCompiler(owner *imageCompiler, parent *functionCompiler, inFunction bool) *functionCompiler {
 	return &functionCompiler{
 		owner: owner, parent: parent, builder: browserruntime.NewBytecodeBuilder(),
-		constant: make(map[constantKey]uint32), bindings: make(map[string]binding), inFunction: inFunction,
+		constant: make(map[constantKey]uint32), scopes: []map[string]binding{make(map[string]binding)}, inFunction: inFunction,
 	}
 }
 
@@ -154,6 +166,21 @@ func (compiler *functionCompiler) emitJump(opcode browserruntime.Opcode, label b
 	return nil
 }
 
+func (compiler *functionCompiler) emitHandler(kind browserruntime.ExceptionHandlerKind, label browserruntime.Label, span lexer.Span) error {
+	_, err := compiler.builder.EmitHandler(kind, label, runtimeSpan(span))
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrCompile, err)
+	}
+	return nil
+}
+
+func (compiler *functionCompiler) mark(label browserruntime.Label) error {
+	if err := compiler.builder.Mark(label); err != nil {
+		return fmt.Errorf("%w: %v", ErrCompile, err)
+	}
+	return nil
+}
+
 func runtimeSpan(span lexer.Span) browserruntime.SourceSpan {
 	return browserruntime.SourceSpan{Start: span.Start.Offset, End: span.End.Offset}
 }
@@ -187,20 +214,32 @@ func (compiler *functionCompiler) stringConstant(value string) (uint32, error) {
 }
 
 func (compiler *functionCompiler) declare(name string, mutable bool, span lexer.Span) error {
-	if previous, exists := compiler.bindings[name]; exists {
+	scope := compiler.scopes[len(compiler.scopes)-1]
+	if previous, exists := scope[name]; exists {
 		return compiler.problem(span, fmt.Sprintf("binding %q already declared at %d:%d", name, previous.span.Start.Line, previous.span.Start.Column))
 	}
-	compiler.bindings[name] = binding{mutable: mutable, span: span}
+	scope[name] = binding{mutable: mutable, span: span}
 	return nil
 }
 
 func (compiler *functionCompiler) resolve(name string) (binding, bool) {
 	for current := compiler; current != nil; current = current.parent {
-		if result, exists := current.bindings[name]; exists {
-			return result, true
+		for index := len(current.scopes) - 1; index >= 0; index-- {
+			if result, exists := current.scopes[index][name]; exists {
+				return result, true
+			}
 		}
 	}
 	return binding{}, false
+}
+
+func (compiler *functionCompiler) pushScope() {
+	compiler.scopes = append(compiler.scopes, make(map[string]binding))
+}
+
+func (compiler *functionCompiler) popScope() {
+	compiler.scopes[len(compiler.scopes)-1] = nil
+	compiler.scopes = compiler.scopes[:len(compiler.scopes)-1]
 }
 
 func (compiler *functionCompiler) problem(span lexer.Span, message string) error {

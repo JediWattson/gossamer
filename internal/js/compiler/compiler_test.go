@@ -149,6 +149,111 @@ func TestCompileRejectsSemanticWorkOutsideN5(t *testing.T) {
 	}
 }
 
+func TestCompileExecutesFunctionsClosuresAndFreshInvocationScopes(t *testing.T) {
+	t.Parallel()
+
+	image, err := compiler.Compile(`
+function add(a, b) { return a + b; }
+function make(base) {
+  let offset = 2;
+  return function(value) { return base + offset + value; };
+}
+function factorial(n) {
+  if (n <= 1) { return 1; }
+  return n * factorial(n - 1);
+}
+let first = make(10);
+let second = make(20);
+add(first(1), second(2)) + factorial(5);
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if image.FunctionCount() != 5 {
+		t.Fatalf("Function count = %d, want 5", image.FunctionCount())
+	}
+	result := execute(t, 814, image)
+	if result.Kind() != memory.ValueNumber || result.Number() != 157 {
+		t.Fatalf("Function result = %#v, want 157", result)
+	}
+}
+
+func TestCompileExecutesConstructionWithExplicitThis(t *testing.T) {
+	t.Parallel()
+
+	image, err := compiler.Compile(`
+function Box(value) {
+  this.value = value;
+}
+let box = new Box(77);
+box.value;
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := execute(t, 815, image)
+	if result.Kind() != memory.ValueNumber || result.Number() != 77 {
+		t.Fatalf("constructed value = %#v, want 77", result)
+	}
+}
+
+func TestCompileExecutesCatchRethrowAndReturnThroughFinally(t *testing.T) {
+	t.Parallel()
+
+	image, err := compiler.Compile(`
+function caught(value) {
+  try {
+    if (value) { throw 13; }
+    return 5;
+  } catch (problem) {
+    return problem + 1;
+  } finally {
+    let touched = 1;
+    touched;
+  }
+}
+function override() {
+  try { return 1; } finally { return 2; }
+}
+function nested() {
+  try {
+    try { throw 7; } catch (inner) { throw inner + 1; }
+  } catch (outer) {
+    return outer;
+  }
+}
+function capture() {
+  try { throw 3; } catch (captured) {
+    return function() { return captured; };
+  }
+}
+caught(true) + caught(false) + override() + nested() + capture()();
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := execute(t, 816, image)
+	if result.Kind() != memory.ValueNumber || result.Number() != 32 {
+		t.Fatalf("exception result = %#v, want 32", result)
+	}
+}
+
+func TestCompileRejectsInvalidFunctionControlFlow(t *testing.T) {
+	t.Parallel()
+
+	for _, source := range []string{
+		"return 1;",
+		"function duplicate(value, value) { return value; } duplicate(1, 2);",
+		"function invalid() { while (true) { try { break; } finally {} } } invalid();",
+		"function invalid() { while (true) { try { break; } catch {} } } invalid();",
+	} {
+		_, err := compiler.Compile(source)
+		if !errors.Is(err, compiler.ErrCompile) {
+			t.Fatalf("Compile(%q) error = %v", source, err)
+		}
+	}
+}
+
 func execute(t *testing.T, realmID browserruntime.RealmID, image program.Program) memory.Value {
 	t.Helper()
 	realm, err := browserruntime.NewRealm(realmID, nil)
