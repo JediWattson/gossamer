@@ -13,6 +13,9 @@ import (
 const (
 	nativeGlobalSetTimeout uint64 = 11_000 + iota
 	nativeGlobalClearTimeout
+	nativeGlobalRequestAnimationFrame
+	nativeGlobalCancelAnimationFrame
+	nativePerformanceNow
 )
 
 func (realm *Realm) globalSetTimeout(context *browserruntime.TaskContext, _ memory.Value, arguments []memory.Value) (memory.Value, error) {
@@ -55,6 +58,57 @@ func (realm *Realm) globalClearTimeout(context *browserruntime.TaskContext, _ me
 	return memory.UndefinedValue(), nil
 }
 
+func (realm *Realm) globalRequestAnimationFrame(context *browserruntime.TaskContext, _ memory.Value, arguments []memory.Value) (memory.Value, error) {
+	callback := argument(arguments, 0)
+	if err := requireFunction(context, callback); err != nil {
+		return memory.Value{}, err
+	}
+	host, ok := realm.host.(browser.AnimationFrameHost)
+	if !ok {
+		return memory.Value{}, fmt.Errorf("nativeengine: browser host does not expose animation frames")
+	}
+	handle, err := realm.retainCallbackLocked(context, callback)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	frame, err := host.RequestAnimationFrame(handle)
+	if err != nil {
+		_, _ = context.MapDelete(realm.bindings.callbackCache, memory.NumberValue(float64(handle)))
+		return memory.Value{}, err
+	}
+	realm.animationCallbacks[frame] = handle
+	return memory.NumberValue(float64(frame)), nil
+}
+
+func (realm *Realm) globalCancelAnimationFrame(context *browserruntime.TaskContext, _ memory.Value, arguments []memory.Value) (memory.Value, error) {
+	frame := browser.AnimationFrameID(timerID(argument(arguments, 0)))
+	if frame == 0 {
+		return memory.UndefinedValue(), nil
+	}
+	host, ok := realm.host.(browser.AnimationFrameHost)
+	if !ok {
+		return memory.Value{}, fmt.Errorf("nativeengine: browser host does not expose animation frames")
+	}
+	if err := host.CancelAnimationFrame(frame); err != nil {
+		return memory.Value{}, err
+	}
+	if handle, found := realm.animationCallbacks[frame]; found {
+		delete(realm.animationCallbacks, frame)
+		if _, err := context.MapDelete(realm.bindings.callbackCache, memory.NumberValue(float64(handle))); err != nil {
+			return memory.Value{}, err
+		}
+	}
+	return memory.UndefinedValue(), nil
+}
+
+func (realm *Realm) performanceNow(_ *browserruntime.TaskContext, _ memory.Value, _ []memory.Value) (memory.Value, error) {
+	host, ok := realm.host.(browser.AnimationFrameHost)
+	if !ok {
+		return memory.Value{}, fmt.Errorf("nativeengine: browser host does not expose performance clock")
+	}
+	return memory.NumberValue(host.PerformanceNow()), nil
+}
+
 func (realm *Realm) retainCallbackLocked(context *browserruntime.TaskContext, callback memory.Value) (browser.ValueHandle, error) {
 	if realm.bindings == nil || realm.bindings.callbackCache == (memory.Ref{}) {
 		return 0, fmt.Errorf("nativeengine: callback cache is unavailable")
@@ -71,6 +125,10 @@ func (realm *Realm) retainCallbackLocked(context *browserruntime.TaskContext, ca
 }
 
 func (realm *Realm) invokeCallbackLocked(context *browserruntime.TaskContext, handle browser.ValueHandle) error {
+	return realm.invokeCallbackArgumentsLocked(context, handle, true, memory.UndefinedValue())
+}
+
+func (realm *Realm) invokeCallbackArgumentsLocked(context *browserruntime.TaskContext, handle browser.ValueHandle, remove bool, this memory.Value, arguments ...memory.Value) error {
 	if handle == 0 || realm.bindings == nil {
 		return fmt.Errorf("%w: %d", ErrUnknownValueHandle, handle)
 	}
@@ -82,8 +140,10 @@ func (realm *Realm) invokeCallbackLocked(context *browserruntime.TaskContext, ha
 	if !found {
 		return fmt.Errorf("%w: %d", ErrUnknownValueHandle, handle)
 	}
-	if _, err := context.MapDelete(realm.bindings.callbackCache, key); err != nil {
-		return err
+	if remove {
+		if _, err := context.MapDelete(realm.bindings.callbackCache, key); err != nil {
+			return err
+		}
 	}
 	for timer, callbackHandle := range realm.timerCallbacks {
 		if callbackHandle == handle {
@@ -94,7 +154,7 @@ func (realm *Realm) invokeCallbackLocked(context *browserruntime.TaskContext, ha
 	if err := requireFunction(context, callback); err != nil {
 		return err
 	}
-	_, err = realm.interpreter.ExecuteWithoutCheckpoint(context, callback.Ref())
+	_, err = realm.interpreter.CallWithoutCheckpoint(context, callback.Ref(), this, arguments...)
 	return err
 }
 
