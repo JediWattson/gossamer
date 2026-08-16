@@ -401,7 +401,20 @@ behave as auto during intrinsic measurement, and shrink-to-fit inline tables
 solve the bounded percentage equilibrium used by the official dynamic WPT.
 Live containing-block and CSSOM mutations rebuild the same retained geometry
 without publishing a frame, and percentage/mixed-math combinations are part of
-the table fuzz corpus. The first Grid vertical slice retains
+the table fuzz corpus. Height layout now retains each row's first-pass base and
+percentage-aware reference size, propagates bounded rowspan requirements, and
+interpolates or distributes the table-root minimum height according to the CSS
+Tables row algorithm while ignoring row-group height declarations. Cell
+specified heights no longer hide taller natural content during ROWMIN. Once
+row distribution finishes, eligible cells receive one bounded content relayout
+against their final content-box height: length-height cells and tables whose
+computed height is a length or percentage resolve direct percentage block,
+atomic-inline, and replaced descendants, even when a table percentage behaves
+as auto. Auto/scroll percentage descendants use the compatible zero-height
+first pass while retaining min-height and overflow; auto-table percentage cells
+remain intrinsic. Retained percentage-resolution bits make the same distinction
+observable through live CSSOM, and height/percentage combinations share the
+table fuzz corpus. The first Grid vertical slice retains
 block and inline Grid formatting contexts, blockifies element and anonymous
 text items without mutating computed snapshots, and bounds placement by item,
 track, occupied-cell, and operation budgets. Explicit and implicit tracks
@@ -449,10 +462,9 @@ parent track model through explicit nesting and work budgets. A Subgrid without
 a compatible parent formatting context computes to the retained keyword but
 uses `none`, as exposed by live resolved CSSOM geometry.
 
-- Complete table percentage-height second-pass sizing and remaining advanced
-  intrinsic edge cases, table-wrapper separation, direction/writing-mode
-  placement, and collapsed-border junctions once the wider border-style set
-  exists.
+- Complete the remaining advanced table intrinsic edge cases, table-wrapper
+  separation, direction/writing-mode placement, and collapsed-border junctions
+  once the wider border-style set exists.
 - Extend Grid Subgrid through orthogonal writing modes and the remaining
   advanced intrinsic/overflow interactions.
 - Add multicolumn and fragmentation only after their block/inline consumers

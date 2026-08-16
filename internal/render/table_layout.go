@@ -82,6 +82,18 @@ type tableCellMeasure struct {
 	percentage float64
 }
 
+type tableRowHeightMeasure struct {
+	base      float64
+	reference float64
+	auto      bool
+}
+
+type tableRowSpanRequirement struct {
+	start  int
+	span   int
+	height float64
+}
+
 type collapsedBorderSource uint8
 
 const (
@@ -1157,6 +1169,136 @@ func distributeTableExcess(widths []float64, measures []tableColumnMeasure, exce
 	}
 }
 
+func (context *layoutContext) tableSpecifiedOuterHeight(style computedStyle, percentageBase, verticalInsets float64, resolvePercent bool) (float64, bool) {
+	value := style.Height()
+	if value.Unit() == lengthAuto || value.DependsOnPercent() && !resolvePercent {
+		return 0, false
+	}
+	resolved, ok := value.Resolve(percentageBase, float64(context.viewport.Width), float64(context.viewport.Height))
+	if !ok {
+		return 0, false
+	}
+	resolved = math.Max(0, resolved)
+	if style.BoxSizing() == boxSizingBorderBox {
+		return math.Max(resolved, verticalInsets), true
+	}
+	return resolved + verticalInsets, true
+}
+
+func (context *layoutContext) tableRowSpecifiedHeight(row *styledNode, percentageBase float64, resolvePercent bool) (float64, bool) {
+	if row == nil {
+		return 0, false
+	}
+	value := row.style.Height()
+	if value.Unit() == lengthAuto || value.DependsOnPercent() && !resolvePercent {
+		return 0, false
+	}
+	resolved, ok := value.Resolve(percentageBase, float64(context.viewport.Width), float64(context.viewport.Height))
+	return math.Max(0, resolved), ok
+}
+
+func applyTableRowSpanRequirements(values []float64, requirements []tableRowSpanRequirement, spacing float64) ([]float64, error) {
+	if len(requirements) == 0 {
+		return values, nil
+	}
+	sort.SliceStable(requirements, func(left, right int) bool {
+		return requirements[left].span < requirements[right].span
+	})
+	operations := 0
+	for groupStart := 0; groupStart < len(requirements); {
+		groupEnd := groupStart + 1
+		span := requirements[groupStart].span
+		for groupEnd < len(requirements) && requirements[groupEnd].span == span {
+			groupEnd++
+		}
+		base := append([]float64(nil), values...)
+		next := append([]float64(nil), values...)
+		for _, requirement := range requirements[groupStart:groupEnd] {
+			start := max(0, requirement.start)
+			end := min(len(base), requirement.start+requirement.span)
+			if start >= end {
+				continue
+			}
+			operations += end - start
+			if operations > maxTableGridOps {
+				return nil, fmt.Errorf("render: table exceeds %d row sizing operations", maxTableGridOps)
+			}
+			occupied := sumFloat64(base[start:end]) + spacing*float64(max(0, end-start-1))
+			deficit := requirement.height - occupied
+			if deficit <= 0 {
+				continue
+			}
+			addition := deficit / float64(end-start)
+			for index := start; index < end; index++ {
+				next[index] = math.Max(next[index], base[index]+addition)
+			}
+		}
+		values = next
+		groupStart = groupEnd
+	}
+	return values, nil
+}
+
+func distributeTableHeights(measures []tableRowHeightMeasure, target float64) []float64 {
+	if len(measures) == 0 {
+		return nil
+	}
+	baseTotal, referenceTotal := 0.0, 0.0
+	for index := range measures {
+		measures[index].base = math.Max(0, measures[index].base)
+		measures[index].reference = math.Max(measures[index].base, measures[index].reference)
+		baseTotal += measures[index].base
+		referenceTotal += measures[index].reference
+	}
+	target = math.Max(target, baseTotal)
+	result := make([]float64, len(measures))
+	if target <= referenceTotal {
+		ratio := 0.0
+		if referenceTotal > baseTotal {
+			ratio = clamp((target-baseTotal)/(referenceTotal-baseTotal), 0, 1)
+		}
+		for index, measure := range measures {
+			result[index] = measure.base + (measure.reference-measure.base)*ratio
+		}
+		return result
+	}
+	for index, measure := range measures {
+		result[index] = measure.reference
+	}
+	extra := target - referenceTotal
+	autoRows := 0
+	for _, measure := range measures {
+		if measure.auto {
+			autoRows++
+		}
+	}
+	if autoRows != 0 {
+		addition := extra / float64(autoRows)
+		for index, measure := range measures {
+			if measure.auto {
+				result[index] += addition
+			}
+		}
+		return result
+	}
+	addition := extra / float64(len(result))
+	for index := range result {
+		result[index] += addition
+	}
+	return result
+}
+
+func tableCellRequiresPercentageRelayout(table, cell *styledNode) bool {
+	if table != nil && table.style.Height().Unit() != lengthAuto {
+		return true
+	}
+	if cell == nil {
+		return false
+	}
+	height := cell.style.Height()
+	return height.Unit() != lengthAuto && !height.DependsOnPercent()
+}
+
 func (context *layoutContext) layoutTableContainer(table *styledNode, tableBox *Box, contentWidth float64, containingHeight *float64) (float64, float64, error) {
 	model, err := buildTableModel(table)
 	if err != nil {
@@ -1238,16 +1380,14 @@ func (context *layoutContext) layoutTableContainer(table *styledNode, tableBox *
 	tableBox.Children = append(tableBox.Children, topBoxes...)
 	gridY := tableBox.ContentBounds.Y + topCaptionHeight
 
-	rowHeights := make([]float64, len(model.rows))
+	rowMeasures := make([]tableRowHeightMeasure, len(model.rows))
 	for index, row := range model.rows {
-		if row.node == nil || row.node.style.Height().Unit() == lengthAuto || row.node.style.Height().DependsOnPercent() {
-			continue
+		rowMeasures[index].auto = row.node == nil || row.node.style.Height().Unit() == lengthAuto
+		if specified, ok := context.tableRowSpecifiedHeight(row.node, 0, false); ok {
+			rowMeasures[index].base = math.Max(rowMeasures[index].base, specified)
 		}
-		rowHeights[index] = math.Max(0, resolveLength(row.node.style.Height(), 0, context.viewport, 0))
 	}
-	cellLayouts := make([]tableCellLayout, 0, len(model.cells))
-	rowBaselines := make([]float64, len(model.rows))
-	for _, placement := range model.cells {
+	layoutCell := func(placement tableCellPlacement, childContainingHeight *float64) (tableCellLayout, error) {
 		spanWidth := tableTrackSpan(logicalColumnStarts, logicalColumnEnds, placement.column, placement.columnSpan)
 		usedSpanWidth := tableTrackSpan(columnStarts, columnEnds, placement.column, placement.columnSpan)
 		padding := context.resolvePadding(placement.node.style, spanWidth)
@@ -1257,9 +1397,15 @@ func (context *layoutContext) layoutTableContainer(table *styledNode, tableBox *
 		}
 		content := math.Max(0, spanWidth-padding.Left-padding.Right-border.Left-border.Right)
 		cellX := tableBox.ContentBounds.X + columnStarts[placement.column]
-		cellBox, layoutErr := context.layoutBlockSized(placement.node, cellX, 0, spanWidth, nil, &content, true)
+		cellBox, layoutErr := context.layoutBlockSizedWithSubgrid(
+			placement.node, cellX, 0, spanWidth, nil, &content, true, nil,
+			blockLayoutOverrides{
+				ignoreSpecifiedHeight: true, childContainingHeight: childContainingHeight,
+				tableCellFirstPass: childContainingHeight == nil,
+			},
+		)
 		if layoutErr != nil {
-			return 0, 0, layoutErr
+			return tableCellLayout{}, layoutErr
 		}
 		if collapsed != nil {
 			adjustCollapsedTableCellBox(cellBox, cellX, usedSpanWidth, padding, border)
@@ -1279,11 +1425,31 @@ func (context *layoutContext) layoutTableContainer(table *styledNode, tableBox *
 			placement.node.style.EmptyCells() == emptyCellsHide && tableCellIsEmpty(placement.node) {
 			cellBox.suppressDecorations = true
 		}
-		if placement.rowSpan == 1 {
-			rowHeights[placement.row] = math.Max(rowHeights[placement.row], cellBox.Bounds.Height)
-			if tableCellUsesBaseline(placement.node.style.VerticalAlignment()) && hasBaseline {
-				rowBaselines[placement.row] = math.Max(rowBaselines[placement.row], baseline)
+		return layout, nil
+	}
+	cellLayouts := make([]tableCellLayout, 0, len(model.cells))
+	rowBaselines := make([]float64, len(model.rows))
+	baseSpans := make([]tableRowSpanRequirement, 0, len(model.cells))
+	for _, placement := range model.cells {
+		layout, layoutErr := layoutCell(placement, nil)
+		if layoutErr != nil {
+			return 0, 0, layoutErr
+		}
+		for row := placement.row; row < min(len(rowMeasures), placement.row+placement.rowSpan); row++ {
+			if placement.node.style.Height().Unit() != lengthAuto {
+				rowMeasures[row].auto = false
 			}
+		}
+		verticalInsets := layout.box.Padding.Top + layout.box.Padding.Bottom + layout.box.Border.Top + layout.box.Border.Bottom
+		specified, _ := context.tableSpecifiedOuterHeight(placement.node.style, 0, verticalInsets, false)
+		required := math.Max(layout.naturalHeight, specified)
+		if placement.rowSpan == 1 {
+			rowMeasures[placement.row].base = math.Max(rowMeasures[placement.row].base, required)
+			if tableCellUsesBaseline(placement.node.style.VerticalAlignment()) && layout.hasBaseline {
+				rowBaselines[placement.row] = math.Max(rowBaselines[placement.row], layout.baseline)
+			}
+		} else {
+			baseSpans = append(baseSpans, tableRowSpanRequirement{start: placement.row, span: placement.rowSpan, height: required})
 		}
 		cellLayouts = append(cellLayouts, layout)
 	}
@@ -1292,41 +1458,82 @@ func (context *layoutContext) layoutTableContainer(table *styledNode, tableBox *
 			continue
 		}
 		required := rowBaselines[cell.placement.row] + cell.naturalHeight - cell.baseline
-		rowHeights[cell.placement.row] = math.Max(rowHeights[cell.placement.row], required)
+		rowMeasures[cell.placement.row].base = math.Max(rowMeasures[cell.placement.row].base, required)
 	}
+	baseHeights := make([]float64, len(rowMeasures))
+	for index := range rowMeasures {
+		baseHeights[index] = rowMeasures[index].base
+	}
+	baseHeights, err = applyTableRowSpanRequirements(baseHeights, baseSpans, verticalSpacing)
+	if err != nil {
+		return 0, 0, err
+	}
+	for index := range rowMeasures {
+		rowMeasures[index].base = baseHeights[index]
+		rowMeasures[index].reference = baseHeights[index]
+	}
+	spacingHeight := totalTableSpacing(len(rowMeasures), verticalSpacing)
+	targetRowsHeight := sumFloat64(baseHeights)
+	if containingHeight != nil {
+		targetRowsHeight = math.Max(targetRowsHeight, *containingHeight-topCaptionHeight-bottomCaptionHeight-spacingHeight)
+	}
+	for index, row := range model.rows {
+		if specified, ok := context.tableRowSpecifiedHeight(row.node, targetRowsHeight, true); ok {
+			rowMeasures[index].reference = math.Max(rowMeasures[index].reference, specified)
+		}
+	}
+	referenceSpans := make([]tableRowSpanRequirement, 0, len(cellLayouts))
 	for _, cell := range cellLayouts {
+		verticalInsets := cell.box.Padding.Top + cell.box.Padding.Bottom + cell.box.Border.Top + cell.box.Border.Bottom
+		specified, _ := context.tableSpecifiedOuterHeight(cell.placement.node.style, targetRowsHeight, verticalInsets, true)
+		required := math.Max(cell.naturalHeight, specified)
 		if cell.placement.rowSpan == 1 {
-			continue
-		}
-		start := cell.placement.row
-		end := start + cell.placement.rowSpan
-		occupied := sumFloat64(rowHeights[start:end]) + verticalSpacing*float64(max(0, cell.placement.rowSpan-1))
-		deficit := cell.box.Bounds.Height - occupied
-		if deficit <= 0 {
-			continue
-		}
-		addition := deficit / float64(cell.placement.rowSpan)
-		for index := start; index < end; index++ {
-			rowHeights[index] += addition
+			rowMeasures[cell.placement.row].reference = math.Max(rowMeasures[cell.placement.row].reference, required)
+		} else {
+			referenceSpans = append(referenceSpans, tableRowSpanRequirement{start: cell.placement.row, span: cell.placement.rowSpan, height: required})
 		}
 	}
-	spacingHeight := totalTableSpacing(len(rowHeights), verticalSpacing)
-	if containingHeight != nil && len(rowHeights) != 0 {
-		extra := *containingHeight - topCaptionHeight - bottomCaptionHeight - spacingHeight - sumFloat64(rowHeights)
-		if extra > 0 {
-			addition := extra / float64(len(rowHeights))
-			for index := range rowHeights {
-				rowHeights[index] += addition
-			}
-		}
+	referenceHeights := make([]float64, len(rowMeasures))
+	for index := range rowMeasures {
+		referenceHeights[index] = rowMeasures[index].reference
 	}
+	referenceHeights, err = applyTableRowSpanRequirements(referenceHeights, referenceSpans, verticalSpacing)
+	if err != nil {
+		return 0, 0, err
+	}
+	for index := range rowMeasures {
+		rowMeasures[index].reference = referenceHeights[index]
+	}
+	rowHeights := distributeTableHeights(rowMeasures, targetRowsHeight)
 	logicalRowStarts, logicalRowEnds, _ := tableTrackGeometry(rowHeights, verticalSpacing, nil)
+	for index := range cellLayouts {
+		cell := &cellLayouts[index]
+		if !tableCellRequiresPercentageRelayout(table, cell.placement.node) {
+			continue
+		}
+		logicalHeight := tableTrackSpan(logicalRowStarts, logicalRowEnds, cell.placement.row, cell.placement.rowSpan)
+		verticalInsets := cell.box.Padding.Top + cell.box.Padding.Bottom + cell.box.Border.Top + cell.box.Border.Bottom
+		childContainingHeight := math.Max(0, logicalHeight-verticalInsets)
+		relayout, layoutErr := layoutCell(cell.placement, &childContainingHeight)
+		if layoutErr != nil {
+			return 0, 0, layoutErr
+		}
+		// Height distribution does not change the row baseline established by
+		// the first pass, even though descendants now receive their final
+		// percentage base.
+		relayout.baseline = cell.baseline
+		relayout.hasBaseline = cell.hasBaseline
+		*cell = relayout
+	}
 	rowStarts, rowEnds, gridHeight := tableTrackGeometry(rowHeights, verticalSpacing, collapsedRows)
 	rowBoxes := make([]*Box, len(model.rows))
 	for index, row := range model.rows {
 		rowBoxes[index] = tableStructuralBox(row.node, Rect{
 			X: tableBox.ContentBounds.X, Y: gridY + rowStarts[index], Width: gridWidth, Height: rowEnds[index] - rowStarts[index],
 		})
+		if row.node != nil {
+			rowBoxes[index].percentHeightResolved = row.node.style.Height().DependsOnPercent()
+		}
 		if clipStructuralBackgrounds && tableNodeHasBackground(row.node) {
 			rowBoxes[index].backgroundRects = tableRowBackgroundRects(tableBox.ContentBounds.X, gridY, columnStarts, columnEnds, rowStarts[index], rowEnds[index])
 		}
@@ -1340,6 +1547,7 @@ func (context *layoutContext) layoutTableContainer(table *styledNode, tableBox *
 		shift := tableCellContentShift(cell, logicalHeight, rowBaselines[start])
 		translateBoxContents(cell.box, 0, shift)
 		setBoxOuterHeight(cell.box, usedHeight)
+		cell.box.percentHeightResolved = cell.placement.node.style.Height().DependsOnPercent()
 		if tableSpanTouchesCollapsed(collapsedColumns, cell.placement.column, cell.placement.columnSpan) ||
 			tableSpanTouchesCollapsed(collapsedRows, cell.placement.row, cell.placement.rowSpan) {
 			cell.box.hasClipBounds = true

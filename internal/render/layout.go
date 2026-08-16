@@ -337,14 +337,25 @@ func (context *layoutContext) blockGeneratesOwnContent(node *styledNode) bool {
 }
 
 func (context *layoutContext) layoutBlock(node *styledNode, containingX, contentY, availableWidth float64, containingHeight *float64) (*Box, error) {
-	return context.layoutBlockSized(node, containingX, contentY, availableWidth, containingHeight, nil, false)
+	return context.layoutBlockWithOverrides(node, containingX, contentY, availableWidth, containingHeight, blockLayoutOverrides{})
+}
+
+func (context *layoutContext) layoutBlockWithOverrides(node *styledNode, containingX, contentY, availableWidth float64, containingHeight *float64, overrides blockLayoutOverrides) (*Box, error) {
+	return context.layoutBlockSizedWithSubgrid(node, containingX, contentY, availableWidth, containingHeight, nil, false, nil, overrides)
 }
 
 func (context *layoutContext) layoutBlockSized(node *styledNode, containingX, contentY, availableWidth float64, containingHeight, forcedContentWidth *float64, independentFormattingContext bool) (*Box, error) {
-	return context.layoutBlockSizedWithSubgrid(node, containingX, contentY, availableWidth, containingHeight, forcedContentWidth, independentFormattingContext, nil)
+	return context.layoutBlockSizedWithSubgrid(node, containingX, contentY, availableWidth, containingHeight, forcedContentWidth, independentFormattingContext, nil, blockLayoutOverrides{})
 }
 
-func (context *layoutContext) layoutBlockSizedWithSubgrid(node *styledNode, containingX, contentY, availableWidth float64, containingHeight, forcedContentWidth *float64, independentFormattingContext bool, subgrid *gridSubgridContext) (*Box, error) {
+type blockLayoutOverrides struct {
+	ignoreSpecifiedHeight  bool
+	forceZeroContentHeight bool
+	childContainingHeight  *float64
+	tableCellFirstPass     bool
+}
+
+func (context *layoutContext) layoutBlockSizedWithSubgrid(node *styledNode, containingX, contentY, availableWidth float64, containingHeight, forcedContentWidth *float64, independentFormattingContext bool, subgrid *gridSubgridContext, overrides blockLayoutOverrides) (*Box, error) {
 	style := node.style
 	leftAuto := style.MarginLeft().Unit() == lengthAuto
 	rightAuto := style.MarginRight().Unit() == lengthAuto
@@ -365,9 +376,20 @@ func (context *layoutContext) layoutBlockSizedWithSubgrid(node *styledNode, cont
 	horizontalInsets := padding.Left + padding.Right + border.Left + border.Right
 	verticalInsets := padding.Top + padding.Bottom + border.Top + border.Bottom
 	specifiedContentHeight, hasDefiniteHeight := context.resolveSpecifiedContentHeight(style, containingHeight, verticalInsets)
+	if overrides.ignoreSpecifiedHeight {
+		specifiedContentHeight = 0
+		hasDefiniteHeight = false
+	}
+	if overrides.forceZeroContentHeight {
+		specifiedContentHeight = 0
+		hasDefiniteHeight = true
+	}
 	var childContainingHeight *float64
 	if hasDefiniteHeight {
 		childContainingHeight = &specifiedContentHeight
+	}
+	if overrides.childContainingHeight != nil {
+		childContainingHeight = overrides.childContainingHeight
 	}
 	if node.node != nil && node.node.Type == dom.ElementNode && node.node.Data == "img" {
 		decoded := context.images[node.node]
@@ -582,12 +604,16 @@ func (context *layoutContext) layoutBlockSizedWithSubgrid(node *styledNode, cont
 			continue
 		}
 		if isBlockFlowChild(child) {
+			childOverrides := blockLayoutOverrides{}
+			if overrides.tableCellFirstPass && tableCellFirstPassZeroHeight(child) {
+				childOverrides.forceZeroContentHeight = true
+			}
 			margins := context.blockMargins(child, width, childContainingHeight)
 			if margins.through {
 				if !(beforeFirstContent && canCollapseStart) {
 					pendingMargin = pendingMargin.merge(margins.start)
 				}
-				childBox, err := context.layoutBlock(child, box.ContentBounds.X, cursorY, width, childContainingHeight)
+				childBox, err := context.layoutBlockWithOverrides(child, box.ContentBounds.X, cursorY, width, childContainingHeight, childOverrides)
 				if err != nil {
 					return nil, err
 				}
@@ -603,7 +629,7 @@ func (context *layoutContext) layoutBlockSizedWithSubgrid(node *styledNode, cont
 			gap := pendingMargin.value()
 			targetY := cursorY + gap
 			placePendingThroughBoxes(targetY)
-			childBox, err := context.layoutBlock(child, box.ContentBounds.X, targetY, width, childContainingHeight)
+			childBox, err := context.layoutBlockWithOverrides(child, box.ContentBounds.X, targetY, width, childContainingHeight, childOverrides)
 			if err != nil {
 				return nil, err
 			}
@@ -622,7 +648,7 @@ func (context *layoutContext) layoutBlockSizedWithSubgrid(node *styledNode, cont
 			!isOutOfFlow(node.children[end].style.Position()) {
 			end++
 		}
-		inline, err := context.layoutInline(node.children[index:end], box.ContentBounds.X, cursorY, width, childContainingHeight, node.style)
+		inline, err := context.layoutInline(node.children[index:end], box.ContentBounds.X, cursorY, width, childContainingHeight, node.style, overrides.tableCellFirstPass)
 		if err != nil {
 			return nil, err
 		}
@@ -664,6 +690,21 @@ func (context *layoutContext) layoutBlockSizedWithSubgrid(node *styledNode, cont
 	box.ContentBounds.Height = contentHeight
 	box.Bounds.Height = border.Top + padding.Top + box.ContentBounds.Height + padding.Bottom + border.Bottom
 	return context.finalizeBlock(node, box, availableWidth)
+}
+
+func tableCellFirstPassZeroHeight(node *styledNode) bool {
+	if node == nil || !node.style.Height().DependsOnPercent() {
+		return false
+	}
+	if node.node != nil && node.node.Type == dom.ElementNode && node.node.Data == "img" {
+		return false
+	}
+	for _, overflow := range []computed.OverflowMode{node.style.OverflowX(), node.style.OverflowY()} {
+		if overflow == computed.OverflowAuto || overflow == computed.OverflowScroll {
+			return true
+		}
+	}
+	return false
 }
 
 func isBlockFlowChild(node *styledNode) bool {
@@ -1360,10 +1401,17 @@ func (context *layoutContext) generatedListItemCount(container *dom.Node) int {
 	return count
 }
 
-func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width float64, containingHeight *float64, containerStyle computedStyle) (inlineLayout, error) {
+func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width float64, containingHeight *float64, containerStyle computedStyle, tableCellFirstPass bool) (inlineLayout, error) {
 	builder := inlineTokenBuilder{images: context.images}
+	var directChildren map[*styledNode]struct{}
+	if tableCellFirstPass {
+		directChildren = make(map[*styledNode]struct{}, len(nodes))
+	}
 	for _, node := range nodes {
 		builder.add(node, 1)
+		if tableCellFirstPass {
+			directChildren[node] = struct{}{}
+		}
 	}
 	if len(builder.tokens) == 0 {
 		return inlineLayout{}, nil
@@ -1547,7 +1595,8 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 		imageHeight := 0.0
 		if token.atomic != nil {
 			var err error
-			atomicBox, wordMetrics.width, atomicHeight, atomicBaseline, err = context.layoutAtomicInline(token.atomic, width, containingHeight, token.opacity)
+			_, direct := directChildren[token.atomic]
+			atomicBox, wordMetrics.width, atomicHeight, atomicBaseline, err = context.layoutAtomicInline(token.atomic, width, containingHeight, token.opacity, tableCellFirstPass && direct)
 			if err != nil {
 				return inlineLayout{}, err
 			}
@@ -1670,7 +1719,7 @@ type intrinsicCacheKey struct {
 	availableWidth float64
 }
 
-func (context *layoutContext) layoutAtomicInline(node *styledNode, availableWidth float64, containingHeight *float64, opacity float64) (*Box, float64, float64, float64, error) {
+func (context *layoutContext) layoutAtomicInline(node *styledNode, availableWidth float64, containingHeight *float64, opacity float64, tableCellFirstPass bool) (*Box, float64, float64, float64, error) {
 	style := node.style
 	marginLeft := resolveLength(style.MarginLeft(), availableWidth, context.viewport, 0)
 	marginRight := resolveLength(style.MarginRight(), availableWidth, context.viewport, 0)
@@ -1679,6 +1728,10 @@ func (context *layoutContext) layoutAtomicInline(node *styledNode, availableWidt
 
 	var box *Box
 	var err error
+	overrides := blockLayoutOverrides{}
+	if tableCellFirstPass && tableCellFirstPassZeroHeight(node) {
+		overrides.forceZeroContentHeight = true
+	}
 	if style.Width().Unit() == lengthAuto {
 		padding := context.resolvePadding(style, availableWidth)
 		border := context.resolveBorder(style, availableWidth)
@@ -1689,9 +1742,9 @@ func (context *layoutContext) layoutAtomicInline(node *styledNode, availableWidt
 		}
 		availableContent := math.Max(0, availableWidth-marginLeft-marginRight-horizontalInsets)
 		contentWidth := math.Min(math.Max(intrinsic.minimum, availableContent), intrinsic.preferred)
-		box, err = context.layoutBlockSized(node, 0, marginTop, availableWidth, containingHeight, &contentWidth, true)
+		box, err = context.layoutBlockSizedWithSubgrid(node, 0, marginTop, availableWidth, containingHeight, &contentWidth, true, nil, overrides)
 	} else {
-		box, err = context.layoutBlock(node, 0, marginTop, availableWidth, containingHeight)
+		box, err = context.layoutBlockWithOverrides(node, 0, marginTop, availableWidth, containingHeight, overrides)
 	}
 	if err != nil {
 		return nil, 0, 0, 0, err

@@ -37,9 +37,16 @@ func FuzzTableLayoutSpansStayFinite(f *testing.F) {
 		} else if rawRows&0x80 != 0 {
 			width = fmt.Sprintf("%dpx", 80+int(rawRows))
 		}
+		tableHeight := "auto"
+		switch {
+		case rawColumns&0x20 != 0:
+			tableHeight = fmt.Sprintf("%dpx", 20+int(rawColumns))
+		case rawColumns&0x10 != 0:
+			tableHeight = fmt.Sprintf("%g%%", float64(1+rawColumns%200))
+		}
 		table := dom.NewElement("table", dom.Attribute{Name: "style", Value: fmt.Sprintf(
-			"border-collapse:%s;border-spacing:%dpx %dpx;table-layout:%s;width:%s;border:%dpx solid #123456;empty-cells:hide",
-			borderCollapse, rawModes%7, (rawModes/7)%7, tableLayout, width, 1+rawModes%5,
+			"border-collapse:%s;border-spacing:%dpx %dpx;table-layout:%s;width:%s;height:%s;border:%dpx solid #123456;empty-cells:hide",
+			borderCollapse, rawModes%7, (rawModes/7)%7, tableLayout, width, tableHeight, 1+rawModes%5,
 		)})
 		captionSide := "top"
 		if rawModes&4 != 0 {
@@ -85,7 +92,14 @@ func FuzzTableLayoutSpansStayFinite(f *testing.F) {
 			if rawModes&128 != 0 && rowIndex%2 == 0 {
 				rowVisibility = "collapse"
 			}
-			row := dom.NewElement("tr", dom.Attribute{Name: "style", Value: "visibility:" + rowVisibility})
+			rowHeight := "auto"
+			switch {
+			case rawRowSpan&0x20 != 0:
+				rowHeight = fmt.Sprintf("%dpx", 1+(rowIndex+int(rawRowSpan))%120)
+			case rawRowSpan&0x10 != 0:
+				rowHeight = fmt.Sprintf("%d%%", 1+(rowIndex+int(rawRowSpan))%180)
+			}
+			row := dom.NewElement("tr", dom.Attribute{Name: "style", Value: fmt.Sprintf("visibility:%s;height:%s", rowVisibility, rowHeight)})
 			for columnIndex := range columns {
 				if rawRowSpan&0x80 != 0 && rowIndex%2 != 0 && columnIndex != 0 {
 					continue
@@ -107,9 +121,16 @@ func FuzzTableLayoutSpansStayFinite(f *testing.F) {
 				if rawRowSpan&0x40 != 0 {
 					maxWidth = fmt.Sprintf("max-width:%d%%;", 1+(rowIndex+columnIndex)%100)
 				}
+				cellHeight := "auto"
+				switch {
+				case rawColumnSpan&0x20 != 0:
+					cellHeight = fmt.Sprintf("%dpx", 1+(rowIndex+columnIndex+int(rawColumnSpan))%160)
+				case rawColumnSpan&0x10 != 0:
+					cellHeight = fmt.Sprintf("%d%%", 1+(rowIndex+columnIndex+int(rawColumnSpan))%220)
+				}
 				attributes := []dom.Attribute{{Name: "style", Value: fmt.Sprintf(
-					"%swidth:%s;%spadding:%dpx;vertical-align:%s;border:%dpx %s #abcdef",
-					cellVisibility, cellWidth, maxWidth, rowIndex%3, alignment, 1+(rowIndex+columnIndex)%4, borderStyle,
+					"%swidth:%s;%sheight:%s;padding:%dpx;vertical-align:%s;border:%dpx %s #abcdef",
+					cellVisibility, cellWidth, maxWidth, cellHeight, rowIndex%3, alignment, 1+(rowIndex+columnIndex)%4, borderStyle,
 				)}}
 				if columnIndex == 0 {
 					attributes = append(attributes,
@@ -118,7 +139,23 @@ func FuzzTableLayoutSpansStayFinite(f *testing.F) {
 					)
 				}
 				cell := dom.NewElement("td", attributes...)
-				if rawModes&16 == 0 || (rowIndex+columnIndex)%3 != 0 {
+				if rawModes&16 != 0 && (rowIndex+columnIndex)%3 == 0 {
+					display, overflow, tag := "block", "visible", "div"
+					if rawRows&0x20 != 0 {
+						display, tag = "inline-block", "span"
+					}
+					if rawModes&8 != 0 {
+						overflow = "auto"
+					}
+					child := dom.NewElement(tag, dom.Attribute{Name: "style", Value: fmt.Sprintf(
+						"display:%s;height:%d%%;min-height:%dpx;overflow:%s;vertical-align:top",
+						display, 1+(rowIndex+columnIndex+int(rawModes))%250, (rowIndex+columnIndex)%17, overflow,
+					)})
+					child.AppendChild(dom.NewElement("span", dom.Attribute{Name: "style", Value: fmt.Sprintf(
+						"display:block;height:%dpx", 1+(rowIndex+columnIndex+int(rawModes))%64,
+					)}))
+					cell.AppendChild(child)
+				} else {
 					cell.AppendChild(dom.NewText(fmt.Sprintf("%d:%d", rowIndex, columnIndex)))
 				}
 				row.AppendChild(cell)

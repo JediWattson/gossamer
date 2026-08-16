@@ -1471,7 +1471,7 @@ func (context *layoutContext) measureGridItems(model *gridLayoutModel, contentWi
 		item.marginLeft = resolveLength(item.node.style.MarginLeft(), contentWidth, context.viewport, 0)
 		subgrid := gridSubgridContextForItem(item, columnStarts, columnEnds, nil, nil, columnNames, nil)
 		context.applySubgridEdgeInsets(item, subgrid, cellWidth)
-		box, err := context.layoutBlockSizedWithSubgrid(item.node, 0, 0, cellWidth, nil, nil, true, subgrid)
+		box, err := context.layoutBlockSizedWithSubgrid(item.node, 0, 0, cellWidth, nil, nil, true, subgrid, blockLayoutOverrides{})
 		if err != nil {
 			return err
 		}
@@ -1635,7 +1635,7 @@ func (context *layoutContext) placeGridItems(container *styledNode, box *Box, mo
 			forced := math.Max(0, cellWidth-item.marginLeft-item.marginRight-padding.Left-padding.Right-border.Left-border.Right)
 			forcedContentWidth = &forced
 		}
-		childBox, err := context.layoutBlockSizedWithSubgrid(item.node, 0, 0, childContainingWidth, &cellHeight, forcedContentWidth, true, subgrid)
+		childBox, err := context.layoutBlockSizedWithSubgrid(item.node, 0, 0, childContainingWidth, &cellHeight, forcedContentWidth, true, subgrid, blockLayoutOverrides{})
 		if err != nil {
 			return err
 		}
