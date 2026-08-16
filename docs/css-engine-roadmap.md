@@ -497,11 +497,25 @@ descendant contributions, nested Subgrids, and row-baseline sharing feed the
 parent track model through explicit nesting and work budgets. A Subgrid without
 a compatible parent formatting context computes to the retained keyword but
 uses `none`, as exposed by live resolved CSSOM geometry.
+Vertical Grid roots now run that same bounded placement and track-sizing model
+in their own logical coordinate space before publishing one physical retained
+tree. Columns follow the vertical inline axis and `direction`, rows follow
+`vertical-rl`/`vertical-lr` block progression, and physical padding, borders,
+backgrounds, hit testing, stable geometry, and resolved track serialization
+share the transformed result. Orthogonal Subgrids attach their column axis to
+the parent row axis and their row axis to the parent column axis; reversed
+writing directions also reverse inherited track and line-name order. Fixed,
+intrinsic, and one-axis fixtures cover the cross-axis handoff. Nested Grid
+formatting roots retain their own horizontal/vertical axes, including opposite
+`vertical-rl`/`vertical-lr` block progression; horizontal Grid text and
+replaced content therefore remain upright inside vertical Grid and table
+trees. Browser-live, V8, hit-testing, paint-orientation, and bounded fuzz
+fixtures exercise the same retained transforms.
 
 - Complete the remaining advanced table intrinsic edge cases, orthogonal flow
   roots inside vertical tables, and complete vertical-script orientation.
-- Extend Grid Subgrid through orthogonal writing modes and the remaining
-  advanced intrinsic/overflow interactions.
+- Complete the remaining advanced Grid intrinsic/overflow interactions and
+  non-Grid independent descendant writing-mode boundaries.
 - Add multicolumn and fragmentation only after their block/inline consumers
   are retained and testable.
 - Keep each formatting context as an independent computed-to-used vertical

@@ -69,6 +69,28 @@ func TestVerticalTableRowsColumnsAndDirectionUseLogicalAxes(t *testing.T) {
 	}
 }
 
+func TestHorizontalGridKeepsIndependentAxesInsideVerticalTable(t *testing.T) {
+	t.Parallel()
+
+	document := mustParseTableDocument(t, `<!doctype html><html><body style="margin:0"><table style="writing-mode:vertical-lr;width:120px;height:180px;border-spacing:0"><tr style="width:120px"><td style="height:180px;padding:0"><div id=inner style="display:grid;writing-mode:horizontal-tb;width:100px;height:60px;grid-template-columns:40px 60px;grid-template-rows:30px;justify-content:start;align-content:start"><i id=a>A</i><i id=b>B</i></div></td></tr></table></body></html>`)
+	frame, err := render.Render(document, render.Viewport{Width: 300, Height: 300})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inner := findBox(frame.Root, tableElementByID(t, document, "inner"))
+	a := findBox(frame.Root, tableElementByID(t, document, "a"))
+	b := findBox(frame.Root, tableElementByID(t, document, "b"))
+	if inner == nil || a == nil || b == nil {
+		t.Fatalf("horizontal Grid boxes inside vertical table missing: %v/%v/%v", inner, a, b)
+	}
+	assertNear(t, "horizontal Grid physical width", inner.Bounds.Width, 100)
+	assertNear(t, "horizontal Grid physical height", inner.Bounds.Height, 60)
+	assertNear(t, "horizontal Grid first track", a.Bounds.Width, 40)
+	assertNear(t, "horizontal Grid second track", b.Bounds.Width, 60)
+	assertNear(t, "horizontal Grid shared row", b.Bounds.Y, a.Bounds.Y)
+	assertNear(t, "horizontal Grid second column", b.Bounds.X-a.Bounds.X, 40)
+}
+
 func TestVerticalTableCaptionsTextAndCollapsedBordersTransformTogether(t *testing.T) {
 	t.Parallel()
 

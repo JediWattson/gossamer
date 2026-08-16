@@ -270,13 +270,27 @@ func FuzzSubgridLayoutStaysFinite(f *testing.F) {
 		gap := int(rawModes % 7)
 
 		var source strings.Builder
-		fmt.Fprintf(&source, `<!doctype html><html><body style="margin:0"><section id="outer" style="display:grid;grid-template-columns:%s;grid-template-rows:%s;gap:%dpx">`, columnTemplate, rowTemplate, gap)
+		outerDirection := "ltr"
+		if rawModes&0x40 != 0 {
+			outerDirection = "rtl"
+		}
+		fmt.Fprintf(&source, `<!doctype html><html><body style="margin:0"><section id="outer" style="display:grid;direction:%s;grid-template-columns:%s;grid-template-rows:%s;gap:%dpx">`, outerDirection, columnTemplate, rowTemplate, gap)
 		for level := range depth {
 			subgridGap := "normal"
 			if rawModes&(1<<uint(level%8)) != 0 {
 				subgridGap = fmt.Sprintf("%dpx", (int(rawModes)+level)%5)
 			}
-			fmt.Fprintf(&source, `<div style="display:grid;grid-column:1/span %d;grid-row:1/span %d;grid-template-columns:subgrid;grid-template-rows:subgrid;gap:%s;padding:%dpx">`, columns, rows, subgridGap, level%3)
+			writingMode := "horizontal-tb"
+			if (int(rawModes)+level)%3 == 1 {
+				writingMode = "vertical-rl"
+			} else if (int(rawModes)+level)%3 == 2 {
+				writingMode = "vertical-lr"
+			}
+			direction := "ltr"
+			if rawModes&(1<<uint((level+3)%8)) != 0 {
+				direction = "rtl"
+			}
+			fmt.Fprintf(&source, `<div style="display:grid;writing-mode:%s;direction:%s;grid-column:1/span %d;grid-row:1/span %d;grid-template-columns:subgrid;grid-template-rows:subgrid;gap:%s;padding:%dpx">`, writingMode, direction, columns, rows, subgridGap, level%3)
 		}
 		for index := range items {
 			column := index%columns + 1

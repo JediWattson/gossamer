@@ -19,6 +19,12 @@ type layoutContext struct {
 	images         map[*dom.Node]image.Image
 	intrinsicCache map[intrinsicCacheKey]intrinsicWidths
 	marginCache    map[marginCacheKey]blockMarginProfile
+	axisCloneCache map[layoutAxisCloneKey]*styledNode
+}
+
+type layoutAxisCloneKey struct {
+	node *styledNode
+	mode writingMode
 }
 
 // marginStrut is one collapsed vertical-margin group. CSS collapses the
@@ -109,6 +115,7 @@ func layoutDocument(root *styledNode, viewport Viewport, images map[*dom.Node]im
 		images:         images,
 		intrinsicCache: make(map[intrinsicCacheKey]intrinsicWidths),
 		marginCache:    make(map[marginCacheKey]blockMarginProfile),
+		axisCloneCache: make(map[layoutAxisCloneKey]*styledNode),
 	}
 	context.indexStyles(root)
 
@@ -359,6 +366,12 @@ func (context *layoutContext) layoutBlockSizedWithSubgrid(node *styledNode, cont
 	style := node.style
 	verticalTable := style.Display().Inside() == computed.DisplayInsideTable &&
 		!style.verticalLayout() && style.WritingMode() != writingModeHorizontalTB
+	verticalGrid := style.Display().Inside() == computed.DisplayInsideGrid &&
+		!style.verticalLayout() && style.WritingMode() != writingModeHorizontalTB
+	horizontalGridInVertical := style.Display().Inside() == computed.DisplayInsideGrid &&
+		style.verticalLayout() && style.WritingMode() == writingModeHorizontalTB
+	reversedVerticalGrid := style.Display().Inside() == computed.DisplayInsideGrid &&
+		style.verticalLayout() && style.WritingMode() != writingModeHorizontalTB && style.WritingMode() != style.layoutAxes
 	leftAuto := style.MarginLeft().Unit() == lengthAuto
 	rightAuto := style.MarginRight().Unit() == lengthAuto
 	left := resolveLength(style.MarginLeft(), availableWidth, context.viewport, 0)
@@ -368,7 +381,7 @@ func (context *layoutContext) layoutBlockSizedWithSubgrid(node *styledNode, cont
 	if style.Display().Inside() == computed.DisplayInsideTable && style.BorderCollapse() == computed.BorderCollapseCollapse {
 		borderNode := node
 		if verticalTable {
-			borderNode = cloneStyledNodeWithLayoutAxes(node, style.WritingMode())
+			borderNode = context.cloneStyledNodeWithLayoutAxes(node, style.WritingMode())
 		}
 		collapsedBorder, err := context.collapsedTableOuterEdges(borderNode)
 		if err != nil {
@@ -563,6 +576,18 @@ func (context *layoutContext) layoutBlockSizedWithSubgrid(node *styledNode, cont
 		return context.finalizeBlock(node, box, availableWidth)
 	}
 	if style.Display().Inside() == computed.DisplayInsideGrid {
+		if verticalGrid {
+			if _, err := context.layoutVerticalGridContainer(node, box, availableWidth, containingHeight, width, subgrid); err != nil {
+				return nil, err
+			}
+			return context.finalizeBlock(node, box, availableWidth)
+		}
+		if horizontalGridInVertical {
+			if _, err := context.layoutHorizontalGridInVerticalPlane(node, box, containingHeight, width, subgrid, style.layoutAxes); err != nil {
+				return nil, err
+			}
+			return context.finalizeBlock(node, box, availableWidth)
+		}
 		repeatHeight := childContainingHeight
 		repeatFulfillsMinimum := false
 		if repeatHeight == nil {
@@ -589,7 +614,13 @@ func (context *layoutContext) layoutBlockSizedWithSubgrid(node *styledNode, cont
 				repeatFulfillsMinimum = true
 			}
 		}
-		contentHeight, err := context.layoutGridContainer(node, box, width, childContainingHeight, repeatHeight, repeatFulfillsMinimum, subgrid)
+		contentHeight := 0.0
+		var err error
+		if reversedVerticalGrid {
+			contentHeight, err = context.layoutReversedVerticalGridInVerticalPlane(node, box, width, childContainingHeight, repeatHeight, repeatFulfillsMinimum, subgrid, style.layoutAxes)
+		} else {
+			contentHeight, err = context.layoutGridContainer(node, box, width, childContainingHeight, repeatHeight, repeatFulfillsMinimum, subgrid)
+		}
 		if err != nil {
 			return nil, err
 		}

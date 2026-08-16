@@ -298,7 +298,13 @@ performance budgets; see
   placement and paint, retained track geometry, and live resolved
   `grid-template-*` CSSOM reads; per-axis Subgrid adopts parent tracks, line
   names, gutters, intrinsic descendant contributions, edge decorations, and
-  shared row-baseline groups through bounded nesting
+  shared row-baseline groups through bounded nesting; vertical Grid roots use
+  logical column/row axes for placement, direction, physical edges, hit
+  testing, and live geometry, while orthogonal Subgrids exchange parent
+  row/column axes with writing-mode-relative track and line-name order; nested
+  Grid roots preserve independent horizontal/vertical axes and opposite
+  vertical block progression, including horizontal Grid content inside a
+  vertical table
 - HTML and CSS table display roles with anonymous wrapper fixup, bounded
   intrinsic column sizing, captions, column and row groups, `colspan`/
   `rowspan`, inline-table participation, separated border spacing, fixed
@@ -354,9 +360,10 @@ The following are intentionally still outside the current milestone:
 - Full HTML error recovery beyond the current table insertion modes and foster
   parenting, including formatting-element reconstruction, complete template
   modes, SVG/MathML, and encoding sniffing
-- Flex wrapping and full intrinsic sizing, Grid orthogonal-flow behavior and
-  remaining advanced intrinsic/overflow interactions, remaining advanced table
-  intrinsic sizing, orthogonal descendants inside vertical tables, and full
+- Flex wrapping and full intrinsic sizing, remaining advanced Grid
+  intrinsic/overflow interactions and non-Grid independent descendant
+  writing-mode boundaries, remaining advanced table intrinsic sizing,
+  non-Grid orthogonal descendants inside vertical tables, and full
   vertical-script text orientation,
   floats, sticky and full inline positioned layout, and retained inline boxes
 - The remaining CSS math grammar beyond the current bounded length

@@ -6,8 +6,35 @@ import (
 	"testing"
 
 	"github.com/JediWattson/gossamer/internal/dom"
+	htmlparser "github.com/JediWattson/gossamer/internal/html"
 	computed "github.com/JediWattson/gossamer/internal/style"
 )
+
+func TestHorizontalGridTextInsideVerticalGridReturnsToHorizontalPaint(t *testing.T) {
+	t.Parallel()
+
+	document, err := htmlparser.Parse(strings.NewReader(`<!doctype html><html><body style="margin:0"><section style="display:grid;writing-mode:vertical-rl;width:200px;height:200px;grid-template-columns:200px;grid-template-rows:200px"><div style="display:grid;writing-mode:horizontal-tb;width:160px;height:100px;grid-template-columns:60px 100px;grid-template-rows:50px"><i>A</i><i>B</i></div></section></body></html>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame, err := Render(document, Viewport{Width: 300, Height: 300})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := 0
+	for _, command := range frame.DisplayList.Commands {
+		if command.Kind != DrawTextCommand || command.Text != "A" && command.Text != "B" {
+			continue
+		}
+		seen++
+		if command.textOrientation != textPaintHorizontal {
+			t.Fatalf("horizontal descendant text %q orientation = %d", command.Text, command.textOrientation)
+		}
+	}
+	if seen != 2 {
+		t.Fatalf("horizontal descendant text commands = %d, want 2", seen)
+	}
+}
 
 func TestResolveGridAxisHandlesLinesSpansAndReversedAreas(t *testing.T) {
 	t.Parallel()
