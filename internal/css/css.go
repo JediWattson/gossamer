@@ -1,9 +1,9 @@
 // Package css parses and matches the CSS subset used by Gossamer's rendering
 // pipeline. It supports complex selectors, attribute selectors, logical and
-// structural pseudo-classes, common CSS nesting forms, nested cascade layers,
-// viewport media queries, escaped selector identifiers, and tokenized declarations consumed
-// by the renderer. Selector namespaces, pseudo-elements, and the remaining
-// at-rules are outside the current subset.
+// structural and linguistic pseudo-classes, common CSS nesting forms, nested
+// cascade layers, viewport media queries, escaped selector identifiers, and
+// tokenized declarations consumed by the renderer. Selector namespaces,
+// pseudo-elements, and the remaining at-rules are outside the current subset.
 package css
 
 import (
@@ -175,6 +175,7 @@ const (
 type pseudoClassSelector struct {
 	name      string
 	selectors []Selector
+	arguments []string
 	nth       nthExpression
 }
 

@@ -351,6 +351,21 @@ func (parser *tokenSelectorParser) parsePseudoClass() (pseudoClassSelector, Spec
 			return pseudoClassSelector{}, Specificity{}, false
 		}
 		return pseudo, greatestSpecificity(pseudo.selectors), true
+	case "lang":
+		var ok bool
+		pseudo.arguments, ok = parseLanguageRanges(value.Values)
+		if !ok {
+			return pseudoClassSelector{}, Specificity{}, false
+		}
+		return pseudo, Specificity{Classes: 1}, true
+	case "dir":
+		argument := trimComponentWhitespace(value.Values)
+		if len(argument) != 1 || argument[0].Kind != ComponentToken ||
+			argument[0].Token.Kind != TokenIdent || argument[0].Token.Incomplete {
+			return pseudoClassSelector{}, Specificity{}, false
+		}
+		pseudo.arguments = []string{lowerASCII(argument[0].Token.Value)}
+		return pseudo, Specificity{Classes: 1}, true
 	case "nth-child", "nth-last-child", "nth-of-type", "nth-last-of-type":
 		allowOf := name == "nth-child" || name == "nth-last-child"
 		var ok bool
@@ -365,6 +380,23 @@ func (parser *tokenSelectorParser) parsePseudoClass() (pseudoClassSelector, Spec
 	default:
 		return pseudoClassSelector{}, Specificity{}, false
 	}
+}
+
+func parseLanguageRanges(values []ComponentValue) ([]string, bool) {
+	groups := splitSelectorComponentGroups(values)
+	ranges := make([]string, 0, len(groups))
+	for _, group := range groups {
+		group = trimComponentWhitespace(group)
+		if len(group) != 1 || group[0].Kind != ComponentToken {
+			return nil, false
+		}
+		token := group[0].Token
+		if token.Incomplete || token.Kind != TokenIdent && token.Kind != TokenString {
+			return nil, false
+		}
+		ranges = append(ranges, token.Value)
+	}
+	return ranges, len(ranges) != 0
 }
 
 func parseTokenNthArgument(source string, values []ComponentValue, allowOf bool, nesting int, insideHas bool) (nthExpression, []Selector, bool) {

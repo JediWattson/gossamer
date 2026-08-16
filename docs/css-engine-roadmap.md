@@ -202,9 +202,20 @@ adjacent, and general-sibling relations with iterative backtracking. One shared
 operation budget bounds combinator and relational work in each top-level
 evaluation and fails closed, including through negation; `@supports
 selector()` uses the same parser.
+Linguistic selectors now parse their Selectors 4 argument grammars from shared
+component values. `:lang()` inherits HTML/SVG `lang` and foreign `xml:lang`,
+canonicalizes recognized BCP 47 tags into extlang form, and applies RFC 4647
+extended filtering while distinguishing explicitly untagged content.
+`:dir()` follows HTML directionality rather than CSS's `direction` property,
+including valid `dir` states, inherited direction, `bdi`, telephone defaults,
+first-strong `dir=auto`, excluded isolated subtrees, and live input/textarea
+values. Language ancestor walks and Unicode direction scans consume the same
+fail-closed selector operation budget. Browser navigation supplies a single
+protocol-level default language through match context without letting the
+selector package reach outside a coherent DOM read.
 
-- Add language/direction, the remaining form-state pseudo-classes, and browser
-  history plumbing for the matcher-level visited-link hook.
+- Add the remaining form-state pseudo-classes and browser history plumbing for
+  the matcher-level visited-link hook.
 - Finish pseudo-elements and the remaining stateful selector grammar.
 - Add memoization and selector/property dependency indexes after profiling the
   now-bounded combinator backtracking paths.

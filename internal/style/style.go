@@ -51,6 +51,9 @@ type SelectorState struct {
 	FocusVisible bool
 	Target       dom.NodeID
 	TargetID     string
+	// DefaultLanguage is the document's higher-level protocol fallback when no
+	// element establishes a content language.
+	DefaultLanguage string
 }
 
 // DisplayMode is the computed outer display mode supported by the current
@@ -549,6 +552,7 @@ type Snapshot struct {
 // code should prefer ComputeReadView so snapshots carry stable node identity
 // and the coherent document version from which they were built.
 func Compute(root *dom.Node, input Input) *Snapshot {
+	input.selectorContext.DefaultLanguage = input.SelectorState.DefaultLanguage
 	styledRoot := buildStyleTree(root, input)
 	snapshot := &Snapshot{
 		root:        root,
@@ -575,11 +579,12 @@ func ComputeReadView(view dom.ReadView, input Input) (*Snapshot, error) {
 		return nil, fmt.Errorf("%w: read view root must be a document node", dom.ErrInvalidDocument)
 	}
 	input.selectorContext = css.MatchContext{
-		Hovered:      resolveSelectorStateNode(access, input.SelectorState.Hovered),
-		Active:       resolveSelectorStateNode(access, input.SelectorState.Active),
-		Focused:      resolveSelectorStateNode(access, input.SelectorState.Focused),
-		FocusVisible: input.SelectorState.FocusVisible,
-		Target:       resolveSelectorTarget(root, access, input.SelectorState),
+		Hovered:         resolveSelectorStateNode(access, input.SelectorState.Hovered),
+		Active:          resolveSelectorStateNode(access, input.SelectorState.Active),
+		Focused:         resolveSelectorStateNode(access, input.SelectorState.Focused),
+		FocusVisible:    input.SelectorState.FocusVisible,
+		Target:          resolveSelectorTarget(root, access, input.SelectorState),
+		DefaultLanguage: input.SelectorState.DefaultLanguage,
 	}
 	styledRoot := buildStyleTree(root, input)
 	snapshot := &Snapshot{

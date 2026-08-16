@@ -183,8 +183,18 @@ func cloneCompounds(source []compoundSelector) []compoundSelector {
 		compound.ids = append([]string(nil), compound.ids...)
 		compound.classes = append([]string(nil), compound.classes...)
 		compound.attributes = append([]attributeSelector(nil), compound.attributes...)
-		compound.pseudos = append([]pseudoClassSelector(nil), compound.pseudos...)
+		compound.pseudos = clonePseudoClasses(compound.pseudos)
 		result[index] = compound
+	}
+	return result
+}
+
+func clonePseudoClasses(source []pseudoClassSelector) []pseudoClassSelector {
+	result := make([]pseudoClassSelector, len(source))
+	for index, pseudo := range source {
+		pseudo.arguments = append([]string(nil), pseudo.arguments...)
+		pseudo.selectors = append([]Selector(nil), pseudo.selectors...)
+		result[index] = pseudo
 	}
 	return result
 }

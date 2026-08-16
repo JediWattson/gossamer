@@ -30,6 +30,7 @@ type Page struct {
 	document           *dom.Document
 	nodeLifetimes      *nodeLifetimeState
 	documentGeneration DocumentGeneration
+	documentLanguage   string
 	parent             *Page
 	frameOwner         NodeHandle
 	children           map[dom.NodeID]*Page
@@ -642,10 +643,11 @@ func (page *Page) styleSnapshotForViewLocked(view dom.ReadView, resources render
 
 func (page *Page) selectorStateLocked() computed.SelectorState {
 	state := computed.SelectorState{
-		Hovered:      page.hoveredElement,
-		Active:       page.pressedElement,
-		Focused:      page.activeElement,
-		FocusVisible: page.focusVisible,
+		Hovered:         page.hoveredElement,
+		Active:          page.pressedElement,
+		Focused:         page.activeElement,
+		FocusVisible:    page.focusVisible,
+		DefaultLanguage: page.documentLanguage,
 	}
 	if page.location != nil && page.location.Fragment != "" {
 		state.TargetID = page.location.Fragment

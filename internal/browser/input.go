@@ -775,10 +775,11 @@ func (page *Page) selectorMatchContextLocked() css.MatchContext {
 		return node
 	}
 	context := css.MatchContext{
-		Hovered:      resolve(page.hoveredElement),
-		Active:       resolve(page.pressedElement),
-		Focused:      resolve(page.activeElement),
-		FocusVisible: page.focusVisible,
+		Hovered:         resolve(page.hoveredElement),
+		Active:          resolve(page.pressedElement),
+		Focused:         resolve(page.activeElement),
+		FocusVisible:    page.focusVisible,
+		DefaultLanguage: page.documentLanguage,
 	}
 	if page.location != nil && page.location.Fragment != "" {
 		if id, ok := page.document.ElementByID(page.location.Fragment); ok {

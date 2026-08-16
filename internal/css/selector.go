@@ -22,9 +22,13 @@ type MatchContext struct {
 	FocusVisible bool
 	Target       *dom.Node
 	Visited      func(*dom.Node) bool
-	// OperationLimit bounds combinator and relational work within one top-level
-	// selector evaluation. Zero uses a conservative engine default; exhausted
-	// evaluations fail closed.
+	// DefaultLanguage supplies the document's protocol-level fallback language
+	// when no element or ancestor establishes one. The empty string represents
+	// an untagged document.
+	DefaultLanguage string
+	// OperationLimit bounds tree, combinator, linguistic, and relational work
+	// within one top-level selector evaluation. Zero uses a conservative engine
+	// default; exhausted evaluations fail closed.
 	OperationLimit int
 }
 
@@ -429,6 +433,10 @@ func matchesPseudoClass(pseudo pseudoClassSelector, node *dom.Node, context Matc
 	case "optional":
 		eligible, required := htmlRequiredState(node)
 		return eligible && !required
+	case "lang":
+		return matchesLanguageRanges(node, pseudo.arguments, context, state)
+	case "dir":
+		return len(pseudo.arguments) == 1 && matchesDirectionality(node, pseudo.arguments[0], state)
 	case "is", "where":
 		return selectorListMatches(pseudo.selectors, node, context, state)
 	case "not":

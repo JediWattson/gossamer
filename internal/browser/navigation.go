@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/JediWattson/gossamer/internal/dom"
@@ -76,11 +77,12 @@ type navigationRecord struct {
 }
 
 type preparedNavigation struct {
-	document *dom.Document
-	location *url.URL
-	requests []navigationResourceRequest
-	scripts  []navigationScript
-	fetcher  resource.Fetcher
+	document        *dom.Document
+	location        *url.URL
+	defaultLanguage string
+	requests        []navigationResourceRequest
+	scripts         []navigationScript
+	fetcher         resource.Fetcher
 }
 
 // Navigate begins document I/O outside the Realm. Parsed document state is
@@ -292,12 +294,32 @@ func prepareNavigation(ctx context.Context, rawURL string, client DocumentLoader
 		return preparedNavigation{}, ErrResourceLoaderUnavailable
 	}
 	return preparedNavigation{
-		document: document,
-		location: location,
-		requests: requests,
-		scripts:  scripts,
-		fetcher:  fetcher,
+		document:        document,
+		location:        location,
+		defaultLanguage: responseDefaultLanguage(response),
+		requests:        requests,
+		scripts:         scripts,
+		fetcher:         fetcher,
 	}, nil
+}
+
+func responseDefaultLanguage(response *loader.Response) string {
+	if response == nil || response.Header == nil {
+		return ""
+	}
+	values := response.Header.Values("Content-Language")
+	if len(values) == 0 {
+		return ""
+	}
+	joined := strings.Join(values, ",")
+	if strings.Contains(joined, ",") {
+		return ""
+	}
+	candidate := strings.Trim(joined, " \t")
+	if candidate == "" || strings.ContainsAny(candidate, " \t\r\n") {
+		return ""
+	}
+	return candidate
 }
 
 func (page *Page) commitNavigationDocument(
@@ -391,6 +413,7 @@ func (page *Page) commitNavigationDocument(
 	page.nodeLifetimes = replacementLifetimes
 	page.document = prepared.document
 	page.documentGeneration = generation
+	page.documentLanguage = prepared.defaultLanguage
 	page.activeElement = dom.InvalidNodeID
 	page.hoveredElement = dom.InvalidNodeID
 	page.pressedElement = dom.InvalidNodeID

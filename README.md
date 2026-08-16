@@ -242,10 +242,9 @@ performance budgets; see
 ### CSS, layout, and paint
 
 - Type, ID, class, attribute, and combinator selectors with structural,
-  logical and relational `:has()`, link, target, hover, active, focus,
-  focus-visible, focus-within, checked, enabled/disabled, and required/optional
-  states
-  pseudo-classes driven by explicit browser state
+  linguistic `:lang()`/`:dir()`, logical and relational `:has()`, link, target,
+  hover, active, focus, focus-visible, focus-within, checked, enabled/disabled,
+  and required/optional pseudo-classes driven by live DOM/browser state
 - Cascade ordering across `!important`, specificity, source order, inline
   styles, and named top-level `@layer` rules
 - Versioned, immutable computed-style snapshots and a live, read-only
