@@ -57,6 +57,10 @@ const (
 	OpJumpIfTrue
 	OpJumpIfFalse
 	OpJumpIfNullish
+	OpCall
+	OpCallNative
+	OpConstruct
+	OpCreateClosure
 )
 
 func (opcode Opcode) String() string {
@@ -161,11 +165,19 @@ func (opcode Opcode) String() string {
 		return "JumpIfFalse"
 	case OpJumpIfNullish:
 		return "JumpIfNullish"
+	case OpCall:
+		return "Call"
+	case OpCallNative:
+		return "CallNative"
+	case OpConstruct:
+		return "Construct"
+	case OpCreateClosure:
+		return "CreateClosure"
 	default:
 		return fmt.Sprintf("Opcode(%d)", opcode)
 	}
 }
 
 func (opcode Opcode) valid() bool {
-	return opcode >= OpConstant && opcode <= OpJumpIfNullish
+	return opcode >= OpConstant && opcode <= OpCreateClosure
 }

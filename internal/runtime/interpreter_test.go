@@ -579,6 +579,227 @@ func TestInterpreterOperatorsAndControlFlow(t *testing.T) {
 	}
 }
 
+func TestInterpreterCallsClosuresConstructorsAndNativeDispatch(t *testing.T) {
+	t.Parallel()
+
+	realm, err := browserruntime.NewRealm(705, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer realm.Close()
+	interpreter := browserruntime.NewInterpreter(browserruntime.InterpreterConfig{MaxCallDepth: 8})
+	if err := interpreter.RegisterNative(1, func(_ *browserruntime.TaskContext, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+		if this.Kind() != memory.ValueUndefined || len(arguments) != 2 {
+			return memory.Value{}, errors.New("unexpected native invocation")
+		}
+		return memory.NumberValue(arguments[0].Number() + arguments[1].Number()), nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := interpreter.RegisterNative(1, func(*browserruntime.TaskContext, memory.Value, []memory.Value) (memory.Value, error) {
+		return memory.Value{}, nil
+	}); !errors.Is(err, browserruntime.ErrNativeFunction) {
+		t.Fatalf("duplicate native registration = %v", err)
+	}
+
+	var promotedConstructed memory.Ref
+	_, err = realm.EnqueueTask(func(task *browserruntime.TaskContext) error {
+		multiply, err := task.NewBytecodeFunction(
+			memory.NullValue(), memory.NullValue(), 2,
+			browserruntime.Assemble(
+				browserruntime.Instruction{Op: browserruntime.OpArgument, A: 0},
+				browserruntime.Instruction{Op: browserruntime.OpArgument, A: 1},
+				browserruntime.Instruction{Op: browserruntime.OpMultiply},
+				browserruntime.Instruction{Op: browserruntime.OpReturn},
+			), nil,
+		)
+		if err != nil {
+			return err
+		}
+		caller, err := task.NewBytecodeFunction(
+			memory.NullValue(), memory.NullValue(), 0,
+			browserruntime.Assemble(
+				browserruntime.Instruction{Op: browserruntime.OpConstant, A: 0},
+				browserruntime.Instruction{Op: browserruntime.OpConstant, A: 1},
+				browserruntime.Instruction{Op: browserruntime.OpConstant, A: 2},
+				browserruntime.Instruction{Op: browserruntime.OpCall, A: 2},
+				browserruntime.Instruction{Op: browserruntime.OpReturn},
+			), []memory.Value{memory.RefValue(multiply), memory.NumberValue(6), memory.NumberValue(7)},
+		)
+		if err != nil {
+			return err
+		}
+		if result, err := interpreter.Execute(task, caller); err != nil || result.Number() != 42 {
+			t.Fatalf("bytecode Call = %#v, %v", result, err)
+		}
+
+		native, err := task.NewNativeFunction(memory.NullValue(), memory.NullValue(), 2, 1)
+		if err != nil {
+			return err
+		}
+		nativeCaller, err := task.NewBytecodeFunction(
+			memory.NullValue(), memory.NullValue(), 0,
+			browserruntime.Assemble(
+				browserruntime.Instruction{Op: browserruntime.OpConstant, A: 0},
+				browserruntime.Instruction{Op: browserruntime.OpConstant, A: 1},
+				browserruntime.Instruction{Op: browserruntime.OpConstant, A: 2},
+				browserruntime.Instruction{Op: browserruntime.OpCallNative, A: 2},
+				browserruntime.Instruction{Op: browserruntime.OpReturn},
+			), []memory.Value{memory.RefValue(native), memory.NumberValue(10), memory.NumberValue(5)},
+		)
+		if err != nil {
+			return err
+		}
+		if result, err := interpreter.Execute(task, nativeCaller); err != nil || result.Number() != 15 {
+			t.Fatalf("native Call = %#v, %v", result, err)
+		}
+
+		capturedName, err := task.NewString("captured")
+		if err != nil {
+			return err
+		}
+		environment, err := task.NewContext(memory.NullValue())
+		if err != nil {
+			return err
+		}
+		if err := task.DeclareBinding(environment, capturedName, false); err != nil {
+			return err
+		}
+		if err := task.InitializeBinding(environment, capturedName, memory.NumberValue(91)); err != nil {
+			return err
+		}
+		template, err := task.NewBytecodeFunction(
+			memory.NullValue(), memory.NullValue(), 0,
+			browserruntime.Assemble(
+				browserruntime.Instruction{Op: browserruntime.OpLoadBinding, A: 0},
+				browserruntime.Instruction{Op: browserruntime.OpReturn},
+			), []memory.Value{memory.RefValue(capturedName)},
+		)
+		if err != nil {
+			return err
+		}
+		factory, err := task.NewBytecodeFunction(
+			memory.NullValue(), memory.RefValue(environment), 0,
+			browserruntime.Assemble(
+				browserruntime.Instruction{Op: browserruntime.OpCreateClosure, A: 0},
+				browserruntime.Instruction{Op: browserruntime.OpReturn},
+			), []memory.Value{memory.RefValue(template)},
+		)
+		if err != nil {
+			return err
+		}
+		closure, err := interpreter.Execute(task, factory)
+		if err != nil {
+			return err
+		}
+		if result, err := interpreter.Execute(task, closure.Ref()); err != nil || result.Number() != 91 {
+			t.Fatalf("closure result = %#v, %v", result, err)
+		}
+
+		propertyName, err := task.NewString("value")
+		if err != nil {
+			return err
+		}
+		constructor, err := task.NewBytecodeFunction(
+			memory.NullValue(), memory.NullValue(), 1,
+			browserruntime.Assemble(
+				browserruntime.Instruction{Op: browserruntime.OpLoadThis},
+				browserruntime.Instruction{Op: browserruntime.OpConstant, A: 0},
+				browserruntime.Instruction{Op: browserruntime.OpArgument, A: 0},
+				browserruntime.Instruction{Op: browserruntime.OpSetOwnProperty},
+				browserruntime.Instruction{Op: browserruntime.OpPop},
+				browserruntime.Instruction{Op: browserruntime.OpUndefined},
+				browserruntime.Instruction{Op: browserruntime.OpReturn},
+			), []memory.Value{memory.RefValue(propertyName)},
+		)
+		if err != nil {
+			return err
+		}
+		constructCaller, err := task.NewBytecodeFunction(
+			memory.NullValue(), memory.NullValue(), 0,
+			browserruntime.Assemble(
+				browserruntime.Instruction{Op: browserruntime.OpConstant, A: 0},
+				browserruntime.Instruction{Op: browserruntime.OpConstant, A: 1},
+				browserruntime.Instruction{Op: browserruntime.OpConstruct, A: 1},
+				browserruntime.Instruction{Op: browserruntime.OpReturn},
+			), []memory.Value{memory.RefValue(constructor), memory.NumberValue(77)},
+		)
+		if err != nil {
+			return err
+		}
+		constructed, err := interpreter.Execute(task, constructCaller)
+		if err != nil {
+			return err
+		}
+		promotedConstructed, err = task.PromoteRef(constructed.Ref())
+		if err != nil {
+			return err
+		}
+		return task.Realm.Store().CheckInvariants()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	constructed, err := realm.Store().DerefObject(realm.Owner(), promotedConstructed)
+	if err != nil || len(constructed.Properties) != 1 || constructed.Properties[0].Value.Number() != 77 {
+		t.Fatalf("constructed Object = %#v, %v", constructed, err)
+	}
+	if err := realm.Store().CheckInvariants(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestInterpreterEnforcesSharedCallDepth(t *testing.T) {
+	t.Parallel()
+
+	realm, err := browserruntime.NewRealm(706, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer realm.Close()
+	interpreter := browserruntime.NewInterpreter(browserruntime.InterpreterConfig{MaxCallDepth: 4})
+	_, err = realm.EnqueueTask(func(task *browserruntime.TaskContext) error {
+		selfName, err := task.NewString("self")
+		if err != nil {
+			return err
+		}
+		environment, err := task.NewContext(memory.NullValue())
+		if err != nil {
+			return err
+		}
+		if err := task.DeclareBinding(environment, selfName, false); err != nil {
+			return err
+		}
+		function, err := task.NewBytecodeFunction(
+			memory.NullValue(), memory.RefValue(environment), 0,
+			browserruntime.Assemble(
+				browserruntime.Instruction{Op: browserruntime.OpLoadBinding, A: 0},
+				browserruntime.Instruction{Op: browserruntime.OpCall},
+				browserruntime.Instruction{Op: browserruntime.OpReturn},
+			), []memory.Value{memory.RefValue(selfName)},
+		)
+		if err != nil {
+			return err
+		}
+		if err := task.InitializeBinding(environment, selfName, memory.RefValue(function)); err != nil {
+			return err
+		}
+		if _, err := interpreter.Execute(task, function); !errors.Is(err, browserruntime.ErrCallDepth) {
+			t.Fatalf("recursive call error = %v, want ErrCallDepth", err)
+		}
+		return task.Realm.Store().CheckInvariants()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestFrameVisitsBorrowedRefsWithoutCreatingOwnership(t *testing.T) {
 	t.Parallel()
 

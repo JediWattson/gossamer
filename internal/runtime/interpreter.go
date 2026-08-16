@@ -5,13 +5,16 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sync"
 
 	"github.com/JediWattson/gossamer/internal/runtime/memory"
 )
 
 var (
 	ErrInstructionLimit = errors.New("runtime: instruction limit exceeded")
-	ErrNotCallable      = errors.New("runtime: value is not a callable bytecode Function")
+	ErrCallDepth        = errors.New("runtime: call depth limit exceeded")
+	ErrNotCallable      = errors.New("runtime: value is not a callable Function")
+	ErrNativeFunction   = errors.New("runtime: native Function is not registered")
 	ErrOperandType      = errors.New("runtime: invalid operand type")
 )
 
@@ -22,10 +25,17 @@ type InterpreterConfig struct {
 	MaxCallDepth    uint32
 }
 
+// NativeFunction is an explicitly registered host callback. Native Function
+// heap payloads retain only its numeric ID, never this Go function value.
+type NativeFunction func(*TaskContext, memory.Value, []memory.Value) (memory.Value, error)
+
 // Interpreter executes native Function descriptors against one TaskContext.
 // It does not parse source, schedule work, or extend value lifetimes.
 type Interpreter struct {
 	config InterpreterConfig
+
+	nativeMutex sync.RWMutex
+	natives     map[uint64]NativeFunction
 }
 
 func NewInterpreter(config InterpreterConfig) *Interpreter {
@@ -35,8 +45,38 @@ func NewInterpreter(config InterpreterConfig) *Interpreter {
 	if config.MaxCallDepth == 0 {
 		config.MaxCallDepth = 256
 	}
-	return &Interpreter{config: config}
+	return &Interpreter{config: config, natives: make(map[uint64]NativeFunction)}
 }
+
+func (interpreter *Interpreter) RegisterNative(id uint64, function NativeFunction) error {
+	if interpreter == nil {
+		return fmt.Errorf("runtime: nil interpreter")
+	}
+	if id == 0 || function == nil {
+		return fmt.Errorf("%w: ID %d", ErrNativeFunction, id)
+	}
+	interpreter.nativeMutex.Lock()
+	defer interpreter.nativeMutex.Unlock()
+	if _, exists := interpreter.natives[id]; exists {
+		return fmt.Errorf("%w: duplicate ID %d", ErrNativeFunction, id)
+	}
+	interpreter.natives[id] = function
+	return nil
+}
+
+type execution struct {
+	interpreter *Interpreter
+	context     *TaskContext
+	steps       uint64
+	depth       uint32
+}
+
+type callMode uint8
+
+const (
+	callAny callMode = iota
+	callNativeOnly
+)
 
 func (interpreter *Interpreter) Execute(context *TaskContext, function memory.Ref, arguments ...memory.Value) (memory.Value, error) {
 	if interpreter == nil {
@@ -45,9 +85,31 @@ func (interpreter *Interpreter) Execute(context *TaskContext, function memory.Re
 	if context == nil || context.Realm == nil {
 		return memory.Value{}, fmt.Errorf("runtime: nil task context")
 	}
-	descriptor, err := context.DerefFunction(function)
+	execution := &execution{interpreter: interpreter, context: context}
+	return execution.call(function, memory.UndefinedValue(), arguments, callAny)
+}
+
+func (execution *execution) call(function memory.Ref, this memory.Value, arguments []memory.Value, mode callMode) (memory.Value, error) {
+	if execution.depth >= execution.interpreter.config.MaxCallDepth {
+		return memory.Value{}, ErrCallDepth
+	}
+	descriptor, err := execution.context.DerefFunction(function)
 	if err != nil {
 		return memory.Value{}, err
+	}
+	if mode == callNativeOnly && descriptor.Kind != memory.FunctionNative {
+		return memory.Value{}, fmt.Errorf("%w: %s", ErrNotCallable, function)
+	}
+	execution.depth++
+	defer func() { execution.depth-- }()
+	if descriptor.Kind == memory.FunctionNative {
+		execution.interpreter.nativeMutex.RLock()
+		native := execution.interpreter.natives[descriptor.NativeID]
+		execution.interpreter.nativeMutex.RUnlock()
+		if native == nil {
+			return memory.Value{}, fmt.Errorf("%w: ID %d", ErrNativeFunction, descriptor.NativeID)
+		}
+		return native(execution.context, this, append([]memory.Value(nil), arguments...))
 	}
 	if descriptor.Kind != memory.FunctionBytecode {
 		return memory.Value{}, fmt.Errorf("%w: %s", ErrNotCallable, function)
@@ -59,7 +121,7 @@ func (interpreter *Interpreter) Execute(context *TaskContext, function memory.Re
 	frame := &Frame{
 		Function:     function,
 		Environment:  descriptor.Environment,
-		This:         memory.UndefinedValue(),
+		This:         this,
 		Arguments:    append([]memory.Value(nil), arguments...),
 		function:     descriptor,
 		instructions: instructions,
@@ -67,14 +129,16 @@ func (interpreter *Interpreter) Execute(context *TaskContext, function memory.Re
 	if err := validateFrameProgram(frame); err != nil {
 		return memory.Value{}, err
 	}
-	return interpreter.runFrame(context, frame)
+	return execution.runFrame(frame)
 }
 
-func (interpreter *Interpreter) runFrame(context *TaskContext, frame *Frame) (memory.Value, error) {
-	for steps := uint64(0); ; steps++ {
-		if steps >= interpreter.config.MaxInstructions {
+func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
+	context := execution.context
+	for {
+		if execution.steps >= execution.interpreter.config.MaxInstructions {
 			return memory.Value{}, ErrInstructionLimit
 		}
+		execution.steps++
 		instruction, err := frame.next()
 		if err != nil {
 			return memory.Value{}, err
@@ -313,6 +377,60 @@ func (interpreter *Interpreter) runFrame(context *TaskContext, frame *Frame) (me
 			if jump {
 				frame.ip = instruction.A
 			}
+		case OpCall, OpCallNative, OpConstruct:
+			callee, arguments, err := popCallOperands(frame, instruction.A)
+			if err != nil {
+				return memory.Value{}, err
+			}
+			this := memory.UndefinedValue()
+			mode := callAny
+			var constructed memory.Ref
+			if instruction.Op == OpCallNative {
+				mode = callNativeOnly
+			}
+			if instruction.Op == OpConstruct {
+				constructed, err = context.NewHeapObject()
+				if err != nil {
+					return memory.Value{}, err
+				}
+				this = memory.RefValue(constructed)
+			}
+			result, err := execution.call(callee, this, arguments, mode)
+			if err != nil {
+				return memory.Value{}, err
+			}
+			if instruction.Op == OpConstruct {
+				object, err := isObjectValue(context, result)
+				if err != nil {
+					return memory.Value{}, err
+				}
+				if !object {
+					result = memory.RefValue(constructed)
+				}
+			}
+			frame.push(result)
+		case OpCreateClosure:
+			template, err := constantRef(frame, instruction.A, "Function template")
+			if err != nil {
+				return memory.Value{}, err
+			}
+			descriptor, err := context.DerefFunction(template)
+			if err != nil {
+				return memory.Value{}, err
+			}
+			var closure memory.Ref
+			switch descriptor.Kind {
+			case memory.FunctionBytecode:
+				closure, err = context.NewBytecodeFunction(descriptor.Name, frame.Environment, descriptor.Arity, descriptor.Code, descriptor.Constants)
+			case memory.FunctionNative:
+				closure, err = context.NewNativeFunction(descriptor.Name, frame.Environment, descriptor.Arity, descriptor.NativeID)
+			default:
+				err = fmt.Errorf("%w: template %s", ErrNotCallable, template)
+			}
+			if err != nil {
+				return memory.Value{}, err
+			}
+			frame.push(memory.RefValue(closure))
 		default:
 			return memory.Value{}, fmt.Errorf("%w: unimplemented %s", ErrInvalidBytecode, instruction.Op)
 		}
@@ -405,7 +523,7 @@ func validateFrameProgram(frame *Frame) error {
 	}
 	for index, instruction := range frame.instructions {
 		switch instruction.Op {
-		case OpConstant, OpLoadBinding, OpDeclareBinding, OpInitializeBinding, OpStoreBinding:
+		case OpConstant, OpLoadBinding, OpDeclareBinding, OpInitializeBinding, OpStoreBinding, OpCreateClosure:
 			if uint64(instruction.A) >= uint64(len(frame.function.Constants)) {
 				return fmt.Errorf("%w: instruction %d uses constant %d", ErrConstantBounds, index, instruction.A)
 			}
@@ -419,6 +537,45 @@ func validateFrameProgram(frame *Frame) error {
 		}
 	}
 	return nil
+}
+
+func popCallOperands(frame *Frame, count uint32) (memory.Ref, []memory.Value, error) {
+	if uint64(count) > uint64(len(frame.Stack)) {
+		return memory.Ref{}, nil, ErrStackUnderflow
+	}
+	arguments := make([]memory.Value, count)
+	for index := int(count) - 1; index >= 0; index-- {
+		value, err := frame.pop()
+		if err != nil {
+			return memory.Ref{}, nil, err
+		}
+		arguments[index] = value
+	}
+	calleeValue, err := frame.pop()
+	if err != nil {
+		return memory.Ref{}, nil, err
+	}
+	callee, err := requireRef(calleeValue, "callee Function")
+	if err != nil {
+		return memory.Ref{}, nil, err
+	}
+	return callee, arguments, nil
+}
+
+func isObjectValue(context *TaskContext, value memory.Value) (bool, error) {
+	if !value.IsRef() {
+		return false, nil
+	}
+	kind, err := context.HeapKind(value.Ref())
+	if err != nil {
+		return false, err
+	}
+	switch kind {
+	case memory.HeapString, memory.HeapBigInt, memory.HeapSymbol:
+		return false, nil
+	default:
+		return true, nil
+	}
 }
 
 func executeOperator(context *TaskContext, frame *Frame, opcode Opcode) error {
