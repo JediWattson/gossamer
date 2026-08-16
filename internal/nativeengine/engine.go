@@ -223,9 +223,29 @@ func (realm *Realm) Evaluate(host browser.Host, source browser.ScriptSource) err
 	}
 	_, err = realm.interpreter.ExecuteWithoutCheckpoint(scope, loaded.Entry)
 	if err != nil {
-		return evaluationError(source.URL, err)
+		return evaluationError(source.URL, describeExecutionError(scope, err))
 	}
 	return nil
+}
+
+func describeExecutionError(context *browserruntime.TaskContext, err error) error {
+	value, thrown := browserruntime.ThrownValue(err)
+	if !thrown || context == nil || !value.IsRef() {
+		return err
+	}
+	kind, kindErr := context.HeapKind(value.Ref())
+	if kindErr != nil || kind != memory.HeapError {
+		return err
+	}
+	object, objectErr := context.DerefError(value.Ref())
+	if objectErr != nil || !object.Message.IsRef() {
+		return err
+	}
+	message, messageErr := context.DerefString(object.Message.Ref())
+	if messageErr != nil || message == "" {
+		return err
+	}
+	return fmt.Errorf("%w: %s", err, message)
 }
 
 func (realm *Realm) DrainMicrotasks(host browser.Host) error {

@@ -531,7 +531,11 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 				}
 			}
 			if !found {
-				err := fmt.Errorf("%w: constant %d", memory.ErrBindingNotFound, instruction.A)
+				nameText, nameErr := context.DerefString(name)
+				if nameErr != nil {
+					return memory.Value{}, nameErr
+				}
+				err := fmt.Errorf("%w: %q", memory.ErrBindingNotFound, nameText)
 				if handled, terminal := execution.routeFrameError(frame, err); handled {
 					continue
 				} else {
