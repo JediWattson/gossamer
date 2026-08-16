@@ -10,6 +10,7 @@ import (
 	"math"
 
 	xdraw "golang.org/x/image/draw"
+	"golang.org/x/image/vector"
 )
 
 type rasterLayer struct {
@@ -42,6 +43,20 @@ func rasterize(displayList DisplayList, fonts *fontBook) (*image.RGBA, error) {
 				continue
 			}
 			draw.Draw(canvas, rectangle, image.NewUniform(command.Color), image.Point{}, draw.Over)
+
+		case FillEllipseCommand:
+			if command.Rect.Width <= 0 || command.Rect.Height <= 0 || command.Color.A == 0 {
+				continue
+			}
+			target := draw.Image(canvas)
+			if command.HasClip {
+				target = image.NewRGBA(canvas.Bounds())
+			}
+			paintEllipse(target, command.Rect, command.Color)
+			if command.HasClip {
+				clip := commandClip(command, canvas.Bounds())
+				draw.Draw(canvas, clip, target, clip.Min, draw.Over)
+			}
 
 		case DrawTextCommand:
 			target := canvas
@@ -128,6 +143,25 @@ func rasterize(displayList DisplayList, fonts *fontBook) (*image.RGBA, error) {
 	}
 
 	return layers[0].canvas, nil
+}
+
+func paintEllipse(target draw.Image, rectangle Rect, fill color.NRGBA) {
+	bounds := target.Bounds()
+	rasterizer := vector.NewRasterizer(bounds.Dx(), bounds.Dy())
+	cx := float32(rectangle.X + rectangle.Width/2 - float64(bounds.Min.X))
+	cy := float32(rectangle.Y + rectangle.Height/2 - float64(bounds.Min.Y))
+	rx := float32(rectangle.Width / 2)
+	ry := float32(rectangle.Height / 2)
+	// Cubic approximation of a circle/ellipse, accurate to well below one
+	// device pixel at the border sizes emitted by the layout engine.
+	const kappa = float32(0.5522847498307936)
+	rasterizer.MoveTo(cx+rx, cy)
+	rasterizer.CubeTo(cx+rx, cy+kappa*ry, cx+kappa*rx, cy+ry, cx, cy+ry)
+	rasterizer.CubeTo(cx-kappa*rx, cy+ry, cx-rx, cy+kappa*ry, cx-rx, cy)
+	rasterizer.CubeTo(cx-rx, cy-kappa*ry, cx-kappa*rx, cy-ry, cx, cy-ry)
+	rasterizer.CubeTo(cx+kappa*rx, cy-ry, cx+rx, cy-kappa*ry, cx+rx, cy)
+	rasterizer.ClosePath()
+	rasterizer.Draw(target, bounds, image.NewUniform(fill), image.Point{})
 }
 
 func commandClip(command Command, bounds image.Rectangle) image.Rectangle {

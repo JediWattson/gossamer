@@ -471,10 +471,7 @@ func paintBoxContents(list *DisplayList, box *Box, styles map[*dom.Node]computed
 		if overlay.Rect.Width <= 0 || overlay.Rect.Height <= 0 || overlay.Color.A == 0 {
 			continue
 		}
-		list.Commands = append(list.Commands, Command{
-			Kind: FillRectCommand, Node: overlay.Node, Pseudo: overlay.Pseudo,
-			Rect: overlay.Rect, Color: overlay.Color,
-		})
+		paintBorderPattern(list, overlay.Node, overlay.Pseudo, overlay.Rect, overlay.Style, overlay.Color, overlay.Edge)
 	}
 }
 
@@ -583,27 +580,180 @@ func paintBoxBorders(list *DisplayList, box *Box, style computedStyle) {
 	// Physical sides are painted in top/right/bottom/left order. Uniform solid
 	// borders are exact; diagonal corner splitting for differently colored
 	// adjacent sides is deferred with the remaining advanced border geometry.
-	paintBorderEdge(list, box.Node, box.Pseudo, Rect{X: bounds.X, Y: bounds.Y, Width: bounds.Width, Height: borders.Top}, borderPaintColor(style.BorderTop(), style.Color()))
-	paintBorderEdge(list, box.Node, box.Pseudo, Rect{X: bounds.X + bounds.Width - borders.Right, Y: bounds.Y, Width: borders.Right, Height: bounds.Height}, borderPaintColor(style.BorderRight(), style.Color()))
-	paintBorderEdge(list, box.Node, box.Pseudo, Rect{X: bounds.X, Y: bounds.Y + bounds.Height - borders.Bottom, Width: bounds.Width, Height: borders.Bottom}, borderPaintColor(style.BorderBottom(), style.Color()))
-	paintBorderEdge(list, box.Node, box.Pseudo, Rect{X: bounds.X, Y: bounds.Y, Width: borders.Left, Height: bounds.Height}, borderPaintColor(style.BorderLeft(), style.Color()))
+	paintBorderSide(list, box.Node, box.Pseudo, Rect{X: bounds.X, Y: bounds.Y, Width: bounds.Width, Height: borders.Top}, style.BorderTop(), style.Color(), borderPaintTop)
+	paintBorderSide(list, box.Node, box.Pseudo, Rect{X: bounds.X + bounds.Width - borders.Right, Y: bounds.Y, Width: borders.Right, Height: bounds.Height}, style.BorderRight(), style.Color(), borderPaintRight)
+	paintBorderSide(list, box.Node, box.Pseudo, Rect{X: bounds.X, Y: bounds.Y + bounds.Height - borders.Bottom, Width: bounds.Width, Height: borders.Bottom}, style.BorderBottom(), style.Color(), borderPaintBottom)
+	paintBorderSide(list, box.Node, box.Pseudo, Rect{X: bounds.X, Y: bounds.Y, Width: borders.Left, Height: bounds.Height}, style.BorderLeft(), style.Color(), borderPaintLeft)
 }
 
-func paintBorderEdge(list *DisplayList, node *dom.Node, pseudo computed.PseudoElement, rectangle Rect, edgeColor color.NRGBA) {
+type borderPaintEdge uint8
+
+const (
+	borderPaintTop borderPaintEdge = iota
+	borderPaintRight
+	borderPaintBottom
+	borderPaintLeft
+)
+
+const maxBorderPatternSegments = 4096
+
+func paintBorderSide(list *DisplayList, node *dom.Node, pseudo computed.PseudoElement, rectangle Rect, side borderSide, currentColor color.NRGBA, edge borderPaintEdge) {
+	edgeColor := currentColor
+	if explicit, ok := side.Color(); ok {
+		edgeColor = explicit
+	}
+	paintBorderPattern(list, node, pseudo, rectangle, side.Style(), edgeColor, edge)
+}
+
+func paintBorderPattern(list *DisplayList, node *dom.Node, pseudo computed.PseudoElement, rectangle Rect, style borderStyle, edgeColor color.NRGBA, edge borderPaintEdge) {
+	if rectangle.Width <= 0 || rectangle.Height <= 0 || edgeColor.A == 0 || style == borderStyleNone || style == borderStyleHidden {
+		return
+	}
+	switch style {
+	case borderStyleDotted:
+		paintDottedBorder(list, node, pseudo, rectangle, edgeColor, edge)
+	case borderStyleDashed:
+		paintDashedBorder(list, node, pseudo, rectangle, edgeColor, edge)
+	case borderStyleDouble:
+		third := borderThickness(rectangle, edge) / 3
+		appendBorderFill(list, node, pseudo, borderStripe(rectangle, edge, 0, third), edgeColor)
+		appendBorderFill(list, node, pseudo, borderStripe(rectangle, edge, 2*third, third), edgeColor)
+	case borderStyleGroove, borderStyleRidge:
+		thickness := borderThickness(rectangle, edge)
+		outerDark := style == borderStyleGroove
+		if edge == borderPaintRight || edge == borderPaintBottom {
+			outerDark = !outerDark
+		}
+		outer, inner := lightenBorderColor(edgeColor), darkenBorderColor(edgeColor)
+		if outerDark {
+			outer, inner = inner, outer
+		}
+		appendBorderFill(list, node, pseudo, borderStripe(rectangle, edge, 0, thickness/2), outer)
+		appendBorderFill(list, node, pseudo, borderStripe(rectangle, edge, thickness/2, thickness-thickness/2), inner)
+	case borderStyleInset, borderStyleOutset:
+		dark := edge == borderPaintTop || edge == borderPaintLeft
+		if style == borderStyleOutset {
+			dark = !dark
+		}
+		if dark {
+			edgeColor = darkenBorderColor(edgeColor)
+		} else {
+			edgeColor = lightenBorderColor(edgeColor)
+		}
+		appendBorderFill(list, node, pseudo, rectangle, edgeColor)
+	default:
+		appendBorderFill(list, node, pseudo, rectangle, edgeColor)
+	}
+}
+
+func appendBorderFill(list *DisplayList, node *dom.Node, pseudo computed.PseudoElement, rectangle Rect, edgeColor color.NRGBA) {
 	if rectangle.Width <= 0 || rectangle.Height <= 0 || edgeColor.A == 0 {
 		return
 	}
 	list.Commands = append(list.Commands, Command{Kind: FillRectCommand, Node: node, Pseudo: pseudo, Rect: rectangle, Color: edgeColor})
 }
 
-func borderPaintColor(side borderSide, currentColor color.NRGBA) color.NRGBA {
-	if side.Style() != borderStyleSolid {
-		return color.NRGBA{}
+func borderThickness(rectangle Rect, edge borderPaintEdge) float64 {
+	if edge == borderPaintTop || edge == borderPaintBottom {
+		return rectangle.Height
 	}
-	if borderColor, hasColor := side.Color(); hasColor {
-		return borderColor
+	return rectangle.Width
+}
+
+func borderLength(rectangle Rect, edge borderPaintEdge) float64 {
+	if edge == borderPaintTop || edge == borderPaintBottom {
+		return rectangle.Width
 	}
-	return currentColor
+	return rectangle.Height
+}
+
+func borderStripe(rectangle Rect, edge borderPaintEdge, outsideOffset, thickness float64) Rect {
+	result := rectangle
+	switch edge {
+	case borderPaintTop:
+		result.Y += outsideOffset
+		result.Height = thickness
+	case borderPaintRight:
+		result.X += rectangle.Width - outsideOffset - thickness
+		result.Width = thickness
+	case borderPaintBottom:
+		result.Y += rectangle.Height - outsideOffset - thickness
+		result.Height = thickness
+	case borderPaintLeft:
+		result.X += outsideOffset
+		result.Width = thickness
+	}
+	return result
+}
+
+func paintDottedBorder(list *DisplayList, node *dom.Node, pseudo computed.PseudoElement, rectangle Rect, edgeColor color.NRGBA, edge borderPaintEdge) {
+	diameter := borderThickness(rectangle, edge)
+	length := borderLength(rectangle, edge)
+	if diameter <= 0 || length <= 0 {
+		return
+	}
+	count := max(1, int(math.Round((length+diameter)/(2*diameter))))
+	if count > maxBorderPatternSegments {
+		appendBorderFill(list, node, pseudo, rectangle, edgeColor)
+		return
+	}
+	step := 0.0
+	if count > 1 {
+		step = (length - diameter) / float64(count-1)
+	}
+	for index := 0; index < count; index++ {
+		position := step * float64(index)
+		dot := rectangle
+		if edge == borderPaintTop || edge == borderPaintBottom {
+			dot.X += position
+			dot.Width = diameter
+		} else {
+			dot.Y += position
+			dot.Height = diameter
+		}
+		list.Commands = append(list.Commands, Command{Kind: FillEllipseCommand, Node: node, Pseudo: pseudo, Rect: dot, Color: edgeColor})
+	}
+}
+
+func paintDashedBorder(list *DisplayList, node *dom.Node, pseudo computed.PseudoElement, rectangle Rect, edgeColor color.NRGBA, edge borderPaintEdge) {
+	thickness := borderThickness(rectangle, edge)
+	length := borderLength(rectangle, edge)
+	if thickness <= 0 || length <= 0 {
+		return
+	}
+	count := max(1, int(math.Round(length/(6*thickness))))
+	if count > maxBorderPatternSegments {
+		appendBorderFill(list, node, pseudo, rectangle, edgeColor)
+		return
+	}
+	dash := length / float64(2*count-1)
+	for index := 0; index < count; index++ {
+		position := 2 * float64(index) * dash
+		segment := rectangle
+		if edge == borderPaintTop || edge == borderPaintBottom {
+			segment.X += position
+			segment.Width = math.Min(dash, length-position)
+		} else {
+			segment.Y += position
+			segment.Height = math.Min(dash, length-position)
+		}
+		appendBorderFill(list, node, pseudo, segment, edgeColor)
+	}
+}
+
+func lightenBorderColor(value color.NRGBA) color.NRGBA {
+	return mixBorderColor(value, color.NRGBA{R: 0xff, G: 0xff, B: 0xff, A: value.A}, 0.35)
+}
+
+func darkenBorderColor(value color.NRGBA) color.NRGBA {
+	return mixBorderColor(value, color.NRGBA{A: value.A}, 0.35)
+}
+
+func mixBorderColor(from, to color.NRGBA, amount float64) color.NRGBA {
+	mix := func(left, right uint8) uint8 {
+		return uint8(math.Round(float64(left)*(1-amount) + float64(right)*amount))
+	}
+	return color.NRGBA{R: mix(from.R, to.R), G: mix(from.G, to.G), B: mix(from.B, to.B), A: from.A}
 }
 
 func paintInlineFragment(list *DisplayList, fragment InlineFragment, styles map[*dom.Node]computedStyle) {

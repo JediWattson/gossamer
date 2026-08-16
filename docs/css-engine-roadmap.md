@@ -378,8 +378,13 @@ sizing without entering the table-root border box. Stable CSSOM geometry retains
 the table-root and caption border boxes separately for `getClientRects()`, unions
 only those boxes for `getBoundingClientRect()`, and keeps wrapper-only margin
 space transparent to hit testing.
-Collapsed tables ignore spacing and table padding, harmonize the supported
-none/hidden/solid borders across table, column/group, row/group, and cell
+The full CSS `<line-style>` set now retains its specified computed keyword and
+flows through shorthands, CSSOM, box geometry, bounded display-list patterns,
+and raster paint. Dotted borders use round marks, dashed and double borders
+preserve their gaps, and groove/ridge/inset/outset use deterministic paired
+shades. Collapsed tables ignore spacing and table padding, harmonize
+none/hidden/dotted/dashed/solid/double/groove/ridge/inset/outset borders across
+table, column/group, row/group, and cell
 edges, use half-width layout insets, and paint one bounded winning segment
 grid instead of duplicate cell borders. Table rows, row groups, columns, and
 column groups with `visibility: collapse` continue to participate in intrinsic
@@ -471,8 +476,7 @@ a compatible parent formatting context computes to the retained keyword but
 uses `none`, as exposed by live resolved CSSOM geometry.
 
 - Complete the remaining advanced table intrinsic edge cases,
-  direction/writing-mode placement, and collapsed-border junctions
-  once the wider border-style set exists.
+  direction/writing-mode placement, and collapsed-border junction geometry.
 - Extend Grid Subgrid through orthogonal writing modes and the remaining
   advanced intrinsic/overflow interactions.
 - Add multicolumn and fragmentation only after their block/inline consumers

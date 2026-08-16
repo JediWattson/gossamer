@@ -73,8 +73,15 @@ type borderStyle = computed.BorderStyle
 
 const (
 	borderStyleNone   = computed.BorderStyleNone
-	borderStyleSolid  = computed.BorderStyleSolid
 	borderStyleHidden = computed.BorderStyleHidden
+	borderStyleDotted = computed.BorderStyleDotted
+	borderStyleDashed = computed.BorderStyleDashed
+	borderStyleSolid  = computed.BorderStyleSolid
+	borderStyleDouble = computed.BorderStyleDouble
+	borderStyleGroove = computed.BorderStyleGroove
+	borderStyleRidge  = computed.BorderStyleRidge
+	borderStyleInset  = computed.BorderStyleInset
+	borderStyleOutset = computed.BorderStyleOutset
 )
 
 type borderCollapse = computed.BorderCollapse

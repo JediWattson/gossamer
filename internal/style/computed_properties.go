@@ -157,8 +157,22 @@ func serializeComputedDisplay(value DisplayMode) string {
 
 func serializeComputedBorderStyle(value BorderStyle) string {
 	switch value {
+	case BorderStyleDotted:
+		return "dotted"
+	case BorderStyleDashed:
+		return "dashed"
 	case BorderStyleSolid:
 		return "solid"
+	case BorderStyleDouble:
+		return "double"
+	case BorderStyleGroove:
+		return "groove"
+	case BorderStyleRidge:
+		return "ridge"
+	case BorderStyleInset:
+		return "inset"
+	case BorderStyleOutset:
+		return "outset"
 	case BorderStyleHidden:
 		return "hidden"
 	default:

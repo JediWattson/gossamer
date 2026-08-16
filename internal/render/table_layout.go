@@ -263,7 +263,7 @@ func (context *layoutContext) collapsedBorderCandidate(node *styledNode, side bo
 		borderColor = color.NRGBA{}
 	}
 	width := math.Max(0, resolveLength(side.Width(), 0, context.viewport, 0))
-	if side.Style() == borderStyleNone {
+	if side.Style() == borderStyleNone || side.Style() == borderStyleHidden {
 		width = 0
 	}
 	return collapsedBorder{
@@ -295,10 +295,36 @@ func collapsedBorderMoreSpecific(candidate, current collapsedBorder) bool {
 	if candidate.width != current.width {
 		return candidate.width > current.width
 	}
-	// The supported style subset has only solid between hidden and none. Once
-	// widths and styles tie, CSS gives the element role priority. Equal-role
-	// conflicts retain the first top/left candidate by traversal order.
+	if candidatePriority, currentPriority := collapsedBorderStylePriority(candidate.style), collapsedBorderStylePriority(current.style); candidatePriority != currentPriority {
+		return candidatePriority > currentPriority
+	}
+	// Once widths and styles tie, CSS gives the element role priority.
+	// Equal-role conflicts retain the first top/left candidate by traversal
+	// order until direction/writing-mode placement supplies the logical tie.
 	return candidate.source > current.source
+}
+
+func collapsedBorderStylePriority(style borderStyle) int {
+	switch style {
+	case borderStyleDouble:
+		return 8
+	case borderStyleSolid:
+		return 7
+	case borderStyleDashed:
+		return 6
+	case borderStyleDotted:
+		return 5
+	case borderStyleRidge:
+		return 4
+	case borderStyleOutset:
+		return 3
+	case borderStyleGroove:
+		return 2
+	case borderStyleInset:
+		return 1
+	default:
+		return 0
+	}
 }
 
 func (grid *collapsedBorderGrid) outerHalfEdges() Edges {
@@ -1996,12 +2022,12 @@ func (grid *collapsedBorderGrid) paintRects(x, y float64, columnStarts, columnEn
 	for line := 0; line <= grid.rows; line++ {
 		for column := 0; column < grid.columns; column++ {
 			border := grid.horizontalAt(line, column)
-			if border == nil || border.style != borderStyleSolid || border.width <= 0 || border.color.A == 0 {
+			if border == nil || border.style == borderStyleNone || border.style == borderStyleHidden || border.width <= 0 || border.color.A == 0 {
 				continue
 			}
 			left, right := xLine(column), xLine(column+1)
 			result = append(result, boxPaintRect{
-				Node: border.node, Pseudo: border.pseudo, Color: border.color,
+				Node: border.node, Pseudo: border.pseudo, Color: border.color, Style: collapsedBorderPaintStyle(border.style), Edge: borderPaintTop,
 				Rect: Rect{X: left, Y: yLine(line) - border.width/2, Width: math.Max(0, right-left), Height: border.width},
 			})
 		}
@@ -2009,17 +2035,28 @@ func (grid *collapsedBorderGrid) paintRects(x, y float64, columnStarts, columnEn
 	for line := 0; line <= grid.columns; line++ {
 		for row := 0; row < grid.rows; row++ {
 			border := grid.verticalAt(line, row)
-			if border == nil || border.style != borderStyleSolid || border.width <= 0 || border.color.A == 0 {
+			if border == nil || border.style == borderStyleNone || border.style == borderStyleHidden || border.width <= 0 || border.color.A == 0 {
 				continue
 			}
 			top, bottom := yLine(row), yLine(row+1)
 			result = append(result, boxPaintRect{
-				Node: border.node, Pseudo: border.pseudo, Color: border.color,
+				Node: border.node, Pseudo: border.pseudo, Color: border.color, Style: collapsedBorderPaintStyle(border.style), Edge: borderPaintLeft,
 				Rect: Rect{X: xLine(line) - border.width/2, Y: top, Width: border.width, Height: math.Max(0, bottom-top)},
 			})
 		}
 	}
 	return result
+}
+
+func collapsedBorderPaintStyle(style borderStyle) borderStyle {
+	switch style {
+	case borderStyleInset:
+		return borderStyleRidge
+	case borderStyleOutset:
+		return borderStyleGroove
+	default:
+		return style
+	}
 }
 
 func tableStructuralBackgroundRectCount(model tableModel) int {

@@ -108,7 +108,8 @@ func FuzzTableLayoutSpansStayFinite(f *testing.F) {
 					continue
 				}
 				alignment := []string{"baseline", "top", "middle", "bottom"}[(rowIndex+columnIndex)%4]
-				borderStyle := "solid"
+				borderStyles := [...]string{"solid", "double", "dashed", "dotted", "ridge", "outset", "groove", "inset"}
+				borderStyle := borderStyles[(rowIndex+columnIndex+int(rawModes))%len(borderStyles)]
 				if rawModes&8 != 0 && rowIndex == 0 && columnIndex == 0 {
 					borderStyle = "hidden"
 				}

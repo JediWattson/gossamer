@@ -264,6 +264,32 @@ func TestEmptyCollapsedTableKeepsHalfWidthTableBorder(t *testing.T) {
 	}
 }
 
+func TestCollapsedTableBorderStylePrecedenceAndPatternPaint(t *testing.T) {
+	t.Parallel()
+
+	document := mustParseTableDocument(t, `<!doctype html><html><body style="margin:0">
+		<table style="border-collapse:collapse;border-spacing:0"><tr>
+		<td id=double style="width:30px;height:20px;border-right:6px double #aa0000"></td>
+		<td id=solid style="width:30px;height:20px;border-left:6px solid #0000aa"></td>
+		</tr></table>
+	</body></html>`)
+	frame, err := render.Render(document, render.Viewport{Width: 100, Height: 60})
+	if err != nil {
+		t.Fatal(err)
+	}
+	doubleNode := tableElementByID(t, document, "double")
+	red := color.NRGBA{R: 0xaa, A: 0xff}
+	blue := color.NRGBA{B: 0xaa, A: 0xff}
+	redCommands := borderCommandsForNode(frame.DisplayList.Commands, doubleNode)
+	if len(redCommands) != 2 || redCommands[0].Color != red || redCommands[1].Color != red ||
+		redCommands[0].Rect.Width != 2 || redCommands[1].Rect.Width != 2 {
+		t.Fatalf("collapsed double border commands = %#v, want two red 2px lines", redCommands)
+	}
+	if firstCommandWithColor(frame.DisplayList.Commands, blue) != nil {
+		t.Fatal("lower-priority solid collapsed border was painted")
+	}
+}
+
 func TestCollapsedHiddenBorderSuppressesOtherwiseVisibleConflict(t *testing.T) {
 	t.Parallel()
 

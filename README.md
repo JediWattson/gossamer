@@ -273,7 +273,9 @@ performance budgets; see
   empty blocks without crossing flex, overflow, border, or padding barriers
 - Content- and border-box sizing, width/height and min/max constraints,
   definite containing-block percentage heights across block, atomic-inline,
-  flex, replaced, and positioned boxes, margins, padding, solid borders,
+  flex, replaced, and positioned boxes, margins, padding, the full CSS
+  `none`/`hidden`/`dotted`/`dashed`/`solid`/`double`/`groove`/`ridge`/`inset`/
+  `outset` border-style set,
   backgrounds, opacity, start/end/center alignment, and inter-word
   justification of soft-wrapped non-final lines
 - Baseline, subscript/superscript, text-edge, middle, line-edge, and typed

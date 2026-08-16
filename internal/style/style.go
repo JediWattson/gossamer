@@ -315,16 +315,30 @@ type BorderStyle uint8
 
 const (
 	BorderStyleNone BorderStyle = iota
-	BorderStyleSolid
 	BorderStyleHidden
+	BorderStyleDotted
+	BorderStyleDashed
+	BorderStyleSolid
+	BorderStyleDouble
+	BorderStyleGroove
+	BorderStyleRidge
+	BorderStyleInset
+	BorderStyleOutset
 )
 
 type borderStyle = BorderStyle
 
 const (
 	borderStyleNone   = BorderStyleNone
-	borderStyleSolid  = BorderStyleSolid
 	borderStyleHidden = BorderStyleHidden
+	borderStyleDotted = BorderStyleDotted
+	borderStyleDashed = BorderStyleDashed
+	borderStyleSolid  = BorderStyleSolid
+	borderStyleDouble = BorderStyleDouble
+	borderStyleGroove = BorderStyleGroove
+	borderStyleRidge  = BorderStyleRidge
+	borderStyleInset  = BorderStyleInset
+	borderStyleOutset = BorderStyleOutset
 )
 
 type BorderSide struct {
@@ -2486,10 +2500,24 @@ func parseBorderStyleComponent(component css.ComponentValue) (borderStyle, bool)
 	switch keyword {
 	case "none":
 		return borderStyleNone, true
-	case "solid":
-		return borderStyleSolid, true
 	case "hidden":
 		return borderStyleHidden, true
+	case "dotted":
+		return borderStyleDotted, true
+	case "dashed":
+		return borderStyleDashed, true
+	case "solid":
+		return borderStyleSolid, true
+	case "double":
+		return borderStyleDouble, true
+	case "groove":
+		return borderStyleGroove, true
+	case "ridge":
+		return borderStyleRidge, true
+	case "inset":
+		return borderStyleInset, true
+	case "outset":
+		return borderStyleOutset, true
 	default:
 		return borderStyleNone, false
 	}

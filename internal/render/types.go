@@ -145,6 +145,8 @@ type boxPaintRect struct {
 	Pseudo css.PseudoElement
 	Rect   Rect
 	Color  color.NRGBA
+	Style  borderStyle
+	Edge   borderPaintEdge
 }
 
 type flowItem struct {
@@ -217,6 +219,7 @@ type CommandKind uint8
 
 const (
 	FillRectCommand CommandKind = iota
+	FillEllipseCommand
 	DrawTextCommand
 	BeginOpacityCommand
 	EndOpacityCommand
@@ -289,7 +292,7 @@ func ScrollDisplayList(frame *Frame, x, y float64) *Frame {
 	for index := range result.DisplayList.Commands {
 		command := &result.DisplayList.Commands[index]
 		switch command.Kind {
-		case FillRectCommand, DrawImageCommand:
+		case FillRectCommand, FillEllipseCommand, DrawImageCommand:
 			command.Rect.X -= x
 			command.Rect.Y -= y
 		case DrawTextCommand:
@@ -321,7 +324,7 @@ func TransformDisplayList(frame *Frame, transforms map[*dom.Node]VisualTransform
 			continue
 		}
 		switch command.Kind {
-		case FillRectCommand, DrawImageCommand:
+		case FillRectCommand, FillEllipseCommand, DrawImageCommand:
 			command.Rect.X -= transform.OffsetX
 			command.Rect.Y -= transform.OffsetY
 		case DrawTextCommand:
