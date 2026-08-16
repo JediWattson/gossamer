@@ -12,6 +12,7 @@ import (
 	htmlparser "github.com/JediWattson/gossamer/internal/html"
 	"github.com/JediWattson/gossamer/internal/render"
 	browserruntime "github.com/JediWattson/gossamer/internal/runtime"
+	"github.com/JediWattson/gossamer/internal/runtime/memory"
 	computed "github.com/JediWattson/gossamer/internal/style"
 )
 
@@ -1372,6 +1373,10 @@ func (host *taskHost) RetainNodeWrapper(handle NodeHandle) error {
 
 func (host *taskHost) ReleaseNodeWrappers(handles []NodeHandle) error {
 	return host.page.ReleaseNodeWrappers(handles)
+}
+
+func (host *taskHost) NodeFacadeRef(handle NodeHandle) (memory.Ref, error) {
+	return host.page.NodeFacadeRef(handle)
 }
 
 func (host *taskHost) RetainNodeEventTarget(handle NodeHandle) error {

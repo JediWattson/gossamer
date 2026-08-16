@@ -217,6 +217,20 @@ silently promoting it and changing weak identity. Values still pass through
 the copy-on-escape barrier. Copy and Promote preserve weak edges, remapping
 keys and values that are otherwise part of the copied strong graph.
 
+### HostObject
+
+Native HostObjects are immutable embedder records containing a nonzero class,
+lifetime scope, and stable identity. RegionStore does not interpret those
+numbers. The browser uses class 1 for `DocumentGeneration + NodeID`, giving
+each native node one canonical document-region record without storing a Go or
+C++ pointer in the heap.
+
+V8 continues to own and garbage-collect the JavaScript wrapper. The HostObject
+is the Go-owned side of the boundary and follows native node lifetime: it
+survives detachment while a wrapper or listener owns the node, is freed when
+that native node is reclaimed, and becomes stale when its document owner is
+released. Copy and Promote preserve the opaque identity triple.
+
 ## Deliberate boundaries
 
 These native payloads are not yet ECMAScript implementations. String

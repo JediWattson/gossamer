@@ -10,6 +10,7 @@ import (
 	"github.com/JediWattson/gossamer/internal/dom"
 	"github.com/JediWattson/gossamer/internal/render"
 	browserruntime "github.com/JediWattson/gossamer/internal/runtime"
+	"github.com/JediWattson/gossamer/internal/runtime/memory"
 	computed "github.com/JediWattson/gossamer/internal/style"
 )
 
@@ -75,7 +76,7 @@ func newPage(
 	document *dom.Document,
 	location *url.URL,
 ) (*Page, error) {
-	lifetimes, err := newNodeLifetimeState(realm.Ledger(), document, 1)
+	lifetimes, err := newNodeLifetimeState(realm, document, 1)
 	if err != nil {
 		return nil, err
 	}
@@ -173,6 +174,24 @@ func (page *Page) Dirty() bool {
 	dirty := page.dirty || page.renderedVersion != page.document.Version()
 	page.mutex.RUnlock()
 	return dirty
+}
+
+// NodeFacadeRef returns the canonical document-region HostObject for one
+// generation-safe native node. JavaScript engines keep wrapper identity in
+// their own heaps; this Ref is the Go-owned half of that wrapper boundary.
+func (page *Page) NodeFacadeRef(handle NodeHandle) (memory.Ref, error) {
+	if page == nil {
+		return memory.Ref{}, fmt.Errorf("browser: nil page")
+	}
+	page.mutex.RLock()
+	defer page.mutex.RUnlock()
+	if page.closed {
+		return memory.Ref{}, ErrPageClosed
+	}
+	if page.nodeLifetimes == nil || handle.Document != page.documentGeneration {
+		return memory.Ref{}, ErrStaleNodeHandle
+	}
+	return page.nodeLifetimes.facade(handle)
 }
 
 // RetainNodeWrapper adds one numeric wrapper root to the current document's

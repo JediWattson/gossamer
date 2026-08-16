@@ -547,6 +547,20 @@ func (context *TaskContext) WeakSetClear(ref memory.Ref) error {
 	return context.Realm.store.WeakSetClear(context.Owner, ref)
 }
 
+func (context *TaskContext) NewHostObject(value memory.HostObject) (memory.Ref, error) {
+	if context == nil || context.Realm == nil {
+		return memory.Ref{}, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.AllocHostObject(context.Owner, context.MemoryRegion, value)
+}
+
+func (context *TaskContext) DerefHostObject(ref memory.Ref) (memory.HostObject, error) {
+	if context == nil || context.Realm == nil {
+		return memory.HostObject{}, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.DerefHostObject(context.Owner, ref)
+}
+
 func (context *TaskContext) NewDate(milliseconds float64) (memory.Ref, error) {
 	if context == nil || context.Realm == nil {
 		return memory.Ref{}, fmt.Errorf("runtime: nil task context")

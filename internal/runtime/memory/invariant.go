@@ -47,6 +47,7 @@ func (store *Store) CheckInvariants() error {
 	liveErrors := uint64(0)
 	liveWeakMaps := uint64(0)
 	liveWeakSets := uint64(0)
+	liveHostObjects := uint64(0)
 	liveBytes := uint64(0)
 	liveRegions := uint64(0)
 	reservedSlotCapacity := uint64(0)
@@ -462,6 +463,14 @@ func (store *Store) CheckInvariants() error {
 					}
 					keys[key] = keyIndex
 				}
+			case HeapHostObject:
+				liveHostObjects++
+				if slotHasOtherPayload(slot, HeapHostObject) {
+					return invariantError("HostObject %s retains another typed payload", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
+				}
+				if slot.HostObject.Class == 0 || slot.HostObject.Scope == 0 || slot.HostObject.Identity == 0 {
+					return invariantError("HostObject %s has invalid identity %#v", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot.HostObject)
+				}
 			default:
 				return invariantError("R%d occupied slot %d has unknown heap kind %d", id, index, slot.Kind)
 			}
@@ -550,6 +559,9 @@ func (store *Store) CheckInvariants() error {
 	}
 	if store.stats.LiveWeakMaps != liveWeakMaps || store.stats.LiveWeakSets != liveWeakSets {
 		return invariantError("stats weak maps/sets = %d/%d, derived %d/%d", store.stats.LiveWeakMaps, store.stats.LiveWeakSets, liveWeakMaps, liveWeakSets)
+	}
+	if store.stats.LiveHostObjects != liveHostObjects {
+		return invariantError("stats host objects = %d, derived %d", store.stats.LiveHostObjects, liveHostObjects)
 	}
 	if store.stats.PooledSlotBuffers != uint64(len(store.slotBuffers)) || store.stats.PooledSlotCapacity != pooledSlotCapacity || store.stats.ReservedSlotCapacity != reservedSlotCapacity {
 		return invariantError("stats pooled buffers/capacity/reserved = %d/%d/%d, derived %d/%d/%d", store.stats.PooledSlotBuffers, store.stats.PooledSlotCapacity, store.stats.ReservedSlotCapacity, len(store.slotBuffers), pooledSlotCapacity, reservedSlotCapacity)
@@ -672,6 +684,9 @@ func slotHasOtherPayload(slot *Slot, kind HeapKind) bool {
 		return true
 	}
 	if kind != HeapWeakSet && len(slot.WeakSet.Keys) != 0 {
+		return true
+	}
+	if kind != HeapHostObject && slot.HostObject != (HostObject{}) {
 		return true
 	}
 	return false

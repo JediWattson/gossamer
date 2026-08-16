@@ -66,6 +66,8 @@ task region, and reads the immutable promoted graph from the microtask.
 
 This is not an ECMAScript implementation. It does not provide source parsing,
 automatic coercion, prototype-chain lookup, descriptors, accessors, implicit
-promotion of bare return values, weak edges, asynchronous opcodes, structured
-clone, browser facade bindings, or V8 replacement. The Store's existing
-copy-on-escape barrier still governs writes into longer-lived native owners.
+promotion of bare return values, asynchronous opcodes, structured clone,
+browser method opcodes, or V8 replacement. RegionStore now has opaque
+HostObjects for browser facade identity, but invoking browser behavior remains
+an embedder boundary. The Store's existing copy-on-escape barrier still governs
+writes into longer-lived native owners.

@@ -2106,6 +2106,10 @@ func TestStockV8NodeMutationChurnPreservesOwnershipBoundaries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("baseline Profile: %v", err)
 	}
+	baselineNative := page.Realm.Profile().Memory
+	if baselineNative.LiveHostObjects != uint64(initialLiveNodes) {
+		t.Fatalf("baseline native facades = %#v, live nodes=%d", baselineNative, initialLiveNodes)
+	}
 
 	_, err = page.QueueScript(browser.ScriptSource{
 		URL: "https://gossamer.test/churn.js",
@@ -2203,13 +2207,13 @@ func TestStockV8NodeMutationChurnPreservesOwnershipBoundaries(t *testing.T) {
 	}
 
 	afterRenderLedger := browserRuntime.Ledger().Stats()
-	if afterRenderLedger.ObjectsCreated-baselineLedger.ObjectsCreated != createdNodes+2 ||
+	if afterRenderLedger.ObjectsCreated-baselineLedger.ObjectsCreated != createdNodes*2+2 ||
 		afterRenderLedger.ObjectsDestroyed-baselineLedger.ObjectsDestroyed != 2 ||
-		afterRenderLedger.LiveObjects-baselineLedger.LiveObjects != createdNodes ||
+		afterRenderLedger.LiveObjects-baselineLedger.LiveObjects != createdNodes*2 ||
 		afterRenderLedger.TaskLocalAllocations-baselineLedger.TaskLocalAllocations != createdNodes+1 ||
 		afterRenderLedger.PublishOperations-baselineLedger.PublishOperations != 2 ||
 		afterRenderLedger.TransferOperations-baselineLedger.TransferOperations != 2 ||
-		afterRenderLedger.PersistentObjects-baselineLedger.PersistentObjects != createdNodes {
+		afterRenderLedger.PersistentObjects-baselineLedger.PersistentObjects != createdNodes*2 {
 		t.Fatalf("churn crossed unexpected ARC boundaries: before=%#v after=%#v", baselineLedger, afterRenderLedger)
 	}
 	afterRenderProfile, err := realm.Profile()
@@ -2223,6 +2227,9 @@ func TestStockV8NodeMutationChurnPreservesOwnershipBoundaries(t *testing.T) {
 	if afterRenderProfile.WrapperCacheHits-baselineProfile.WrapperCacheHits != 1 {
 		t.Fatalf("wrapper cache hits after churn = %d, want 1", afterRenderProfile.WrapperCacheHits-baselineProfile.WrapperCacheHits)
 	}
+	if native := page.Realm.Profile().Memory; native.LiveHostObjects-baselineNative.LiveHostObjects != uint64(createdNodes) {
+		t.Fatalf("native facade records after churn = %#v, baseline=%#v", native, baselineNative)
+	}
 
 	ledgerBeforeGC := browserRuntime.Ledger().Stats()
 	if err := realm.CollectGarbage(page); err != nil {
@@ -2231,9 +2238,9 @@ func TestStockV8NodeMutationChurnPreservesOwnershipBoundaries(t *testing.T) {
 	ledgerAfterGC := browserRuntime.Ledger().Stats()
 	const connectedCreatedNodes = 2
 	const reclaimedDetachedNodes = createdNodes - connectedCreatedNodes
-	if ledgerAfterGC.ObjectsDestroyed-ledgerBeforeGC.ObjectsDestroyed != reclaimedDetachedNodes ||
-		ledgerAfterGC.LiveObjects-baselineLedger.LiveObjects != connectedCreatedNodes ||
-		ledgerAfterGC.PersistentObjects-baselineLedger.PersistentObjects != connectedCreatedNodes ||
+	if ledgerAfterGC.ObjectsDestroyed-ledgerBeforeGC.ObjectsDestroyed != reclaimedDetachedNodes*2 ||
+		ledgerAfterGC.LiveObjects-baselineLedger.LiveObjects != connectedCreatedNodes*2 ||
+		ledgerAfterGC.PersistentObjects-baselineLedger.PersistentObjects != connectedCreatedNodes*2 ||
 		document.Store().LiveLen()-initialLiveNodes != connectedCreatedNodes {
 		t.Fatalf("detached-node collection boundary: before=%#v after=%#v liveNodes=%d",
 			ledgerBeforeGC, ledgerAfterGC, document.Store().LiveLen()-initialLiveNodes)
@@ -2245,6 +2252,9 @@ func TestStockV8NodeMutationChurnPreservesOwnershipBoundaries(t *testing.T) {
 	if afterGC.WrappersCollected-baselineProfile.WrappersCollected != createdWrappers-1 ||
 		afterGC.LiveWrappers != baselineProfile.LiveWrappers+1 {
 		t.Fatalf("wrapper reclamation after churn = %#v, baseline=%#v", afterGC, baselineProfile)
+	}
+	if native := page.Realm.Profile().Memory; native.LiveHostObjects-baselineNative.LiveHostObjects != uint64(connectedCreatedNodes) {
+		t.Fatalf("native facade records after GC = %#v, baseline=%#v", native, baselineNative)
 	}
 
 	if err := page.Close(); err != nil {
@@ -2258,6 +2268,9 @@ func TestStockV8NodeMutationChurnPreservesOwnershipBoundaries(t *testing.T) {
 	}
 	if finalLedger := browserRuntime.Ledger().Stats(); finalLedger.LiveObjects != 0 || finalLedger.PersistentObjects != 0 {
 		t.Fatalf("churn teardown ownership = %#v", finalLedger)
+	}
+	if native := page.Realm.Profile().Memory; native.LiveHostObjects != 0 || native.LiveSlots != 0 {
+		t.Fatalf("churn teardown native facades = %#v", native)
 	}
 }
 

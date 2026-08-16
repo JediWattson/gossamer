@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/JediWattson/gossamer/internal/dom"
+	"github.com/JediWattson/gossamer/internal/runtime/memory"
 )
 
 // ValueHandle is opaque engine-owned identity for a JavaScript value or
@@ -170,6 +171,12 @@ type Host interface {
 type NodeWrapperLifetimeHost interface {
 	RetainNodeWrapper(NodeHandle) error
 	ReleaseNodeWrappers([]NodeHandle) error
+}
+
+// NodeFacadeHost exposes the Go-owned half of a JavaScript DOM wrapper. The
+// Ref resolves to an immutable HostObject in the current document region.
+type NodeFacadeHost interface {
+	NodeFacadeRef(NodeHandle) (memory.Ref, error)
 }
 
 // NodeEventListenerLifetimeHost lets an engine publish native listener roots

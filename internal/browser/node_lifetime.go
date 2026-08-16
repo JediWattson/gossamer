@@ -7,6 +7,7 @@ import (
 
 	"github.com/JediWattson/gossamer/internal/dom"
 	browserruntime "github.com/JediWattson/gossamer/internal/runtime"
+	"github.com/JediWattson/gossamer/internal/runtime/memory"
 	"github.com/JediWattson/gossamer/internal/runtime/ownership"
 )
 
@@ -14,6 +15,8 @@ var (
 	nextWrapperOwner  atomic.Uint64
 	nextDocumentOwner atomic.Uint64
 )
+
+const browserNodeHostClass memory.HostClass = 1
 
 // nodeLifetimeState mirrors one Document's stable-ID tree in the semantic
 // ownership ledger. The document and the V8-facing wrapper/listener set are
@@ -23,6 +26,7 @@ type nodeLifetimeState struct {
 	generation DocumentGeneration
 	document   *dom.Document
 	ledger     *ownership.Ledger
+	store      *memory.Store
 
 	wrapperOwner  ownership.OwnerID
 	wrapperRegion ownership.RegionID
@@ -34,6 +38,8 @@ type nodeLifetimeState struct {
 	documentOwner  ownership.OwnerID
 	documentRegion ownership.RegionID
 	documentRoot   ownership.ObjectID
+	facadeRegion   memory.RegionID
+	facades        map[dom.NodeID]memory.Ref
 
 	nodes   map[dom.NodeID]ownership.ObjectID
 	reverse map[ownership.ObjectID]dom.NodeID
@@ -41,22 +47,25 @@ type nodeLifetimeState struct {
 }
 
 func newNodeLifetimeState(
-	ledger *ownership.Ledger,
+	realm *browserruntime.Realm,
 	document *dom.Document,
 	generation DocumentGeneration,
 ) (_ *nodeLifetimeState, result error) {
-	if ledger == nil || document == nil || generation == 0 {
+	if realm == nil || realm.Ledger() == nil || realm.Store() == nil || document == nil || generation == 0 {
 		return nil, fmt.Errorf("browser: invalid document lifetime boundary")
 	}
+	ledger := realm.Ledger()
 	state := &nodeLifetimeState{
 		generation:    generation,
 		document:      document,
 		ledger:        ledger,
+		store:         realm.Store(),
 		wrapperOwner:  ownership.OwnerID{Kind: ownership.OwnerWrapper, Value: nextWrapperOwner.Add(1)},
 		documentOwner: ownership.OwnerID{Kind: ownership.OwnerDocument, Value: nextDocumentOwner.Add(1)},
 		wrappers:      make(map[dom.NodeID]struct{}),
 		wrapperRoots:  make(map[dom.NodeID]struct{}),
 		listeners:     make(map[dom.NodeID]uint64),
+		facades:       make(map[dom.NodeID]memory.Ref),
 		nodes:         make(map[dom.NodeID]ownership.ObjectID),
 		reverse:       make(map[ownership.ObjectID]dom.NodeID),
 		parents:       make(map[dom.NodeID]dom.NodeID),
@@ -72,7 +81,11 @@ func newNodeLifetimeState(
 	if err != nil {
 		return nil, err
 	}
-	state.documentRegion, err = ledger.CreateRegion(state.documentOwner)
+	state.facadeRegion, err = state.store.NewRegion(state.documentOwner)
+	if err != nil {
+		return nil, err
+	}
+	state.documentRegion, err = ledger.OwnerRegion(state.documentOwner)
 	if err != nil {
 		return nil, err
 	}
@@ -104,20 +117,30 @@ func (state *nodeLifetimeState) sync(task *browserruntime.TaskContext) error {
 		if _, exists := state.nodes[record.ID]; exists {
 			continue
 		}
-		var (
-			object ownership.ObjectID
-			err    error
-		)
-		if task != nil {
-			object, err = task.NewObject()
-		} else {
-			object, err = state.ledger.CreateObject(state.documentRegion)
-		}
+		facade, err := state.store.AllocHostObject(state.documentOwner, state.facadeRegion, memory.HostObject{
+			Class:    browserNodeHostClass,
+			Scope:    uint64(state.generation),
+			Identity: uint64(record.ID),
+		})
 		if err != nil {
 			return err
 		}
+		var (
+			object    ownership.ObjectID
+			objectErr error
+		)
+		if task != nil {
+			object, objectErr = task.NewObject()
+		} else {
+			object, objectErr = state.ledger.CreateObject(state.documentRegion)
+		}
+		if objectErr != nil {
+			_ = state.store.Free(state.documentOwner, facade)
+			return objectErr
+		}
 		state.nodes[record.ID] = object
 		state.reverse[object] = record.ID
+		state.facades[record.ID] = facade
 	}
 
 	for node, oldParent := range state.parents {
@@ -159,7 +182,20 @@ func (state *nodeLifetimeState) sync(task *browserruntime.TaskContext) error {
 	if err != nil {
 		return err
 	}
-	documentDestroyed, err := state.ledger.ReconcileRegion(state.documentOwner, []ownership.ObjectID{state.documentRoot})
+	documentRoots := make([]ownership.ObjectID, 0, len(state.facades)+1)
+	documentRoots = append(documentRoots, state.documentRoot)
+	for _, record := range records {
+		facade := state.facades[record.ID]
+		if facade == (memory.Ref{}) {
+			return fmt.Errorf("browser: node %d has no facade record", record.ID)
+		}
+		object, objectErr := state.store.ObjectID(state.documentOwner, facade)
+		if objectErr != nil {
+			return objectErr
+		}
+		documentRoots = append(documentRoots, object)
+	}
+	documentDestroyed, err := state.ledger.ReconcileRegion(state.documentOwner, documentRoots)
 	if err != nil {
 		return err
 	}
@@ -313,6 +349,24 @@ func (state *nodeLifetimeState) connected(node dom.NodeID) bool {
 	return false
 }
 
+func (state *nodeLifetimeState) facade(handle NodeHandle) (memory.Ref, error) {
+	if state == nil || handle.Document != state.generation || handle.Node == dom.InvalidNodeID {
+		return memory.Ref{}, ErrStaleNodeHandle
+	}
+	ref := state.facades[handle.Node]
+	if ref == (memory.Ref{}) {
+		return memory.Ref{}, dom.ErrUnknownNode
+	}
+	record, err := state.store.DerefHostObject(state.documentOwner, ref)
+	if err != nil {
+		return memory.Ref{}, err
+	}
+	if record.Class != browserNodeHostClass || record.Scope != uint64(handle.Document) || record.Identity != uint64(handle.Node) {
+		return memory.Ref{}, fmt.Errorf("browser: corrupt node facade record for %#v", handle)
+	}
+	return ref, nil
+}
+
 func (state *nodeLifetimeState) reclaim(objects []ownership.ObjectID) error {
 	if len(objects) == 0 {
 		return nil
@@ -334,6 +388,12 @@ func (state *nodeLifetimeState) reclaim(objects []ownership.ObjectID) error {
 		return err
 	}
 	for _, node := range nodes {
+		if facade := state.facades[node]; facade != (memory.Ref{}) {
+			if err := state.store.Free(state.documentOwner, facade); err != nil {
+				return err
+			}
+			delete(state.facades, node)
+		}
 		object := state.nodes[node]
 		delete(state.reverse, object)
 		delete(state.nodes, node)
@@ -354,10 +414,12 @@ func (state *nodeLifetimeState) close() error {
 		result = errors.Join(result, state.ledger.CloseRegion(state.wrapperRegion))
 		state.wrapperRegion = 0
 	}
-	if state.documentRegion != 0 {
-		result = errors.Join(result, state.ledger.CloseRegion(state.documentRegion))
+	if state.facadeRegion != 0 {
+		result = errors.Join(result, state.store.ReleaseOwner(state.documentOwner))
+		state.facadeRegion = 0
 		state.documentRegion = 0
 	}
 	state.document = nil
+	state.facades = nil
 	return result
 }

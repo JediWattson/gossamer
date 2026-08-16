@@ -2,12 +2,73 @@ package browser
 
 import (
 	"context"
+	"errors"
 	"net/url"
 	"testing"
 
 	"github.com/JediWattson/gossamer/internal/dom"
 	browserruntime "github.com/JediWattson/gossamer/internal/runtime"
 )
+
+func TestNodeFacadeRecordsAreCanonicalAndFollowNativeLifetime(t *testing.T) {
+	browserRuntime, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer browserRuntime.Close()
+	page, err := browserRuntime.NewPage(dom.NewDocument(), &url.URL{Scheme: "https", Host: "gossamer.test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := NodeHandle{Document: page.DocumentGeneration(), Node: page.Document().RootID()}
+	first, err := page.NodeFacadeRef(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := page.NodeFacadeRef(root)
+	if err != nil || second != first {
+		t.Fatalf("canonical root facade = %s then %s, %v", first, second, err)
+	}
+	baseline := page.Realm.Profile().Memory
+	if baseline.LiveHostObjects != uint64(page.Document().Store().LiveLen()) {
+		t.Fatalf("initial facade records = %#v, live nodes=%d", baseline, page.Document().Store().LiveLen())
+	}
+
+	var detached NodeHandle
+	if _, err := page.Realm.EnqueueTask(func(task *browserruntime.TaskContext) error {
+		host := &taskHost{page: page, task: task, generation: page.DocumentGeneration()}
+		detached, err = host.CreateElement("aside")
+		if err != nil {
+			return err
+		}
+		return host.RetainNodeWrapper(detached)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	detachedRef, err := page.NodeFacadeRef(detached)
+	if err != nil || detachedRef == first {
+		t.Fatalf("detached facade = %s, %v", detachedRef, err)
+	}
+	if live := page.Realm.Profile().Memory.LiveHostObjects; live != baseline.LiveHostObjects+1 {
+		t.Fatalf("live facade records = %d, want %d", live, baseline.LiveHostObjects+1)
+	}
+
+	if err := page.ReleaseNodeWrappers([]NodeHandle{detached}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := page.NodeFacadeRef(detached); !errors.Is(err, dom.ErrUnknownNode) {
+		t.Fatalf("reclaimed NodeFacadeRef() error = %v, want unknown node", err)
+	}
+	if stats := page.Realm.Profile().Memory; stats.LiveHostObjects != baseline.LiveHostObjects {
+		t.Fatalf("reclaimed facade stats = %#v", stats)
+	}
+	if err := page.Realm.Store().CheckInvariants(); err != nil {
+		t.Fatalf("region-backed facade invariants: %v", err)
+	}
+}
 
 func TestDetachedWrapperGraphOutlivesTaskThenReclaims(t *testing.T) {
 	browserRuntime, err := New()
@@ -49,7 +110,7 @@ func TestDetachedWrapperGraphOutlivesTaskThenReclaims(t *testing.T) {
 	}
 	afterTask := browserRuntime.Ledger().Stats()
 	if afterTask.TaskLocalAllocations-baselineOwnership.TaskLocalAllocations != 2 ||
-		afterTask.LiveObjects-baselineOwnership.LiveObjects != 2 ||
+		afterTask.LiveObjects-baselineOwnership.LiveObjects != 4 ||
 		document.Store().LiveLen()-baselineNodes != 2 {
 		t.Fatalf("construction region after task = nodes:%d ownership:%#v baseline:%#v",
 			document.Store().LiveLen()-baselineNodes, afterTask, baselineOwnership)
@@ -69,7 +130,7 @@ func TestDetachedWrapperGraphOutlivesTaskThenReclaims(t *testing.T) {
 	}
 	afterCollection := browserRuntime.Ledger().Stats()
 	if afterCollection.LiveObjects != baselineOwnership.LiveObjects ||
-		afterCollection.ObjectsDestroyed-baselineOwnership.ObjectsDestroyed != 2 ||
+		afterCollection.ObjectsDestroyed-baselineOwnership.ObjectsDestroyed != 4 ||
 		document.Store().LiveLen() != baselineNodes {
 		t.Fatalf("wrapper collection = liveNodes:%d ownership:%#v baseline:%#v",
 			document.Store().LiveLen(), afterCollection, baselineOwnership)
@@ -196,7 +257,7 @@ func TestDetachedEventTargetOutlivesWrapperUntilFinalListenerRelease(t *testing.
 	}
 	after := browserRuntime.Ledger().Stats()
 	if after.LiveObjects != baseline.LiveObjects ||
-		after.ObjectsDestroyed-baseline.ObjectsDestroyed != 1 {
+		after.ObjectsDestroyed-baseline.ObjectsDestroyed != 2 {
 		t.Fatalf("listener lifetime ownership = before:%#v after:%#v", baseline, after)
 	}
 }

@@ -202,12 +202,22 @@ tools/v8/profile.sh -iterations 5 -sampling-interval 4096
 tools/v8/profile.sh -script ./workload.js
 ```
 
-The five-iteration native workload establishes the first allocator baseline:
+Before region-backed browser facade records, the five-iteration native
+workload established the first allocator baseline:
 each live checkpoint has seven native slots. Region buffer recycling performs
 one eight-slot buffer allocation and four reuses with no growth; the final
 checkpoint reports 35 semantic allocations, 35 frees, zero live slots, and one
 pooled eight-slot buffer. These counters make later slab or payload-pool work a
 measured change rather than an ownership-model change.
+
+Each current-document `NodeHandle` now also has one immutable RegionStore
+HostObject containing its facade class, document generation, and NodeID. V8's
+canonical weak wrapper still carries only the numeric handle and remains under
+V8 GC; aliases do not create additional HostObjects. Wrapper/listener claims
+govern detached node lifetime, and native reclamation frees the corresponding
+HostObject. The churn gate checks that live HostObject count rises once per
+created native node, falls with detached wrapper collection, and reaches zero
+at Page teardown.
 
 ## Proven sequence
 

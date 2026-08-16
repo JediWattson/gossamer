@@ -328,7 +328,7 @@ func (page *Page) commitNavigationDocument(
 	}
 	generation := page.nextDocumentGeneration + 1
 	replacementLifetimes, lifetimeErr := newNodeLifetimeState(
-		page.Realm.Ledger(),
+		page.Realm,
 		prepared.document,
 		generation,
 	)

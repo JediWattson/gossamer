@@ -50,7 +50,8 @@ claim(region, object) is either present or absent
   mutable epoch milliseconds; RegExps retain checked pattern descriptors; and
   Errors retain typed diagnostic graphs including causes and aggregate members.
   WeakMaps and WeakSets add identity-keyed weak ownership, with fixed-point
-  ephemeron tracing at deterministic collection checkpoints.
+  ephemeron tracing at deterministic collection checkpoints. Immutable
+  HostObjects carry embedder-defined scope and identity without native pointers.
 - Freed slots advance their generation and exhausted generations are retired,
   so a stale Ref cannot become valid again.
 - Every mutable physical region has exactly one owner. Published regions are
@@ -118,6 +119,11 @@ document and V8 wrapper cache maintain independent semantic root sets, and a
 weak-wrapper sweep can reclaim a detached Go subgraph without reusing its
 stable IDs. See
 [`stock-v8-integration.md`](stock-v8-integration.md).
+
+The browser half of every current `NodeHandle` is now a canonical HostObject in
+the document's RegionStore owner. V8 wrappers remain V8 objects; the native
+record survives and dies with the stable Go node, including detached wrapper
+and listener ownership.
 
 The first profile-driven physical optimization is implemented without changing
 the ownership model: short-lived regions use eight-slot buffers sized to the
