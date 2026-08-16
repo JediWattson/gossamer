@@ -538,6 +538,31 @@ func (context *TaskContext) SetClear(ref memory.Ref) error {
 	return context.Realm.store.SetClear(context.Owner, ref)
 }
 
+func (context *TaskContext) NewIterator(target memory.Ref, kind memory.IteratorKind) (memory.Ref, error) {
+	if context == nil || context.Realm == nil {
+		return memory.Ref{}, fmt.Errorf("runtime: nil task context")
+	}
+	ref, err := context.Realm.store.AllocIterator(context.Owner, context.MemoryRegion, target, kind)
+	if err == nil && context.intrinsics != nil {
+		err = context.SetPrototype(ref, memory.RefValue(context.intrinsics.IteratorPrototype))
+	}
+	return ref, err
+}
+
+func (context *TaskContext) DerefIterator(ref memory.Ref) (memory.Iterator, error) {
+	if context == nil || context.Realm == nil {
+		return memory.Iterator{}, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.DerefIterator(context.Owner, ref)
+}
+
+func (context *TaskContext) AdvanceIterator(ref memory.Ref) (memory.IteratorStep, error) {
+	if context == nil || context.Realm == nil {
+		return memory.IteratorStep{}, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.AdvanceIterator(context.Owner, ref)
+}
+
 func (context *TaskContext) NewWeakMap() (memory.Ref, error) {
 	if context == nil || context.Realm == nil {
 		return memory.Ref{}, fmt.Errorf("runtime: nil task context")

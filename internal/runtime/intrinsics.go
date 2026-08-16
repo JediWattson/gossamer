@@ -30,6 +30,47 @@ const (
 	nativeArrayPop
 	nativeArrayJoin
 	nativeArraySlice
+	nativeStringConstructor
+	nativeStringToString
+	nativeStringValueOf
+	nativeStringCharAt
+	nativeStringIncludes
+	nativeStringIndexOf
+	nativeStringSlice
+	nativeStringToUpperCase
+	nativeStringToLowerCase
+	nativeStringTrim
+	nativeStringSplit
+	nativeStringValues
+	nativeIteratorNext
+	nativeArrayMap
+	nativeArrayFilter
+	nativeArrayForEach
+	nativeArrayIncludes
+	nativeArrayIndexOf
+	nativeArrayKeys
+	nativeArrayValues
+	nativeArrayEntries
+	nativeMapConstructor
+	nativeMapGet
+	nativeMapSet
+	nativeMapHas
+	nativeMapDelete
+	nativeMapClear
+	nativeMapSize
+	nativeMapKeys
+	nativeMapValues
+	nativeMapEntries
+	nativeMapForEach
+	nativeSetConstructor
+	nativeSetAdd
+	nativeSetHas
+	nativeSetDelete
+	nativeSetClear
+	nativeSetSize
+	nativeSetValues
+	nativeSetEntries
+	nativeSetForEach
 )
 
 // Intrinsics is one task-local instantiation of the native ECMAScript
@@ -41,6 +82,8 @@ type Intrinsics struct {
 	ObjectPrototype         memory.Ref
 	FunctionPrototype       memory.Ref
 	ArrayPrototype          memory.Ref
+	StringPrototype         memory.Ref
+	IteratorPrototype       memory.Ref
 	ErrorPrototype          memory.Ref
 	TypeErrorPrototype      memory.Ref
 	RangeErrorPrototype     memory.Ref
@@ -52,6 +95,9 @@ type Intrinsics struct {
 	ObjectConstructor         memory.Ref
 	FunctionConstructor       memory.Ref
 	ArrayConstructor          memory.Ref
+	StringConstructor         memory.Ref
+	MapConstructor            memory.Ref
+	SetConstructor            memory.Ref
 	ErrorConstructor          memory.Ref
 	TypeErrorConstructor      memory.Ref
 	RangeErrorConstructor     memory.Ref
@@ -107,6 +153,8 @@ func (interpreter *Interpreter) Bootstrap(context *TaskContext) (*Intrinsics, er
 		return nil, err
 	}
 	for _, target := range []*memory.Ref{
+		&intrinsics.StringPrototype,
+		&intrinsics.IteratorPrototype,
 		&intrinsics.ErrorPrototype,
 		&intrinsics.TypeErrorPrototype,
 		&intrinsics.RangeErrorPrototype,
@@ -120,7 +168,7 @@ func (interpreter *Interpreter) Bootstrap(context *TaskContext) (*Intrinsics, er
 			return nil, err
 		}
 	}
-	for _, target := range []memory.Ref{intrinsics.ErrorPrototype, intrinsics.MapPrototype, intrinsics.SetPrototype, intrinsics.PromisePrototype} {
+	for _, target := range []memory.Ref{intrinsics.StringPrototype, intrinsics.IteratorPrototype, intrinsics.ErrorPrototype, intrinsics.MapPrototype, intrinsics.SetPrototype, intrinsics.PromisePrototype} {
 		if err := context.SetPrototype(target, memory.RefValue(intrinsics.ObjectPrototype)); err != nil {
 			return nil, err
 		}
@@ -149,6 +197,10 @@ func (interpreter *Interpreter) Bootstrap(context *TaskContext) (*Intrinsics, er
 		context.intrinsics = nil
 		return nil, err
 	}
+	if err := intrinsics.installCollectionBuiltins(context); err != nil {
+		context.intrinsics = nil
+		return nil, err
+	}
 	if err := intrinsics.installErrorPrototypes(context); err != nil {
 		context.intrinsics = nil
 		return nil, err
@@ -163,6 +215,9 @@ func (interpreter *Interpreter) Bootstrap(context *TaskContext) (*Intrinsics, er
 		{"Object", memory.RefValue(intrinsics.ObjectConstructor)},
 		{"Function", memory.RefValue(intrinsics.FunctionConstructor)},
 		{"Array", memory.RefValue(intrinsics.ArrayConstructor)},
+		{"String", memory.RefValue(intrinsics.StringConstructor)},
+		{"Map", memory.RefValue(intrinsics.MapConstructor)},
+		{"Set", memory.RefValue(intrinsics.SetConstructor)},
 		{"Error", memory.RefValue(intrinsics.ErrorConstructor)},
 		{"TypeError", memory.RefValue(intrinsics.TypeErrorConstructor)},
 		{"RangeError", memory.RefValue(intrinsics.RangeErrorConstructor)},
@@ -205,6 +260,47 @@ func (interpreter *Interpreter) registerBuiltinCallbacks() error {
 		nativeArrayPop:                       builtinArrayPop,
 		nativeArrayJoin:                      builtinArrayJoin,
 		nativeArraySlice:                     builtinArraySlice,
+		nativeStringConstructor:              builtinStringConstructor,
+		nativeStringToString:                 builtinStringToString,
+		nativeStringValueOf:                  builtinStringToString,
+		nativeStringCharAt:                   builtinStringCharAt,
+		nativeStringIncludes:                 builtinStringIncludes,
+		nativeStringIndexOf:                  builtinStringIndexOf,
+		nativeStringSlice:                    builtinStringSlice,
+		nativeStringToUpperCase:              builtinStringToUpperCase,
+		nativeStringToLowerCase:              builtinStringToLowerCase,
+		nativeStringTrim:                     builtinStringTrim,
+		nativeStringSplit:                    builtinStringSplit,
+		nativeStringValues:                   builtinStringValues,
+		nativeIteratorNext:                   builtinIteratorNext,
+		nativeArrayMap:                       builtinArrayMap,
+		nativeArrayFilter:                    builtinArrayFilter,
+		nativeArrayForEach:                   builtinArrayForEach,
+		nativeArrayIncludes:                  builtinArrayIncludes,
+		nativeArrayIndexOf:                   builtinArrayIndexOf,
+		nativeArrayKeys:                      builtinArrayKeys,
+		nativeArrayValues:                    builtinArrayValues,
+		nativeArrayEntries:                   builtinArrayEntries,
+		nativeMapConstructor:                 builtinMapConstructor,
+		nativeMapGet:                         builtinMapGet,
+		nativeMapSet:                         builtinMapSet,
+		nativeMapHas:                         builtinMapHas,
+		nativeMapDelete:                      builtinMapDelete,
+		nativeMapClear:                       builtinMapClear,
+		nativeMapSize:                        builtinMapSize,
+		nativeMapKeys:                        builtinMapKeys,
+		nativeMapValues:                      builtinMapValues,
+		nativeMapEntries:                     builtinMapEntries,
+		nativeMapForEach:                     builtinMapForEach,
+		nativeSetConstructor:                 builtinSetConstructor,
+		nativeSetAdd:                         builtinSetAdd,
+		nativeSetHas:                         builtinSetHas,
+		nativeSetDelete:                      builtinSetDelete,
+		nativeSetClear:                       builtinSetClear,
+		nativeSetSize:                        builtinSetSize,
+		nativeSetValues:                      builtinSetValues,
+		nativeSetEntries:                     builtinSetEntries,
+		nativeSetForEach:                     builtinSetForEach,
 	}
 	for id, callback := range callbacks {
 		interpreter.nativeMutex.RLock()

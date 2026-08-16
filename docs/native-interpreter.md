@@ -41,6 +41,8 @@ adding ownership claims or reference-count traffic.
 - Functions: bytecode calls, registered numeric native calls, captured closure
   creation, Function object metadata, and construction through the Function's
   actual `prototype` property with explicit `this`.
+- Built-ins: core Object, Array, String, Error, Map, and Set constructors and
+  prototype methods, including explicit deterministic iterator objects.
 - Exceptions: thrown Values, nested catch handlers, rethrow, and finally
   unwinding on normal and exceptional paths.
 

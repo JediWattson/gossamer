@@ -19,7 +19,7 @@ func (execution *execution) getProperty(base, key memory.Value) (memory.Value, b
 		return memory.Value{}, false, err
 	}
 	switch kind {
-	case memory.HeapObject, memory.HeapFunction, memory.HeapPromise, memory.HeapMap, memory.HeapSet:
+	case memory.HeapObject, memory.HeapFunction, memory.HeapPromise, memory.HeapMap, memory.HeapSet, memory.HeapIterator:
 		name, err := execution.propertyName(key)
 		if err != nil {
 			return memory.Value{}, false, err
@@ -41,6 +41,32 @@ func (execution *execution) getProperty(base, key memory.Value) (memory.Value, b
 			return context.ArrayElement(ref, index)
 		}
 		return execution.getNamedProperty(base, ref, name)
+	case memory.HeapString:
+		name, err := execution.propertyName(key)
+		if err != nil {
+			return memory.Value{}, false, err
+		}
+		keyText, err := context.DerefString(name)
+		if err != nil {
+			return memory.Value{}, false, err
+		}
+		text, err := context.DerefString(ref)
+		if err != nil {
+			return memory.Value{}, false, err
+		}
+		units := []rune(text)
+		if keyText == "length" {
+			return memory.NumberValue(float64(len(units))), true, nil
+		}
+		if parsed, parseErr := strconv.ParseUint(keyText, 10, 32); parseErr == nil && strconv.FormatUint(parsed, 10) == keyText && parsed < uint64(len(units)) {
+			character := string(units[parsed])
+			value, err := context.NewString(character)
+			return memory.RefValue(value), true, err
+		}
+		if context.intrinsics == nil {
+			return memory.Value{}, false, nil
+		}
+		return execution.getNamedProperty(base, context.intrinsics.StringPrototype, name)
 	case memory.HeapError:
 		name, err := execution.propertyName(key)
 		if err != nil {
@@ -101,7 +127,7 @@ func (execution *execution) setPropertyValue(base, key, value memory.Value) erro
 		return err
 	}
 	switch kind {
-	case memory.HeapObject, memory.HeapFunction, memory.HeapPromise, memory.HeapMap, memory.HeapSet, memory.HeapError:
+	case memory.HeapObject, memory.HeapFunction, memory.HeapPromise, memory.HeapMap, memory.HeapSet, memory.HeapError, memory.HeapIterator:
 		name, err := execution.propertyName(key)
 		if err != nil {
 			return err
@@ -147,6 +173,8 @@ func (execution *execution) setPropertyValue(base, key, value memory.Value) erro
 			return context.SetArrayElement(ref, index, value)
 		}
 		return execution.setNamedProperty(base, ref, name, value)
+	case memory.HeapString:
+		return memory.ErrReadOnlyProperty
 	default:
 		return fmt.Errorf("%w: HeapKind(%d) has no properties", ErrOperandType, kind)
 	}
@@ -216,7 +244,7 @@ func (execution *execution) deletePropertyValue(base, key memory.Value) (bool, e
 		return false, err
 	}
 	switch kind {
-	case memory.HeapObject, memory.HeapFunction, memory.HeapPromise, memory.HeapMap, memory.HeapSet, memory.HeapError:
+	case memory.HeapObject, memory.HeapFunction, memory.HeapPromise, memory.HeapMap, memory.HeapSet, memory.HeapError, memory.HeapIterator:
 		name, err := execution.propertyName(key)
 		if err != nil {
 			return false, err
@@ -247,6 +275,8 @@ func (execution *execution) deletePropertyValue(base, key memory.Value) (bool, e
 			return true, nil
 		}
 		return context.DeleteProperty(ref, name)
+	case memory.HeapString:
+		return false, nil
 	default:
 		return false, fmt.Errorf("%w: HeapKind(%d) has no properties", ErrOperandType, kind)
 	}

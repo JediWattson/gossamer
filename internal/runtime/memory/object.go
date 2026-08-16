@@ -73,6 +73,8 @@ func objectHeaderForSlot(slot *Slot) (*ObjectHeader, bool) {
 		return &slot.Set.ObjectHeader, true
 	case HeapError:
 		return &slot.Error.ObjectHeader, true
+	case HeapIterator:
+		return &slot.Iterator.ObjectHeader, true
 	default:
 		return nil, false
 	}

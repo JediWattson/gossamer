@@ -32,6 +32,11 @@ and ordinary task release invalidates every unpromoted loaded Ref.
   Error-family prototypes, constructor metadata, and global bindings;
 - `Object.create`, descriptor definition/inspection, prototype inspection and
   mutation, `Object.keys`, plus Array `push`, `pop`, `join`, and `slice`;
+- String construction and core inspection/transformation methods; Array
+  callback/search methods; Map and Set constructors, mutation, lookup, size,
+  and callback methods;
+- explicit Array, String, Map, and Set iterator objects whose `next()` method
+  returns ordinary `{value, done}` Objects in deterministic native order;
 - assignment, deletion, and prefix/postfix identifier or property updates;
 - numeric, bitwise, strict comparison, logical, nullish, and conditional
   expressions, plus coercive arithmetic, relational comparison, unary `+`,
@@ -66,8 +71,9 @@ This is not yet an ECMAScript-compatible engine. In particular:
   intentionally incomplete;
 - primitive coercion includes Boolean, Number, String, null, and undefined;
   Object coercion uses explicit or inherited `valueOf`/`toString` hooks;
-- full BigInt/Symbol and built-in Object coercion, regex and template literals,
-  modules, generators, async Functions, and Promise jobs are absent;
+- full BigInt/Symbol and UTF-16 edge semantics, regex and template literals,
+  `for...of`, well-known `Symbol.iterator`, modules, generators, async
+  Functions, and Promise jobs are absent;
 - source evaluation is not wired into `browser.Engine` or `browser.JSRealm`.
 
 `runtime.Interpreter.Bootstrap` currently instantiates the native global

@@ -77,6 +77,7 @@ type Stats struct {
 	LiveErrors               uint64 `json:"liveErrors"`
 	LiveWeakMaps             uint64 `json:"liveWeakMaps"`
 	LiveWeakSets             uint64 `json:"liveWeakSets"`
+	LiveIterators            uint64 `json:"liveIterators"`
 	LiveHostObjects          uint64 `json:"liveHostObjects"`
 	LiveBytes                uint64 `json:"liveBytes"`
 	LiveRegions              uint64 `json:"liveRegions"`
@@ -148,6 +149,8 @@ func (kind HeapKind) String() string {
 		return "WeakMap"
 	case HeapWeakSet:
 		return "WeakSet"
+	case HeapIterator:
+		return "Iterator"
 	case HeapHostObject:
 		return "HostObject"
 	default:
@@ -851,6 +854,8 @@ func (store *Store) recordKindAllocationLocked(kind HeapKind, bytes uint64) {
 		store.stats.LiveWeakMaps++
 	case HeapWeakSet:
 		store.stats.LiveWeakSets++
+	case HeapIterator:
+		store.stats.LiveIterators++
 	case HeapHostObject:
 		store.stats.LiveHostObjects++
 	}
@@ -902,6 +907,8 @@ func (store *Store) recordKindFreeLocked(slot *Slot) {
 		store.stats.LiveWeakMaps--
 	case HeapWeakSet:
 		store.stats.LiveWeakSets--
+	case HeapIterator:
+		store.stats.LiveIterators--
 	case HeapHostObject:
 		store.stats.LiveHostObjects--
 	}
@@ -1545,6 +1552,16 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 			for _, key := range sourceSlot.WeakSet.Keys {
 				copySlot.WeakSet.Keys = append(copySlot.WeakSet.Keys, remapWeakRef(key, mapping))
 			}
+		case HeapIterator:
+			copyRegion, copySlot, _ := store.slotLocked(copyRef)
+			target, err := store.replaceValueLocked(to, copyRegion, copySlot, Value{}, RefValue(mapping[sourceSlot.Iterator.Target]), true)
+			if err != nil {
+				_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
+				return nil, err
+			}
+			copySlot.Iterator.Target = target.Ref()
+			copySlot.Iterator.Kind = sourceSlot.Iterator.Kind
+			copySlot.Iterator.Next = sourceSlot.Iterator.Next
 		case HeapHostObject:
 			// Immutable scalar identity was cloned during allocation.
 		default:

@@ -46,6 +46,7 @@ const (
 	HeapError
 	HeapWeakMap
 	HeapWeakSet
+	HeapIterator
 	HeapHostObject
 )
 
@@ -77,6 +78,7 @@ type Slot struct {
 	Error       ErrorObject
 	WeakMap     WeakMap
 	WeakSet     WeakSet
+	Iterator    Iterator
 	HostObject  HostObject
 	Occupied    bool
 
@@ -125,6 +127,7 @@ func cloneSlot(slot Slot) Slot {
 		Error:       cloneError(slot.Error),
 		WeakMap:     cloneWeakMap(slot.WeakMap),
 		WeakSet:     cloneWeakSet(slot.WeakSet),
+		Iterator:    cloneIterator(slot.Iterator),
 		HostObject:  slot.HostObject,
 		Occupied:    slot.Occupied,
 	}
@@ -204,6 +207,9 @@ func slotReferences(slot *Slot) []Value {
 		values = append(values, slot.Error.Errors...)
 		return values
 	}
+	if slot.Kind == HeapIterator {
+		return append(values, RefValue(slot.Iterator.Target))
+	}
 	return nil
 }
 
@@ -221,7 +227,7 @@ func objectHeaderReferences(slot *Slot) []Value {
 }
 
 func slotStorageEmpty(slot *Slot) bool {
-	return slot != nil && slot.Kind == HeapInvalid && len(slot.Cell.Fields) == 0 && slot.String.Text == "" && objectHeaderStorageEmpty(slot.Object.ObjectHeader) && slot.Array.Length == 0 && len(slot.Array.Elements) == 0 && objectHeaderStorageEmpty(slot.Array.ObjectHeader) && slot.Context.Parent == (Value{}) && len(slot.Context.Bindings) == 0 && slot.Function.Kind == 0 && slot.Function.Name == (Value{}) && slot.Function.Environment == (Value{}) && slot.Function.Arity == 0 && !slot.Function.Constructible && len(slot.Function.Code) == 0 && len(slot.Function.Constants) == 0 && slot.Function.NativeID == 0 && objectHeaderStorageEmpty(slot.Function.ObjectHeader) && slot.Promise.State == PromisePending && slot.Promise.Result == (Value{}) && len(slot.Promise.Reactions) == 0 && !slot.Promise.Handled && objectHeaderStorageEmpty(slot.Promise.ObjectHeader) && !slot.BigInt.Negative && len(slot.BigInt.Magnitude) == 0 && slot.Symbol.ID == 0 && slot.Symbol.Description == (Value{}) && len(slot.ArrayBuffer.Bytes) == 0 && !slot.ArrayBuffer.Detached && slot.TypedArray == (TypedArray{}) && len(slot.Map.Entries) == 0 && objectHeaderStorageEmpty(slot.Map.ObjectHeader) && len(slot.Set.Values) == 0 && objectHeaderStorageEmpty(slot.Set.ObjectHeader) && slot.Date.Milliseconds == 0 && slot.RegExp == (RegExp{}) && slot.Error.Kind == 0 && slot.Error.Message == (Value{}) && slot.Error.Stack == (Value{}) && slot.Error.Cause == (Value{}) && !slot.Error.HasCause && len(slot.Error.Errors) == 0 && objectHeaderStorageEmpty(slot.Error.ObjectHeader) && len(slot.WeakMap.Entries) == 0 && len(slot.WeakSet.Keys) == 0 && slot.HostObject == (HostObject{})
+	return slot != nil && slot.Kind == HeapInvalid && len(slot.Cell.Fields) == 0 && slot.String.Text == "" && objectHeaderStorageEmpty(slot.Object.ObjectHeader) && slot.Array.Length == 0 && len(slot.Array.Elements) == 0 && objectHeaderStorageEmpty(slot.Array.ObjectHeader) && slot.Context.Parent == (Value{}) && len(slot.Context.Bindings) == 0 && slot.Function.Kind == 0 && slot.Function.Name == (Value{}) && slot.Function.Environment == (Value{}) && slot.Function.Arity == 0 && !slot.Function.Constructible && len(slot.Function.Code) == 0 && len(slot.Function.Constants) == 0 && slot.Function.NativeID == 0 && objectHeaderStorageEmpty(slot.Function.ObjectHeader) && slot.Promise.State == PromisePending && slot.Promise.Result == (Value{}) && len(slot.Promise.Reactions) == 0 && !slot.Promise.Handled && objectHeaderStorageEmpty(slot.Promise.ObjectHeader) && !slot.BigInt.Negative && len(slot.BigInt.Magnitude) == 0 && slot.Symbol.ID == 0 && slot.Symbol.Description == (Value{}) && len(slot.ArrayBuffer.Bytes) == 0 && !slot.ArrayBuffer.Detached && slot.TypedArray == (TypedArray{}) && len(slot.Map.Entries) == 0 && objectHeaderStorageEmpty(slot.Map.ObjectHeader) && len(slot.Set.Values) == 0 && objectHeaderStorageEmpty(slot.Set.ObjectHeader) && slot.Date.Milliseconds == 0 && slot.RegExp == (RegExp{}) && slot.Error.Kind == 0 && slot.Error.Message == (Value{}) && slot.Error.Stack == (Value{}) && slot.Error.Cause == (Value{}) && !slot.Error.HasCause && len(slot.Error.Errors) == 0 && objectHeaderStorageEmpty(slot.Error.ObjectHeader) && len(slot.WeakMap.Entries) == 0 && len(slot.WeakSet.Keys) == 0 && objectHeaderStorageEmpty(slot.Iterator.ObjectHeader) && slot.Iterator.Target == (Ref{}) && slot.Iterator.Kind == 0 && slot.Iterator.Next == 0 && slot.HostObject == (HostObject{})
 }
 
 func objectHeaderStorageEmpty(header ObjectHeader) bool {
@@ -248,6 +254,7 @@ func clearSlotPayload(slot *Slot) {
 	slot.Error = ErrorObject{}
 	slot.WeakMap = WeakMap{}
 	slot.WeakSet = WeakSet{}
+	slot.Iterator = Iterator{}
 	slot.HostObject = HostObject{}
 }
 

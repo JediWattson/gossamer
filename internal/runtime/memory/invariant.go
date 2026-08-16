@@ -47,6 +47,7 @@ func (store *Store) CheckInvariants() error {
 	liveErrors := uint64(0)
 	liveWeakMaps := uint64(0)
 	liveWeakSets := uint64(0)
+	liveIterators := uint64(0)
 	liveHostObjects := uint64(0)
 	liveBytes := uint64(0)
 	liveRegions := uint64(0)
@@ -488,6 +489,19 @@ func (store *Store) CheckInvariants() error {
 					}
 					keys[key] = keyIndex
 				}
+			case HeapIterator:
+				liveIterators++
+				if slotHasOtherPayload(slot, HeapIterator) {
+					return invariantError("Iterator %s retains another typed payload", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
+				}
+				targetRegion := store.regions[slot.Iterator.Target.Region]
+				if targetRegion == nil || targetRegion.State == RegionDestroyed || uint64(slot.Iterator.Target.Slot) >= uint64(len(targetRegion.Slots)) {
+					return invariantError("Iterator %s has stale target %s", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot.Iterator.Target)
+				}
+				targetSlot := &targetRegion.Slots[slot.Iterator.Target.Slot]
+				if !targetSlot.Occupied || targetSlot.Generation != slot.Iterator.Target.Gen || !iteratorTargetMatches(slot.Iterator.Kind, targetSlot.Kind) {
+					return invariantError("Iterator %s has invalid target %s for kind %d", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot.Iterator.Target, slot.Iterator.Kind)
+				}
 			case HeapHostObject:
 				liveHostObjects++
 				if slotHasOtherPayload(slot, HeapHostObject) {
@@ -591,6 +605,9 @@ func (store *Store) CheckInvariants() error {
 	}
 	if store.stats.LiveWeakMaps != liveWeakMaps || store.stats.LiveWeakSets != liveWeakSets {
 		return invariantError("stats weak maps/sets = %d/%d, derived %d/%d", store.stats.LiveWeakMaps, store.stats.LiveWeakSets, liveWeakMaps, liveWeakSets)
+	}
+	if store.stats.LiveIterators != liveIterators {
+		return invariantError("stats iterators = %d, derived %d", store.stats.LiveIterators, liveIterators)
 	}
 	if store.stats.LiveHostObjects != liveHostObjects {
 		return invariantError("stats host objects = %d, derived %d", store.stats.LiveHostObjects, liveHostObjects)
@@ -716,6 +733,9 @@ func slotHasOtherPayload(slot *Slot, kind HeapKind) bool {
 		return true
 	}
 	if kind != HeapWeakSet && len(slot.WeakSet.Keys) != 0 {
+		return true
+	}
+	if kind != HeapIterator && (!objectHeaderStorageEmpty(slot.Iterator.ObjectHeader) || slot.Iterator.Target != (Ref{}) || slot.Iterator.Kind != 0 || slot.Iterator.Next != 0) {
 		return true
 	}
 	if kind != HeapHostObject && slot.HostObject != (HostObject{}) {

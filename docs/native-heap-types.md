@@ -175,6 +175,15 @@ engine as Map. Adding an equivalent value is idempotent and preserves the
 original Ref and position. Delete and Clear unlink removed members; Copy and
 Promote preserve order and semantic equality.
 
+### Iterator
+
+Native Iterators carry a shared `ObjectHeader`, one strong target Ref, an
+explicit iterator kind, and a uint32 logical position. Array, String, Map, and
+Set iteration therefore retains its source through the ordinary counted write
+barrier without storing a Go closure or pointer. Copy and promotion preserve
+the current position and remap the target; advancing an immutable published
+iterator remains forbidden like every other published mutation.
+
 ### Date
 
 Native Dates store mutable TimeClip milliseconds. Finite inputs within
