@@ -1,6 +1,7 @@
 package style
 
 import (
+	"image/color"
 	"sort"
 	"strconv"
 	"strings"
@@ -194,6 +195,7 @@ var shorthandTargets = map[string][]string{
 type propertyApplyContext struct {
 	parentFontSize   float64
 	parentFontWeight int
+	parentColor      color.NRGBA
 	viewport         Viewport
 }
 
@@ -233,6 +235,7 @@ func (definition propertyDefinition) copy(destination *computedStyle, source com
 	case propertyBackgroundColor:
 		destination.background = source.background
 		destination.hasBackground = source.hasBackground
+		destination.backgroundCurrent = source.backgroundCurrent
 	case propertyBorderColor:
 		destinationSide := definition.borderSide(destination)
 		sourceSide := definition.borderSide(&source)
@@ -322,7 +325,7 @@ func (definition propertyDefinition) valid(source string, viewport Viewport) boo
 		keyword, ok := singleCSSKeyword(source)
 		return ok && (keyword == "stretch" || keyword == "flex-start" || keyword == "flex-end" || keyword == "center")
 	case propertyBackgroundColor:
-		_, ok := parseColor(source)
+		_, ok := parseComputedColor(source)
 		return ok
 	case propertyBorderColor:
 		_, ok := parseBorderColor(source)
@@ -337,7 +340,7 @@ func (definition propertyDefinition) valid(source string, viewport Viewport) boo
 		keyword, ok := singleCSSKeyword(source)
 		return ok && (keyword == "content-box" || keyword == "border-box")
 	case propertyColor:
-		_, ok := parseColor(source)
+		_, ok := parseComputedColor(source)
 		return ok
 	case propertyDisplay:
 		keyword, ok := singleCSSKeyword(source)
@@ -475,9 +478,10 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 			style.alignItems = AlignStretch
 		}
 	case propertyBackgroundColor:
-		if parsed, ok := parseColor(source); ok {
-			style.background = parsed
-			style.hasBackground = parsed.A != 0
+		if parsed, ok := parseComputedColor(source); ok {
+			style.background = parsed.value
+			style.backgroundCurrent = parsed.currentColor
+			style.hasBackground = !parsed.currentColor && parsed.value.A != 0
 		}
 	case propertyBorderColor:
 		if parsed, ok := parseBorderColor(source); ok {
@@ -498,8 +502,12 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 			style.boxSizing = BoxSizingContentBox
 		}
 	case propertyColor:
-		if parsed, ok := parseColor(source); ok {
-			style.color = parsed
+		if parsed, ok := parseComputedColor(source); ok {
+			if parsed.currentColor {
+				style.color = context.parentColor
+			} else {
+				style.color = parsed.value
+			}
 		}
 	case propertyDisplay:
 		keyword, _ := singleCSSKeyword(source)
@@ -754,7 +762,8 @@ func (definition propertyDefinition) serialize(computed ComputedStyle) string {
 			return "stretch"
 		}
 	case propertyBackgroundColor:
-		return serializeComputedColor(computed.background)
+		background, _ := computed.Background()
+		return serializeComputedColor(background)
 	case propertyBorderColor:
 		return serializeComputedBorderColor(*definition.borderSide(&computed), computed.color)
 	case propertyBorderStyle:
@@ -1009,7 +1018,7 @@ func validComputedDeclaration(declaration css.Declaration, viewport Viewport) bo
 		_, _, ok := parseGapShorthand(declaration.Value, 1, viewport)
 		return ok
 	case "background":
-		_, ok := parseFirstColor(declaration.Value)
+		_, ok := parseFirstComputedColor(declaration.Value)
 		return ok
 	case "padding":
 		_, ok := parsePaddingLengths(declaration.Value, 1, viewport)
@@ -1117,9 +1126,10 @@ func applyDeclaration(style *computedStyle, property, source string, context pro
 
 	switch property {
 	case "background":
-		if parsed, ok := parseFirstColor(source); ok {
-			style.background = parsed
-			style.hasBackground = parsed.A != 0
+		if parsed, ok := parseFirstComputedColor(source); ok {
+			style.background = parsed.value
+			style.backgroundCurrent = parsed.currentColor
+			style.hasBackground = !parsed.currentColor && parsed.value.A != 0
 		}
 	case "padding":
 		if values, ok := parsePaddingLengths(source, style.fontSize, context.viewport); ok {

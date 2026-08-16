@@ -113,6 +113,10 @@ the current single horizontal viewport model, with `vmin`/`vmax` retained as
 typed terms. Color values now cover the SVG/CSS named set, all hex forms, and
 legacy/modern `rgb()`/`rgba()`, `hsl()`/`hsla()`, and `hwb()` syntax with
 token-correct comma, whitespace, slash, angle, clamping, and alpha behavior.
+The typed `currentcolor` reference resolves against the final element color
+for backgrounds and borders, while `color: currentcolor` resolves from the
+parent; CSS-wide inheritance preserves the reference rather than freezing an
+ancestor's paint value.
 The central property registry and layout now also carry `box-sizing`,
 `min-height`, and `max-height`; block and replaced content apply constraints to
 the selected content or border box, and layout-backed computed width/height
@@ -131,8 +135,8 @@ fallback until angle-aware synthesis or a dedicated face is added.
 - Extend CSS math beyond the current length-percentage subset as number,
   angle, time, resolution, transform, and color consumers arrive.
 - Expand font-relative units and add angle, time, and resolution consumers.
-- Add `currentcolor` outside borders, system colors, wide-gamut `color()`,
-  Lab/LCH/OKLab/OKLCH, and relative/color-mix functions.
+- Add system colors, wide-gamut `color()`, Lab/LCH/OKLab/OKLCH, and
+  relative/color-mix functions.
 - Add URLs, images, gradients, backgrounds, radii, shadows, transforms, and
   generated content as their consumers become available.
 

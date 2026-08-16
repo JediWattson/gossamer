@@ -381,6 +381,7 @@ type ComputedStyle struct {
 	color             color.NRGBA
 	background        color.NRGBA
 	hasBackground     bool
+	backgroundCurrent bool
 	fontSize          float64
 	fontWeightValue   int
 	fontStyle         FontStyle
@@ -439,6 +440,9 @@ func (computed ComputedStyle) FlexBasis() Length              { return computed.
 func (computed ComputedStyle) Order() int                     { return computed.order }
 func (computed ComputedStyle) Color() color.NRGBA             { return computed.color }
 func (computed ComputedStyle) Background() (color.NRGBA, bool) {
+	if computed.backgroundCurrent {
+		return computed.color, computed.color.A != 0
+	}
 	return computed.background, computed.hasBackground
 }
 func (computed ComputedStyle) FontSize() float64 { return computed.fontSize }
@@ -1392,6 +1396,7 @@ func applyTargetDeclaration(style *computedStyle, parent *styledNode, target str
 	context := propertyApplyContext{
 		parentFontSize:   parentFontSize(parent, viewport),
 		parentFontWeight: parentFontWeight(parent),
+		parentColor:      parentColor(parent, viewport),
 		viewport:         viewport,
 	}
 	if declaration.Property == "font" {
@@ -1944,12 +1949,37 @@ func parseColor(source string) (color.NRGBA, bool) {
 	return parseColorComponent(component)
 }
 
-func parseFirstColor(source string) (color.NRGBA, bool) {
+type computedColorValue struct {
+	value        color.NRGBA
+	currentColor bool
+}
+
+func parseComputedColor(source string) (computedColorValue, bool) {
+	value, ok := parsePropertyValue(source)
+	if !ok {
+		return computedColorValue{}, false
+	}
+	component, ok := value.single()
+	if !ok {
+		return computedColorValue{}, false
+	}
+	return parseComputedColorComponent(component)
+}
+
+func parseComputedColorComponent(component css.ComponentValue) (computedColorValue, bool) {
+	if keyword, ok := componentKeyword(component); ok && keyword == "currentcolor" {
+		return computedColorValue{currentColor: true}, true
+	}
+	parsed, ok := parseColorComponent(component)
+	return computedColorValue{value: parsed}, ok
+}
+
+func parseFirstComputedColor(source string) (computedColorValue, bool) {
 	value, ok := parsePropertyValue(source)
 	if !ok || len(value.terms) == 0 {
-		return color.NRGBA{}, false
+		return computedColorValue{}, false
 	}
-	return parseColorComponent(value.terms[0])
+	return parseComputedColorComponent(value.terms[0])
 }
 
 func parentFontSize(parent *styledNode, viewport Viewport) float64 {
@@ -1964,6 +1994,13 @@ func parentFontWeight(parent *styledNode) int {
 		return 400
 	}
 	return parent.style.fontWeightValue
+}
+
+func parentColor(parent *styledNode, viewport Viewport) color.NRGBA {
+	if parent == nil {
+		return cssInitialStyle(viewport).color
+	}
+	return parent.style.color
 }
 
 func px(value float64) length {
