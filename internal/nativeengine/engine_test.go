@@ -367,3 +367,54 @@ if (lastEvent.currentTarget !== null || lastEvent.eventPhase !== 0) {
 		t.Fatal(err)
 	}
 }
+
+func TestNativeBrowserBindingsReleaseCompleteRealmGraphOnClose(t *testing.T) {
+	t.Parallel()
+
+	root, err := htmlparser.Parse(strings.NewReader(`<!doctype html><html><body></body></html>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	scriptEngine := nativeengine.New(nativeengine.Config{})
+	browserRuntime, err := browser.NewWithEngine(scriptEngine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	location, _ := url.Parse("https://gossamer.test/native-teardown/")
+	page, err := browserRuntime.NewPage(root, location)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := page.Realm.Store()
+	ledger := browserRuntime.Ledger()
+
+	if _, err := page.QueueScript(browser.ScriptSource{URL: "retain.js", Source: `
+let detached = document.createElement("div");
+detached.textContent = "retained";
+detached.addEventListener("click", function () { detached.textContent = "fired"; });
+let pendingTimer = setTimeout(function () { detached.textContent = "timer"; }, 60000);
+`}); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	before := store.Stats()
+	if before.LiveRegions == 0 || before.LiveSlots == 0 || before.LiveFunctions == 0 || before.LiveHostObjects == 0 {
+		t.Fatalf("native graph was not retained before close: %#v", before)
+	}
+	if err := browserRuntime.Close(); err != nil {
+		t.Fatal(err)
+	}
+	after := store.Stats()
+	if after.LiveRegions != 0 || after.LiveSlots != 0 || after.LiveBytes != 0 {
+		t.Fatalf("native graph survived Browser.Close: %#v", after)
+	}
+	if stats := ledger.Stats(); stats.LiveObjects != 0 || stats.PersistentObjects != 0 {
+		t.Fatalf("semantic ownership survived Browser.Close: %#v", stats)
+	}
+	profile := scriptEngine.Profile()
+	if profile.LiveRealms != 0 || profile.RealmsCreated != 1 || profile.RealmsClosed != 1 {
+		t.Fatalf("native engine profile after close = %#v", profile)
+	}
+}

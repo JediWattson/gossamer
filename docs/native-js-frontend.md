@@ -80,9 +80,10 @@ This is not yet an ECMAScript-compatible engine. In particular:
   `for...of`, well-known `Symbol.iterator`, modules, generators, async
   Functions, `await`, thenable assimilation, Promise combinators/finally, and
   browser-level unhandled-rejection reporting are absent;
-- native `DispatchEvent` and opaque callback `Invoke` are not implemented yet;
-  the adapter currently owns source evaluation and native microtask checkpoints
-  while browser DOM APIs remain on the stock V8 path.
+- the native browser facade is intentionally smaller than the stock V8 facade:
+  it does not yet provide constructible DOM interfaces, synchronous
+  `dispatchEvent()`, live collection objects, style/form/geometry facades,
+  observers, animation frames, or weak wrapper collection.
 
 ## N11 browser Realm adapter
 
@@ -115,3 +116,46 @@ bindings at compile time.
 
 Unsupported constructs fail with source-ranged compiler diagnostics. There is
 no per-expression fallback to V8.
+
+## N12 native browser bindings
+
+The native adapter now binds the first practical browser surface directly to
+the Go-owned DOM. `window`, `self`, and `document` are ordinary RegionStore
+Objects with private immutable HostObject identity records. Node handles encode
+the document generation and stable `NodeID`; no Go pointer enters the native
+heap. A RegionStore Map reachable from the global Context provides one
+canonical wrapper per handle across source evaluations, task copies, and
+microtask checkpoints.
+
+The initial wrapper prototypes expose document root traversal and element
+creation; node parent, sibling, child, text, insertion, removal, containment,
+and cloning operations; and element attributes, IDs, selectors, matching, and
+closest-ancestor queries. `childNodes`, `children`, and `querySelectorAll()`
+currently return snapshot Arrays. All reads and mutations cross the
+execution-scoped `browser.Host`, so the indexed Go Document remains the source
+of truth and render invalidation follows the existing Page task boundary.
+
+Timer functions use opaque numeric `browser.ValueHandle` identities. The Go
+timer queue transports only that number and its own HostObject lifetime record;
+the JavaScript Function stays in a hidden RegionStore callback Map. Firing a
+timer copies the Realm graph into the callback task, resolves the remapped
+Function by handle, consumes the entry once, and drains native jobs at the
+normal `JSRealm.DrainMicrotasks` checkpoint. `clearTimeout()` removes both the
+Page-owned timer record and the Function root.
+
+`addEventListener()` and `removeEventListener()` keep target, type, capture,
+once, and passive metadata in the adapter while listener Functions remain in
+that same RegionStore callback graph. Browser input walks stable Go DOM parent
+handles and synchronously invokes capture, target, and bubble listeners with
+the canonical wrapper as `this`. The native Event value exposes normalized
+input fields, cancellation state, current target, phase, and propagation
+controls. Listener registration also uses the browser's independent event
+target lifetime claim, so a detached target cannot disappear while it still
+has a listener.
+
+The wrapper cache is deliberately strong for this rung and is released in bulk
+with the Realm. Weak wrapper collection, script-created Event constructors and
+`dispatchEvent()`, and the broader stock-V8 DOM facade remain later native
+adapter work. Browser close tests require the complete wrapper, callback,
+listener, timer, and intrinsic graph to return both physical heap and semantic
+ownership counts to zero.
