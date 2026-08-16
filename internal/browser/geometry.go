@@ -6,8 +6,38 @@ import (
 
 	"github.com/JediWattson/gossamer/internal/dom"
 	"github.com/JediWattson/gossamer/internal/render"
+	browserruntime "github.com/JediWattson/gossamer/internal/runtime"
 	computed "github.com/JediWattson/gossamer/internal/style"
 )
+
+// QueueViewportScrollBy publishes native wheel/trackpad input through one
+// external Page task, then dispatches the coalesced root scroll event and
+// schedules paint through the ordinary host boundary.
+func (page *Page) QueueViewportScrollBy(deltaX, deltaY float64) (browserruntime.TaskID, error) {
+	if page == nil {
+		return 0, fmt.Errorf("browser: nil page")
+	}
+	if math.IsNaN(deltaX) || math.IsNaN(deltaY) || math.IsInf(deltaX, 0) || math.IsInf(deltaY, 0) {
+		return 0, fmt.Errorf("browser: invalid scroll delta")
+	}
+	task, _, err := page.browser.scheduler.EnqueueExternalTask(page.Realm, func(context *browserruntime.TaskContext) error {
+		page.mutex.RLock()
+		if page.closed {
+			page.mutex.RUnlock()
+			return ErrPageClosed
+		}
+		x, y := page.scrollX, page.scrollY
+		generation := page.documentGeneration
+		page.mutex.RUnlock()
+		host := &taskHost{page: page, task: context, generation: generation, autoRender: true}
+		changed, scrollErr := host.ScrollViewport(x+deltaX, y+deltaY)
+		if scrollErr != nil || !changed {
+			return scrollErr
+		}
+		return host.finish()
+	})
+	return task, err
+}
 
 type scrollOffset struct {
 	x float64

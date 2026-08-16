@@ -64,6 +64,7 @@ tools/v8/bootstrap.sh
 tools/v8/build.sh
 tools/v8/test.sh -v
 tools/v8/profile.sh
+tools/v8/window.sh https://example.com
 ```
 
 The V8 adapter is intentionally guarded by the `v8` build tag. Ordinary
@@ -135,6 +136,9 @@ The wrapper layer now adds:
 - typed single-line flex properties, including direction, order, gaps,
   grow/shrink/basis, justification, and alignment, consumed by Go layout from
   React-authored inline styles;
+- a native AppKit presentation loop that keeps V8 on the JavaScript side of
+  the existing engine boundary, copies rasterized frames into a native-owned
+  front buffer, and sends value-only input records through Page tasks;
 - execution-scoped C callback tables that carry a numeric registry ID, never a
   Go pointer, into an engine entry; and
 - wrapper, callback, listener, and dispatch counts alongside V8 heap metrics.
@@ -146,6 +150,12 @@ listeners synchronously in registration order. This preserves DOM propagation
 state and lets `stopPropagation()`, `stopImmediatePropagation()`, once removal,
 and `preventDefault()` affect the current dispatch. Timer and Gossamer
 microtask callbacks continue to use one-shot numeric `ValueHandle` entries.
+
+The interactive launcher locks the process main thread for AppKit, loads the
+document through the normal browser navigation pipeline, and then pumps Page
+tasks and native events serially. It does not call V8 from Objective-C and does
+not pass a DOM pointer into Cocoa. See
+[`window-backend.md`](window-backend.md) for the ownership and event sequence.
 
 The wrapper cache is weak. One cached wrapper for a detached node contributes
 one root to a wrapper-owned region, regardless of how many JavaScript aliases

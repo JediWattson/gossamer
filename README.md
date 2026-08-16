@@ -4,8 +4,9 @@
 
 Gossamer is an experimental browser engine built from scratch in Go. It can
 fetch a page, tokenize and parse its HTML, build a DOM, load stylesheets and
-images, compute styles, lay out the document, produce a display list, and paint
-the result to a PNG.
+images, execute JavaScript in stock V8, compute styles, lay out the document,
+produce a display list, and paint the result to a PNG or an interactive native
+window.
 
 <p align="center">
   <img src="./example.png" alt="Gossamer rendering example.com at 800 by 600 pixels" width="800">
@@ -14,8 +15,8 @@ the result to a PNG.
 <p align="center"><em>example.com rendered by Gossamer at 800 x 600</em></p>
 
 Gossamer is early-stage engine work, not yet a general-purpose browser. The
-goal is to grow a correct, understandable pipeline first, then reuse its
-backend-neutral display list for an interactive windowed browser.
+goal is to grow a correct, understandable pipeline while reusing one
+backend-neutral display list for screenshots and interactive presentation.
 
 ## Quick start
 
@@ -55,6 +56,21 @@ go build -o gossamer ./cmd/gossamer
 ./gossamer --screenshot page.png https://example.com
 ```
 
+On Apple Silicon macOS, after building the pinned stock V8 checkout, open the
+same browser Page in the native interactive backend:
+
+```sh
+tools/v8/bootstrap.sh
+tools/v8/build.sh
+tools/v8/window.sh https://example.com
+```
+
+The window currently presents copied RGBA frames and routes resize, mouse,
+wheel, keyboard, focus, and blur input through the Page queue. It is an engine
+milestone rather than a general-purpose browser shell: there is no URL bar,
+tab model, scrollbar chrome, clipboard, IME, or accessibility integration yet.
+See [`docs/window-backend.md`](docs/window-backend.md).
+
 ## How it works
 
 ```mermaid
@@ -66,12 +82,14 @@ flowchart LR
     Resources --> Style["Computed style tree"]
     Style --> Layout["Layout boxes"]
     Layout --> Display["Display list"]
-    Display --> PNG["PNG painter"]
+    Display --> Raster["RGBA rasterizer"]
+    Raster --> PNG["PNG file"]
+    Raster --> Window["AppKit window"]
 ```
 
-The display list is deliberately separate from rasterization. A future window
-backend can replay the same paint commands without replacing the document,
-style, or layout pipeline.
+The display list is deliberately separate from presentation. The PNG command
+and native window replay the same paint commands without replacing the
+document, style, layout, hit-testing, or input pipeline.
 
 ## Phase 0 execution kernel
 
@@ -169,6 +187,11 @@ paint and hit testing; fixed geometry remains stable through root scrolling.
 Single-line `display:flex` containers now support row and column directions,
 reversal, ordering, gaps, grow/shrink/basis, justification, and cross-axis
 alignment through the same retained geometry and input path.
+The first interactive backend now rasterizes each newly published Page frame
+into a native-owned AppKit front buffer. Cocoa events are normalized into
+value-only records and published through the same ordered Page queue used by
+tests and stock V8; native code never receives a DOM node, V8 handle, or Go
+pointer.
 Browser input currently covers click, pointer, keyboard, input, focus, and
 change event families. Profiling covers heap totals, sampled allocations,
 GC callbacks, weak-wrapper collection, wrapper-root region sweeps, callback
@@ -255,13 +278,16 @@ performance budgets; see
 | `internal/render` | Used-value resolution, layout, display lists, and PNG painting |
 | `internal/runtime` | Realms, task and microtask queues, actor scheduling, and shadow ownership telemetry |
 | `internal/browser` | Browser/Page ownership, loading, stable-ID mutation scheduling, and frame invalidation |
+| `internal/window` | Backend-neutral interactive loop, copied frame presentation, and normalized native input |
+| `cmd/gossamer-window` | Stock-V8 AppKit browser milestone launcher |
 
 ## Current limitations
 
 The following are intentionally still outside the current milestone:
 
 - General Web APIs beyond the current V8 DOM slice, history traversal and
-  navigation globals, scrollbar UI, and a windowed UI
+  navigation globals, browser chrome, scrollbar UI, clipboard/IME input, and
+  non-macOS interactive backends
 - Full HTML error recovery, including table foster parenting, formatting
   element reconstruction, templates, SVG/MathML, and encoding sniffing
 - Flex wrapping and full intrinsic sizing, Grid, table layout, floats, sticky
@@ -314,9 +340,10 @@ go test ./internal/css -run '^$' -fuzz=FuzzParseDoesNotPanic
 ## Roadmap
 
 The next broad milestones are richer CSS values and formatting contexts, deeper
-HTML tree-builder coverage, and an interactive window backend with navigation,
-hit testing, input, and scrolling. The existing renderer is structured so each
-of those capabilities can extend the pipeline instead of replacing it.
+HTML tree-builder coverage, browser navigation/chrome, and expanding the first
+interactive backend beyond its macOS mouse/keyboard/scroll slice. The existing
+renderer is structured so each capability can extend the pipeline instead of
+replacing it.
 
 The staged CSS architecture and its V8/DOM invalidation boundary are tracked in
 [`docs/css-engine-roadmap.md`](docs/css-engine-roadmap.md).

@@ -18,6 +18,24 @@ import (
 	computed "github.com/JediWattson/gossamer/internal/style"
 )
 
+// ActiveElementHandle returns the current generation-safe focus target for a
+// native window backend. It intentionally exposes identity only; focus
+// mutation still crosses QueueInputEvent and the Page task boundary.
+func (page *Page) ActiveElementHandle() (NodeHandle, bool) {
+	if page == nil {
+		return NodeHandle{}, false
+	}
+	page.mutex.RLock()
+	defer page.mutex.RUnlock()
+	if page.closed || page.activeElement == dom.InvalidNodeID {
+		return NodeHandle{}, false
+	}
+	if _, ok := page.document.Resolve(page.activeElement); !ok {
+		return NodeHandle{}, false
+	}
+	return NodeHandle{Document: page.documentGeneration, Node: page.activeElement}, true
+}
+
 // HitTest converts the renderer's transitional pointer result into stable
 // identity from the exact document generation that produced the Frame.
 func (page *Page) HitTest(x, y float64) (NodeHandle, bool) {

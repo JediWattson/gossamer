@@ -5,7 +5,7 @@ DOM compatibility gate verifies that this split remains observable as one DOM:
 canonical V8 wrappers carry numeric `NodeHandle` values, while Go owns node
 identity, mutation, form state, construction regions, and queue ARC.
 
-## Selected completed milestones 8-32
+## Selected completed milestones 8-33
 
 | Milestone | Native surface | Regression boundary |
 | --- | --- | --- |
@@ -26,6 +26,7 @@ identity, mutation, form state, construction regions, and queue ARC.
 | 30. Layout observation | `ResizeObserver`, `IntersectionObserver`, entry geometry, thresholds, target registration lifecycle | Delivery reads the current immutable Go layout snapshot at the explicit checkpoint; observers retain canonical target wrappers across forced V8 GC; disconnect and Realm teardown release every native claim |
 | 31. Positioned layout | Typed `position`, physical insets, integer `z-index`, relative/absolute/fixed block geometry, local stacking order | Absolute boxes leave normal flow; fixed boxes bypass root scrolling; display-list paint and hit testing share the same ordered positioned children; a React layout effect measures the same native geometry used by delegated click routing |
 | 32. Flex formatting | `display:flex`, row/column directions and reversals, grow/shrink/basis, `order`, row/column gaps, justification, cross-axis alignment | Ordered element children share one single-line flex calculation for retained geometry, paint, CSSOM View, and hit testing; React style assignment and `useLayoutEffect` observe the native result; teardown returns ownership to zero |
+| 33. Interactive window and native input | Backend-neutral window loop, AppKit presentation, resize, pointer, wheel, keyboard, focus, blur, text editing, stock-V8 launcher | The backend owns only copied RGBA pixels and value-only events; every DOM/script mutation crosses the Page queue; deterministic and stock-V8 tests assert event order, final state, frame publication, forced GC, and zero ownership after teardown |
 
 Run the gate against the locally built stock V8:
 
@@ -59,6 +60,11 @@ and ownership barriers before a separate render task publishes a frame.
   auto margins, baseline alignment, `align-self`, and the complete flexible-box
   min/max constraint algorithm are not yet claimed; `inline-flex` computes but
   still follows the existing inline fallback.
+- The AppKit backend is an Apple Silicon macOS milestone surface. It supports
+  one window and mouse, wheel, basic keyboard text, focus, blur, and resize
+  events. Browser chrome, tabs, scrollbar widgets, clipboard, IME/composition,
+  touch, drag-and-drop, accessibility, and non-macOS backends remain future
+  work.
 - Range contents now cross nested containers and UTF-16 character data.
   `surroundContents`, contextual fragments, point-comparison helpers, and full
   live boundary adjustment after unrelated DOM mutations remain future work.
