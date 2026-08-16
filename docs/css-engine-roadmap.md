@@ -411,14 +411,22 @@ start/end shims participate in automatic Grid row sizing, and baseline content
 alignment uses its specified fallback when no parent sharing context exists.
 Definite and indefinite flexible tracks follow their distinct fraction sizing
 rules, and retained stable-ID geometry exposes resolved explicit and implicit
-`grid-template-*` tracks to live CSSOM reads.
+`grid-template-*` tracks to live CSSOM reads. Per-axis Subgrid now adopts the
+tracks, line names, and normal gutters spanned in its parent. Local line names
+combine for placement while resolved CSSOM exposes only the local names,
+including bounded `repeat(auto-fill, ...)` expansion. Explicit gap differences,
+edge margin/border/padding contributions, clamped overflow placement, intrinsic
+descendant contributions, nested Subgrids, and row-baseline sharing feed the
+parent track model through explicit nesting and work budgets. A Subgrid without
+a compatible parent formatting context computes to the retained keyword but
+uses `none`, as exposed by live resolved CSSOM geometry.
 
 - Complete table track merging/missing-cell fixup, percentage/intrinsic sizing
   edge cases, row/column `visibility: collapse`, table-wrapper separation,
   direction/writing-mode placement, and collapsed-border junctions once the
   wider border-style set exists.
-- Extend Grid with subgrid, orthogonal and nested-container baseline
-  propagation, and the remaining intrinsic/overflow interactions.
+- Extend Grid Subgrid through orthogonal writing modes and the remaining
+  advanced intrinsic/overflow interactions.
 - Add multicolumn and fragmentation only after their block/inline consumers
   are retained and testable.
 - Keep each formatting context as an independent computed-to-used vertical

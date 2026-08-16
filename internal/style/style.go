@@ -612,6 +612,8 @@ type ComputedStyle struct {
 	alignSelfOvf      OverflowAlignment
 	rowGap            Length
 	columnGap         Length
+	rowGapNormal      bool
+	columnGapNormal   bool
 	content           ContentValue
 	flexGrow          float64
 	flexShrink        float64
@@ -694,6 +696,26 @@ func (computed ComputedStyle) WithAnonymousDisplay(display DisplayMode) Computed
 	return computed
 }
 
+// WithBlockifiedDisplay returns the used style of a principal box whose outer
+// display role is blockified by a Grid/Flex formatting context. The inner
+// formatting context remains Grid, Flex, or Table rather than collapsing the
+// entire two-part display value to ordinary block flow.
+func (computed ComputedStyle) WithBlockifiedDisplay() ComputedStyle {
+	switch computed.display {
+	case DisplayInlineGrid:
+		computed.display = DisplayGrid
+	case DisplayInlineFlex:
+		computed.display = DisplayFlex
+	case DisplayInlineTable:
+		computed.display = DisplayTable
+	case DisplayGrid, DisplayFlex, DisplayTable:
+		// Already block-level.
+	default:
+		computed.display = DisplayBlock
+	}
+	return computed
+}
+
 // WithAnonymousGridItem returns the inherited style basis for an anonymous
 // grid item while resetting non-inherited placement and ordering state.
 func (computed ComputedStyle) WithAnonymousGridItem() ComputedStyle {
@@ -738,6 +760,8 @@ func (computed ComputedStyle) AlignSelfOverflow() OverflowAlignment {
 }
 func (computed ComputedStyle) RowGap() Length                 { return computed.rowGap }
 func (computed ComputedStyle) ColumnGap() Length              { return computed.columnGap }
+func (computed ComputedStyle) RowGapNormal() bool             { return computed.rowGapNormal }
+func (computed ComputedStyle) ColumnGapNormal() bool          { return computed.columnGapNormal }
 func (computed ComputedStyle) Content() ContentValue          { return computed.content }
 func (computed ComputedStyle) FlexGrow() float64              { return computed.flexGrow }
 func (computed ComputedStyle) FlexShrink() float64            { return computed.flexShrink }
@@ -1324,6 +1348,8 @@ func cssInitialStyle(viewport Viewport) computedStyle {
 		alignSelf:       AlignAuto,
 		rowGap:          px(0),
 		columnGap:       px(0),
+		rowGapNormal:    true,
+		columnGapNormal: true,
 		content:         ContentValue{kind: contentNormal},
 		flexShrink:      1,
 		flexBasis:       length{unit: lengthAuto},

@@ -26,6 +26,8 @@ type LayoutGeometry struct {
 	gridRowSizes          []float64
 	gridColumnLineNames   [][]string
 	gridRowLineNames      [][]string
+	gridColumnSubgrid     bool
+	gridRowSubgrid        bool
 }
 
 // GridColumnSizes returns the used explicit and implicit column track sizes
@@ -45,6 +47,11 @@ func (geometry LayoutGeometry) GridRowSizes() []float64 {
 func (geometry LayoutGeometry) GridColumnLineNames() [][]string {
 	return cloneGridLineNames(geometry.gridColumnLineNames)
 }
+
+// GridColumnSubgrid and GridRowSubgrid report whether layout adopted that
+// axis from a parent grid rather than falling back to an independent grid.
+func (geometry LayoutGeometry) GridColumnSubgrid() bool { return geometry.gridColumnSubgrid }
+func (geometry LayoutGeometry) GridRowSubgrid() bool    { return geometry.gridRowSubgrid }
 
 // GridRowLineNames returns the explicit names attached to every used row line,
 // including empty sets for implicit lines.
@@ -257,6 +264,8 @@ func boxGeometry(box *Box, extent layoutExtent) LayoutGeometry {
 		gridRowSizes:          append([]float64(nil), box.gridRowSizes...),
 		gridColumnLineNames:   cloneGridLineNames(box.gridColumnLineNames),
 		gridRowLineNames:      cloneGridLineNames(box.gridRowLineNames),
+		gridColumnSubgrid:     box.gridColumnSubgrid,
+		gridRowSubgrid:        box.gridRowSubgrid,
 	}
 }
 

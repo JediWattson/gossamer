@@ -114,6 +114,8 @@ type Box struct {
 	gridRowSizes        []float64
 	gridColumnLineNames [][]string
 	gridRowLineNames    [][]string
+	gridColumnSubgrid   bool
+	gridRowSubgrid      bool
 }
 
 type boxPaintRect struct {

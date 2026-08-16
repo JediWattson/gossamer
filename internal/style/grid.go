@@ -62,9 +62,16 @@ type GridTrackList struct {
 	tracks        []GridTrackSize
 	lineNames     [][]string
 	autoRepeat    *gridAutoRepeatDefinition
+	subgridRepeat *gridSubgridAutoRepeatDefinition
+	subgridNames  [][]string
 	autoStart     int
 	autoEnd       int
+	subgrid       bool
 	serialization string
+}
+
+type gridSubgridAutoRepeatDefinition struct {
+	prefix, pattern, suffix [][]string
 }
 
 // GridAutoRepeatKind identifies the layout-dependent repeat-to-fill form
@@ -148,6 +155,56 @@ func (list GridTrackList) At(index int) (GridTrackSize, bool) {
 
 func (list GridTrackList) Tracks() []GridTrackSize {
 	return append([]GridTrackSize(nil), list.tracks...)
+}
+
+// IsSubgrid reports whether this computed track list requests that the used
+// axis adopt the tracks spanned in its parent grid.
+func (list GridTrackList) IsSubgrid() bool { return list.subgrid }
+
+// ResolvedSubgridLineNames expands the local line-name list to the used number
+// of lines in a subgridded axis. Adopted parent names are intentionally absent:
+// CSSOM's resolved serialization exposes only names declared on the subgrid.
+func (list GridTrackList) ResolvedSubgridLineNames(lineCount int) [][]string {
+	if !list.subgrid || lineCount < 1 || lineCount > maxGridTrackListEntries+1 {
+		return nil
+	}
+	names := list.subgridNames
+	if repeat := list.subgridRepeat; repeat != nil {
+		count := 0
+		remaining := lineCount - len(repeat.prefix) - len(repeat.suffix)
+		if remaining > 0 && len(repeat.pattern) != 0 {
+			count = remaining / len(repeat.pattern)
+		}
+		if gridLineNameSetCount(repeat.prefix)+count*gridLineNameSetCount(repeat.pattern)+gridLineNameSetCount(repeat.suffix) > maxGridLineNames {
+			return nil
+		}
+		names = make([][]string, 0, len(repeat.prefix)+count*len(repeat.pattern)+len(repeat.suffix))
+		names = appendGridLineNameSets(names, repeat.prefix)
+		for range count {
+			names = appendGridLineNameSets(names, repeat.pattern)
+		}
+		names = appendGridLineNameSets(names, repeat.suffix)
+	}
+	resolved := make([][]string, lineCount)
+	for index := 0; index < min(lineCount, len(names)); index++ {
+		resolved[index] = append([]string(nil), names[index]...)
+	}
+	return resolved
+}
+
+func gridLineNameSetCount(sets [][]string) int {
+	count := 0
+	for _, names := range sets {
+		count += len(names)
+	}
+	return count
+}
+
+func appendGridLineNameSets(destination, source [][]string) [][]string {
+	for _, names := range source {
+		destination = append(destination, append([]string(nil), names...))
+	}
+	return destination
 }
 
 // LineNames returns a copy of the case-sensitive names assigned to one
@@ -340,6 +397,9 @@ func parseGridTrackList(source string, fontSize float64, viewport Viewport) (Gri
 			return GridTrackList{serialization: "none"}, true
 		}
 	}
+	if keyword, keywordOK := componentKeyword(value.terms[0]); keywordOK && keyword == "subgrid" {
+		return parseSubgridTrackList(value.terms[1:])
+	}
 	builder, automatic, ok := parseExplicitGridTrackSequence(value.terms, value.source, fontSize, viewport)
 	if !ok || len(builder.tracks) == 0 {
 		return GridTrackList{}, false
@@ -354,6 +414,82 @@ func parseGridTrackList(source string, fontSize float64, viewport Viewport) (Gri
 		list.autoStart = len(automatic.prefix.tracks)
 		list.autoEnd = list.autoStart + len(automatic.pattern.tracks)
 	}
+	return list, true
+}
+
+func parseSubgridTrackList(terms []css.ComponentValue) (GridTrackList, bool) {
+	list := GridTrackList{subgrid: true, serialization: "subgrid"}
+	if len(terms) == 0 {
+		return list, true
+	}
+	current := make([][]string, 0, len(terms))
+	parts := make([]string, 0, len(terms)+1)
+	parts = append(parts, "subgrid")
+	nameCount := 0
+	for _, term := range terms {
+		if names, ok := parseGridLineNameSet(term); ok {
+			if len(current) >= maxGridTrackListEntries+1 || nameCount+len(names) > maxGridLineNames {
+				return GridTrackList{}, false
+			}
+			current = append(current, append([]string(nil), names...))
+			nameCount += len(names)
+			parts = append(parts, serializeGridLineNameSet(names))
+			continue
+		}
+		if term.Kind != css.ComponentFunction || lowerASCIIValue(term.Token.Value) != "repeat" {
+			return GridTrackList{}, false
+		}
+		repeat, ok := gridRepeatParts(term)
+		if !ok || repeat.kind == GridAutoRepeatFit || repeat.kind == GridAutoRepeatFill && list.subgridRepeat != nil {
+			return GridTrackList{}, false
+		}
+		pattern := make([][]string, 0, len(repeat.body))
+		patternNames := 0
+		bodyParts := make([]string, 0, len(repeat.body))
+		for _, component := range repeat.body {
+			names, namesOK := parseGridLineNameSet(component)
+			if !namesOK {
+				return GridTrackList{}, false
+			}
+			pattern = append(pattern, append([]string(nil), names...))
+			patternNames += len(names)
+			bodyParts = append(bodyParts, serializeGridLineNameSet(names))
+		}
+		if len(pattern) == 0 {
+			return GridTrackList{}, false
+		}
+		count := strconv.Itoa(repeat.count)
+		if repeat.kind == GridAutoRepeatFill {
+			if nameCount+patternNames > maxGridLineNames {
+				return GridTrackList{}, false
+			}
+			count = "auto-fill"
+			list.subgridRepeat = &gridSubgridAutoRepeatDefinition{
+				prefix:  appendGridLineNameSets(nil, current),
+				pattern: pattern,
+			}
+			current = nil
+		} else {
+			if repeat.count > (maxGridTrackListEntries+1-len(current))/len(pattern) ||
+				patternNames != 0 && repeat.count > (maxGridLineNames-nameCount)/patternNames {
+				return GridTrackList{}, false
+			}
+			for range repeat.count {
+				current = appendGridLineNameSets(current, pattern)
+			}
+			nameCount += repeat.count * patternNames
+		}
+		parts = append(parts, "repeat("+count+", "+strings.Join(bodyParts, " ")+")")
+	}
+	if list.subgridRepeat != nil {
+		list.subgridRepeat.suffix = appendGridLineNameSets(nil, current)
+		if len(list.subgridRepeat.prefix)+len(list.subgridRepeat.suffix) > maxGridTrackListEntries+1 {
+			return GridTrackList{}, false
+		}
+	} else {
+		list.subgridNames = appendGridLineNameSets(nil, current)
+	}
+	list.serialization = strings.Join(parts, " ")
 	return list, true
 }
 

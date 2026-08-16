@@ -38,8 +38,22 @@ type gridAxisDefinition struct {
 	template       computed.GridTrackList
 	explicitTracks int
 	areaLineNames  [][]string
+	subgridNames   [][]string
 	autoFitStart   int
 	autoFitEnd     int
+}
+
+type gridSubgridAxisContext struct {
+	starts    []float64
+	ends      []float64
+	lineNames [][]string
+	edgeStart float64
+	edgeEnd   float64
+}
+
+type gridSubgridContext struct {
+	columns *gridSubgridAxisContext
+	rows    *gridSubgridAxisContext
 }
 
 func gridAxisDefinitionFromTemplate(template computed.GridTrackList) gridAxisDefinition {
@@ -74,6 +88,34 @@ func gridAxisDefinitionWithAreas(template computed.GridTrackList, areas computed
 	return definition
 }
 
+func gridAxisDefinitionForSubgrid(template computed.GridTrackList, areas computed.GridTemplateAreas, axis *gridSubgridAxisContext, rows bool) gridAxisDefinition {
+	explicitTracks := 0
+	if axis != nil {
+		explicitTracks = min(len(axis.starts), len(axis.ends))
+	}
+	definition := gridAxisDefinition{
+		template:       template,
+		explicitTracks: explicitTracks,
+		areaLineNames:  make([][]string, explicitTracks+1),
+		subgridNames:   make([][]string, explicitTracks+1),
+	}
+	local := template.ResolvedSubgridLineNames(explicitTracks + 1)
+	for line := 0; line <= explicitTracks; line++ {
+		if axis != nil && line < len(axis.lineNames) {
+			definition.subgridNames[line] = append(definition.subgridNames[line], axis.lineNames[line]...)
+		}
+		if line < len(local) {
+			definition.subgridNames[line] = append(definition.subgridNames[line], local[line]...)
+		}
+		if rows {
+			definition.areaLineNames[line] = areas.RowLineNames(line)
+		} else {
+			definition.areaLineNames[line] = areas.ColumnLineNames(line)
+		}
+	}
+	return definition
+}
+
 func (definition gridAxisDefinition) lineHasName(line int, name string) bool {
 	if line < 0 || line > definition.explicitTracks {
 		return false
@@ -85,6 +127,13 @@ func (definition gridAxisDefinition) lineHasName(line int, name string) bool {
 	}
 	if line < len(definition.areaLineNames) {
 		for _, candidate := range definition.areaLineNames[line] {
+			if candidate == name {
+				return true
+			}
+		}
+	}
+	if line < len(definition.subgridNames) {
+		for _, candidate := range definition.subgridNames[line] {
 			if candidate == name {
 				return true
 			}
@@ -193,17 +242,19 @@ func definiteGridTrackBreadth(kind computed.GridTrackKind, length computed.Lengt
 }
 
 type gridLayoutModel struct {
-	items        []gridLayoutItem
-	columns      int
-	rows         int
-	explicitCols int
-	explicitRows int
-	columnAxis   gridAxisDefinition
-	rowAxis      gridAxisDefinition
-	columnOffset int
-	rowOffset    int
-	placementOps int
-	occupied     map[gridCell]struct{}
+	items         []gridLayoutItem
+	columns       int
+	rows          int
+	explicitCols  int
+	explicitRows  int
+	columnAxis    gridAxisDefinition
+	rowAxis       gridAxisDefinition
+	columnOffset  int
+	rowOffset     int
+	placementOps  int
+	occupied      map[gridCell]struct{}
+	columnSubgrid bool
+	rowSubgrid    bool
 }
 
 type gridCell struct {
@@ -244,55 +295,108 @@ func (model *gridLayoutModel) collapsedAutoFitTracks(rows bool) []bool {
 	return collapsed
 }
 
-func (context *layoutContext) layoutGridContainer(node *styledNode, box *Box, contentWidth float64, definiteHeight, repeatHeight *float64, repeatFulfillsMinimum bool) (float64, error) {
+func (context *layoutContext) layoutGridContainer(node *styledNode, box *Box, contentWidth float64, definiteHeight, repeatHeight *float64, repeatFulfillsMinimum bool, inherited *gridSubgridContext) (float64, error) {
 	columnGap := math.Max(0, resolveLength(node.style.ColumnGap(), contentWidth, context.viewport, 0))
 	rowGap := math.Max(0, resolveLength(node.style.RowGap(), contentWidth, context.viewport, 0))
-	columnTemplate := resolveGridAutoRepeat(node.style.GridTemplateColumns(), &contentWidth, false, columnGap, context.viewport)
-	rowTemplate := resolveGridAutoRepeat(node.style.GridTemplateRows(), repeatHeight, repeatFulfillsMinimum, rowGap, context.viewport)
-	model, err := context.buildGridLayoutModel(node, columnTemplate, rowTemplate)
+	columnTemplate := node.style.GridTemplateColumns()
+	rowTemplate := node.style.GridTemplateRows()
+	columnSubgrid := columnTemplate.IsSubgrid() && inherited != nil && inherited.columns != nil
+	rowSubgrid := rowTemplate.IsSubgrid() && inherited != nil && inherited.rows != nil
+	if !columnSubgrid {
+		if columnTemplate.IsSubgrid() {
+			columnTemplate = computed.GridTrackList{}
+		} else {
+			columnTemplate = resolveGridAutoRepeat(columnTemplate, &contentWidth, false, columnGap, context.viewport)
+		}
+	}
+	if !rowSubgrid {
+		if rowTemplate.IsSubgrid() {
+			rowTemplate = computed.GridTrackList{}
+		} else {
+			rowTemplate = resolveGridAutoRepeat(rowTemplate, repeatHeight, repeatFulfillsMinimum, rowGap, context.viewport)
+		}
+	}
+	model, err := context.buildGridLayoutModel(node, columnTemplate, rowTemplate, inherited, columnSubgrid, rowSubgrid)
 	if err != nil {
 		return 0, err
 	}
 	collapsedColumns := model.collapsedAutoFitTracks(false)
 	collapsedRows := model.collapsedAutoFitTracks(true)
-	columnTracks := gridTrackSizes(model.columnAxis.template, node.style.GridAutoColumns(), model.columns, model.columnOffset)
-	columnSizes, err := context.sizeGridColumns(model.items, columnTracks, collapsedColumns, contentWidth, columnGap, contentAlignmentStretches(node.style.JustifyContent()))
-	if err != nil {
-		return 0, err
+	var columnSizes, columnStarts, columnEnds []float64
+	if columnSubgrid {
+		columnSizes, columnStarts, columnEnds = subgridAxisGeometry(inherited.columns, columnGap, node.style.ColumnGapNormal())
+		box.gridColumnSubgrid = true
+	} else {
+		columnTracks := gridTrackSizes(model.columnAxis.template, node.style.GridAutoColumns(), model.columns, model.columnOffset)
+		columnSizes, err = context.sizeGridColumns(&model, columnTracks, collapsedColumns, contentWidth, columnGap, contentAlignmentStretches(node.style.JustifyContent()))
+		if err != nil {
+			return 0, err
+		}
+		columnStarts, columnEnds, _ = alignedGridTrackGeometry(columnSizes, collapsedColumns, columnGap, contentWidth, node.style.JustifyContent(), node.style.JustifyContentOverflow())
 	}
-	columnStarts, columnEnds, _ := alignedGridTrackGeometry(columnSizes, collapsedColumns, columnGap, contentWidth, node.style.JustifyContent(), node.style.JustifyContentOverflow())
 	box.gridColumnSizes = append([]float64(nil), columnSizes...)
-	box.gridColumnLineNames = gridUsedLineNames(model.columnAxis.template, len(columnSizes), model.columnOffset)
+	if columnSubgrid {
+		box.gridColumnLineNames = columnTemplate.ResolvedSubgridLineNames(len(columnSizes) + 1)
+	} else {
+		box.gridColumnLineNames = gridUsedLineNames(model.columnAxis.template, len(columnSizes), model.columnOffset)
+	}
+	columnPlacementNames := gridUsedAxisLineNames(model.columnAxis, len(columnSizes), model.columnOffset)
 
 	// The first item pass obtains max-content row contributions. Once rows are
 	// sized, a second bounded pass supplies each area's definite height so
 	// percentage heights and stretch use the actual grid-area containing block.
-	if err := context.measureGridItems(&model, contentWidth, columnStarts, columnEnds); err != nil {
+	if err := context.measureGridItems(&model, contentWidth, columnStarts, columnEnds, columnPlacementNames); err != nil {
 		return 0, err
 	}
-	rowTracks := gridTrackSizes(model.rowAxis.template, node.style.GridAutoRows(), model.rows, model.rowOffset)
-	rowSizes := context.sizeGridRows(model.items, rowTracks, collapsedRows, definiteHeight, rowGap, contentAlignmentStretches(node.style.AlignContent()), node.style.AlignItems())
-	box.gridRowSizes = append([]float64(nil), rowSizes...)
-	box.gridRowLineNames = gridUsedLineNames(model.rowAxis.template, len(rowSizes), model.rowOffset)
-	rowAvailable := sumFloat64(rowSizes) + gridGapTotal(collapsedRows, len(rowSizes), rowGap)
-	if definiteHeight != nil {
-		rowAvailable = *definiteHeight
+	var rowSizes, rowStarts, rowEnds []float64
+	gridHeight := 0.0
+	if rowSubgrid {
+		rowSizes, rowStarts, rowEnds = subgridAxisGeometry(inherited.rows, rowGap, node.style.RowGapNormal())
+		if len(rowEnds) != 0 {
+			gridHeight = rowEnds[len(rowEnds)-1]
+		}
+		box.gridRowSubgrid = true
+	} else {
+		rowTracks := gridTrackSizes(model.rowAxis.template, node.style.GridAutoRows(), model.rows, model.rowOffset)
+		rowSizes, err = context.sizeGridRows(&model, rowTracks, collapsedRows, definiteHeight, contentWidth, rowGap, contentAlignmentStretches(node.style.AlignContent()), node.style.AlignItems())
+		if err != nil {
+			return 0, err
+		}
+		rowAvailable := sumFloat64(rowSizes) + gridGapTotal(collapsedRows, len(rowSizes), rowGap)
+		if definiteHeight != nil {
+			rowAvailable = *definiteHeight
+		}
+		rowStarts, rowEnds, gridHeight = alignedGridTrackGeometry(rowSizes, collapsedRows, rowGap, rowAvailable, node.style.AlignContent(), node.style.AlignContentOverflow())
 	}
-	rowStarts, rowEnds, gridHeight := alignedGridTrackGeometry(rowSizes, collapsedRows, rowGap, rowAvailable, node.style.AlignContent(), node.style.AlignContentOverflow())
-	if err := context.placeGridItems(node, box, &model, columnStarts, columnEnds, rowStarts, rowEnds); err != nil {
+	box.gridRowSizes = append([]float64(nil), rowSizes...)
+	if rowSubgrid {
+		box.gridRowLineNames = rowTemplate.ResolvedSubgridLineNames(len(rowSizes) + 1)
+	} else {
+		box.gridRowLineNames = gridUsedLineNames(model.rowAxis.template, len(rowSizes), model.rowOffset)
+	}
+	rowPlacementNames := gridUsedAxisLineNames(model.rowAxis, len(rowSizes), model.rowOffset)
+	if err := context.placeGridItems(node, box, &model, columnStarts, columnEnds, rowStarts, rowEnds, columnPlacementNames, rowPlacementNames); err != nil {
 		return 0, err
 	}
 	return gridHeight, nil
 }
 
-func (context *layoutContext) buildGridLayoutModel(container *styledNode, columnTemplate, rowTemplate computed.GridTrackList) (gridLayoutModel, error) {
-	model := gridLayoutModel{occupied: make(map[gridCell]struct{})}
+func (context *layoutContext) buildGridLayoutModel(container *styledNode, columnTemplate, rowTemplate computed.GridTrackList, inherited *gridSubgridContext, columnSubgrid, rowSubgrid bool) (gridLayoutModel, error) {
+	model := gridLayoutModel{occupied: make(map[gridCell]struct{}), columnSubgrid: columnSubgrid, rowSubgrid: rowSubgrid}
 	model.items = context.gridItems(container)
 	if len(model.items) > maxGridItems {
 		return gridLayoutModel{}, fmt.Errorf("render: grid exceeds %d items", maxGridItems)
 	}
-	model.columnAxis = gridAxisDefinitionWithAreas(columnTemplate, container.style.GridTemplateAreas(), false)
-	model.rowAxis = gridAxisDefinitionWithAreas(rowTemplate, container.style.GridTemplateAreas(), true)
+	if columnSubgrid {
+		model.columnAxis = gridAxisDefinitionForSubgrid(columnTemplate, container.style.GridTemplateAreas(), inherited.columns, false)
+	} else {
+		model.columnAxis = gridAxisDefinitionWithAreas(columnTemplate, container.style.GridTemplateAreas(), false)
+	}
+	if rowSubgrid {
+		model.rowAxis = gridAxisDefinitionForSubgrid(rowTemplate, container.style.GridTemplateAreas(), inherited.rows, true)
+	} else {
+		model.rowAxis = gridAxisDefinitionWithAreas(rowTemplate, container.style.GridTemplateAreas(), true)
+	}
 	model.explicitCols = model.columnAxis.explicitTracks
 	model.explicitRows = model.rowAxis.explicitTracks
 	model.columns = model.explicitCols
@@ -309,6 +413,12 @@ func (context *layoutContext) buildGridLayoutModel(container *styledNode, column
 		item := &model.items[index]
 		item.column = resolveGridAxis(item.node.style.GridColumnStart(), item.node.style.GridColumnEnd(), model.columnAxis)
 		item.row = resolveGridAxis(item.node.style.GridRowStart(), item.node.style.GridRowEnd(), model.rowAxis)
+		if columnSubgrid {
+			normalizeSubgridPlacement(&item.column, model.explicitCols)
+		}
+		if rowSubgrid {
+			normalizeSubgridPlacement(&item.row, model.explicitRows)
+		}
 		if item.column.definite {
 			minColumn = min(minColumn, item.column.start)
 		}
@@ -316,19 +426,27 @@ func (context *layoutContext) buildGridLayoutModel(container *styledNode, column
 			minRow = min(minRow, item.row.start)
 		}
 	}
-	model.columnOffset = -minColumn
-	model.rowOffset = -minRow
+	if !columnSubgrid {
+		model.columnOffset = -minColumn
+	}
+	if !rowSubgrid {
+		model.rowOffset = -minRow
+	}
 	model.columns += model.columnOffset
 	model.rows += model.rowOffset
 	for index := range model.items {
 		item := &model.items[index]
 		if item.column.definite {
 			item.column.start += model.columnOffset
-			model.columns = max(model.columns, item.column.start+item.column.span)
+			if !columnSubgrid {
+				model.columns = max(model.columns, item.column.start+item.column.span)
+			}
 		}
 		if item.row.definite {
 			item.row.start += model.rowOffset
-			model.rows = max(model.rows, item.row.start+item.row.span)
+			if !rowSubgrid {
+				model.rows = max(model.rows, item.row.start+item.row.span)
+			}
 		}
 	}
 	if err := model.checkBounds(); err != nil {
@@ -361,13 +479,20 @@ func (context *layoutContext) buildGridLayoutModel(container *styledNode, column
 		}
 		row, column, err := model.findPosition(*item, flow.Axis(), 0, 0)
 		if err != nil {
+			row, column, err = model.subgridOverflowPosition(*item, err)
+		}
+		if err != nil {
 			return gridLayoutModel{}, err
 		}
 		item.row.start, item.row.definite = row, true
 		item.column.start, item.column.definite = column, true
 		item.row.span, item.column.span = model.itemSpansAt(*item, row, column)
-		model.rows = max(model.rows, row+item.row.span)
-		model.columns = max(model.columns, column+item.column.span)
+		if !rowSubgrid {
+			model.rows = max(model.rows, row+item.row.span)
+		}
+		if !columnSubgrid {
+			model.columns = max(model.columns, column+item.column.span)
+		}
 		if err := model.checkBounds(); err != nil {
 			return gridLayoutModel{}, err
 		}
@@ -390,13 +515,20 @@ func (context *layoutContext) buildGridLayoutModel(container *styledNode, column
 		}
 		row, column, err := model.findPosition(*item, flow.Axis(), cursorRow, cursorColumn)
 		if err != nil {
+			row, column, err = model.subgridOverflowPosition(*item, err)
+		}
+		if err != nil {
 			return gridLayoutModel{}, err
 		}
 		item.row.start, item.row.definite = row, true
 		item.column.start, item.column.definite = column, true
 		item.row.span, item.column.span = model.itemSpansAt(*item, row, column)
-		model.rows = max(model.rows, row+item.row.span)
-		model.columns = max(model.columns, column+item.column.span)
+		if !rowSubgrid {
+			model.rows = max(model.rows, row+item.row.span)
+		}
+		if !columnSubgrid {
+			model.columns = max(model.columns, column+item.column.span)
+		}
 		if err := model.checkBounds(); err != nil {
 			return gridLayoutModel{}, err
 		}
@@ -424,6 +556,38 @@ func (context *layoutContext) buildGridLayoutModel(container *styledNode, column
 	return model, model.checkBounds()
 }
 
+func (model *gridLayoutModel) subgridOverflowPosition(item gridLayoutItem, placementErr error) (int, int, error) {
+	if model == nil || !model.columnSubgrid && !model.rowSubgrid {
+		return 0, 0, placementErr
+	}
+	row, column := 0, 0
+	if item.row.definite {
+		row = item.row.start
+	}
+	if item.column.definite {
+		column = item.column.start
+	}
+	if model.rowSubgrid {
+		row = min(max(0, row), max(0, model.rows-item.row.span))
+	}
+	if model.columnSubgrid {
+		column = min(max(0, column), max(0, model.columns-item.column.span))
+	}
+	return row, column, nil
+}
+
+func normalizeSubgridPlacement(placement *gridAxisPlacement, trackCount int) {
+	if placement == nil || trackCount < 1 {
+		return
+	}
+	if placement.definite {
+		placement.start = min(max(0, placement.start), trackCount-1)
+		placement.span = min(max(1, placement.span), trackCount-placement.start)
+		return
+	}
+	placement.span = min(max(1, placement.span), trackCount)
+}
+
 func (context *layoutContext) gridItems(container *styledNode) []gridLayoutItem {
 	items := make([]gridLayoutItem, 0, len(container.children))
 	for index := 0; index < len(container.children); {
@@ -434,7 +598,7 @@ func (context *layoutContext) gridItems(container *styledNode) []gridLayoutItem 
 		}
 		if child.node != nil && child.node.Type == dom.ElementNode {
 			blockified := *child
-			blockified.style = child.style.WithAnonymousDisplay(computed.DisplayBlock)
+			blockified.style = child.style.WithBlockifiedDisplay()
 			items = append(items, gridLayoutItem{node: &blockified, originalIndex: index})
 			index++
 			continue
@@ -641,6 +805,9 @@ func (model *gridLayoutModel) areaFree(row, column, rowSpan, columnSpan int) (bo
 	if row < 0 || column < 0 || row+rowSpan > maxGridTracksPerAxis || column+columnSpan > maxGridTracksPerAxis {
 		return false, nil
 	}
+	if model.rowSubgrid && row+rowSpan > model.rows || model.columnSubgrid && column+columnSpan > model.columns {
+		return false, nil
+	}
 	for candidateRow := row; candidateRow < row+rowSpan; candidateRow++ {
 		for candidateColumn := column; candidateColumn < column+columnSpan; candidateColumn++ {
 			model.placementOps++
@@ -804,23 +971,224 @@ func gridUsedLineNames(template computed.GridTrackList, count, offset int) [][]s
 	return lines
 }
 
-func (context *layoutContext) sizeGridColumns(items []gridLayoutItem, tracks []computed.GridTrackSize, collapsed []bool, availableWidth, gap float64, stretchAuto bool) ([]float64, error) {
-	contributions := make([]gridTrackContribution, 0, len(items))
-	for index := range items {
-		item := &items[index]
+func gridUsedAxisLineNames(definition gridAxisDefinition, count, offset int) [][]string {
+	lines := make([][]string, count+1)
+	for usedLine := range lines {
+		explicitLine := usedLine - offset
+		if explicitLine < 0 || explicitLine > definition.explicitTracks {
+			continue
+		}
+		lines[usedLine] = append(lines[usedLine], definition.template.LineNames(explicitLine)...)
+		if explicitLine < len(definition.areaLineNames) {
+			lines[usedLine] = append(lines[usedLine], definition.areaLineNames[explicitLine]...)
+		}
+		if explicitLine < len(definition.subgridNames) {
+			lines[usedLine] = append(lines[usedLine], definition.subgridNames[explicitLine]...)
+		}
+	}
+	return lines
+}
+
+func subgridAxisGeometry(axis *gridSubgridAxisContext, gap float64, normalGap bool) (sizes, starts, ends []float64) {
+	if axis == nil {
+		return nil, nil, nil
+	}
+	count := min(len(axis.starts), len(axis.ends))
+	if count == 0 {
+		return nil, nil, nil
+	}
+	starts = append([]float64(nil), axis.starts[:count]...)
+	ends = append([]float64(nil), axis.ends[:count]...)
+	origin := starts[0]
+	for index := range starts {
+		starts[index] -= origin + axis.edgeStart
+		ends[index] -= origin + axis.edgeStart
+	}
+	starts[0] = 0
+	ends[count-1] = math.Max(starts[count-1], ends[count-1]-axis.edgeEnd)
+	if !normalGap {
+		for index := 0; index+1 < count; index++ {
+			parentGap := starts[index+1] - ends[index]
+			delta := (parentGap - gap) / 2
+			ends[index] += delta
+			starts[index+1] -= delta
+		}
+	}
+	sizes = make([]float64, count)
+	for index := range sizes {
+		sizes[index] = math.Max(0, ends[index]-starts[index])
+	}
+	return sizes, starts, ends
+}
+
+func gridSubgridAxisForPlacement(starts, ends []float64, lineNames [][]string, placement gridAxisPlacement) *gridSubgridAxisContext {
+	if !placement.definite || placement.start < 0 || placement.span < 1 || placement.start+placement.span > len(starts) || placement.start+placement.span > len(ends) {
+		return nil
+	}
+	origin := starts[placement.start]
+	axis := &gridSubgridAxisContext{
+		starts:    make([]float64, placement.span),
+		ends:      make([]float64, placement.span),
+		lineNames: make([][]string, placement.span+1),
+	}
+	for index := range placement.span {
+		axis.starts[index] = starts[placement.start+index] - origin
+		axis.ends[index] = ends[placement.start+index] - origin
+	}
+	for index := range axis.lineNames {
+		source := placement.start + index
+		if source < len(lineNames) {
+			axis.lineNames[index] = append([]string(nil), lineNames[source]...)
+		}
+	}
+	return axis
+}
+
+func gridSubgridContextForItem(item *gridLayoutItem, columnStarts, columnEnds, rowStarts, rowEnds []float64, columnNames, rowNames [][]string) *gridSubgridContext {
+	if item == nil || item.node == nil || item.node.style.Display().Inside() != computed.DisplayInsideGrid || isOutOfFlow(item.node.style.Position()) {
+		return nil
+	}
+	result := &gridSubgridContext{}
+	if item.node.style.GridTemplateColumns().IsSubgrid() {
+		result.columns = gridSubgridAxisForPlacement(columnStarts, columnEnds, columnNames, item.column)
+	}
+	if item.node.style.GridTemplateRows().IsSubgrid() {
+		result.rows = gridSubgridAxisForPlacement(rowStarts, rowEnds, rowNames, item.row)
+	}
+	if result.columns == nil && result.rows == nil {
+		return nil
+	}
+	return result
+}
+
+func (context *layoutContext) applySubgridEdgeInsets(item *gridLayoutItem, subgrid *gridSubgridContext, availableWidth float64) {
+	if item == nil || item.node == nil || subgrid == nil {
+		return
+	}
+	padding := context.resolvePadding(item.node.style, availableWidth)
+	border := context.resolveBorder(item.node.style, availableWidth)
+	if subgrid.columns != nil {
+		subgrid.columns.edgeStart = item.marginLeft + padding.Left + border.Left
+		subgrid.columns.edgeEnd = item.marginRight + padding.Right + border.Right
+	}
+	if subgrid.rows != nil {
+		subgrid.rows.edgeStart = item.marginTop + padding.Top + border.Top
+		subgrid.rows.edgeEnd = item.marginBottom + padding.Bottom + border.Bottom
+	}
+}
+
+func (context *layoutContext) sizeGridColumns(model *gridLayoutModel, tracks []computed.GridTrackSize, collapsed []bool, availableWidth, gap float64, stretchAuto bool) ([]float64, error) {
+	budget := maxGridItems
+	contributions, err := context.gridColumnContributions(model, 0, availableWidth, gap, 0, &budget)
+	if err != nil {
+		return nil, err
+	}
+	height := availableWidth
+	return sizeGridTrackAxis(tracks, contributions, collapsed, &height, gap, context.viewport, stretchAuto), nil
+}
+
+const maxSubgridNesting = 32
+
+func (context *layoutContext) gridColumnContributions(model *gridLayoutModel, baseStart int, availableWidth, parentGap float64, depth int, budget *int) ([]gridTrackContribution, error) {
+	if model == nil || budget == nil || *budget < 0 || depth > maxSubgridNesting {
+		return nil, fmt.Errorf("render: subgrid intrinsic contribution budget exceeded")
+	}
+	contributions := make([]gridTrackContribution, 0, len(model.items))
+	lineNames := gridUsedAxisLineNames(model.columnAxis, model.columns, model.columnOffset)
+	for index := range model.items {
+		item := &model.items[index]
+		if item.node.style.Display().Inside() == computed.DisplayInsideGrid && item.node.style.GridTemplateColumns().IsSubgrid() {
+			if depth == maxSubgridNesting {
+				return nil, fmt.Errorf("render: subgrid exceeds nesting depth %d", maxSubgridNesting)
+			}
+			axis := gridSubgridAxisForNames(lineNames, item.column)
+			if axis == nil {
+				continue
+			}
+			rowTemplate := item.node.style.GridTemplateRows()
+			if rowTemplate.IsSubgrid() {
+				rowTemplate = computed.GridTrackList{}
+			} else {
+				rowTemplate = resolveGridAutoRepeat(rowTemplate, nil, false, 0, context.viewport)
+			}
+			nested, err := context.buildGridLayoutModel(item.node, item.node.style.GridTemplateColumns(), rowTemplate, &gridSubgridContext{columns: axis}, true, false)
+			if err != nil {
+				return nil, err
+			}
+			nestedGap := parentGap
+			if !item.node.style.ColumnGapNormal() {
+				nestedGap = math.Max(0, resolveLength(item.node.style.ColumnGap(), availableWidth, context.viewport, 0))
+			}
+			nestedContributions, err := context.gridColumnContributions(&nested, baseStart+item.column.start, availableWidth, nestedGap, depth+1, budget)
+			if err != nil {
+				return nil, err
+			}
+			context.adjustSubgridColumnContributions(nestedContributions, baseStart+item.column.start, item.column.span, item.node, availableWidth, parentGap, nestedGap)
+			contributions = append(contributions, nestedContributions...)
+			continue
+		}
+		*budget--
+		if *budget < 0 {
+			return nil, fmt.Errorf("render: grid exceeds %d intrinsic items", maxGridItems)
+		}
 		intrinsic, err := context.gridItemIntrinsicWidths(item.node, availableWidth)
 		if err != nil {
 			return nil, err
 		}
 		contributions = append(contributions, gridTrackContribution{
-			start:     item.column.start,
+			start:     baseStart + item.column.start,
 			span:      item.column.span,
 			minimum:   intrinsic.minimum,
 			preferred: intrinsic.preferred,
 		})
 	}
-	height := availableWidth
-	return sizeGridTrackAxis(tracks, contributions, collapsed, &height, gap, context.viewport, stretchAuto), nil
+	return contributions, nil
+}
+
+func gridSubgridAxisForNames(lineNames [][]string, placement gridAxisPlacement) *gridSubgridAxisContext {
+	if !placement.definite || placement.start < 0 || placement.span < 1 || placement.start+placement.span >= len(lineNames) {
+		return nil
+	}
+	axis := &gridSubgridAxisContext{
+		starts:    make([]float64, placement.span),
+		ends:      make([]float64, placement.span),
+		lineNames: make([][]string, placement.span+1),
+	}
+	for index := range axis.starts {
+		axis.starts[index] = float64(index)
+		axis.ends[index] = float64(index + 1)
+	}
+	for index := range axis.lineNames {
+		axis.lineNames[index] = append([]string(nil), lineNames[placement.start+index]...)
+	}
+	return axis
+}
+
+func (context *layoutContext) adjustSubgridColumnContributions(contributions []gridTrackContribution, start, span int, node *styledNode, availableWidth, parentGap, subgridGap float64) {
+	if node == nil || span < 1 {
+		return
+	}
+	padding := context.resolvePadding(node.style, availableWidth)
+	border := context.resolveBorder(node.style, availableWidth)
+	startEdge := resolveLength(node.style.MarginLeft(), availableWidth, context.viewport, 0) + padding.Left + border.Left
+	endEdge := resolveLength(node.style.MarginRight(), availableWidth, context.viewport, 0) + padding.Right + border.Right
+	halfGapDifference := (subgridGap - parentGap) / 2
+	for index := range contributions {
+		contribution := &contributions[index]
+		extra := 0.0
+		if contribution.start == start {
+			extra += startEdge
+		} else {
+			extra += halfGapDifference
+		}
+		if contribution.start+contribution.span == start+span {
+			extra += endEdge
+		} else {
+			extra += halfGapDifference
+		}
+		contribution.minimum = math.Max(0, contribution.minimum+extra)
+		contribution.preferred = math.Max(contribution.minimum, contribution.preferred+extra)
+	}
 }
 
 type gridTrackContribution struct {
@@ -1093,70 +1461,186 @@ func gridStateGapTotal(states []gridTrackState, gap float64) float64 {
 	return total
 }
 
-func (context *layoutContext) measureGridItems(model *gridLayoutModel, contentWidth float64, columnStarts, columnEnds []float64) error {
+func (context *layoutContext) measureGridItems(model *gridLayoutModel, contentWidth float64, columnStarts, columnEnds []float64, columnNames [][]string) error {
 	for index := range model.items {
 		item := &model.items[index]
 		cellWidth := gridTrackSpan(columnStarts, columnEnds, item.column.start, item.column.span)
-		box, err := context.layoutBlockSized(item.node, 0, 0, cellWidth, nil, nil, true)
-		if err != nil {
-			return err
-		}
-		item.box = box
 		item.marginTop = resolveLength(item.node.style.MarginTop(), contentWidth, context.viewport, 0)
 		item.marginRight = resolveLength(item.node.style.MarginRight(), contentWidth, context.viewport, 0)
 		item.marginBottom = resolveLength(item.node.style.MarginBottom(), contentWidth, context.viewport, 0)
 		item.marginLeft = resolveLength(item.node.style.MarginLeft(), contentWidth, context.viewport, 0)
+		subgrid := gridSubgridContextForItem(item, columnStarts, columnEnds, nil, nil, columnNames, nil)
+		context.applySubgridEdgeInsets(item, subgrid, cellWidth)
+		box, err := context.layoutBlockSizedWithSubgrid(item.node, 0, 0, cellWidth, nil, nil, true, subgrid)
+		if err != nil {
+			return err
+		}
+		item.box = box
 	}
 	return nil
 }
 
-func (context *layoutContext) sizeGridRows(items []gridLayoutItem, tracks []computed.GridTrackSize, collapsed []bool, definiteHeight *float64, gap float64, stretchAuto bool, parentAlignment computed.AlignItems) []float64 {
-	firstGroups, lastGroups := gridRowBaselineGroups(items, parentAlignment)
-	contributions := make([]gridTrackContribution, 0, len(items))
-	for index := range items {
-		item := &items[index]
-		contribution := item.box.Bounds.Height + item.marginTop + item.marginBottom
-		alignment := resolvedSelfAlignment(item.node.style.AlignSelf(), parentAlignment)
-		switch alignment {
-		case computed.AlignBaseline:
-			distances := boxBaselineDistances(item.box, item.marginTop, item.marginBottom, false)
-			contribution += math.Max(0, firstGroups[item.row.start].start-distances.start)
-		case computed.AlignLastBaseline:
-			distances := boxBaselineDistances(item.box, item.marginTop, item.marginBottom, true)
-			key := item.row.start + item.row.span - 1
-			contribution += math.Max(0, lastGroups[key].end-distances.end)
-		}
-		contributions = append(contributions, gridTrackContribution{
-			start:     item.row.start,
-			span:      item.row.span,
-			minimum:   contribution,
-			preferred: contribution,
-		})
+func (context *layoutContext) sizeGridRows(model *gridLayoutModel, tracks []computed.GridTrackSize, collapsed []bool, definiteHeight *float64, availableWidth, gap float64, stretchAuto bool, parentAlignment computed.AlignItems) ([]float64, error) {
+	firstGroups, lastGroups := gridRowBaselineGroups(model.items, parentAlignment)
+	budget := maxGridItems
+	contributions, err := context.gridRowContributions(model, 0, availableWidth, gap, 0, &budget, firstGroups, lastGroups, parentAlignment)
+	if err != nil {
+		return nil, err
 	}
-	return sizeGridTrackAxis(tracks, contributions, collapsed, definiteHeight, gap, context.viewport, stretchAuto)
+	return sizeGridTrackAxis(tracks, contributions, collapsed, definiteHeight, gap, context.viewport, stretchAuto), nil
 }
 
-func (context *layoutContext) placeGridItems(container *styledNode, box *Box, model *gridLayoutModel, columnStarts, columnEnds, rowStarts, rowEnds []float64) error {
+func (context *layoutContext) gridRowContributions(model *gridLayoutModel, baseStart int, availableWidth, parentGap float64, depth int, budget *int, firstGroups, lastGroups map[int]baselineAlignmentGroup, parentAlignment computed.AlignItems) ([]gridTrackContribution, error) {
+	if model == nil || budget == nil || *budget < 0 || depth > maxSubgridNesting {
+		return nil, fmt.Errorf("render: subgrid intrinsic contribution budget exceeded")
+	}
+	contributions := make([]gridTrackContribution, 0, len(model.items))
+	lineNames := gridUsedAxisLineNames(model.rowAxis, model.rows, model.rowOffset)
+	for index := range model.items {
+		item := &model.items[index]
+		if item.node.style.Display().Inside() == computed.DisplayInsideGrid && item.node.style.GridTemplateRows().IsSubgrid() {
+			if depth == maxSubgridNesting {
+				return nil, fmt.Errorf("render: subgrid exceeds nesting depth %d", maxSubgridNesting)
+			}
+			axis := gridSubgridAxisForNames(lineNames, item.row)
+			if axis == nil {
+				continue
+			}
+			columnTemplate := item.node.style.GridTemplateColumns()
+			if columnTemplate.IsSubgrid() {
+				columnTemplate = computed.GridTrackList{}
+			} else {
+				columnTemplate = resolveGridAutoRepeat(columnTemplate, nil, false, 0, context.viewport)
+			}
+			nested, err := context.buildGridLayoutModel(item.node, columnTemplate, item.node.style.GridTemplateRows(), &gridSubgridContext{rows: axis}, false, true)
+			if err != nil {
+				return nil, err
+			}
+			for nestedIndex := range nested.items {
+				nestedItem := &nested.items[nestedIndex]
+				nestedItem.box = findGridItemBox(item.box, nestedItem.node)
+				nestedItem.marginTop = resolveLength(nestedItem.node.style.MarginTop(), availableWidth, context.viewport, 0)
+				nestedItem.marginBottom = resolveLength(nestedItem.node.style.MarginBottom(), availableWidth, context.viewport, 0)
+			}
+			nestedGap := parentGap
+			if !item.node.style.RowGapNormal() {
+				nestedGap = math.Max(0, resolveLength(item.node.style.RowGap(), availableWidth, context.viewport, 0))
+			}
+			nestedContributions, err := context.gridRowContributions(&nested, baseStart+item.row.start, availableWidth, nestedGap, depth+1, budget, nil, nil, computed.AlignNormal)
+			if err != nil {
+				return nil, err
+			}
+			context.adjustSubgridRowContributions(nestedContributions, baseStart+item.row.start, item.row.span, item.node, availableWidth, parentGap, nestedGap)
+			contributions = append(contributions, nestedContributions...)
+			continue
+		}
+		(*budget)--
+		if *budget < 0 {
+			return nil, fmt.Errorf("render: grid exceeds %d intrinsic items", maxGridItems)
+		}
+		itemBox := item.box
+		if itemBox == nil {
+			var err error
+			itemBox, err = context.layoutBlockSized(item.node, 0, 0, availableWidth, nil, nil, true)
+			if err != nil {
+				return nil, err
+			}
+		}
+		contribution := itemBox.Bounds.Height + item.marginTop + item.marginBottom
+		if depth == 0 {
+			alignment := resolvedSelfAlignment(item.node.style.AlignSelf(), parentAlignment)
+			switch alignment {
+			case computed.AlignBaseline:
+				distances := boxBaselineDistances(itemBox, item.marginTop, item.marginBottom, false)
+				contribution += math.Max(0, firstGroups[item.row.start].start-distances.start)
+			case computed.AlignLastBaseline:
+				distances := boxBaselineDistances(itemBox, item.marginTop, item.marginBottom, true)
+				key := item.row.start + item.row.span - 1
+				contribution += math.Max(0, lastGroups[key].end-distances.end)
+			}
+		}
+		contributions = append(contributions, gridTrackContribution{
+			start: baseStart + item.row.start, span: item.row.span,
+			minimum: contribution, preferred: contribution,
+		})
+	}
+	return contributions, nil
+}
+
+func findGridItemBox(root *Box, node *styledNode) *Box {
+	if root == nil || node == nil {
+		return nil
+	}
+	if node.node != nil && root.Node == node.node && root.Pseudo == node.pseudo {
+		return root
+	}
+	for _, child := range root.Children {
+		if found := findGridItemBox(child, node); found != nil {
+			return found
+		}
+	}
+	return nil
+}
+
+func (context *layoutContext) adjustSubgridRowContributions(contributions []gridTrackContribution, start, span int, node *styledNode, availableWidth, parentGap, subgridGap float64) {
+	if node == nil || span < 1 {
+		return
+	}
+	padding := context.resolvePadding(node.style, availableWidth)
+	border := context.resolveBorder(node.style, availableWidth)
+	startEdge := resolveLength(node.style.MarginTop(), availableWidth, context.viewport, 0) + padding.Top + border.Top
+	endEdge := resolveLength(node.style.MarginBottom(), availableWidth, context.viewport, 0) + padding.Bottom + border.Bottom
+	halfGapDifference := (subgridGap - parentGap) / 2
+	for index := range contributions {
+		contribution := &contributions[index]
+		extra := 0.0
+		if contribution.start == start {
+			extra += startEdge
+		} else {
+			extra += halfGapDifference
+		}
+		if contribution.start+contribution.span == start+span {
+			extra += endEdge
+		} else {
+			extra += halfGapDifference
+		}
+		contribution.minimum = math.Max(0, contribution.minimum+extra)
+		contribution.preferred = math.Max(contribution.minimum, contribution.preferred+extra)
+	}
+}
+
+func (context *layoutContext) placeGridItems(container *styledNode, box *Box, model *gridLayoutModel, columnStarts, columnEnds, rowStarts, rowEnds []float64, columnNames, rowNames [][]string) error {
 	for index := range model.items {
 		item := &model.items[index]
 		cellWidth := gridTrackSpan(columnStarts, columnEnds, item.column.start, item.column.span)
 		cellHeight := gridTrackSpan(rowStarts, rowEnds, item.row.start, item.row.span)
 		horizontalAlignment := resolvedSelfAlignment(item.node.style.JustifySelf(), container.style.JustifyItems())
 		verticalAlignment := resolvedSelfAlignment(item.node.style.AlignSelf(), container.style.AlignItems())
+		subgrid := gridSubgridContextForItem(item, columnStarts, columnEnds, rowStarts, rowEnds, columnNames, rowNames)
+		context.applySubgridEdgeInsets(item, subgrid, cellWidth)
+		columnSubgrid := subgrid != nil && subgrid.columns != nil
+		rowSubgrid := subgrid != nil && subgrid.rows != nil
 		childContainingWidth := cellWidth
-		if !alignmentStretches(horizontalAlignment) && item.node.style.Width().Unit() == lengthAuto {
+		if !columnSubgrid && !alignmentStretches(horizontalAlignment) && item.node.style.Width().Unit() == lengthAuto {
 			intrinsic, intrinsicErr := context.gridItemIntrinsicWidths(item.node, cellWidth)
 			if intrinsicErr != nil {
 				return intrinsicErr
 			}
 			childContainingWidth = math.Min(cellWidth, intrinsic.preferred)
 		}
-		childBox, err := context.layoutBlockSized(item.node, 0, 0, childContainingWidth, &cellHeight, nil, true)
+		var forcedContentWidth *float64
+		if columnSubgrid {
+			padding := context.resolvePadding(item.node.style, cellWidth)
+			border := context.resolveBorder(item.node.style, cellWidth)
+			forced := math.Max(0, cellWidth-item.marginLeft-item.marginRight-padding.Left-padding.Right-border.Left-border.Right)
+			forcedContentWidth = &forced
+		}
+		childBox, err := context.layoutBlockSizedWithSubgrid(item.node, 0, 0, childContainingWidth, &cellHeight, forcedContentWidth, true, subgrid)
 		if err != nil {
 			return err
 		}
 		availableHeight := math.Max(0, cellHeight-item.marginTop-item.marginBottom)
-		if item.node.style.Height().Unit() == lengthAuto && alignmentStretches(verticalAlignment) {
+		if rowSubgrid || item.node.style.Height().Unit() == lengthAuto && alignmentStretches(verticalAlignment) {
 			setBoxOuterHeight(childBox, availableHeight)
 		}
 		item.box = childBox
@@ -1342,9 +1826,19 @@ func gridTrackSpan(starts, ends []float64, start, span int) float64 {
 }
 
 func (context *layoutContext) intrinsicGridContentWidths(node *styledNode, availableWidth float64) (intrinsicWidths, error) {
-	columnTemplate := resolveGridAutoRepeat(node.style.GridTemplateColumns(), nil, false, 0, context.viewport)
-	rowTemplate := resolveGridAutoRepeat(node.style.GridTemplateRows(), nil, false, 0, context.viewport)
-	model, err := context.buildGridLayoutModel(node, columnTemplate, rowTemplate)
+	columnTemplate := node.style.GridTemplateColumns()
+	if columnTemplate.IsSubgrid() {
+		columnTemplate = computed.GridTrackList{}
+	} else {
+		columnTemplate = resolveGridAutoRepeat(columnTemplate, nil, false, 0, context.viewport)
+	}
+	rowTemplate := node.style.GridTemplateRows()
+	if rowTemplate.IsSubgrid() {
+		rowTemplate = computed.GridTrackList{}
+	} else {
+		rowTemplate = resolveGridAutoRepeat(rowTemplate, nil, false, 0, context.viewport)
+	}
+	model, err := context.buildGridLayoutModel(node, columnTemplate, rowTemplate, nil, false, false)
 	if err != nil {
 		return intrinsicWidths{}, err
 	}

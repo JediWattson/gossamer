@@ -341,6 +341,10 @@ func (context *layoutContext) layoutBlock(node *styledNode, containingX, content
 }
 
 func (context *layoutContext) layoutBlockSized(node *styledNode, containingX, contentY, availableWidth float64, containingHeight, forcedContentWidth *float64, independentFormattingContext bool) (*Box, error) {
+	return context.layoutBlockSizedWithSubgrid(node, containingX, contentY, availableWidth, containingHeight, forcedContentWidth, independentFormattingContext, nil)
+}
+
+func (context *layoutContext) layoutBlockSizedWithSubgrid(node *styledNode, containingX, contentY, availableWidth float64, containingHeight, forcedContentWidth *float64, independentFormattingContext bool, subgrid *gridSubgridContext) (*Box, error) {
 	style := node.style
 	leftAuto := style.MarginLeft().Unit() == lengthAuto
 	rightAuto := style.MarginRight().Unit() == lengthAuto
@@ -528,7 +532,7 @@ func (context *layoutContext) layoutBlockSized(node *styledNode, containingX, co
 				repeatFulfillsMinimum = true
 			}
 		}
-		contentHeight, err := context.layoutGridContainer(node, box, width, childContainingHeight, repeatHeight, repeatFulfillsMinimum)
+		contentHeight, err := context.layoutGridContainer(node, box, width, childContainingHeight, repeatHeight, repeatFulfillsMinimum, subgrid)
 		if err != nil {
 			return nil, err
 		}

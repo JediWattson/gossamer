@@ -293,7 +293,9 @@ performance budgets; see
   container/item/self alignment with explicit `safe`/`unsafe` overflow
   positions and first/last baseline groups, anonymous text items, order-modified
   placement and paint, retained track geometry, and live resolved
-  `grid-template-*` CSSOM reads
+  `grid-template-*` CSSOM reads; per-axis Subgrid adopts parent tracks, line
+  names, gutters, intrinsic descendant contributions, edge decorations, and
+  shared row-baseline groups through bounded nesting
 - HTML and CSS table display roles with anonymous wrapper fixup, bounded
   intrinsic column sizing, captions, column and row groups, `colspan`/
   `rowspan`, inline-table participation, separated border spacing, fixed
@@ -336,8 +338,8 @@ The following are intentionally still outside the current milestone:
 - Full HTML error recovery beyond the current table insertion modes and foster
   parenting, including formatting-element reconstruction, complete template
   modes, SVG/MathML, and encoding sniffing
-- Flex wrapping and full intrinsic sizing, Grid subgrid and orthogonal or
-  nested-container baseline propagation, remaining table track
+- Flex wrapping and full intrinsic sizing, Grid orthogonal-flow behavior and
+  remaining advanced intrinsic/overflow interactions, remaining table track
   merging, percentage sizing, visibility-collapse, wrapper, writing-mode, and
   border junction behavior, floats, sticky and full inline positioned layout,
   and retained inline boxes

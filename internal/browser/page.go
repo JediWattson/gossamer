@@ -645,11 +645,23 @@ func (page *Page) ComputedStyleProperty(handle NodeHandle, property string) (str
 			if computedStyle.Display().Inside() != computed.DisplayInsideGrid {
 				return nil
 			}
+			template := computedStyle.GridTemplateColumns()
 			tracks := geometry.GridColumnSizes()
 			lineNames := geometry.GridColumnLineNames()
+			isSubgrid := geometry.GridColumnSubgrid()
 			if canonical == "grid-template-rows" {
+				template = computedStyle.GridTemplateRows()
 				tracks = geometry.GridRowSizes()
 				lineNames = geometry.GridRowLineNames()
+				isSubgrid = geometry.GridRowSubgrid()
+			}
+			if template.IsSubgrid() {
+				if !isSubgrid {
+					value = "none"
+					return nil
+				}
+				value = serializeResolvedSubgrid(template.ResolvedSubgridLineNames(len(tracks) + 1))
+				return nil
 			}
 			if len(tracks) == 0 {
 				return nil
@@ -874,6 +886,15 @@ func serializeResolvedGridTracks(tracks []float64, lineNames [][]string) string 
 	}
 	if len(tracks) < len(lineNames) && len(lineNames[len(tracks)]) != 0 {
 		parts = append(parts, computed.SerializeGridLineNames(lineNames[len(tracks)]))
+	}
+	return strings.Join(parts, " ")
+}
+
+func serializeResolvedSubgrid(lineNames [][]string) string {
+	parts := make([]string, 1, len(lineNames)+1)
+	parts[0] = "subgrid"
+	for _, names := range lineNames {
+		parts = append(parts, computed.SerializeGridLineNames(names))
 	}
 	return strings.Join(parts, " ")
 }

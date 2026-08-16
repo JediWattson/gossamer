@@ -394,6 +394,11 @@ func (definition propertyDefinition) copy(destination *computedStyle, source com
 		destination.position = source.position
 	case propertyGap:
 		*definition.boxLength(destination) = *definition.boxLength(&source)
+		if definition.edge == propertyBottom {
+			destination.rowGapNormal = source.rowGapNormal
+		} else {
+			destination.columnGapNormal = source.columnGapNormal
+		}
 	case propertyTableLayout:
 		destination.tableLayout = source.tableLayout
 	case propertyTextAlign:
@@ -568,8 +573,8 @@ func (definition propertyDefinition) valid(source string, viewport Viewport) boo
 		keyword, ok := singleCSSKeyword(source)
 		return ok && (keyword == "static" || keyword == "relative" || keyword == "absolute" || keyword == "fixed")
 	case propertyGap:
-		parsed, ok := parseLength(source, 1, 1, viewport)
-		return ok && parsed.unit != lengthAuto && nonNegativeLength(parsed)
+		_, ok := parseGapValue(source, 1, viewport)
+		return ok
 	case propertyTableLayout:
 		keyword, ok := singleCSSKeyword(source)
 		return ok && (keyword == "auto" || keyword == "fixed")
@@ -935,8 +940,13 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 			style.position = PositionStatic
 		}
 	case propertyGap:
-		if parsed, ok := parseLength(source, style.fontSize, style.fontSize, context.viewport); ok && parsed.unit != lengthAuto && nonNegativeLength(parsed) {
-			*definition.boxLength(style) = parsed
+		if parsed, ok := parseGapValue(source, style.fontSize, context.viewport); ok {
+			*definition.boxLength(style) = parsed.length
+			if definition.edge == propertyBottom {
+				style.rowGapNormal = parsed.normal
+			} else {
+				style.columnGapNormal = parsed.normal
+			}
 		}
 	case propertyTableLayout:
 		keyword, _ := singleCSSKeyword(source)
@@ -1188,6 +1198,9 @@ func (definition propertyDefinition) serialize(computed ComputedStyle) string {
 			return "static"
 		}
 	case propertyGap:
+		if definition.edge == propertyBottom && computed.rowGapNormal || definition.edge == propertyRight && computed.columnGapNormal {
+			return "normal"
+		}
 		return serializeComputedLength(*definition.boxLength(&computed))
 	case propertyTableLayout:
 		if computed.tableLayout == TableLayoutFixed {
@@ -1423,20 +1436,44 @@ func parseBorderSpacing(source string, fontSize float64, viewport Viewport) (Bor
 	return BorderSpacing{horizontal: parsed[0], vertical: parsed[1]}, true
 }
 
-func parseGapShorthand(source string, fontSize float64, viewport Viewport) (length, length, bool) {
-	parts := strings.Fields(source)
-	if len(parts) < 1 || len(parts) > 2 {
-		return length{}, length{}, false
+type gapValue struct {
+	length length
+	normal bool
+}
+
+func parseGapValue(source string, fontSize float64, viewport Viewport) (gapValue, bool) {
+	value, ok := parsePropertyValue(source)
+	if !ok || len(value.terms) != 1 {
+		return gapValue{}, false
 	}
-	row, ok := parseLength(parts[0], fontSize, fontSize, viewport)
-	if !ok || row.unit == lengthAuto || !nonNegativeLength(row) {
-		return length{}, length{}, false
+	return parseGapComponent(value.terms[0], value.source, fontSize, viewport)
+}
+
+func parseGapComponent(component css.ComponentValue, source string, fontSize float64, viewport Viewport) (gapValue, bool) {
+	if keyword, ok := componentKeyword(component); ok && keyword == "normal" {
+		return gapValue{length: px(0), normal: true}, true
+	}
+	parsed, ok := parseLengthComponent(component, source, fontSize, viewport)
+	if !ok || parsed.unit == lengthAuto || !nonNegativeLength(parsed) {
+		return gapValue{}, false
+	}
+	return gapValue{length: parsed}, true
+}
+
+func parseGapShorthand(source string, fontSize float64, viewport Viewport) (gapValue, gapValue, bool) {
+	value, ok := parsePropertyValue(source)
+	if !ok || len(value.terms) < 1 || len(value.terms) > 2 {
+		return gapValue{}, gapValue{}, false
+	}
+	row, ok := parseGapComponent(value.terms[0], value.source, fontSize, viewport)
+	if !ok {
+		return gapValue{}, gapValue{}, false
 	}
 	column := row
-	if len(parts) == 2 {
-		column, ok = parseLength(parts[1], fontSize, fontSize, viewport)
-		if !ok || column.unit == lengthAuto || !nonNegativeLength(column) {
-			return length{}, length{}, false
+	if len(value.terms) == 2 {
+		column, ok = parseGapComponent(value.terms[1], value.source, fontSize, viewport)
+		if !ok {
+			return gapValue{}, gapValue{}, false
 		}
 	}
 	return row, column, true
@@ -1510,7 +1547,8 @@ func applyDeclaration(style *computedStyle, property, source string, context pro
 		}
 	case "gap":
 		if row, column, ok := parseGapShorthand(source, style.fontSize, context.viewport); ok {
-			style.rowGap, style.columnGap = row, column
+			style.rowGap, style.columnGap = row.length, column.length
+			style.rowGapNormal, style.columnGapNormal = row.normal, column.normal
 		}
 	case "grid-column":
 		if start, end, ok := parseGridLineShorthand(source); ok {
