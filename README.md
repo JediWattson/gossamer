@@ -20,13 +20,77 @@ backend-neutral display list for screenshots and interactive presentation.
 
 ## Quick start
 
-Gossamer currently targets Go 1.25.3. Remote pages require network access, and
-the parent directory for a screenshot must already exist.
+### Run the Graphite browser with stock V8
+
+The interactive browser currently requires:
+
+- Apple Silicon macOS (`arm64`);
+- Go 1.25.3;
+- Xcode and its command-line tools; and
+- Git plus network access for the first V8 checkout and for remote pages.
+
+The pinned V8 source and symbolized profile build currently occupy about 40 GB,
+so reserve at least 45 GB of free disk space. They remain under the ignored
+`third_party/v8` directory and are not committed to the repository.
+
+Clone Gossamer and enter the repository:
 
 ```sh
 git clone https://github.com/JediWattson/gossamer.git
 cd gossamer
 ```
+
+Bootstrap and build the pinned stock V8 checkout once:
+
+```sh
+./tools/v8/bootstrap.sh
+./tools/v8/build.sh
+```
+
+Then launch the native Graphite browser with an absolute HTTP or HTTPS URL:
+
+```sh
+./tools/v8/window.sh https://example.com
+```
+
+Subsequent launches only need `window.sh`; rerun `build.sh` after changing the
+C++ V8 bridge. URLs containing shell characters such as `&` should be quoted.
+An optional title can be supplied before the URL:
+
+```sh
+./tools/v8/window.sh --title "Gossamer Dev" "https://example.com/?mode=dev&panel=1"
+```
+
+The initial page is loaded before the native window opens. Close the last tab
+or press Control-C in the launching terminal to stop the process. Graphite
+provides multiple tabs, editable address navigation, back/forward/reload,
+root scrollbars, clipboard and IME text input, a two-document back-forward
+cache, and the collapsible engine/kernel telemetry rail. Page JavaScript runs
+in stock V8 while DOM, CSS, layout, browser objects, regions, and queue ARC stay
+owned by Go.
+
+Verify the tagged native launcher and backend without opening a window:
+
+```sh
+GOCACHE=/tmp/gossamer-go-cache ./tools/v8/window.sh --check -count=1
+```
+
+Run the complete Go, race-detector, stock-V8, React, ownership, and teardown
+gate with:
+
+```sh
+GOCACHE=/tmp/gossamer-go-cache ./tools/v8/gate.sh
+```
+
+See
+[`docs/graphite-shell.md`](docs/graphite-shell.md)
+and [`docs/window-backend.md`](docs/window-backend.md).
+
+### Run the Go-only document and rendering pipeline
+
+These commands work without downloading V8. Scripting is disabled in this
+mode, but the same Go loader, DOM, CSS, layout, display-list, and raster paths
+can fetch, inspect, or render a page.
 
 Fetch a document and print its response body:
 
@@ -46,34 +110,16 @@ Render a fixed 800 x 600 screenshot:
 go run ./cmd/gossamer --screenshot page.png https://example.com
 ```
 
-The argument order is currently strict. The three modes cannot be combined.
-URLs must be absolute `http` or `https` URLs.
+The argument order is strict, the three modes cannot be combined, and URLs
+must be absolute `http` or `https` URLs. The parent directory for a screenshot
+must already exist.
 
-You can also build a standalone binary:
+You can also build a standalone Go-only binary:
 
 ```sh
 go build -o gossamer ./cmd/gossamer
 ./gossamer --screenshot page.png https://example.com
 ```
-
-On Apple Silicon macOS, after building the pinned stock V8 checkout, open the
-same browser Page in the native interactive backend:
-
-```sh
-tools/v8/bootstrap.sh
-tools/v8/build.sh
-tools/v8/window.sh https://example.com
-```
-
-The native launcher now opens the functional Graphite browser shell: multiple
-tabs with independent Page and session-history ownership, a bounded
-back-forward cache, an editable address field, back/forward/reload commands,
-root overlay scrollbars, native text clipboard and IME foundations, a content
-viewport, and a collapsible engine/kernel telemetry rail. Resize, mouse,
-wheel, keyboard, composition, focus, and blur input still cross the ordered
-Page queue. Accessibility integration remains future work. See
-[`docs/graphite-shell.md`](docs/graphite-shell.md)
-and [`docs/window-backend.md`](docs/window-backend.md).
 
 ## How it works
 
