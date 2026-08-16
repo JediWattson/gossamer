@@ -23,6 +23,10 @@ const (
 	EventKeyUp
 	EventFocus
 	EventBlur
+	EventTextInput
+	EventCompositionStart
+	EventCompositionUpdate
+	EventCompositionEnd
 )
 
 type Modifiers struct {
@@ -33,8 +37,9 @@ type Modifiers struct {
 }
 
 // Event is a backend-neutral native input record. Coordinates and scroll
-// deltas are CSS pixels in a top-left coordinate system. Text accompanies a
-// key-down when the platform produced insertable Unicode text.
+// deltas are CSS pixels in a top-left coordinate system. Insertable Unicode
+// text arrives separately from physical key events so IME composition can be
+// represented without pretending every edit is one key-down.
 type Event struct {
 	Kind      EventKind
 	Width     int
@@ -49,6 +54,7 @@ type Event struct {
 	Code      string
 	Text      string
 	Repeat    bool
+	Composing bool
 	Modifiers Modifiers
 }
 
@@ -66,4 +72,11 @@ type Backend interface {
 	NextEvent(context.Context) (Event, error)
 	Present(*image.RGBA) error
 	Close() error
+}
+
+// ClipboardBackend is an optional native capability. Clipboard strings cross
+// the backend boundary by value; DOM selection and edits remain Page-owned.
+type ClipboardBackend interface {
+	ReadClipboardText() (string, error)
+	WriteClipboardText(string) error
 }

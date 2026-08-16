@@ -66,11 +66,12 @@ tools/v8/window.sh https://example.com
 ```
 
 The native launcher now opens the functional Graphite browser shell: multiple
-tabs with independent Page and session-history ownership, an editable address
-field, back/forward/reload commands, a content viewport, and a collapsible
-engine/kernel telemetry rail. Resize, mouse, wheel, keyboard, focus, and blur
-input still cross the ordered Page queue. A back-forward cache, scrollbar
-chrome, clipboard, IME, and accessibility integration remain future work. See
+tabs with independent Page and session-history ownership, a bounded
+back-forward cache, an editable address field, back/forward/reload commands,
+root overlay scrollbars, native text clipboard and IME foundations, a content
+viewport, and a collapsible engine/kernel telemetry rail. Resize, mouse,
+wheel, keyboard, composition, focus, and blur input still cross the ordered
+Page queue. Accessibility integration remains future work. See
 [`docs/graphite-shell.md`](docs/graphite-shell.md)
 and [`docs/window-backend.md`](docs/window-backend.md).
 
@@ -369,8 +370,8 @@ performance budgets; see
 
 The following are intentionally still outside the current milestone:
 
-- General Web APIs beyond the current V8 DOM slice, script-visible history
-  navigation globals, a back-forward cache, scrollbar UI, clipboard/IME input, and
+- General Web APIs beyond the current V8 DOM slice, element scrollbar chrome,
+  Clipboard API and clipboard DOM events, complete marked-text UI, and
   non-macOS interactive backends
 - Full HTML error recovery beyond the current table insertion modes and foster
   parenting, including formatting-element reconstruction, complete template

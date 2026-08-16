@@ -61,6 +61,7 @@ func (backend *cocoaBackend) NextEvent(ctx context.Context) (Event, error) {
 		DeltaX: float64(native.delta_x), DeltaY: float64(native.delta_y),
 		Button: int(native.button), Buttons: uint(native.buttons),
 		Key: normalizedKey, Code: code, Text: C.GoString(&native.text[0]), Repeat: native.repeat != 0,
+		Composing: native.composing != 0,
 		Modifiers: Modifiers{Alt: native.alt != 0, Ctrl: native.control != 0, Meta: native.command != 0, Shift: native.shift != 0},
 	}, nil
 }
@@ -89,6 +90,31 @@ func (backend *cocoaBackend) Close() error {
 		C.gossamer_cocoa_close(backend.window)
 		backend.window = nil
 	}
+	return nil
+}
+
+func (backend *cocoaBackend) ReadClipboardText() (string, error) {
+	var value *C.char
+	var nativeError *C.char
+	if C.gossamer_cocoa_read_clipboard(&value, &nativeError) == 0 {
+		return "", cocoaError(nativeError, "read Cocoa clipboard")
+	}
+	defer C.free(unsafe.Pointer(value))
+	C.free(unsafe.Pointer(nativeError))
+	if value == nil {
+		return "", nil
+	}
+	return C.GoString(value), nil
+}
+
+func (backend *cocoaBackend) WriteClipboardText(value string) error {
+	nativeValue := C.CString(value)
+	defer C.free(unsafe.Pointer(nativeValue))
+	var nativeError *C.char
+	if C.gossamer_cocoa_write_clipboard(nativeValue, &nativeError) == 0 {
+		return cocoaError(nativeError, "write Cocoa clipboard")
+	}
+	C.free(unsafe.Pointer(nativeError))
 	return nil
 }
 

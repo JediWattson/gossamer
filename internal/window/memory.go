@@ -11,12 +11,50 @@ import (
 // loop without depending on a display server. Presented images are cloned so
 // tests observe the same ownership boundary as a native front buffer.
 type MemoryBackend struct {
-	mutex  sync.Mutex
-	events []Event
-	frames []*image.RGBA
-	config Config
-	open   bool
-	closed bool
+	mutex     sync.Mutex
+	events    []Event
+	frames    []*image.RGBA
+	config    Config
+	clipboard string
+	open      bool
+	closed    bool
+}
+
+func (backend *MemoryBackend) ReadClipboardText() (string, error) {
+	if backend == nil {
+		return "", fmt.Errorf("window: nil memory backend")
+	}
+	backend.mutex.Lock()
+	defer backend.mutex.Unlock()
+	return backend.clipboard, nil
+}
+
+func (backend *MemoryBackend) WriteClipboardText(value string) error {
+	if backend == nil {
+		return fmt.Errorf("window: nil memory backend")
+	}
+	backend.mutex.Lock()
+	backend.clipboard = value
+	backend.mutex.Unlock()
+	return nil
+}
+
+func (backend *MemoryBackend) ClipboardText() string {
+	if backend == nil {
+		return ""
+	}
+	backend.mutex.Lock()
+	defer backend.mutex.Unlock()
+	return backend.clipboard
+}
+
+func (backend *MemoryBackend) SetClipboardText(value string) {
+	if backend == nil {
+		return
+	}
+	backend.mutex.Lock()
+	backend.clipboard = value
+	backend.mutex.Unlock()
 }
 
 func NewMemoryBackend(events ...Event) *MemoryBackend {

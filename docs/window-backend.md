@@ -46,14 +46,23 @@ the existing retained layout hit test. A pointer-down remembers only a stable
 numeric `NodeHandle`; pointer-up hit-tests again and emits a primary click only
 when it lands on the same handle.
 Keyboard, focus, and blur events target the active or most recently hit native
-node. Printable key-down text becomes cancelable `beforeinput`; the existing
-Go default action updates form state and dispatches `input`.
+node. Physical keys and committed Unicode text are distinct records. Direct
+text, paste, cut, and composition commits become cancelable `beforeinput`; the
+existing Go default action updates form state and dispatches `input`.
+
+`ClipboardBackend` is optional and transfers copied strings only. Command-C
+reads the control's UTF-16 selection, while Command-X and Command-V enqueue
+`deleteByCut` and `insertFromPaste`. AppKit implements `NSTextInputClient` and
+queues composition start/update/end plus committed text after the physical key
+record. Graphite consumes that same committed-text channel for its address
+field. Candidate-window placement and the script-visible Clipboard API are not
+claimed yet.
 
 The Cocoa implementation converts its bottom-left coordinates to top-left CSS
 pixels, normalizes scroll direction, maps basic special keys and alphanumeric
-codes, applies a Dark Aqua native frame, and copies RGBA pixels into a
-CoreGraphics image. AppKit initialization is rejected off the process main
-thread.
+codes, applies a Dark Aqua native frame, bridges `NSPasteboard` and
+`NSTextInputClient`, and copies RGBA pixels into a CoreGraphics image. AppKit
+initialization is rejected off the process main thread.
 
 Graphite reserves an 84-pixel top inset and 48-pixel collapsed rail outside
 the DOM viewport. Address/reload input remains shell-owned. Document pointers
@@ -89,8 +98,10 @@ ownership after Page teardown.
 
 This is still an early browser shell. Graphite has up to eight functional tabs,
 independent Page history and input state, address navigation, history
-traversal, reload, and an engine/kernel telemetry rail. It does not yet have a
-back-forward cache, scrollbar chrome, clipboard, IME/composition bridge, touch,
-drag-and-drop, accessibility tree, GPU compositor, or non-macOS backend. Event
-polling and CPU rasterization are intentionally serial until correctness and
-profiling establish where concurrency is valuable.
+traversal, reload, a bounded region-aware back-forward cache, root overlay
+scrollbars, native text clipboard and composition foundations, and an
+engine/kernel telemetry rail. It does not yet have element scrollbar chrome,
+clipboard DOM events or `navigator.clipboard`, complete marked-text candidate
+UI, touch, drag-and-drop, accessibility tree, GPU compositor, or non-macOS
+backend. Event polling and CPU rasterization are intentionally serial until
+correctness and profiling establish where concurrency is valuable.

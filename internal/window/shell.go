@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"math"
 	"net/url"
 	"strings"
 	"unicode/utf8"
@@ -20,6 +21,9 @@ const (
 	graphiteRailWidth     = 48
 	graphiteAddressRadius = 16
 	graphiteTabTopRadius  = 16
+	graphiteScrollbarSize = 8
+	graphiteScrollbarGap  = 2
+	graphiteScrollbarMin  = 24
 	minimumContentWidth   = 160
 	minimumContentHeight  = 120
 )
@@ -52,6 +56,28 @@ type shellTabLayout struct {
 	close image.Rectangle
 }
 
+type shellScrollbarAxis uint8
+
+const (
+	shellScrollbarNone shellScrollbarAxis = iota
+	shellScrollbarHorizontal
+	shellScrollbarVertical
+)
+
+type shellScrollbarDrag struct {
+	axis          shellScrollbarAxis
+	pointerOffset int
+}
+
+type shellScrollbars struct {
+	horizontalTrack image.Rectangle
+	horizontalThumb image.Rectangle
+	verticalTrack   image.Rectangle
+	verticalThumb   image.Rectangle
+	maximumX        float64
+	maximumY        float64
+}
+
 type graphiteShell struct {
 	loader    browser.DocumentLoader
 	opener    PageOpener
@@ -74,6 +100,7 @@ type graphiteShell struct {
 	navigationView string
 	navigationErr  string
 	suppressedKeys map[string]bool
+	scrollbarDrag  shellScrollbarDrag
 	revision       uint64
 }
 
@@ -292,6 +319,16 @@ func (shell *graphiteShell) handleEvent(
 		delete(shell.suppressedKeys, event.Code)
 		return true, translated, false, nil
 	}
+	if shell.addressFocused {
+		switch event.Kind {
+		case EventTextInput:
+			return true, translated, false, shell.insertAddressText(event.Text)
+		case EventCompositionStart, EventCompositionUpdate:
+			return true, translated, false, nil
+		case EventCompositionEnd:
+			return true, translated, false, shell.insertAddressText(event.Text)
+		}
+	}
 	if event.Kind == EventKeyDown {
 		if event.Modifiers.Meta && strings.EqualFold(event.Key, "t") {
 			shell.suppress(event)
@@ -342,6 +379,9 @@ func (shell *graphiteShell) handleEvent(
 
 	if isPointerEvent(event.Kind) {
 		point := image.Pt(int(event.X), int(event.Y))
+		if handled, scrollbarErr := shell.handleScrollbarEvent(page, layout, point, event.Kind); handled || scrollbarErr != nil {
+			return handled, translated, false, scrollbarErr
+		}
 		if point.In(layout.content) && !point.In(layout.inspector) {
 			if event.Kind == EventPointerDown && shell.addressFocused {
 				shell.addressFocused = false
@@ -399,6 +439,161 @@ func (shell *graphiteShell) handleEvent(
 	return false, translated, false, nil
 }
 
+func (shell *graphiteShell) insertAddressText(value string) error {
+	if value == "" {
+		return nil
+	}
+	if shell.selectAll {
+		shell.address = value
+		shell.selectAll = false
+	} else {
+		shell.address += value
+	}
+	shell.revision++
+	return nil
+}
+
+func (shell *graphiteShell) handleScrollbarEvent(page *browser.Page, layout shellLayout, point image.Point, kind EventKind) (bool, error) {
+	if shell == nil || page == nil {
+		return false, nil
+	}
+	if kind == EventPointerUp && shell.scrollbarDrag.axis != shellScrollbarNone {
+		shell.scrollbarDrag = shellScrollbarDrag{}
+		return true, nil
+	}
+	if shell.scrollbarDrag.axis == shellScrollbarNone && kind != EventPointerDown {
+		return false, nil
+	}
+	visibleContent := layout.content
+	if !layout.inspector.Empty() && layout.inspector.Min.X < visibleContent.Max.X {
+		visibleContent.Max.X = layout.inspector.Min.X
+	}
+	if shell.scrollbarDrag.axis == shellScrollbarNone &&
+		point.X < visibleContent.Max.X-graphiteScrollbarGap-graphiteScrollbarSize &&
+		point.Y < visibleContent.Max.Y-graphiteScrollbarGap-graphiteScrollbarSize {
+		return false, nil
+	}
+	geometry, err := page.ViewportGeometry()
+	if err != nil {
+		return false, err
+	}
+	bars := graphiteScrollbars(visibleContent, geometry)
+	scroll := func(axis shellScrollbarAxis, coordinate, offset int) error {
+		track := bars.horizontalTrack
+		thumb := bars.horizontalThumb
+		maximum := bars.maximumX
+		currentX, currentY := geometry.ScrollX, geometry.ScrollY
+		if axis == shellScrollbarVertical {
+			track = bars.verticalTrack
+			thumb = bars.verticalThumb
+			maximum = bars.maximumY
+		}
+		travel := track.Dx() - thumb.Dx()
+		trackStart := track.Min.X
+		if axis == shellScrollbarVertical {
+			travel = track.Dy() - thumb.Dy()
+			trackStart = track.Min.Y
+		}
+		if travel <= 0 || maximum <= 0 {
+			return nil
+		}
+		position := float64(coordinate-trackStart-offset) / float64(travel)
+		position = math.Max(0, math.Min(1, position))
+		if axis == shellScrollbarHorizontal {
+			currentX = position * maximum
+		} else {
+			currentY = position * maximum
+		}
+		_, queueErr := page.QueueViewportScrollTo(currentX, currentY)
+		return queueErr
+	}
+	if shell.scrollbarDrag.axis != shellScrollbarNone && kind == EventPointerMove {
+		coordinate := point.X
+		if shell.scrollbarDrag.axis == shellScrollbarVertical {
+			coordinate = point.Y
+		}
+		return true, scroll(shell.scrollbarDrag.axis, coordinate, shell.scrollbarDrag.pointerOffset)
+	}
+	if kind != EventPointerDown {
+		return false, nil
+	}
+	startDrag := func(axis shellScrollbarAxis, track, thumb image.Rectangle, coordinate int) (bool, error) {
+		if track.Empty() || !point.In(track) {
+			return false, nil
+		}
+		offset := thumb.Dx() / 2
+		if axis == shellScrollbarVertical {
+			offset = thumb.Dy() / 2
+		}
+		if point.In(thumb) {
+			if axis == shellScrollbarHorizontal {
+				offset = point.X - thumb.Min.X
+			} else {
+				offset = point.Y - thumb.Min.Y
+			}
+		}
+		shell.scrollbarDrag = shellScrollbarDrag{axis: axis, pointerOffset: offset}
+		return true, scroll(axis, coordinate, offset)
+	}
+	if handled, dragErr := startDrag(shellScrollbarVertical, bars.verticalTrack, bars.verticalThumb, point.Y); handled || dragErr != nil {
+		return handled, dragErr
+	}
+	return startDrag(shellScrollbarHorizontal, bars.horizontalTrack, bars.horizontalThumb, point.X)
+}
+
+func graphiteScrollbars(content image.Rectangle, geometry browser.DOMViewportGeometry) shellScrollbars {
+	maximumX := math.Max(0, geometry.ScrollWidth-geometry.InnerWidth)
+	maximumY := math.Max(0, geometry.ScrollHeight-geometry.InnerHeight)
+	result := shellScrollbars{maximumX: maximumX, maximumY: maximumY}
+	hasHorizontal := maximumX > 0 && content.Dx() >= graphiteScrollbarMin+graphiteScrollbarGap*2
+	hasVertical := maximumY > 0 && content.Dy() >= graphiteScrollbarMin+graphiteScrollbarGap*2
+	if hasVertical {
+		bottom := content.Max.Y - graphiteScrollbarGap
+		if hasHorizontal {
+			bottom -= graphiteScrollbarSize + graphiteScrollbarGap
+		}
+		result.verticalTrack = image.Rect(
+			content.Max.X-graphiteScrollbarGap-graphiteScrollbarSize,
+			content.Min.Y+graphiteScrollbarGap,
+			content.Max.X-graphiteScrollbarGap,
+			bottom,
+		)
+		result.verticalThumb = scrollbarThumb(result.verticalTrack, geometry.InnerHeight, geometry.ScrollHeight, geometry.ScrollY, true)
+	}
+	if hasHorizontal {
+		right := content.Max.X - graphiteScrollbarGap
+		if hasVertical {
+			right -= graphiteScrollbarSize + graphiteScrollbarGap
+		}
+		result.horizontalTrack = image.Rect(
+			content.Min.X+graphiteScrollbarGap,
+			content.Max.Y-graphiteScrollbarGap-graphiteScrollbarSize,
+			right,
+			content.Max.Y-graphiteScrollbarGap,
+		)
+		result.horizontalThumb = scrollbarThumb(result.horizontalTrack, geometry.InnerWidth, geometry.ScrollWidth, geometry.ScrollX, false)
+	}
+	return result
+}
+
+func scrollbarThumb(track image.Rectangle, viewport, extent, offset float64, vertical bool) image.Rectangle {
+	trackLength := track.Dx()
+	if vertical {
+		trackLength = track.Dy()
+	}
+	if trackLength <= 0 || viewport <= 0 || extent <= viewport {
+		return image.Rectangle{}
+	}
+	thumbLength := int(math.Round(float64(trackLength) * viewport / extent))
+	thumbLength = maxInt(graphiteScrollbarMin, minInt(trackLength, thumbLength))
+	maximum := extent - viewport
+	position := int(math.Round(float64(trackLength-thumbLength) * math.Max(0, math.Min(maximum, offset)) / maximum))
+	if vertical {
+		return image.Rect(track.Min.X, track.Min.Y+position, track.Max.X, track.Min.Y+position+thumbLength)
+	}
+	return image.Rect(track.Min.X+position, track.Min.Y, track.Min.X+position+thumbLength, track.Max.Y)
+}
+
 func (shell *graphiteShell) focusAddress() {
 	shell.addressFocused = true
 	shell.selectAll = true
@@ -445,14 +640,7 @@ func (shell *graphiteShell) handleAddressKey(
 	if event.Text == "" || event.Modifiers.Meta || event.Modifiers.Ctrl {
 		return nil
 	}
-	if shell.selectAll {
-		shell.address = event.Text
-		shell.selectAll = false
-	} else {
-		shell.address += event.Text
-	}
-	shell.revision++
-	return nil
+	return shell.insertAddressText(event.Text)
 }
 
 func (shell *graphiteShell) navigate(ctx context.Context, page *browser.Page, raw string) error {

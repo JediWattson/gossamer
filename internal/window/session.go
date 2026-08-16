@@ -132,9 +132,68 @@ func runSession(ctx context.Context, page *browser.Page, backend Backend, config
 			}
 			event = translated
 		}
+		if handled, err := routeClipboardShortcut(activePage, backend, event, activeState); err != nil {
+			return err
+		} else if handled {
+			continue
+		}
 		if err := routeEvent(activePage, event, activeState); err != nil {
 			return err
 		}
+	}
+}
+
+func routeClipboardShortcut(page *browser.Page, backend Backend, event Event, state *inputState) (bool, error) {
+	if event.Kind != EventKeyDown || !event.Modifiers.Meta || event.Modifiers.Ctrl || event.Modifiers.Alt {
+		return false, nil
+	}
+	clipboard, ok := backend.(ClipboardBackend)
+	if !ok {
+		return false, nil
+	}
+	target, ok := keyboardTarget(page, state.focusTarget)
+	if !ok {
+		return false, nil
+	}
+	key := event.Key
+	if key != "c" && key != "C" && key != "x" && key != "X" && key != "v" && key != "V" {
+		return false, nil
+	}
+	state.focusTarget = target
+	selected, selectionErr := page.SelectedText(target)
+	if errors.Is(selectionErr, dom.ErrWrongNodeKind) {
+		return false, nil
+	}
+	if selectionErr != nil {
+		return true, selectionErr
+	}
+	if err := routeEvent(page, event, state); err != nil {
+		return true, err
+	}
+	queueEdit := func(data, inputType string) error {
+		_, err := page.QueueInputEvent(browser.InputEvent{
+			Type: browser.InputBeforeInput, Target: target, Data: data, InputType: inputType,
+			MetaKey: true, ShiftKey: event.Modifiers.Shift,
+		})
+		return err
+	}
+	switch key {
+	case "c", "C", "x", "X":
+		if err := clipboard.WriteClipboardText(selected); err != nil {
+			return true, err
+		}
+		if key == "x" || key == "X" {
+			return true, queueEdit("", "deleteByCut")
+		}
+		return true, nil
+	case "v", "V":
+		value, err := clipboard.ReadClipboardText()
+		if err != nil {
+			return true, err
+		}
+		return true, queueEdit(value, "insertFromPaste")
+	default:
+		return false, nil
 	}
 }
 
@@ -219,12 +278,40 @@ func routeEvent(page *browser.Page, event Event, state *inputState) error {
 		}
 		err := queue(browser.InputEvent{
 			Type: kind, Target: target, Key: event.Key, Code: event.Code,
-			Repeat: event.Repeat, IsComposing: false,
+			Repeat: event.Repeat, IsComposing: event.Composing,
 		})
 		if event.Kind == EventKeyDown && event.Text != "" && !modifiers.Meta && !modifiers.Ctrl {
 			err = errors.Join(err, queue(browser.InputEvent{
 				Type: browser.InputBeforeInput, Target: target, Data: event.Text,
 				InputType: "insertText",
+			}))
+		}
+		return err
+	case EventTextInput, EventCompositionStart, EventCompositionUpdate, EventCompositionEnd:
+		target, ok := keyboardTarget(page, state.focusTarget)
+		if !ok {
+			return nil
+		}
+		state.focusTarget = target
+		if event.Kind == EventTextInput {
+			return queue(browser.InputEvent{
+				Type: browser.InputBeforeInput, Target: target, Data: event.Text,
+				InputType: "insertText",
+			})
+		}
+		kind := browser.InputCompositionStart
+		if event.Kind == EventCompositionUpdate {
+			kind = browser.InputCompositionUpdate
+		} else if event.Kind == EventCompositionEnd {
+			kind = browser.InputCompositionEnd
+		}
+		err := queue(browser.InputEvent{
+			Type: kind, Target: target, Data: event.Text, IsComposing: event.Kind != EventCompositionEnd,
+		})
+		if event.Kind == EventCompositionEnd && event.Text != "" {
+			err = errors.Join(err, queue(browser.InputEvent{
+				Type: browser.InputBeforeInput, Target: target, Data: event.Text,
+				InputType: "insertCompositionText",
 			}))
 		}
 		return err

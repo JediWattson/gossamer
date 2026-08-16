@@ -19,16 +19,25 @@ enum {
   GOSSAMER_EVENT_KEY_UP = 8,
   GOSSAMER_EVENT_FOCUS = 9,
   GOSSAMER_EVENT_BLUR = 10,
+  GOSSAMER_EVENT_TEXT_INPUT = 11,
+  GOSSAMER_EVENT_COMPOSITION_START = 12,
+  GOSSAMER_EVENT_COMPOSITION_UPDATE = 13,
+  GOSSAMER_EVENT_COMPOSITION_END = 14,
 };
 
 struct gossamer_cocoa_window;
+static void gossamer_queue_text_event(struct gossamer_cocoa_window *state,
+                                      int kind, NSString *text,
+                                      int composing);
 
-@interface GossamerView : NSView {
+@interface GossamerView : NSView <NSTextInputClient> {
  @public
   uint8_t *_pixels;
   size_t _width;
   size_t _height;
   size_t _stride;
+  struct gossamer_cocoa_window *_state;
+  NSMutableString *_markedText;
 }
 - (BOOL)setPixels:(const uint8_t *)pixels
             width:(size_t)width
@@ -50,6 +59,9 @@ struct gossamer_cocoa_window {
   int focus_change;
   int last_width;
   int last_height;
+  gossamer_cocoa_event pending_events[8];
+  unsigned int pending_head;
+  unsigned int pending_count;
 };
 
 static void gossamer_set_error(char **error, NSString *message) {
@@ -72,6 +84,29 @@ static void gossamer_copy_string(char *destination, size_t capacity,
   strlcpy(destination, utf8, capacity);
 }
 
+static void gossamer_queue_text_event(gossamer_cocoa_window *state, int kind,
+                                      NSString *text, int composing) {
+  if (state == NULL || state->pending_count >= 8)
+    return;
+  unsigned int index = (state->pending_head + state->pending_count) % 8;
+  gossamer_cocoa_event *event = &state->pending_events[index];
+  memset(event, 0, sizeof(*event));
+  event->kind = kind;
+  event->composing = composing ? 1 : 0;
+  gossamer_copy_string(event->text, sizeof(event->text), text);
+  state->pending_count++;
+}
+
+static int gossamer_pop_text_event(gossamer_cocoa_window *state,
+                                   gossamer_cocoa_event *event) {
+  if (state == NULL || event == NULL || state->pending_count == 0)
+    return 0;
+  *event = state->pending_events[state->pending_head];
+  state->pending_head = (state->pending_head + 1) % 8;
+  state->pending_count--;
+  return 1;
+}
+
 @implementation GossamerView
 - (BOOL)acceptsFirstResponder {
   return YES;
@@ -79,7 +114,98 @@ static void gossamer_copy_string(char *destination, size_t capacity,
 
 - (void)dealloc {
   free(_pixels);
+  [_markedText release];
   [super dealloc];
+}
+
+- (void)keyDown:(NSEvent *)event {
+  if (![[self inputContext] handleEvent:event])
+    [super keyDown:event];
+}
+
+- (BOOL)hasMarkedText {
+  return _markedText != nil && [_markedText length] != 0;
+}
+
+- (NSRange)markedRange {
+  if (![self hasMarkedText])
+    return NSMakeRange(NSNotFound, 0);
+  return NSMakeRange(0, [_markedText length]);
+}
+
+- (NSRange)selectedRange {
+  return NSMakeRange(0, 0);
+}
+
+- (void)setMarkedText:(id)text
+         selectedRange:(NSRange)selectedRange
+       replacementRange:(NSRange)replacementRange {
+  (void)selectedRange;
+  (void)replacementRange;
+  NSString *plain = [text isKindOfClass:[NSAttributedString class]]
+                        ? [(NSAttributedString *)text string]
+                        : (NSString *)text;
+  BOOL starting = ![self hasMarkedText];
+  [_markedText release];
+  _markedText = [[NSMutableString alloc] initWithString:plain == nil ? @"" : plain];
+  if (starting)
+    gossamer_queue_text_event(_state, GOSSAMER_EVENT_COMPOSITION_START, @"", 1);
+  gossamer_queue_text_event(_state, GOSSAMER_EVENT_COMPOSITION_UPDATE,
+                            _markedText, 1);
+}
+
+- (void)unmarkText {
+  if (![self hasMarkedText])
+    return;
+  gossamer_queue_text_event(_state, GOSSAMER_EVENT_COMPOSITION_END,
+                            _markedText, 0);
+  [_markedText release];
+  _markedText = nil;
+}
+
+- (void)insertText:(id)text replacementRange:(NSRange)replacementRange {
+  (void)replacementRange;
+  NSString *plain = [text isKindOfClass:[NSAttributedString class]]
+                        ? [(NSAttributedString *)text string]
+                        : (NSString *)text;
+  if ([self hasMarkedText]) {
+    gossamer_queue_text_event(_state, GOSSAMER_EVENT_COMPOSITION_END,
+                              plain, 0);
+    [_markedText release];
+    _markedText = nil;
+    return;
+  }
+  gossamer_queue_text_event(_state, GOSSAMER_EVENT_TEXT_INPUT, plain, 0);
+}
+
+- (void)doCommandBySelector:(SEL)selector {
+  [[self nextResponder] tryToPerform:selector with:self];
+}
+
+- (NSArray<NSAttributedStringKey> *)validAttributesForMarkedText {
+  return @[];
+}
+
+- (NSAttributedString *)attributedSubstringForProposedRange:(NSRange)range
+                                                actualRange:(NSRangePointer)actualRange {
+  (void)range;
+  if (actualRange != NULL)
+    *actualRange = NSMakeRange(NSNotFound, 0);
+  return nil;
+}
+
+- (NSUInteger)characterIndexForPoint:(NSPoint)point {
+  (void)point;
+  return NSNotFound;
+}
+
+- (NSRect)firstRectForCharacterRange:(NSRange)range
+                          actualRange:(NSRangePointer)actualRange {
+  if (actualRange != NULL)
+    *actualRange = range;
+  NSRect local = NSMakeRect(0, 0, 1, 20);
+  NSRect windowRect = [self convertRect:local toView:nil];
+  return [[self window] convertRectToScreen:windowRect];
 }
 
 - (BOOL)setPixels:(const uint8_t *)pixels
@@ -194,6 +320,7 @@ gossamer_cocoa_window *gossamer_cocoa_open(const char *title, int width,
                                                   backing:NSBackingStoreBuffered
                                                     defer:NO];
     state->view = [[GossamerView alloc] initWithFrame:rectangle];
+    state->view->_state = state;
     state->delegate = [[GossamerWindowDelegate alloc] init];
     state->delegate->_state = state;
     [state->window setDelegate:state->delegate];
@@ -257,6 +384,8 @@ int gossamer_cocoa_next_event(gossamer_cocoa_window *state,
       event->kind = GOSSAMER_EVENT_CLOSE;
       return 1;
     }
+    if (gossamer_pop_text_event(state, event))
+      return 1;
     NSSize size = [state->view bounds].size;
     int width = (int)llround(size.width);
     int height = (int)llround(size.height);
@@ -316,14 +445,9 @@ int gossamer_cocoa_next_event(gossamer_cocoa_window *state,
       event->kind = GOSSAMER_EVENT_KEY_DOWN;
       event->key_code = [native keyCode];
       event->repeat = [native isARepeat] ? 1 : 0;
+      event->composing = [state->view hasMarkedText] ? 1 : 0;
       gossamer_copy_string(event->key, sizeof(event->key),
                            [native charactersIgnoringModifiers]);
-      NSString *characters = [native characters];
-      if (!event->command && !event->control && [characters length] > 0) {
-        unichar first = [characters characterAtIndex:0];
-        if (![[NSCharacterSet controlCharacterSet] characterIsMember:first])
-          gossamer_copy_string(event->text, sizeof(event->text), characters);
-      }
       break;
     }
     case NSEventTypeKeyUp:
@@ -379,5 +503,46 @@ void gossamer_cocoa_close(gossamer_cocoa_window *state) {
     [state->view release];
     [state->window release];
     free(state);
+  }
+}
+
+int gossamer_cocoa_read_clipboard(char **value, char **error) {
+  @autoreleasepool {
+    if (value != NULL)
+      *value = NULL;
+    if (error != NULL)
+      *error = NULL;
+    if (value == NULL) {
+      gossamer_set_error(error, @"clipboard output is null");
+      return 0;
+    }
+    NSString *text = [[NSPasteboard generalPasteboard]
+        stringForType:NSPasteboardTypeString];
+    const char *utf8 = text == nil ? "" : [text UTF8String];
+    *value = strdup(utf8 == NULL ? "" : utf8);
+    if (*value == NULL) {
+      gossamer_set_error(error, @"allocating clipboard text failed");
+      return 0;
+    }
+    return 1;
+  }
+}
+
+int gossamer_cocoa_write_clipboard(const char *value, char **error) {
+  @autoreleasepool {
+    if (error != NULL)
+      *error = NULL;
+    NSString *text = value == NULL ? @"" : [NSString stringWithUTF8String:value];
+    if (text == nil) {
+      gossamer_set_error(error, @"clipboard text is not valid UTF-8");
+      return 0;
+    }
+    NSPasteboard *pasteboard = [NSPasteboard generalPasteboard];
+    [pasteboard clearContents];
+    if (![pasteboard setString:text forType:NSPasteboardTypeString]) {
+      gossamer_set_error(error, @"writing clipboard text failed");
+      return 0;
+    }
+    return 1;
   }
 }

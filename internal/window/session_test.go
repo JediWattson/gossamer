@@ -135,6 +135,139 @@ func TestRunRoutesNativeEventsThroughPageQueueAndPresentsFrames(t *testing.T) {
 	}
 }
 
+func TestRunRoutesClipboardShortcutsThroughQueuedFormEdits(t *testing.T) {
+	t.Parallel()
+
+	fakeEngine := fake.New()
+	browserRuntime, err := browser.NewWithEngine(fakeEngine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer browserRuntime.Close()
+	page, err := browserRuntime.LoadPage(context.Background(), "https://clipboard.gossamer.test/", windowDocumentLoader{response: &loader.Response{
+		URL: mustWindowURL(t, "https://clipboard.gossamer.test/"), StatusCode: 200,
+		Body: io.NopCloser(strings.NewReader(`<html><body style="margin:0"><input id="target" style="display:block;width:120px;height:30px"></body></html>`)),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputID, found := page.Document().ElementByID("target")
+	if !found {
+		t.Fatal("clipboard input has no stable node identity")
+	}
+	if err := page.Document().SetFormValue(inputID, "A😀B"); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.Document().SetFormSelection(inputID, 1, 3, "forward"); err != nil {
+		t.Fatal(err)
+	}
+	target := browser.NodeHandle{Document: page.DocumentGeneration(), Node: inputID}
+	realm, _ := fakeEngine.LatestRealm()
+	var dispatched []browser.InputEventType
+	for _, eventType := range []browser.InputEventType{browser.InputKeyDown, browser.InputBeforeInput, browser.InputInput} {
+		eventType := eventType
+		callback, callbackErr := realm.RegisterCallback(func(browser.Host) error {
+			dispatched = append(dispatched, eventType)
+			return nil
+		})
+		if callbackErr != nil {
+			t.Fatal(callbackErr)
+		}
+		if err := realm.Bind(eventType, target, callback); err != nil {
+			t.Fatal(err)
+		}
+	}
+	backend := window.NewMemoryBackend(
+		window.Event{Kind: window.EventPointerDown, X: 5, Y: 5, Button: 0, Buttons: 1},
+		window.Event{Kind: window.EventPointerUp, X: 5, Y: 5, Button: 0},
+		window.Event{Kind: window.EventKeyDown, Key: "c", Code: "KeyC", Modifiers: window.Modifiers{Meta: true}},
+		window.Event{Kind: window.EventKeyDown, Key: "x", Code: "KeyX", Modifiers: window.Modifiers{Meta: true}},
+		window.Event{Kind: window.EventKeyDown, Key: "v", Code: "KeyV", Modifiers: window.Modifiers{Meta: true}},
+		window.Event{Kind: window.EventClose},
+	)
+	if err := window.Run(context.Background(), page, backend, "Clipboard test"); err != nil {
+		t.Fatal(err)
+	}
+	if got := backend.ClipboardText(); got != "😀" {
+		t.Fatalf("clipboard = %q, want 😀", got)
+	}
+	if value, valueErr := page.Document().FormValue(inputID); valueErr != nil || value != "A😀B" {
+		t.Fatalf("value after copy/cut/paste = %q, err=%v", value, valueErr)
+	}
+	want := []browser.InputEventType{
+		browser.InputKeyDown,
+		browser.InputKeyDown, browser.InputBeforeInput, browser.InputInput,
+		browser.InputKeyDown, browser.InputBeforeInput, browser.InputInput,
+	}
+	if !reflect.DeepEqual(dispatched, want) {
+		t.Fatalf("clipboard event order = %v, want %v", dispatched, want)
+	}
+}
+
+func TestRunRoutesCompositionAndCommittedTextThroughQueuedInput(t *testing.T) {
+	t.Parallel()
+
+	fakeEngine := fake.New()
+	browserRuntime, err := browser.NewWithEngine(fakeEngine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer browserRuntime.Close()
+	page, err := browserRuntime.LoadPage(context.Background(), "https://ime.gossamer.test/", windowDocumentLoader{response: &loader.Response{
+		URL: mustWindowURL(t, "https://ime.gossamer.test/"), StatusCode: 200,
+		Body: io.NopCloser(strings.NewReader(`<html><body style="margin:0"><input id="target" style="display:block;width:120px;height:30px"></body></html>`)),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputID, found := page.Document().ElementByID("target")
+	if !found {
+		t.Fatal("IME input has no stable node identity")
+	}
+	target := browser.NodeHandle{Document: page.DocumentGeneration(), Node: inputID}
+	realm, _ := fakeEngine.LatestRealm()
+	var dispatched []browser.InputEventType
+	for _, eventType := range []browser.InputEventType{
+		browser.InputCompositionStart, browser.InputCompositionUpdate, browser.InputCompositionEnd,
+		browser.InputBeforeInput, browser.InputInput,
+	} {
+		eventType := eventType
+		callback, callbackErr := realm.RegisterCallback(func(browser.Host) error {
+			dispatched = append(dispatched, eventType)
+			return nil
+		})
+		if callbackErr != nil {
+			t.Fatal(callbackErr)
+		}
+		if err := realm.Bind(eventType, target, callback); err != nil {
+			t.Fatal(err)
+		}
+	}
+	backend := window.NewMemoryBackend(
+		window.Event{Kind: window.EventPointerDown, X: 5, Y: 5, Button: 0, Buttons: 1},
+		window.Event{Kind: window.EventPointerUp, X: 5, Y: 5, Button: 0},
+		window.Event{Kind: window.EventCompositionStart, Composing: true},
+		window.Event{Kind: window.EventCompositionUpdate, Text: "に", Composing: true},
+		window.Event{Kind: window.EventCompositionEnd, Text: "日本"},
+		window.Event{Kind: window.EventTextInput, Text: "!"},
+		window.Event{Kind: window.EventClose},
+	)
+	if err := window.Run(context.Background(), page, backend, "IME test"); err != nil {
+		t.Fatal(err)
+	}
+	if value, valueErr := page.Document().FormValue(inputID); valueErr != nil || value != "日本!" {
+		t.Fatalf("IME value = %q, err=%v, want 日本!", value, valueErr)
+	}
+	want := []browser.InputEventType{
+		browser.InputCompositionStart, browser.InputCompositionUpdate, browser.InputCompositionEnd,
+		browser.InputBeforeInput, browser.InputInput,
+		browser.InputBeforeInput, browser.InputInput,
+	}
+	if !reflect.DeepEqual(dispatched, want) {
+		t.Fatalf("IME event order = %v, want %v", dispatched, want)
+	}
+}
+
 func TestRunBrowserOffsetsGraphiteChromeFromDOMViewportAndInput(t *testing.T) {
 	t.Parallel()
 

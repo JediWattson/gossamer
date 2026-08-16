@@ -3131,7 +3131,7 @@ func TestStockV8TemplateConstructionRangeAndTraversalObjects(t *testing.T) {
 	}
 }
 
-func TestStockV8FormSubmissionNavigatesAndTearsDownOldRealm(t *testing.T) {
+func TestStockV8FormSubmissionNavigatesCachesAndEvictsOldRealm(t *testing.T) {
 	engine := newTestEngine(t)
 	browserRuntime, err := browser.NewWithEngine(engine)
 	if err != nil {
@@ -3297,8 +3297,14 @@ func TestStockV8FormSubmissionNavigatesAndTearsDownOldRealm(t *testing.T) {
 	if !v8FrameContainsText(page.Frame(), "submitted result") {
 		t.Fatal("form navigation response did not reach paint")
 	}
-	if err := oldRealm.Evaluate(nil, browser.ScriptSource{URL: "old-realm.js", Source: `1`}); err != ErrRealmClosed {
-		t.Fatalf("old Realm Evaluate = %v, want %v", err, ErrRealmClosed)
+	if err := oldRealm.Evaluate(nil, browser.ScriptSource{URL: "cached-realm.js", Source: `1`}); err != nil {
+		t.Fatalf("eligible form source Realm was not retained in back-forward cache: %v", err)
+	}
+	if err := page.EvictBackForwardCache(); err != nil {
+		t.Fatalf("EvictBackForwardCache: %v", err)
+	}
+	if err := oldRealm.Evaluate(nil, browser.ScriptSource{URL: "evicted-realm.js", Source: `1`}); err != ErrRealmClosed {
+		t.Fatalf("evicted old Realm Evaluate = %v, want %v", err, ErrRealmClosed)
 	}
 	if err := page.Close(); err != nil {
 		t.Fatalf("Close page: %v", err)

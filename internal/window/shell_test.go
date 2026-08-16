@@ -74,6 +74,67 @@ func TestGraphiteShellComposesChromeContentRailAndInspector(t *testing.T) {
 	}
 }
 
+func TestGraphiteRootScrollbarPaintsAndDragsThroughPageQueue(t *testing.T) {
+	t.Parallel()
+
+	page, closePage := newShellTestPage(t, shellTestLoader{document: `<html><body style="margin:0"><div style="display:block;width:1600px;height:1800px">scrollable</div></body></html>`})
+	defer closePage()
+	shell, err := newGraphiteShell(page, ShellConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer shell.close()
+	shell.initialWindowSize(page.Frame().Viewport)
+	layout := shell.layout()
+	geometry, err := page.ViewportGeometry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	bars := graphiteScrollbars(layout.content, geometry)
+	if bars.verticalTrack.Empty() || bars.verticalThumb.Empty() || bars.horizontalTrack.Empty() || bars.horizontalThumb.Empty() {
+		t.Fatalf("scrollbar geometry = %#v, want both axes", bars)
+	}
+	canvas, err := shell.compose(image.NewRGBA(image.Rect(0, 0, 800, 600)), page)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verticalCenter := center(bars.verticalThumb)
+	if got := color.NRGBAModel.Convert(canvas.At(verticalCenter.X, verticalCenter.Y)).(color.NRGBA); got != (color.NRGBA{R: 0x58, G: 0x65, B: 0x70, A: 0xff}) {
+		t.Fatalf("vertical thumb pixel = %#v", got)
+	}
+	state := inputState{}
+	if handled, _, _, err := shell.handleEvent(context.Background(), page, Event{
+		Kind: EventPointerDown, X: float64(verticalCenter.X), Y: float64(verticalCenter.Y), Button: 0,
+	}, &state); err != nil || !handled {
+		t.Fatalf("scrollbar pointer down handled=%t err=%v", handled, err)
+	}
+	dragY := bars.verticalTrack.Max.Y - bars.verticalThumb.Dy()/2 - 1
+	if handled, _, _, err := shell.handleEvent(context.Background(), page, Event{
+		Kind: EventPointerMove, X: float64(verticalCenter.X), Y: float64(dragY), Buttons: 1,
+	}, &state); err != nil || !handled {
+		t.Fatalf("scrollbar drag handled=%t err=%v", handled, err)
+	}
+	if err := pumpPageTasks(context.Background(), page); err != nil {
+		t.Fatal(err)
+	}
+	if handled, _, _, err := shell.handleEvent(context.Background(), page, Event{
+		Kind: EventPointerUp, X: float64(verticalCenter.X), Y: float64(dragY), Button: 0,
+	}, &state); err != nil || !handled {
+		t.Fatalf("scrollbar pointer up handled=%t err=%v", handled, err)
+	}
+	after, err := page.ViewportGeometry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.ScrollY < bars.maximumY*0.9 {
+		t.Fatalf("dragged scrollY = %v, want near maximum %v", after.ScrollY, bars.maximumY)
+	}
+	endBars := graphiteScrollbars(layout.content, after)
+	if endBars.verticalThumb.Max.Y != endBars.verticalTrack.Max.Y {
+		t.Fatalf("thumb at maximum = %v in %v", endBars.verticalThumb, endBars.verticalTrack)
+	}
+}
+
 func TestGraphiteTabTitlePrefersLiveDocumentMetadata(t *testing.T) {
 	page, closePage := newShellTestPage(t, shellTestLoader{document: `<html><head><title>Memory Browser</title></head><body></body></html>`})
 	defer closePage()
@@ -228,6 +289,35 @@ func TestGraphiteAddressBarNormalizesAndNavigates(t *testing.T) {
 	entriesAfterReload, indexAfterReload := page.History()
 	if len(entriesAfterReload) != len(entriesBeforeReload) || indexAfterReload != indexBeforeReload {
 		t.Fatalf("Graphite reload changed history length/index from %d/%d to %d/%d", len(entriesBeforeReload), indexBeforeReload, len(entriesAfterReload), indexAfterReload)
+	}
+}
+
+func TestGraphiteAddressAcceptsCommittedAndComposedNativeText(t *testing.T) {
+	t.Parallel()
+
+	page, closePage := newShellTestPage(t, shellTestLoader{document: `<html><body>address input</body></html>`})
+	defer closePage()
+	shell, err := newGraphiteShell(page, ShellConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer shell.close()
+	shell.initialWindowSize(page.Frame().Viewport)
+	shell.focusAddress()
+	state := inputState{}
+	for _, event := range []Event{
+		{Kind: EventTextInput, Text: "例"},
+		{Kind: EventCompositionStart, Composing: true},
+		{Kind: EventCompositionUpdate, Text: "て", Composing: true},
+		{Kind: EventCompositionEnd, Text: "テスト"},
+	} {
+		handled, _, _, eventErr := shell.handleEvent(context.Background(), page, event, &state)
+		if eventErr != nil || !handled {
+			t.Fatalf("address event %d handled=%t err=%v", event.Kind, handled, eventErr)
+		}
+	}
+	if shell.address != "例テスト" || shell.selectAll {
+		t.Fatalf("composed address = %q selected=%t", shell.address, shell.selectAll)
 	}
 }
 

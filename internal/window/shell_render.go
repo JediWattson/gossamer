@@ -129,6 +129,9 @@ func (shell *graphiteShell) compose(pageCanvas *image.RGBA, page *browser.Page) 
 	if pageCanvas != nil {
 		draw.Draw(canvas, layout.content, pageCanvas, pageCanvas.Bounds().Min, draw.Src)
 	}
+	if err := shell.drawScrollbars(canvas, layout, page); err != nil {
+		return nil, err
+	}
 
 	fillRect(canvas, image.Rect(0, 0, layout.rail.Min.X, graphiteTabHeight), graphitePalette.top)
 	fillRect(canvas, image.Rect(0, graphiteTabHeight, layout.rail.Min.X, graphiteChromeHeight), graphitePalette.surface)
@@ -154,6 +157,34 @@ func (shell *graphiteShell) compose(pageCanvas *image.RGBA, page *browser.Page) 
 		fillRect(canvas, image.Rect(0, graphiteChromeHeight-2, lineRight, graphiteChromeHeight), graphitePalette.teal)
 	}
 	return canvas, nil
+}
+
+func (shell *graphiteShell) drawScrollbars(canvas *image.RGBA, layout shellLayout, page *browser.Page) error {
+	if page == nil {
+		return nil
+	}
+	content := layout.content
+	if !layout.inspector.Empty() && layout.inspector.Min.X < content.Max.X {
+		content.Max.X = layout.inspector.Min.X
+	}
+	geometry, err := page.ViewportGeometry()
+	if err != nil {
+		return err
+	}
+	bars := graphiteScrollbars(content, geometry)
+	trackColor := color.NRGBA{R: 0x08, G: 0x0c, B: 0x11, A: 0xff}
+	thumbColor := color.NRGBA{R: 0x58, G: 0x65, B: 0x70, A: 0xff}
+	for _, track := range []image.Rectangle{bars.horizontalTrack, bars.verticalTrack} {
+		if !track.Empty() {
+			fillRoundedRect(canvas, track, graphiteScrollbarSize/2, trackColor)
+		}
+	}
+	for _, thumb := range []image.Rectangle{bars.horizontalThumb, bars.verticalThumb} {
+		if !thumb.Empty() {
+			fillRoundedRect(canvas, thumb, graphiteScrollbarSize/2, thumbColor)
+		}
+	}
+	return nil
 }
 
 func (shell *graphiteShell) drawTabs(canvas *image.RGBA, layout shellLayout) error {

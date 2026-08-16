@@ -5,7 +5,7 @@ DOM compatibility gate verifies that this split remains observable as one DOM:
 canonical V8 wrappers carry numeric `NodeHandle` values, while Go owns node
 identity, mutation, form state, construction regions, and queue ARC.
 
-## Selected completed milestones 8-37
+## Selected completed milestones 8-42
 
 | Milestone | Native surface | Regression boundary |
 | --- | --- | --- |
@@ -31,6 +31,11 @@ identity, mutation, form state, construction regions, and queue ARC.
 | 35. Graphite browser shell | Single-tab Graphite chrome, editable address navigation, reload, content viewport, collapsed telemetry rail, engine/kernel inspector | Chrome remains in Go, page coordinates are translated before hit testing, native dimensions subtract to the exact DOM viewport, and deterministic plus stock-V8 tests retain ordered input and teardown behavior |
 | 36. Session history traversal | `Page.Back`, `Forward`, `Go`, and `Reload`; Graphite controls and keyboard commands; live direction availability | Traversal commits the index only after a successful document rebuild, creates a fresh document generation and V8 Realm, invalidates departed wrappers, preserves the current entry after failure, and leaves zero ownership after teardown |
 | 37. Graphite tab ownership | Browser-created blank Pages, independent address/history/input state, tab switching and cycling, close controls, inactive queue pumping | Each tab is a real Page/Realm ownership unit; browser-owned tabs close deterministically, background queues keep their ordered checkpoints, stock V8 Realm counts balance, and native ownership returns to zero |
+| 38. Script-visible session history | Canonical `History` and `Location`, same-document traversal, state cloning, `popstate`, and `hashchange` | State is bounded JSON, URLs remain same-origin, same-document entries retain one document generation, and traversal stays on the ordered Page queue |
+| 39. Live document metadata | `document.title`, resolved favicon metadata, and Graphite tab labels | Title mutations use the native DOM and tab chrome reads live Page metadata without retaining a JS wrapper |
+| 40. Navigation lifecycle | Cancelable `beforeunload`, `pagehide`, `unload`, and `pageshow` | Cancellation retains the old URL, history index, generation, Realm, and frame; committed replacement delivers lifecycle events in order |
+| 41. Region-aware back-forward cache | Two-entry document/Realm cache, exact generation restoration, persisted lifecycle events, explicit eviction | A hit restores the retained Go document region, V8 global, DOM state, frames, scroll/style/layout state without refetch; eviction and teardown release every region and wrapper |
+| 42. Native text and scrollbar foundations | Root overlay scrollbars, absolute queued scrolling, native text clipboard, AppKit `NSTextInputClient`, composition and committed-text events | Native code exchanges copied strings and value-only events; UTF-16 selection, cut/paste, and composition commits mutate form state only through queued `beforeinput` default actions |
 
 Run the gate against the locally built stock V8:
 
@@ -66,11 +71,12 @@ and ownership barriers before a separate render task publishes a frame.
   still follows the existing inline fallback.
 - The AppKit backend is an Apple Silicon macOS milestone surface. Graphite
   currently supports one window with up to eight functional tabs, independent
-  Page history/input state, address/history/reload chrome, plus mouse, wheel,
-  basic keyboard text, focus, blur, and resize events. A back-forward cache,
-  scrollbar widgets, clipboard,
-  IME/composition, touch, drag-and-drop, accessibility, and non-macOS backends
-  remain future work.
+  Page history/input state, a bounded two-document back-forward cache,
+  address/history/reload chrome, root overlay scrollbars, native text
+  clipboard shortcuts, AppKit composition, mouse, wheel, keyboard, focus,
+  blur, and resize events. Element scrollbar widgets, Clipboard API and
+  clipboard DOM events, marked-text candidate UI, touch, drag-and-drop,
+  accessibility, and non-macOS backends remain future work.
 - Initial scripts run after the document and represented render resources are
   loaded, not from a streaming HTML parser. Static HTTP(S) module imports are
   supported; import maps, bare package specifiers, dynamic `import()`, module
@@ -93,8 +99,7 @@ and ownership barriers before a separate render task publishes a frame.
   passed directly between iframe globals; cross-Realm data uses the native
   structured-clone/`postMessage` seam and fresh target wrappers.
 - This gate does not claim Shadow DOM, custom elements, multipart/file form
-  submission, every validation constraint, script-visible History APIs or a
-  back-forward cache, scrollbar UI,
+  submission, every validation constraint, element scrollbar UI,
   accessibility, or the complete Web Platform test surface. Overflow now
   clips and scrolls block boxes, but inline overflow fragmentation, scroll
   anchoring, snap points, overscroll behavior, and scrollbar layout remain.

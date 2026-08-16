@@ -21,6 +21,7 @@ typedef struct {
   uint8_t control;
   uint8_t command;
   uint8_t shift;
+  uint8_t composing;
   char key[64];
   char text[128];
 } gossamer_cocoa_event;
@@ -34,5 +35,7 @@ int gossamer_cocoa_present(gossamer_cocoa_window *window,
                            const uint8_t *pixels, int width, int height,
                            int stride, char **error);
 void gossamer_cocoa_close(gossamer_cocoa_window *window);
+int gossamer_cocoa_read_clipboard(char **value, char **error);
+int gossamer_cocoa_write_clipboard(const char *value, char **error);
 
 #endif

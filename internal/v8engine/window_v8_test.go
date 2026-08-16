@@ -112,6 +112,94 @@ func TestStockV8GraphiteShellRoutesNativeInputAndTeardown(t *testing.T) {
 	}
 }
 
+func TestStockV8WindowClipboardAndCompositionUseDOMInputPipeline(t *testing.T) {
+	engine := newTestEngine(t)
+	browserRuntime, err := browser.NewWithEngine(engine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer browserRuntime.Close()
+	page, err := browserRuntime.LoadPage(context.Background(), "https://gossamer.test/native-text", staticDocumentLoader{
+		document: `<!doctype html><html><body style="margin:0"><input id="target" style="display:block;width:120px;height:30px"></body></html>`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	queue := func(label, source string) {
+		t.Helper()
+		if _, queueErr := page.QueueScript(browser.ScriptSource{
+			URL: "https://gossamer.test/native-text/" + label + ".js", Source: source,
+		}); queueErr != nil {
+			t.Fatal(queueErr)
+		}
+		for attempt := 0; attempt < 64 && page.Realm.Tasks.Len() != 0; attempt++ {
+			if runErr := page.Realm.RunOne(context.Background()); runErr != nil {
+				t.Fatalf("%s: %v", label, runErr)
+			}
+		}
+		if page.Realm.Tasks.Len() != 0 {
+			t.Fatalf("%s: task queue did not drain", label)
+		}
+	}
+	queue("listen", `
+		globalThis.__nativeTextEvents = [];
+		const target = document.getElementById("target");
+		target.value = "hello world";
+		target.setSelectionRange(0, 5, "forward");
+		const record = event => __nativeTextEvents.push({
+			type: event.type,
+			data: event.data || "",
+			inputType: event.inputType || "",
+			value: target.value,
+		});
+		for (const type of ["keydown", "beforeinput", "input", "compositionstart", "compositionupdate", "compositionend"])
+			target.addEventListener(type, record);
+	`)
+	backend := window.NewMemoryBackend(
+		window.Event{Kind: window.EventPointerDown, X: 5, Y: 89, Button: 0, Buttons: 1},
+		window.Event{Kind: window.EventPointerUp, X: 5, Y: 89, Button: 0},
+		window.Event{Kind: window.EventKeyDown, Key: "c", Code: "KeyC", Modifiers: window.Modifiers{Meta: true}},
+		window.Event{Kind: window.EventKeyDown, Key: "x", Code: "KeyX", Modifiers: window.Modifiers{Meta: true}},
+		window.Event{Kind: window.EventKeyDown, Key: "v", Code: "KeyV", Modifiers: window.Modifiers{Meta: true}},
+		window.Event{Kind: window.EventCompositionStart, Composing: true},
+		window.Event{Kind: window.EventCompositionUpdate, Text: "に", Composing: true},
+		window.Event{Kind: window.EventCompositionEnd, Text: "日本"},
+		window.Event{Kind: window.EventTextInput, Text: "!"},
+		window.Event{Kind: window.EventClose},
+	)
+	if err := window.RunBrowser(context.Background(), page, backend, window.ShellConfig{
+		Title: "Gossamer native text test",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := backend.ClipboardText(); got != "hello" {
+		t.Fatalf("V8 native clipboard = %q, want hello", got)
+	}
+	queue("assert", `
+		const types = __nativeTextEvents.map(event => event.type).join(",");
+		const expected = "keydown,keydown,beforeinput,input,keydown,beforeinput,input,compositionstart,compositionupdate,compositionend,beforeinput,input,beforeinput,input";
+		if (types !== expected) throw new Error("native text event order diverged: " + types);
+		const before = __nativeTextEvents.filter(event => event.type === "beforeinput");
+		if (before.map(event => event.inputType).join(",") !== "deleteByCut,insertFromPaste,insertCompositionText,insertText")
+			throw new Error("native input types diverged: " + JSON.stringify(before));
+		if (before[1].data !== "hello" || before[2].data !== "日本" || before[3].data !== "!" ||
+			document.getElementById("target").value !== "hello日本! world")
+			throw new Error("native text data or value diverged: " + JSON.stringify(__nativeTextEvents));
+		globalThis.__nativeTextEvents = undefined;
+	`)
+	if realm, ok := engine.LatestRealm(); ok {
+		if err := realm.CollectGarbage(page); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := page.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if ledger := browserRuntime.Ledger().Stats(); ledger.LiveObjects != 0 || ledger.PersistentObjects != 0 {
+		t.Fatalf("native text teardown ownership = %#v", ledger)
+	}
+}
+
 func TestStockV8HistoryTraversalRestoresCachedRealmsAndInvalidatesInactiveWrappers(t *testing.T) {
 	engine := newTestEngine(t)
 	browserRuntime, err := browser.NewWithEngine(engine)

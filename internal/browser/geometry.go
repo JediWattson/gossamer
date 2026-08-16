@@ -39,6 +39,33 @@ func (page *Page) QueueViewportScrollBy(deltaX, deltaY float64) (browserruntime.
 	return task, err
 }
 
+// QueueViewportScrollTo publishes an absolute root-scroll update through the
+// same ordered Page task boundary used by wheel and trackpad input.
+func (page *Page) QueueViewportScrollTo(x, y float64) (browserruntime.TaskID, error) {
+	if page == nil {
+		return 0, fmt.Errorf("browser: nil page")
+	}
+	if math.IsNaN(x) || math.IsNaN(y) || math.IsInf(x, 0) || math.IsInf(y, 0) {
+		return 0, fmt.Errorf("browser: invalid scroll offset")
+	}
+	task, _, err := page.browser.scheduler.EnqueueExternalTask(page.Realm, func(context *browserruntime.TaskContext) error {
+		page.mutex.RLock()
+		if page.closed {
+			page.mutex.RUnlock()
+			return ErrPageClosed
+		}
+		generation := page.documentGeneration
+		page.mutex.RUnlock()
+		host := &taskHost{page: page, task: context, generation: generation, autoRender: true}
+		changed, scrollErr := host.ScrollViewport(x, y)
+		if scrollErr != nil || !changed {
+			return scrollErr
+		}
+		return host.finish()
+	})
+	return task, err
+}
+
 type scrollOffset struct {
 	x float64
 	y float64
