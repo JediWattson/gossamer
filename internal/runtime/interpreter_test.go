@@ -119,6 +119,125 @@ func TestInterpreterRejectsMalformedAndUnsafePrograms(t *testing.T) {
 	}
 }
 
+func TestInterpreterObjectAndArrayVerbsUseRegionStore(t *testing.T) {
+	t.Parallel()
+
+	realm, err := browserruntime.NewRealm(702, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer realm.Close()
+	interpreter := browserruntime.NewInterpreter(browserruntime.InterpreterConfig{})
+	var sourceObject memory.Ref
+	var sourceArray memory.Ref
+	var promotedArray memory.Ref
+	_, err = realm.EnqueueTask(func(task *browserruntime.TaskContext) error {
+		name, err := task.NewString("answer")
+		if err != nil {
+			return err
+		}
+		objectFunction, err := task.NewBytecodeFunction(
+			memory.NullValue(), memory.NullValue(), 0,
+			browserruntime.Assemble(
+				browserruntime.Instruction{Op: browserruntime.OpNewObject},
+				browserruntime.Instruction{Op: browserruntime.OpDup},
+				browserruntime.Instruction{Op: browserruntime.OpConstant, A: 0},
+				browserruntime.Instruction{Op: browserruntime.OpConstant, A: 1},
+				browserruntime.Instruction{Op: browserruntime.OpSetOwnProperty},
+				browserruntime.Instruction{Op: browserruntime.OpPop},
+				browserruntime.Instruction{Op: browserruntime.OpDup},
+				browserruntime.Instruction{Op: browserruntime.OpConstant, A: 0},
+				browserruntime.Instruction{Op: browserruntime.OpGetOwnProperty},
+				browserruntime.Instruction{Op: browserruntime.OpPop},
+				browserruntime.Instruction{Op: browserruntime.OpDup},
+				browserruntime.Instruction{Op: browserruntime.OpConstant, A: 0},
+				browserruntime.Instruction{Op: browserruntime.OpDeleteOwnProperty},
+				browserruntime.Instruction{Op: browserruntime.OpPop},
+				browserruntime.Instruction{Op: browserruntime.OpDup},
+				browserruntime.Instruction{Op: browserruntime.OpConstant, A: 0},
+				browserruntime.Instruction{Op: browserruntime.OpConstant, A: 1},
+				browserruntime.Instruction{Op: browserruntime.OpSetOwnProperty},
+				browserruntime.Instruction{Op: browserruntime.OpPop},
+				browserruntime.Instruction{Op: browserruntime.OpReturn},
+			),
+			[]memory.Value{memory.RefValue(name), memory.NumberValue(42)},
+		)
+		if err != nil {
+			return err
+		}
+		objectValue, err := interpreter.Execute(task, objectFunction)
+		if err != nil {
+			return err
+		}
+		sourceObject = objectValue.Ref()
+
+		arrayFunction, err := task.NewBytecodeFunction(
+			memory.NullValue(), memory.NullValue(), 1,
+			browserruntime.Assemble(
+				browserruntime.Instruction{Op: browserruntime.OpNewArray},
+				browserruntime.Instruction{Op: browserruntime.OpDup},
+				browserruntime.Instruction{Op: browserruntime.OpConstant, A: 0},
+				browserruntime.Instruction{Op: browserruntime.OpArgument, A: 0},
+				browserruntime.Instruction{Op: browserruntime.OpSetElement},
+				browserruntime.Instruction{Op: browserruntime.OpPop},
+				browserruntime.Instruction{Op: browserruntime.OpDup},
+				browserruntime.Instruction{Op: browserruntime.OpGetLength},
+				browserruntime.Instruction{Op: browserruntime.OpPop},
+				browserruntime.Instruction{Op: browserruntime.OpDup},
+				browserruntime.Instruction{Op: browserruntime.OpConstant, A: 0},
+				browserruntime.Instruction{Op: browserruntime.OpGetElement},
+				browserruntime.Instruction{Op: browserruntime.OpPop},
+				browserruntime.Instruction{Op: browserruntime.OpDup},
+				browserruntime.Instruction{Op: browserruntime.OpConstant, A: 1},
+				browserruntime.Instruction{Op: browserruntime.OpDeleteElement},
+				browserruntime.Instruction{Op: browserruntime.OpPop},
+				browserruntime.Instruction{Op: browserruntime.OpDup},
+				browserruntime.Instruction{Op: browserruntime.OpConstant, A: 2},
+				browserruntime.Instruction{Op: browserruntime.OpSetLength},
+				browserruntime.Instruction{Op: browserruntime.OpPop},
+				browserruntime.Instruction{Op: browserruntime.OpReturn},
+			),
+			[]memory.Value{memory.NumberValue(0), memory.NumberValue(1), memory.NumberValue(3)},
+		)
+		if err != nil {
+			return err
+		}
+		arrayValue, err := interpreter.Execute(task, arrayFunction, objectValue)
+		if err != nil {
+			return err
+		}
+		sourceArray = arrayValue.Ref()
+		promotedArray, err = task.PromoteRef(sourceArray)
+		if err != nil {
+			return err
+		}
+		return task.Realm.Store().CheckInvariants()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := realm.Store().DerefObject(realm.Owner(), sourceObject); !errors.Is(err, memory.ErrStaleRef) {
+		t.Fatalf("source Object after task = %v, want ErrStaleRef", err)
+	}
+	if _, err := realm.Store().DerefArray(realm.Owner(), sourceArray); !errors.Is(err, memory.ErrStaleRef) {
+		t.Fatalf("source Array after task = %v, want ErrStaleRef", err)
+	}
+	array, err := realm.Store().DerefArray(realm.Owner(), promotedArray)
+	if err != nil || array.Length != 3 || len(array.Elements) != 1 || !array.Elements[0].Value.IsRef() {
+		t.Fatalf("promoted Array = %#v, %v", array, err)
+	}
+	object, err := realm.Store().DerefObject(realm.Owner(), array.Elements[0].Value.Ref())
+	if err != nil || len(object.Properties) != 1 || object.Properties[0].Value.Number() != 42 {
+		t.Fatalf("promoted Object = %#v, %v", object, err)
+	}
+	if err := realm.Store().CheckInvariants(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestFrameVisitsBorrowedRefsWithoutCreatingOwnership(t *testing.T) {
 	t.Parallel()
 

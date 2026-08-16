@@ -16,6 +16,16 @@ const (
 	OpPop
 	OpDup
 	OpReturn
+	OpNewObject
+	OpGetOwnProperty
+	OpSetOwnProperty
+	OpDeleteOwnProperty
+	OpNewArray
+	OpGetElement
+	OpSetElement
+	OpDeleteElement
+	OpGetLength
+	OpSetLength
 )
 
 func (opcode Opcode) String() string {
@@ -38,11 +48,31 @@ func (opcode Opcode) String() string {
 		return "Dup"
 	case OpReturn:
 		return "Return"
+	case OpNewObject:
+		return "NewObject"
+	case OpGetOwnProperty:
+		return "GetOwnProperty"
+	case OpSetOwnProperty:
+		return "SetOwnProperty"
+	case OpDeleteOwnProperty:
+		return "DeleteOwnProperty"
+	case OpNewArray:
+		return "NewArray"
+	case OpGetElement:
+		return "GetElement"
+	case OpSetElement:
+		return "SetElement"
+	case OpDeleteElement:
+		return "DeleteElement"
+	case OpGetLength:
+		return "GetLength"
+	case OpSetLength:
+		return "SetLength"
 	default:
 		return fmt.Sprintf("Opcode(%d)", opcode)
 	}
 }
 
 func (opcode Opcode) valid() bool {
-	return opcode >= OpConstant && opcode <= OpReturn
+	return opcode >= OpConstant && opcode <= OpSetLength
 }
