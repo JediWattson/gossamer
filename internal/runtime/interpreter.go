@@ -16,6 +16,7 @@ var (
 	ErrNotCallable      = errors.New("runtime: value is not a callable Function")
 	ErrNativeFunction   = errors.New("runtime: native Function is not registered")
 	ErrOperandType      = errors.New("runtime: invalid operand type")
+	ErrExceptionState   = errors.New("runtime: invalid exception state")
 )
 
 const defaultMaxInstructions uint64 = 1_000_000
@@ -28,6 +29,34 @@ type InterpreterConfig struct {
 // NativeFunction is an explicitly registered host callback. Native Function
 // heap payloads retain only its numeric ID, never this Go function value.
 type NativeFunction func(*TaskContext, memory.Value, []memory.Value) (memory.Value, error)
+
+// ThrownError carries an interpreter Value through Go call frames without
+// converting it into a host-language error object.
+type ThrownError struct {
+	Value memory.Value
+}
+
+func (thrown *ThrownError) Error() string {
+	if thrown == nil {
+		return "runtime: thrown <nil>"
+	}
+	if thrown.Value.IsRef() {
+		return fmt.Sprintf("runtime: thrown %s", thrown.Value.Ref())
+	}
+	return fmt.Sprintf("runtime: thrown Value(%d)", thrown.Value.Kind())
+}
+
+func Throw(value memory.Value) error {
+	return &ThrownError{Value: value}
+}
+
+func ThrownValue(err error) (memory.Value, bool) {
+	var thrown *ThrownError
+	if !errors.As(err, &thrown) || thrown == nil {
+		return memory.Value{}, false
+	}
+	return thrown.Value, true
+}
 
 // Interpreter executes native Function descriptors against one TaskContext.
 // It does not parse source, schedule work, or extend value lifetimes.
@@ -397,7 +426,11 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 			}
 			result, err := execution.call(callee, this, arguments, mode)
 			if err != nil {
-				return memory.Value{}, err
+				handled, routed := routeThrown(frame, err)
+				if handled {
+					continue
+				}
+				return memory.Value{}, routed
 			}
 			if instruction.Op == OpConstruct {
 				object, err := isObjectValue(context, result)
@@ -431,6 +464,57 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 				return memory.Value{}, err
 			}
 			frame.push(memory.RefValue(closure))
+		case OpThrow:
+			value, err := frame.pop()
+			if err != nil {
+				return memory.Value{}, err
+			}
+			handled, routed := routeThrown(frame, Throw(value))
+			if handled {
+				continue
+			}
+			return memory.Value{}, routed
+		case OpEnterTry:
+			frame.handlers = append(frame.handlers, exceptionHandler{
+				kind:       ExceptionHandlerKind(instruction.B),
+				target:     instruction.A,
+				stackDepth: len(frame.Stack),
+			})
+		case OpLeaveTry:
+			if len(frame.handlers) == 0 {
+				return memory.Value{}, fmt.Errorf("%w: LeaveTry without handler", ErrExceptionState)
+			}
+			frame.handlers[len(frame.handlers)-1] = exceptionHandler{}
+			frame.handlers = frame.handlers[:len(frame.handlers)-1]
+		case OpEnterCatch:
+			if frame.pending == nil {
+				return memory.Value{}, fmt.Errorf("%w: EnterCatch without a thrown value", ErrExceptionState)
+			}
+			frame.current = frame.pending
+			frame.push(frame.pending.Value)
+			frame.pending = nil
+		case OpEnterFinally:
+			// Exceptional entry retains pending; normal entry has no pending
+			// value. EndFinally distinguishes the two paths.
+		case OpEndFinally:
+			if frame.pending != nil {
+				thrown := frame.pending
+				frame.pending = nil
+				handled, routed := routeThrown(frame, thrown)
+				if handled {
+					continue
+				}
+				return memory.Value{}, routed
+			}
+		case OpRethrow:
+			if frame.current == nil {
+				return memory.Value{}, fmt.Errorf("%w: Rethrow without a current exception", ErrExceptionState)
+			}
+			handled, routed := routeThrown(frame, frame.current)
+			if handled {
+				continue
+			}
+			return memory.Value{}, routed
 		default:
 			return memory.Value{}, fmt.Errorf("%w: unimplemented %s", ErrInvalidBytecode, instruction.Op)
 		}
@@ -527,7 +611,7 @@ func validateFrameProgram(frame *Frame) error {
 			if uint64(instruction.A) >= uint64(len(frame.function.Constants)) {
 				return fmt.Errorf("%w: instruction %d uses constant %d", ErrConstantBounds, index, instruction.A)
 			}
-		case OpJump, OpJumpIfTrue, OpJumpIfFalse, OpJumpIfNullish:
+		case OpJump, OpJumpIfTrue, OpJumpIfFalse, OpJumpIfNullish, OpEnterTry:
 			if uint64(instruction.A) >= uint64(len(frame.instructions)) {
 				return fmt.Errorf("%w: instruction %d jumps to %d", ErrInvalidBytecode, index, instruction.A)
 			}
@@ -535,8 +619,34 @@ func validateFrameProgram(frame *Frame) error {
 		if instruction.Op == OpDeclareBinding && instruction.B > 1 {
 			return fmt.Errorf("%w: DeclareBinding mutability %d", ErrInvalidBytecode, instruction.B)
 		}
+		if instruction.Op == OpEnterTry && instruction.B != uint32(HandlerCatch) && instruction.B != uint32(HandlerFinally) {
+			return fmt.Errorf("%w: EnterTry handler kind %d", ErrInvalidBytecode, instruction.B)
+		}
 	}
 	return nil
+}
+
+func routeThrown(frame *Frame, err error) (bool, error) {
+	var thrown *ThrownError
+	if !errors.As(err, &thrown) || thrown == nil {
+		return false, err
+	}
+	if len(frame.handlers) == 0 {
+		return false, err
+	}
+	index := len(frame.handlers) - 1
+	handler := frame.handlers[index]
+	frame.handlers[index] = exceptionHandler{}
+	frame.handlers = frame.handlers[:index]
+	if handler.stackDepth < 0 || handler.stackDepth > len(frame.Stack) {
+		return false, fmt.Errorf("%w: handler stack depth %d", ErrExceptionState, handler.stackDepth)
+	}
+	clear(frame.Stack[handler.stackDepth:])
+	frame.Stack = frame.Stack[:handler.stackDepth]
+	frame.pending = thrown
+	frame.current = thrown
+	frame.ip = handler.target
+	return true, nil
 }
 
 func popCallOperands(frame *Frame, count uint32) (memory.Ref, []memory.Value, error) {

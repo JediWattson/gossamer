@@ -9,6 +9,19 @@ import (
 
 var ErrStackUnderflow = errors.New("runtime: operand stack underflow")
 
+type ExceptionHandlerKind uint32
+
+const (
+	HandlerCatch ExceptionHandlerKind = iota + 1
+	HandlerFinally
+)
+
+type exceptionHandler struct {
+	kind       ExceptionHandlerKind
+	target     uint32
+	stackDepth int
+}
+
 // RootSource exposes borrowed Refs without changing their ownership. Cycle
 // reclamation checkpoints can use the same contract for frames and other
 // transient runtime roots.
@@ -28,6 +41,9 @@ type Frame struct {
 	function     memory.Function
 	instructions []Instruction
 	ip           uint32
+	handlers     []exceptionHandler
+	pending      *ThrownError
+	current      *ThrownError
 }
 
 func (frame *Frame) VisitRefs(visit func(memory.Ref) error) error {
@@ -43,6 +59,12 @@ func (frame *Frame) VisitRefs(visit func(memory.Ref) error) error {
 	values = append(values, frame.Environment, frame.This)
 	values = append(values, frame.Arguments...)
 	values = append(values, frame.Stack...)
+	if frame.pending != nil {
+		values = append(values, frame.pending.Value)
+	}
+	if frame.current != nil && frame.current != frame.pending {
+		values = append(values, frame.current.Value)
+	}
 	for _, value := range values {
 		if value.IsRef() {
 			if err := visit(value.Ref()); err != nil {

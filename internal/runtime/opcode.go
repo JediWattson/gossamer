@@ -61,6 +61,13 @@ const (
 	OpCallNative
 	OpConstruct
 	OpCreateClosure
+	OpThrow
+	OpEnterTry
+	OpLeaveTry
+	OpEnterCatch
+	OpEnterFinally
+	OpEndFinally
+	OpRethrow
 )
 
 func (opcode Opcode) String() string {
@@ -173,11 +180,25 @@ func (opcode Opcode) String() string {
 		return "Construct"
 	case OpCreateClosure:
 		return "CreateClosure"
+	case OpThrow:
+		return "Throw"
+	case OpEnterTry:
+		return "EnterTry"
+	case OpLeaveTry:
+		return "LeaveTry"
+	case OpEnterCatch:
+		return "EnterCatch"
+	case OpEnterFinally:
+		return "EnterFinally"
+	case OpEndFinally:
+		return "EndFinally"
+	case OpRethrow:
+		return "Rethrow"
 	default:
 		return fmt.Sprintf("Opcode(%d)", opcode)
 	}
 }
 
 func (opcode Opcode) valid() bool {
-	return opcode >= OpConstant && opcode <= OpCreateClosure
+	return opcode >= OpConstant && opcode <= OpRethrow
 }

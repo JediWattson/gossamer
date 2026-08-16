@@ -100,6 +100,9 @@ func TestInterpreterRejectsMalformedAndUnsafePrograms(t *testing.T) {
 			{name: "missing return", vm: browserruntime.NewInterpreter(browserruntime.InterpreterConfig{}), code: browserruntime.Assemble(browserruntime.Instruction{Op: browserruntime.OpUndefined}), want: browserruntime.ErrInvalidBytecode},
 			{name: "instruction limit", vm: browserruntime.NewInterpreter(browserruntime.InterpreterConfig{MaxInstructions: 1}), code: browserruntime.Assemble(browserruntime.Instruction{Op: browserruntime.OpUndefined}, browserruntime.Instruction{Op: browserruntime.OpReturn}), want: browserruntime.ErrInstructionLimit},
 			{name: "jump bounds", vm: browserruntime.NewInterpreter(browserruntime.InterpreterConfig{}), code: browserruntime.Assemble(browserruntime.Instruction{Op: browserruntime.OpJump, A: 9}, browserruntime.Instruction{Op: browserruntime.OpReturn}), want: browserruntime.ErrInvalidBytecode},
+			{name: "invalid handler kind", vm: browserruntime.NewInterpreter(browserruntime.InterpreterConfig{}), code: browserruntime.Assemble(browserruntime.Instruction{Op: browserruntime.OpEnterTry, A: 1, B: 99}, browserruntime.Instruction{Op: browserruntime.OpReturn}), want: browserruntime.ErrInvalidBytecode},
+			{name: "leave without handler", vm: browserruntime.NewInterpreter(browserruntime.InterpreterConfig{}), code: browserruntime.Assemble(browserruntime.Instruction{Op: browserruntime.OpLeaveTry}, browserruntime.Instruction{Op: browserruntime.OpReturn}), want: browserruntime.ErrExceptionState},
+			{name: "catch without throw", vm: browserruntime.NewInterpreter(browserruntime.InterpreterConfig{}), code: browserruntime.Assemble(browserruntime.Instruction{Op: browserruntime.OpEnterCatch}, browserruntime.Instruction{Op: browserruntime.OpReturn}), want: browserruntime.ErrExceptionState},
 		}
 		for _, test := range tests {
 			function, allocErr := task.NewBytecodeFunction(memory.NullValue(), memory.NullValue(), 0, test.code, nil)
@@ -789,6 +792,157 @@ func TestInterpreterEnforcesSharedCallDepth(t *testing.T) {
 		}
 		if _, err := interpreter.Execute(task, function); !errors.Is(err, browserruntime.ErrCallDepth) {
 			t.Fatalf("recursive call error = %v, want ErrCallDepth", err)
+		}
+		return task.Realm.Store().CheckInvariants()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestInterpreterUnwindsThrowCatchFinallyAndNativeCalls(t *testing.T) {
+	t.Parallel()
+
+	realm, err := browserruntime.NewRealm(707, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer realm.Close()
+	interpreter := browserruntime.NewInterpreter(browserruntime.InterpreterConfig{})
+	if err := interpreter.RegisterNative(2, func(*browserruntime.TaskContext, memory.Value, []memory.Value) (memory.Value, error) {
+		return memory.Value{}, browserruntime.Throw(memory.NumberValue(7))
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = realm.EnqueueTask(func(task *browserruntime.TaskContext) error {
+		caught, err := task.NewBytecodeFunction(
+			memory.NullValue(), memory.NullValue(), 0,
+			browserruntime.Assemble(
+				browserruntime.Instruction{Op: browserruntime.OpEnterTry, A: 4, B: uint32(browserruntime.HandlerCatch)},
+				browserruntime.Instruction{Op: browserruntime.OpConstant, A: 0},
+				browserruntime.Instruction{Op: browserruntime.OpThrow},
+				browserruntime.Instruction{Op: browserruntime.OpLeaveTry},
+				browserruntime.Instruction{Op: browserruntime.OpEnterCatch},
+				browserruntime.Instruction{Op: browserruntime.OpReturn},
+			), []memory.Value{memory.NumberValue(13)},
+		)
+		if err != nil {
+			return err
+		}
+		if result, err := interpreter.Execute(task, caught); err != nil || result.Number() != 13 {
+			t.Fatalf("caught throw = %#v, %v", result, err)
+		}
+
+		rethrown, err := task.NewBytecodeFunction(
+			memory.NullValue(), memory.NullValue(), 0,
+			browserruntime.Assemble(
+				browserruntime.Instruction{Op: browserruntime.OpEnterTry, A: 7, B: uint32(browserruntime.HandlerCatch)},
+				browserruntime.Instruction{Op: browserruntime.OpEnterTry, A: 4, B: uint32(browserruntime.HandlerCatch)},
+				browserruntime.Instruction{Op: browserruntime.OpConstant, A: 0},
+				browserruntime.Instruction{Op: browserruntime.OpThrow},
+				browserruntime.Instruction{Op: browserruntime.OpEnterCatch},
+				browserruntime.Instruction{Op: browserruntime.OpPop},
+				browserruntime.Instruction{Op: browserruntime.OpRethrow},
+				browserruntime.Instruction{Op: browserruntime.OpEnterCatch},
+				browserruntime.Instruction{Op: browserruntime.OpReturn},
+			), []memory.Value{memory.NumberValue(21)},
+		)
+		if err != nil {
+			return err
+		}
+		if result, err := interpreter.Execute(task, rethrown); err != nil || result.Number() != 21 {
+			t.Fatalf("rethrown catch = %#v, %v", result, err)
+		}
+
+		flagName, err := task.NewString("finallyRan")
+		if err != nil {
+			return err
+		}
+		environment, err := task.NewContext(memory.NullValue())
+		if err != nil {
+			return err
+		}
+		if err := task.DeclareBinding(environment, flagName, true); err != nil {
+			return err
+		}
+		if err := task.InitializeBinding(environment, flagName, memory.NumberValue(0)); err != nil {
+			return err
+		}
+		finalized, err := task.NewBytecodeFunction(
+			memory.NullValue(), memory.RefValue(environment), 0,
+			browserruntime.Assemble(
+				browserruntime.Instruction{Op: browserruntime.OpEnterTry, A: 4, B: uint32(browserruntime.HandlerFinally)},
+				browserruntime.Instruction{Op: browserruntime.OpConstant, A: 1},
+				browserruntime.Instruction{Op: browserruntime.OpThrow},
+				browserruntime.Instruction{Op: browserruntime.OpLeaveTry},
+				browserruntime.Instruction{Op: browserruntime.OpEnterFinally},
+				browserruntime.Instruction{Op: browserruntime.OpConstant, A: 2},
+				browserruntime.Instruction{Op: browserruntime.OpStoreBinding, A: 0},
+				browserruntime.Instruction{Op: browserruntime.OpPop},
+				browserruntime.Instruction{Op: browserruntime.OpEndFinally},
+				browserruntime.Instruction{Op: browserruntime.OpUndefined},
+				browserruntime.Instruction{Op: browserruntime.OpReturn},
+			), []memory.Value{memory.RefValue(flagName), memory.NumberValue(99), memory.NumberValue(1)},
+		)
+		if err != nil {
+			return err
+		}
+		if _, err := interpreter.Execute(task, finalized); err == nil {
+			t.Fatal("exceptional finally did not rethrow")
+		} else if value, ok := browserruntime.ThrownValue(err); !ok || value.Number() != 99 {
+			t.Fatalf("finally error = %v, thrown=%#v/%t", err, value, ok)
+		}
+		if value, found, err := task.ResolveBinding(environment, flagName); err != nil || !found || value.Number() != 1 {
+			t.Fatalf("finally binding = %#v/%t, %v", value, found, err)
+		}
+
+		normalFinally, err := task.NewBytecodeFunction(
+			memory.NullValue(), memory.NullValue(), 0,
+			browserruntime.Assemble(
+				browserruntime.Instruction{Op: browserruntime.OpEnterTry, A: 3, B: uint32(browserruntime.HandlerFinally)},
+				browserruntime.Instruction{Op: browserruntime.OpLeaveTry},
+				browserruntime.Instruction{Op: browserruntime.OpJump, A: 3},
+				browserruntime.Instruction{Op: browserruntime.OpEnterFinally},
+				browserruntime.Instruction{Op: browserruntime.OpEndFinally},
+				browserruntime.Instruction{Op: browserruntime.OpConstant, A: 0},
+				browserruntime.Instruction{Op: browserruntime.OpReturn},
+			), []memory.Value{memory.NumberValue(5)},
+		)
+		if err != nil {
+			return err
+		}
+		if result, err := interpreter.Execute(task, normalFinally); err != nil || result.Number() != 5 {
+			t.Fatalf("normal finally = %#v, %v", result, err)
+		}
+
+		native, err := task.NewNativeFunction(memory.NullValue(), memory.NullValue(), 0, 2)
+		if err != nil {
+			return err
+		}
+		nativeCatch, err := task.NewBytecodeFunction(
+			memory.NullValue(), memory.NullValue(), 0,
+			browserruntime.Assemble(
+				browserruntime.Instruction{Op: browserruntime.OpEnterTry, A: 6, B: uint32(browserruntime.HandlerCatch)},
+				browserruntime.Instruction{Op: browserruntime.OpConstant, A: 0},
+				browserruntime.Instruction{Op: browserruntime.OpCallNative},
+				browserruntime.Instruction{Op: browserruntime.OpLeaveTry},
+				browserruntime.Instruction{Op: browserruntime.OpJump, A: 8},
+				browserruntime.Instruction{Op: browserruntime.OpUndefined},
+				browserruntime.Instruction{Op: browserruntime.OpEnterCatch},
+				browserruntime.Instruction{Op: browserruntime.OpReturn},
+				browserruntime.Instruction{Op: browserruntime.OpUndefined},
+				browserruntime.Instruction{Op: browserruntime.OpReturn},
+			), []memory.Value{memory.RefValue(native)},
+		)
+		if err != nil {
+			return err
+		}
+		if result, err := interpreter.Execute(task, nativeCatch); err != nil || result.Number() != 7 {
+			t.Fatalf("native catch = %#v, %v", result, err)
 		}
 		return task.Realm.Store().CheckInvariants()
 	})
