@@ -164,6 +164,12 @@ extern int goGossamerV8HostFormChecked(uint64_t execution_id,
 extern int goGossamerV8HostSetFormChecked(uint64_t execution_id,
                                           uint64_t document, uint32_t node,
                                           int checked, char **error_out);
+extern int goGossamerV8HostFormIndeterminate(
+    uint64_t execution_id, uint64_t document, uint32_t node,
+    int *indeterminate_out, char **error_out);
+extern int goGossamerV8HostSetFormIndeterminate(
+    uint64_t execution_id, uint64_t document, uint32_t node,
+    int indeterminate, char **error_out);
 extern int goGossamerV8HostFormSelected(uint64_t execution_id,
                                         uint64_t document, uint32_t node,
                                         int *selected_out, char **error_out);
@@ -402,6 +408,8 @@ static gossamer_v8_host gossamer_v8_go_host(uint64_t execution_id) {
       .request_animation_frame = goGossamerV8HostRequestAnimationFrame,
       .cancel_animation_frame = goGossamerV8HostCancelAnimationFrame,
       .performance_now = goGossamerV8HostPerformanceNow,
+      .form_indeterminate = goGossamerV8HostFormIndeterminate,
+      .set_form_indeterminate = goGossamerV8HostSetFormIndeterminate,
   };
   return host;
 }

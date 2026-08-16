@@ -221,10 +221,14 @@ selector operation budget.
 `:default` now distinguishes markup default checkedness/selectedness from live
 state and finds the first submit button for an HTML form owner, including
 external `form` associations and tree-order changes under the same budget.
+`:indeterminate` observes the live `HTMLInputElement.indeterminate` state for
+checkboxes, radio groups with no checked member, and progress elements without
+a `value` attribute. Checkbox activation clears indeterminateness before event
+dispatch and restores it when canceled; the live IDL setter, selector queries,
+and computed-style invalidation share the versioned DOM state.
 
-- Add indeterminate and validation/range/user-interaction form-state
-  pseudo-classes, plus browser history plumbing for the matcher-level visited
-  link hook.
+- Add validation/range/user-interaction form-state pseudo-classes, plus browser
+  history plumbing for the matcher-level visited link hook.
 - Finish pseudo-elements and the remaining stateful selector grammar.
 - Add memoization and selector/property dependency indexes after profiling the
   now-bounded combinator backtracking paths.

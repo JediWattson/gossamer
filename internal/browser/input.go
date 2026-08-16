@@ -252,10 +252,22 @@ func (host *taskHost) applyInputStateBeforeDispatch(event InputEvent) (func() er
 		}
 		switch {
 		case strings.EqualFold(inputType, "checkbox"):
-			if err := host.SetFormChecked(event.Target, !previous); err != nil {
+			previousIndeterminate, indeterminateErr := host.FormIndeterminate(event.Target)
+			if indeterminateErr != nil {
+				return nil, indeterminateErr
+			}
+			if err := host.SetFormIndeterminate(event.Target, false); err != nil {
 				return nil, err
 			}
-			return func() error { return host.SetFormChecked(event.Target, previous) }, nil
+			if err := host.SetFormChecked(event.Target, !previous); err != nil {
+				return nil, errors.Join(err, host.SetFormIndeterminate(event.Target, previousIndeterminate))
+			}
+			return func() error {
+				return errors.Join(
+					host.SetFormChecked(event.Target, previous),
+					host.SetFormIndeterminate(event.Target, previousIndeterminate),
+				)
+			}, nil
 		case strings.EqualFold(inputType, "radio"):
 			if previous {
 				return nil, nil
@@ -1070,6 +1082,21 @@ func (host *taskHost) FormChecked(handle NodeHandle) (bool, error) {
 func (host *taskHost) SetFormChecked(handle NodeHandle, checked bool) error {
 	return host.mutateNodes(handle, NodeHandle{}, NodeHandle{}, func() error {
 		return host.page.document.SetFormChecked(handle.Node, checked)
+	})
+}
+
+func (host *taskHost) FormIndeterminate(handle NodeHandle) (bool, error) {
+	host.page.mutex.RLock()
+	defer host.page.mutex.RUnlock()
+	if err := host.validateHandleLocked(handle); err != nil {
+		return false, err
+	}
+	return host.page.document.FormIndeterminate(handle.Node)
+}
+
+func (host *taskHost) SetFormIndeterminate(handle NodeHandle, indeterminate bool) error {
+	return host.mutateNodes(handle, NodeHandle{}, NodeHandle{}, func() error {
+		return host.page.document.SetFormIndeterminate(handle.Node, indeterminate)
 	})
 }
 

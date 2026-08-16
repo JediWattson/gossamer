@@ -443,6 +443,8 @@ func matchesPseudoClass(pseudo pseudoClassSelector, node *dom.Node, context Matc
 		return htmlPlaceholderShown(node, state)
 	case "default":
 		return htmlDefaultState(node, state)
+	case "indeterminate":
+		return htmlIndeterminateState(node, state)
 	case "lang":
 		return matchesLanguageRanges(node, pseudo.arguments, context, state)
 	case "dir":
@@ -475,7 +477,7 @@ func supportedSimplePseudoClass(name string) bool {
 		"link", "any-link", "visited",
 		"hover", "active", "focus", "focus-visible", "focus-within", "target",
 		"checked", "disabled", "enabled", "required", "optional",
-		"read-only", "read-write", "placeholder-shown", "default":
+		"read-only", "read-write", "placeholder-shown", "default", "indeterminate":
 		return true
 	default:
 		return false

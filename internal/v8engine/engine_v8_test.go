@@ -3887,6 +3887,14 @@ func (*capturingBindingHost) SetFormChecked(browser.NodeHandle, bool) error {
 	return nil
 }
 
+func (*capturingBindingHost) FormIndeterminate(browser.NodeHandle) (bool, error) {
+	return false, nil
+}
+
+func (*capturingBindingHost) SetFormIndeterminate(browser.NodeHandle, bool) error {
+	return nil
+}
+
 func (*capturingBindingHost) Focus(browser.NodeHandle) error { return nil }
 
 func (*capturingBindingHost) Blur(browser.NodeHandle) error { return nil }

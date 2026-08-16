@@ -297,6 +297,48 @@ func (document *Document) SetFormChecked(id NodeID, checked bool) error {
 	return nil
 }
 
+// FormIndeterminate exposes HTMLInputElement's live indeterminateness state.
+// The state exists on every input, although HTML's :indeterminate selector
+// only observes it for checkboxes.
+func (document *Document) FormIndeterminate(id NodeID) (bool, error) {
+	if document == nil || document.store == nil {
+		return false, ErrInvalidDocument
+	}
+	document.store.mutex.RLock()
+	defer document.store.mutex.RUnlock()
+	node, ok := document.store.resolveLocked(id)
+	if !ok {
+		return false, fmt.Errorf("%w: %d", ErrUnknownNode, id)
+	}
+	if !isHTMLControl(node, "input") {
+		return false, fmt.Errorf("%w: node %d has no indeterminate state", ErrWrongNodeKind, id)
+	}
+	return node.Control != nil && node.Control.Indeterminate, nil
+}
+
+// SetFormIndeterminate updates HTMLInputElement's live indeterminateness state.
+func (document *Document) SetFormIndeterminate(id NodeID, indeterminate bool) error {
+	if document == nil || document.store == nil {
+		return ErrInvalidDocument
+	}
+	document.store.mutex.Lock()
+	defer document.store.mutex.Unlock()
+	node, ok := document.store.resolveLocked(id)
+	if !ok {
+		return fmt.Errorf("%w: %d", ErrUnknownNode, id)
+	}
+	if !isHTMLControl(node, "input") {
+		return fmt.Errorf("%w: node %d has no indeterminate state", ErrWrongNodeKind, id)
+	}
+	state := ensureControlState(node)
+	if state.Indeterminate == indeterminate {
+		return nil
+	}
+	state.Indeterminate = indeterminate
+	document.version.Add(1)
+	return nil
+}
+
 // RadioGroupNodes returns the same-document radio group containing id.
 func (document *Document) RadioGroupNodes(id NodeID) ([]NodeID, error) {
 	if document == nil || document.store == nil {
@@ -314,7 +356,7 @@ func (document *Document) RadioGroupNodes(id NodeID) ([]NodeID, error) {
 	result := make([]NodeID, 0, 2)
 	for candidateID, candidate := range document.store.nodes {
 		if sameRadioGroupLocked(document, node, candidate) {
-			result = append(result, NodeID(candidateID))
+			result = append(result, NodeID(candidateID+1))
 		}
 	}
 	return result, nil
@@ -618,7 +660,12 @@ func sameRadioGroupLocked(document *Document, first, second *Node) bool {
 	if !isHTMLControl(second, "input") || !strings.EqualFold(contentAttribute(second, "type"), "radio") {
 		return false
 	}
-	if contentAttribute(first, "name") != contentAttribute(second, "name") {
+	if first == second {
+		return true
+	}
+	firstName, firstNamed := attributeValue(first, "name")
+	secondName, secondNamed := attributeValue(second, "name")
+	if !firstNamed || !secondNamed || firstName == "" || secondName == "" || firstName != secondName || treeRoot(first) != treeRoot(second) {
 		return false
 	}
 	firstOwner := formOwnerNodeLocked(document, first)
@@ -626,7 +673,7 @@ func sameRadioGroupLocked(document *Document, first, second *Node) bool {
 	if firstOwner != nil || secondOwner != nil {
 		return firstOwner == secondOwner
 	}
-	return treeRoot(first) == treeRoot(second)
+	return true
 }
 
 func formOwnerNodeLocked(document *Document, node *Node) *Node {

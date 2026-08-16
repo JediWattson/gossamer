@@ -351,6 +351,12 @@ typedef struct gossamer_v8_host {
                                 char **error_out);
   int (*performance_now)(uint64_t execution_id, double *milliseconds_out,
                          char **error_out);
+  int (*form_indeterminate)(uint64_t execution_id, uint64_t document,
+                            uint32_t node, int *indeterminate_out,
+                            char **error_out);
+  int (*set_form_indeterminate)(uint64_t execution_id, uint64_t document,
+                                uint32_t node, int indeterminate,
+                                char **error_out);
 } gossamer_v8_host;
 
 typedef struct gossamer_v8_node_handle {

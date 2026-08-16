@@ -1353,6 +1353,51 @@ func goGossamerV8HostSetFormChecked(
 	}, executionID)
 }
 
+//export goGossamerV8HostFormIndeterminate
+func goGossamerV8HostFormIndeterminate(
+	executionID C.uint64_t,
+	document C.uint64_t,
+	node C.uint32_t,
+	indeterminateOut *C.int,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domElementHost(host)
+		if err != nil {
+			return err
+		}
+		indeterminate, err := domHost.FormIndeterminate(browserNodeHandle(document, node))
+		if err != nil {
+			return err
+		}
+		if indeterminateOut != nil {
+			if indeterminate {
+				*indeterminateOut = 1
+			} else {
+				*indeterminateOut = 0
+			}
+		}
+		return nil
+	}, executionID)
+}
+
+//export goGossamerV8HostSetFormIndeterminate
+func goGossamerV8HostSetFormIndeterminate(
+	executionID C.uint64_t,
+	document C.uint64_t,
+	node C.uint32_t,
+	indeterminate C.int,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domElementHost(host)
+		if err != nil {
+			return err
+		}
+		return domHost.SetFormIndeterminate(browserNodeHandle(document, node), indeterminate != 0)
+	}, executionID)
+}
+
 //export goGossamerV8HostFormSelected
 func goGossamerV8HostFormSelected(
 	executionID C.uint64_t,

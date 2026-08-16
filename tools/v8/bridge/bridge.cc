@@ -3901,6 +3901,64 @@ void ElementFormCheckedSetter(
   info.GetReturnValue().Set(true);
 }
 
+void ElementFormIndeterminateGetter(
+    v8::Local<v8::Name>, const v8::PropertyCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.Holder(), &key))
+    return;
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  int indeterminate = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->form_indeterminate(
+          realm->active_host->execution_id, key.document, key.node,
+          &indeterminate, &host_error) == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate, error.empty()
+                            ? "reading form indeterminate state failed"
+                            : error);
+    return;
+  }
+  std::free(host_error);
+  info.GetReturnValue().Set(indeterminate != 0);
+}
+
+void ElementFormIndeterminateSetter(
+    v8::Local<v8::Name>, v8::Local<v8::Value> value,
+    const v8::PropertyCallbackInfo<v8::Boolean> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.Holder(), &key)) {
+    info.GetReturnValue().Set(false);
+    return;
+  }
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    info.GetReturnValue().Set(false);
+    return;
+  }
+  char *host_error = nullptr;
+  if (realm->active_host->set_form_indeterminate(
+          realm->active_host->execution_id, key.document, key.node,
+          value->BooleanValue(isolate) ? 1 : 0, &host_error) == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate, error.empty()
+                            ? "setting form indeterminate state failed"
+                            : error);
+    info.GetReturnValue().Set(false);
+    return;
+  }
+  std::free(host_error);
+  info.GetReturnValue().Set(true);
+}
+
 void ElementFormSelectedGetter(
     v8::Local<v8::Name>, const v8::PropertyCallbackInfo<v8::Value> &info) {
   v8::Isolate *isolate = info.GetIsolate();
@@ -4435,6 +4493,58 @@ void ElementFormCheckedFunctionSetter(
     error = TakeCString(host_error);
     ThrowError(isolate,
                error.empty() ? "setting form checked state failed" : error);
+    return;
+  }
+  std::free(host_error);
+}
+
+void ElementFormIndeterminateFunctionGetter(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.This(), &key))
+    return;
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  int indeterminate = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->form_indeterminate(
+          realm->active_host->execution_id, key.document, key.node,
+          &indeterminate, &host_error) == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate, error.empty()
+                            ? "reading form indeterminate state failed"
+                            : error);
+    return;
+  }
+  std::free(host_error);
+  info.GetReturnValue().Set(indeterminate != 0);
+}
+
+void ElementFormIndeterminateFunctionSetter(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey key;
+  if (!ReadReceiverKey(isolate, info.This(), &key) || info.Length() == 0)
+    return;
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  std::string error;
+  if (!RequireHost(realm, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  char *host_error = nullptr;
+  if (realm->active_host->set_form_indeterminate(
+          realm->active_host->execution_id, key.document, key.node,
+          info[0]->BooleanValue(isolate) ? 1 : 0, &host_error) == 0) {
+    error = TakeCString(host_error);
+    ThrowError(isolate, error.empty()
+                            ? "setting form indeterminate state failed"
+                            : error);
     return;
   }
   std::free(host_error);
@@ -10589,6 +10699,12 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
       v8::FunctionTemplate::New(isolate, ElementFormCheckedFunctionGetter),
       v8::FunctionTemplate::New(isolate,
                                 ElementFormCheckedFunctionSetter));
+  html_input_element_template->PrototypeTemplate()->SetAccessorProperty(
+      v8::String::NewFromUtf8Literal(isolate, "indeterminate"),
+      v8::FunctionTemplate::New(isolate,
+                                ElementFormIndeterminateFunctionGetter),
+      v8::FunctionTemplate::New(isolate,
+                                ElementFormIndeterminateFunctionSetter));
   for (v8::Local<v8::FunctionTemplate> interface_template :
        {html_input_element_template, html_text_area_element_template}) {
     for (const auto &property :
@@ -10898,6 +11014,9 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   html_input_element_template->InstanceTemplate()->SetNativeDataProperty(
       v8::String::NewFromUtf8Literal(isolate, "checked"),
       ElementFormCheckedGetter, ElementFormCheckedSetter);
+  html_input_element_template->InstanceTemplate()->SetNativeDataProperty(
+      v8::String::NewFromUtf8Literal(isolate, "indeterminate"),
+      ElementFormIndeterminateGetter, ElementFormIndeterminateSetter);
   for (v8::Local<v8::FunctionTemplate> interface_template :
        {html_input_element_template, html_text_area_element_template}) {
     for (const char *name : {"selectionStart", "selectionEnd",

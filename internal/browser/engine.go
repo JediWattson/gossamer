@@ -338,6 +338,8 @@ type DOMElementHost interface {
 	ReplaceFormSelection(NodeHandle, string, string) error
 	FormChecked(NodeHandle) (bool, error)
 	SetFormChecked(NodeHandle, bool) error
+	FormIndeterminate(NodeHandle) (bool, error)
+	SetFormIndeterminate(NodeHandle, bool) error
 	FormSelected(NodeHandle) (bool, error)
 	SetFormSelected(NodeHandle, bool) error
 	FormSelectedIndex(NodeHandle) (int, error)
