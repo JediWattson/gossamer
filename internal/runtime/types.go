@@ -240,7 +240,24 @@ func (context *TaskContext) ResolveBinding(contextRef, name memory.Ref) (memory.
 	if context == nil || context.Realm == nil {
 		return memory.Value{}, false, fmt.Errorf("runtime: nil task context")
 	}
-	return context.Realm.store.ResolveBinding(context.Owner, contextRef, name)
+	value, found, err := context.Realm.store.ResolveBinding(context.Owner, contextRef, name)
+	if err != nil || found {
+		return value, found, err
+	}
+
+	// Browser scripts use an Object-backed global environment: an own property
+	// created through globalThis must also be visible to an identifier lookup.
+	// Standalone interpreter contexts have no globalThis binding and retain the
+	// closed lexical-environment behavior above.
+	globalName, err := context.NewString("globalThis")
+	if err != nil {
+		return memory.Value{}, false, err
+	}
+	global, found, err := context.Realm.store.ResolveBinding(context.Owner, contextRef, globalName)
+	if err != nil || !found || !global.IsRef() {
+		return memory.Value{}, false, err
+	}
+	return context.Realm.store.GetOwnProperty(context.Owner, global.Ref(), name)
 }
 
 func (context *TaskContext) NewBytecodeFunction(name, environment memory.Value, arity uint32, code []byte, constants []memory.Value) (memory.Ref, error) {
