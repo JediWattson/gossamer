@@ -108,6 +108,28 @@ func TestBytecodeBuilderRejectsInvalidLabelsAndPrograms(t *testing.T) {
 	}
 }
 
+func TestBytecodeBuilderBuildsAgainstPortableConstantTable(t *testing.T) {
+	t.Parallel()
+
+	builder := browserruntime.NewBytecodeBuilder()
+	if _, err := builder.Emit(browserruntime.Instruction{Op: browserruntime.OpConstant, A: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := builder.Emit(browserruntime.Instruction{Op: browserruntime.OpReturn}); err != nil {
+		t.Fatal(err)
+	}
+	code, locations, err := builder.BuildCode(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(code) != 2*browserruntime.InstructionWidth || len(locations) != 2 {
+		t.Fatalf("portable output sizes = %d and %d", len(code), len(locations))
+	}
+	if _, _, err := builder.BuildCode(1); !errors.Is(err, browserruntime.ErrConstantBounds) {
+		t.Fatalf("short portable constant table error = %v", err)
+	}
+}
+
 func TestVerifyBytecodeRejectsStackAndControlFlowErrors(t *testing.T) {
 	t.Parallel()
 

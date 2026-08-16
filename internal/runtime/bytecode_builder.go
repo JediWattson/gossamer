@@ -167,23 +167,34 @@ func (builder *BytecodeBuilder) emitLabelReference(instruction Instruction, labe
 }
 
 func (builder *BytecodeBuilder) Build() (BytecodeChunk, error) {
+	code, locations, err := builder.BuildCode(len(builder.constants))
+	if err != nil {
+		return BytecodeChunk{}, err
+	}
+	return BytecodeChunk{
+		Code:      code,
+		Constants: append([]memory.Value(nil), builder.constants...),
+		Locations: locations,
+	}, nil
+}
+
+// BuildCode patches labels and verifies instructions against an external
+// constant table. Portable compilers use this without manufacturing temporary
+// RegionStore Values during compilation.
+func (builder *BytecodeBuilder) BuildCode(constantCount int) ([]byte, []SourceSpan, error) {
 	if builder == nil {
-		return BytecodeChunk{}, fmt.Errorf("%w: nil bytecode builder", ErrInvalidBytecode)
+		return nil, nil, fmt.Errorf("%w: nil bytecode builder", ErrInvalidBytecode)
 	}
 	instructions := append([]Instruction(nil), builder.instructions...)
 	for _, fixup := range builder.fixups {
 		target, exists := builder.labels[fixup.label]
 		if !exists {
-			return BytecodeChunk{}, fmt.Errorf("%w: label %d was never marked", ErrInvalidBytecode, fixup.label)
+			return nil, nil, fmt.Errorf("%w: label %d was never marked", ErrInvalidBytecode, fixup.label)
 		}
 		instructions[fixup.instruction].A = target
 	}
-	if err := verifyInstructions(instructions, len(builder.constants)); err != nil {
-		return BytecodeChunk{}, err
+	if err := verifyInstructions(instructions, constantCount); err != nil {
+		return nil, nil, err
 	}
-	return BytecodeChunk{
-		Code:      Assemble(instructions...),
-		Constants: append([]memory.Value(nil), builder.constants...),
-		Locations: append([]SourceSpan(nil), builder.locations...),
-	}, nil
+	return Assemble(instructions...), append([]SourceSpan(nil), builder.locations...), nil
 }
