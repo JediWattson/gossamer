@@ -526,6 +526,14 @@ func (store *Store) CheckInvariants() error {
 			}
 		}
 	}
+	if len(store.objectRegions) != len(objects) {
+		return invariantError("object-region index has %d entries, want %d", len(store.objectRegions), len(objects))
+	}
+	for object, location := range objects {
+		if indexed := store.objectRegions[object]; indexed != location.region {
+			return invariantError("ledger object %d indexes R%d, want R%d", object, indexed, location.region)
+		}
+	}
 	pooledSlotCapacity := uint64(0)
 	for bufferIndex, buffer := range store.slotBuffers {
 		if len(buffer) != 0 || cap(buffer) == 0 || cap(buffer) > maxPooledSlotCapacity {

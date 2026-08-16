@@ -205,6 +205,83 @@ func TestLocalObjectGraphEdgesDoNotChangeARC(t *testing.T) {
 	}
 }
 
+func TestSameRegionMutualReferencesDoNotRetainObjects(t *testing.T) {
+	t.Parallel()
+
+	ledger := NewLedger()
+	task := OwnerID{Kind: OwnerTask, Value: 1}
+	region := mustCreateRegion(t, ledger, task)
+	first, err := ledger.CreateObject(region)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := ledger.CreateObject(region)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ledger.AddReference(first, second); err != nil {
+		t.Fatal(err)
+	}
+	if err := ledger.AddReference(second, first); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, object := range []ObjectID{first, second} {
+		assertObject(t, ledger, object, true, region, map[OwnerID]int{task: 1})
+	}
+	if stats := ledger.Stats(); stats.RetainOperations != 0 || stats.BarrierRetains != 0 {
+		t.Fatalf("same-region cycle generated ARC operations: %#v", stats)
+	}
+
+	if err := ledger.CloseRegion(region); err != nil {
+		t.Fatal(err)
+	}
+	for _, object := range []ObjectID{first, second} {
+		assertObject(t, ledger, object, false, region, map[OwnerID]int{})
+	}
+	if stats := ledger.Stats(); stats.ObjectsDestroyed != 2 || stats.LiveObjects != 0 {
+		t.Fatalf("same-region cycle survived region release: %#v", stats)
+	}
+}
+
+func TestDestroyUnlinksOnlyAdjacentObjectEdges(t *testing.T) {
+	t.Parallel()
+
+	ledger := NewLedger()
+	wrapper := OwnerID{Kind: OwnerWrapper, Value: 1}
+	document := OwnerID{Kind: OwnerDocument, Value: 1}
+	wrapperRegion := mustCreateRegion(t, ledger, wrapper)
+	documentRegion := mustCreateRegion(t, ledger, document)
+	shorter, err := ledger.CreateObject(wrapperRegion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	longer, err := ledger.CreateObject(documentRegion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ledger.AddReference(shorter, longer); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := ledger.objects[longer].incoming[shorter]; !exists {
+		t.Fatal("incoming edge index does not contain source")
+	}
+
+	if err := ledger.CloseRegion(documentRegion); err != nil {
+		t.Fatal(err)
+	}
+	shorterSnapshot, err := ledger.Object(shorter)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(shorterSnapshot.Edges) != 0 {
+		t.Fatalf("destroyed target remained reachable from source: %#v", shorterSnapshot)
+	}
+	if len(ledger.objects[longer].incoming) != 0 {
+		t.Fatalf("destroyed target retained incoming edge index: %#v", ledger.objects[longer].incoming)
+	}
+}
+
 func TestLongerLivedWriteBarrierRetainsReachableSubgraph(t *testing.T) {
 	t.Parallel()
 

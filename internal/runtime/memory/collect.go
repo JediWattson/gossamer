@@ -231,6 +231,7 @@ func (store *Store) Collect(owner ownership.OwnerID, roots ...Ref) (Collection, 
 		}
 		store.recordKindFreeLocked(slot)
 		clearSlotPayload(slot)
+		delete(store.objectRegions, slot.object)
 		slot.object = 0
 		slot.Occupied = false
 		if slot.Generation != math.MaxUint32 {

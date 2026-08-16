@@ -166,15 +166,16 @@ type Store struct {
 	ledger *ownership.Ledger
 	closed bool
 
-	nextRegion   RegionID
-	regions      map[RegionID]*Region
-	ownerClaims  map[ownership.OwnerID]ownership.RegionID
-	closedOwners map[ownership.OwnerID]bool
-	barrier      *Barrier
-	objectEdges  map[objectEdge]uint32
-	promotions   map[promotionKey]Ref
-	slotBuffers  [][]Slot
-	stats        Stats
+	nextRegion    RegionID
+	regions       map[RegionID]*Region
+	ownerClaims   map[ownership.OwnerID]ownership.RegionID
+	closedOwners  map[ownership.OwnerID]bool
+	barrier       *Barrier
+	objectEdges   map[objectEdge]uint32
+	objectRegions map[ownership.ObjectID]RegionID
+	promotions    map[promotionKey]Ref
+	slotBuffers   [][]Slot
+	stats         Stats
 
 	sharedOwner ownership.OwnerID
 	sharedClaim ownership.RegionID
@@ -185,13 +186,14 @@ func NewStore(ledger *ownership.Ledger) *Store {
 		ledger = ownership.NewLedger()
 	}
 	return &Store{
-		ledger:       ledger,
-		regions:      make(map[RegionID]*Region),
-		ownerClaims:  make(map[ownership.OwnerID]ownership.RegionID),
-		closedOwners: make(map[ownership.OwnerID]bool),
-		barrier:      newBarrier(),
-		objectEdges:  make(map[objectEdge]uint32),
-		promotions:   make(map[promotionKey]Ref),
+		ledger:        ledger,
+		regions:       make(map[RegionID]*Region),
+		ownerClaims:   make(map[ownership.OwnerID]ownership.RegionID),
+		closedOwners:  make(map[ownership.OwnerID]bool),
+		barrier:       newBarrier(),
+		objectEdges:   make(map[objectEdge]uint32),
+		objectRegions: make(map[ownership.ObjectID]RegionID),
+		promotions:    make(map[promotionKey]Ref),
 	}
 }
 
@@ -314,6 +316,7 @@ func (store *Store) allocKindLocked(owner ownership.OwnerID, regionID RegionID, 
 		region.Slots = append(region.Slots, Slot{Generation: 1, Kind: kind, Occupied: true, object: object})
 		initializeSlotPayload(&region.Slots[index], kind)
 	}
+	store.objectRegions[object] = region.ID
 	store.stats.Allocations++
 	store.stats.LiveSlots++
 	store.recordKindAllocationLocked(kind, 0)
@@ -541,6 +544,7 @@ func (store *Store) freeLocked(owner ownership.OwnerID, ref Ref, internal bool) 
 	}
 	store.recordKindFreeLocked(slot)
 	clearSlotPayload(slot)
+	delete(store.objectRegions, slot.object)
 	slot.object = 0
 	slot.Occupied = false
 	if slot.Generation != math.MaxUint32 {
@@ -1180,6 +1184,7 @@ func (store *Store) destroyRegionsLocked(ids map[RegionID]struct{}) error {
 			}
 			store.recordKindFreeLocked(slot)
 			clearSlotPayload(slot)
+			delete(store.objectRegions, slot.object)
 			slot.object = 0
 			slot.Occupied = false
 			if slot.Generation != math.MaxUint32 {
@@ -1199,17 +1204,7 @@ func (store *Store) destroyRegionsLocked(ids map[RegionID]struct{}) error {
 }
 
 func (store *Store) regionForObjectLocked(object ownership.ObjectID) RegionID {
-	for id, region := range store.regions {
-		if region.State == RegionDestroyed {
-			continue
-		}
-		for index := range region.Slots {
-			if region.Slots[index].Occupied && region.Slots[index].object == object {
-				return id
-			}
-		}
-	}
-	return 0
+	return store.objectRegions[object]
 }
 
 func (store *Store) privateComponentLocked(owner ownership.OwnerID, refs []Ref, includeIncoming bool) (map[RegionID]struct{}, error) {

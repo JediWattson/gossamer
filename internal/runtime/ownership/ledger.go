@@ -29,7 +29,10 @@ type objectRecord struct {
 	region RegionID
 	claims map[RegionID]struct{}
 	edges  map[ObjectID]struct{}
-	alive  bool
+	// incoming is a non-owning adjacency index used only for direct unlinking.
+	// It never contributes an ARC claim.
+	incoming map[ObjectID]struct{}
+	alive    bool
 }
 
 type regionRecord struct {
@@ -90,11 +93,12 @@ func (ledger *Ledger) CreateObject(regionID RegionID) (ObjectID, error) {
 
 	ledger.nextObject++
 	object := &objectRecord{
-		id:     ledger.nextObject,
-		region: region.id,
-		claims: map[RegionID]struct{}{region.id: {}},
-		edges:  make(map[ObjectID]struct{}),
-		alive:  true,
+		id:       ledger.nextObject,
+		region:   region.id,
+		claims:   map[RegionID]struct{}{region.id: {}},
+		edges:    make(map[ObjectID]struct{}),
+		incoming: make(map[ObjectID]struct{}),
+		alive:    true,
 	}
 	ledger.objects[object.id] = object
 	region.objects[object.id] = struct{}{}
@@ -128,7 +132,8 @@ func (ledger *Ledger) AddReference(fromID, toID ObjectID) error {
 	if err != nil {
 		return err
 	}
-	if _, err := ledger.liveObjectLocked(toID); err != nil {
+	to, err := ledger.liveObjectLocked(toID)
+	if err != nil {
 		return err
 	}
 	if _, exists := from.edges[toID]; exists {
@@ -137,11 +142,18 @@ func (ledger *Ledger) AddReference(fromID, toID ObjectID) error {
 
 	claimRegions := sortedRegionIDs(from.claims)
 	for _, regionID := range claimRegions {
+		// A claimed object already has the region's claim propagated through
+		// its reachable graph. Subsequent edges from that graph pass through
+		// this same barrier, so an existing root claim is an O(1) no-op.
+		if _, claimed := to.claims[regionID]; claimed {
+			continue
+		}
 		if err := ledger.barrierRetainLocked(toID, regionID, fromID); err != nil {
 			return err
 		}
 	}
 	from.edges[toID] = struct{}{}
+	to.incoming[fromID] = struct{}{}
 	ledger.stats.LocalReferences++
 	ledger.recordLocked(Event{Kind: ObjectLinked, Object: fromID, Target: toID, References: referenceCount(from)})
 	return nil
@@ -164,6 +176,9 @@ func (ledger *Ledger) RemoveReference(fromID, toID ObjectID) error {
 		return nil
 	}
 	delete(from.edges, toID)
+	if to := ledger.objects[toID]; to != nil {
+		delete(to.incoming, fromID)
+	}
 	ledger.recordLocked(Event{Kind: ObjectUnlinked, Object: fromID, Target: toID, References: referenceCount(from)})
 	return nil
 }
@@ -801,12 +816,18 @@ func (ledger *Ledger) destroyLocked(object *objectRecord) {
 		}
 	}
 	clear(object.claims)
-	clear(object.edges)
-	for _, candidate := range ledger.objects {
-		if candidate.alive {
-			delete(candidate.edges, object.id)
+	for targetID := range object.edges {
+		if target := ledger.objects[targetID]; target != nil {
+			delete(target.incoming, object.id)
 		}
 	}
+	for sourceID := range object.incoming {
+		if source := ledger.objects[sourceID]; source != nil {
+			delete(source.edges, object.id)
+		}
+	}
+	clear(object.edges)
+	clear(object.incoming)
 	object.alive = false
 	ledger.stats.ObjectsDestroyed++
 	ledger.stats.LiveObjects--
