@@ -21,7 +21,11 @@ const (
 	// size independently bounded so a sparse but very wide table cannot turn
 	// border harmonization into an unbounded allocation.
 	maxTableCollapsedSegments = 500_000
-	maxTableBackgroundRects   = 500_000
+	// Junction patches are retained in addition to the two segment planes. The
+	// conservative bound counts every grid intersection even though paint only
+	// materializes intersections with both a horizontal and vertical border.
+	maxTableCollapsedPaintRects = 750_000
+	maxTableBackgroundRects     = 500_000
 )
 
 type tableModel struct {
@@ -195,6 +199,10 @@ func (context *layoutContext) resolveCollapsedTableBorders(table *styledNode, mo
 	horizontalCount := (len(model.rows) + 1) * model.columnCount
 	if verticalCount < 0 || horizontalCount < 0 || verticalCount+horizontalCount > maxTableCollapsedSegments {
 		return nil, fmt.Errorf("render: collapsed table exceeds %d border segments", maxTableCollapsedSegments)
+	}
+	junctionCount := (len(model.rows) + 1) * (model.columnCount + 1)
+	if junctionCount < 0 || verticalCount+horizontalCount+junctionCount > maxTableCollapsedPaintRects {
+		return nil, fmt.Errorf("render: collapsed table exceeds %d border paint rectangles", maxTableCollapsedPaintRects)
 	}
 	grid := &collapsedBorderGrid{
 		rows: len(model.rows), columns: model.columnCount, rtl: table.style.Direction() == directionRTL,
@@ -2048,8 +2056,70 @@ func adjustTableCellBox(box *Box, x, width float64, padding, border Edges) {
 	translateBoxContents(box, box.ContentBounds.X-oldContentX, box.ContentBounds.Y-oldContentY)
 }
 
+type collapsedBorderPaintSegment struct {
+	border     *collapsedBorder
+	edge       borderPaintEdge
+	start, end float64
+	cross      float64
+}
+
+func (segment *collapsedBorderPaintSegment) valid() bool {
+	return segment != nil && segment.border != nil && segment.border.width > 0 &&
+		segment.border.style != borderStyleNone && segment.border.style != borderStyleHidden
+}
+
+// trimAt reserves the winning junction square at the endpoint nearest center.
+// Every incident segment is stopped at the square rather than painted below it;
+// this matters for double gaps and transparent winners as well as opaque lines.
+func (segment *collapsedBorderPaintSegment) trimAt(center, halfWidth float64) {
+	if !segment.valid() {
+		return
+	}
+	if math.Abs(center-segment.start) <= math.Abs(center-segment.end) {
+		segment.start = math.Max(segment.start, center+halfWidth)
+		return
+	}
+	segment.end = math.Min(segment.end, center-halfWidth)
+}
+
+func (segment collapsedBorderPaintSegment) paintRect() (boxPaintRect, bool) {
+	if !segment.valid() || segment.border.color.A == 0 || segment.end <= segment.start {
+		return boxPaintRect{}, false
+	}
+	border := segment.border
+	rectangle := Rect{}
+	if segment.edge == borderPaintTop || segment.edge == borderPaintBottom {
+		rectangle = Rect{X: segment.start, Y: segment.cross - border.width/2, Width: segment.end - segment.start, Height: border.width}
+	} else {
+		rectangle = Rect{X: segment.cross - border.width/2, Y: segment.start, Width: border.width, Height: segment.end - segment.start}
+	}
+	return boxPaintRect{
+		Node: border.node, Pseudo: border.pseudo, Rect: rectangle, Color: border.color,
+		Style: collapsedBorderPaintStyle(border.style), Edge: segment.edge,
+	}, true
+}
+
+type collapsedBorderJunction struct {
+	border collapsedBorder
+	edge   borderPaintEdge
+	x, y   float64
+}
+
+func (junction collapsedBorderJunction) paintRect() (boxPaintRect, bool) {
+	if junction.border.width <= 0 || junction.border.style == borderStyleNone || junction.border.style == borderStyleHidden || junction.border.color.A == 0 {
+		return boxPaintRect{}, false
+	}
+	halfWidth := junction.border.width / 2
+	return boxPaintRect{
+		Node: junction.border.node, Pseudo: junction.border.pseudo,
+		Rect:  Rect{X: junction.x - halfWidth, Y: junction.y - halfWidth, Width: junction.border.width, Height: junction.border.width},
+		Color: junction.border.color, Style: collapsedBorderPaintStyle(junction.border.style), Edge: junction.edge,
+	}, true
+}
+
 func (grid *collapsedBorderGrid) paintRects(x, y float64, columnStarts, columnEnds, rowStarts, rowEnds []float64) []boxPaintRect {
-	if grid == nil || len(columnStarts) == 0 || len(rowStarts) == 0 {
+	if grid == nil || grid.rows <= 0 || grid.columns <= 0 ||
+		len(columnStarts) < grid.columns || len(columnEnds) < grid.columns || len(rowStarts) < grid.rows || len(rowEnds) < grid.rows {
 		return nil
 	}
 	xLine := func(line int) float64 {
@@ -2082,32 +2152,120 @@ func (grid *collapsedBorderGrid) paintRects(x, y float64, columnStarts, columnEn
 			return y + (rowEnds[line-1]+rowStarts[line])/2
 		}
 	}
-	result := make([]boxPaintRect, 0, len(grid.horizontal)+len(grid.vertical))
+
+	horizontal := make([]collapsedBorderPaintSegment, len(grid.horizontal))
 	for line := 0; line <= grid.rows; line++ {
 		for column := 0; column < grid.columns; column++ {
 			border := grid.horizontalAt(line, column)
-			if border == nil || border.style == borderStyleNone || border.style == borderStyleHidden || border.width <= 0 || border.color.A == 0 {
+			if border == nil || border.width <= 0 || border.style == borderStyleNone || border.style == borderStyleHidden {
 				continue
 			}
 			first, second := xLine(column), xLine(column+1)
-			left, right := math.Min(first, second), math.Max(first, second)
-			result = append(result, boxPaintRect{
-				Node: border.node, Pseudo: border.pseudo, Color: border.color, Style: collapsedBorderPaintStyle(border.style), Edge: borderPaintTop,
-				Rect: Rect{X: left, Y: yLine(line) - border.width/2, Width: math.Max(0, right-left), Height: border.width},
-			})
+			if first == second {
+				continue
+			}
+			horizontal[line*grid.columns+column] = collapsedBorderPaintSegment{
+				border: border, edge: borderPaintTop, start: math.Min(first, second), end: math.Max(first, second), cross: yLine(line),
+			}
 		}
 	}
+	vertical := make([]collapsedBorderPaintSegment, len(grid.vertical))
 	for line := 0; line <= grid.columns; line++ {
 		for row := 0; row < grid.rows; row++ {
 			border := grid.verticalAt(line, row)
-			if border == nil || border.style == borderStyleNone || border.style == borderStyleHidden || border.width <= 0 || border.color.A == 0 {
+			if border == nil || border.width <= 0 || border.style == borderStyleNone || border.style == borderStyleHidden {
 				continue
 			}
-			top, bottom := yLine(row), yLine(row+1)
-			result = append(result, boxPaintRect{
-				Node: border.node, Pseudo: border.pseudo, Color: border.color, Style: collapsedBorderPaintStyle(border.style), Edge: borderPaintLeft,
-				Rect: Rect{X: xLine(line) - border.width/2, Y: top, Width: border.width, Height: math.Max(0, bottom-top)},
-			})
+			first, second := yLine(row), yLine(row+1)
+			if first == second {
+				continue
+			}
+			vertical[row*(grid.columns+1)+line] = collapsedBorderPaintSegment{
+				border: border, edge: borderPaintLeft, start: math.Min(first, second), end: math.Max(first, second), cross: xLine(line),
+			}
+		}
+	}
+
+	junctions := make([]collapsedBorderJunction, 0)
+	for rowLine := 0; rowLine <= grid.rows; rowLine++ {
+		for columnLine := 0; columnLine <= grid.columns; columnLine++ {
+			var incidents [4]*collapsedBorderPaintSegment
+			count := 0
+			add := func(segment *collapsedBorderPaintSegment) {
+				if segment != nil && segment.valid() {
+					incidents[count] = segment
+					count++
+				}
+			}
+			// Stable exact-tie order is block-start, inline-start, block-end,
+			// inline-end. Normal CSS conflict fields (including logical row and
+			// column) decide before this final corner-only fallback.
+			if rowLine > 0 {
+				add(&vertical[(rowLine-1)*(grid.columns+1)+columnLine])
+			}
+			if columnLine > 0 {
+				add(&horizontal[rowLine*grid.columns+columnLine-1])
+			}
+			if rowLine < grid.rows {
+				add(&vertical[rowLine*(grid.columns+1)+columnLine])
+			}
+			if columnLine < grid.columns {
+				add(&horizontal[rowLine*grid.columns+columnLine])
+			}
+			if count < 2 {
+				continue
+			}
+			hasHorizontal, hasVertical := false, false
+			winner := incidents[0]
+			for index := 0; index < count; index++ {
+				incident := incidents[index]
+				if incident.edge == borderPaintTop || incident.edge == borderPaintBottom {
+					hasHorizontal = true
+				} else {
+					hasVertical = true
+				}
+				if index > 0 && collapsedBorderMoreSpecific(*incident.border, *winner.border) {
+					winner = incident
+				}
+			}
+			if !hasHorizontal || !hasVertical {
+				continue
+			}
+			centerX, centerY := xLine(columnLine), yLine(rowLine)
+			halfWidth := winner.border.width / 2
+			for index := 0; index < count; index++ {
+				incident := incidents[index]
+				if incident.edge == borderPaintTop || incident.edge == borderPaintBottom {
+					incident.trimAt(centerX, halfWidth)
+				} else {
+					incident.trimAt(centerY, halfWidth)
+				}
+			}
+			junctions = append(junctions, collapsedBorderJunction{border: *winner.border, edge: winner.edge, x: centerX, y: centerY})
+		}
+	}
+
+	// Paint weaker overlapping junctions first. Row-major stable order resolves
+	// the deliberately unspecified final tie without depending on segment-plane
+	// traversal or whether the table is physically mirrored.
+	sort.SliceStable(junctions, func(left, right int) bool {
+		return collapsedBorderMoreSpecific(junctions[right].border, junctions[left].border)
+	})
+
+	result := make([]boxPaintRect, 0, len(grid.horizontal)+len(grid.vertical)+len(junctions))
+	for index := range horizontal {
+		if rectangle, ok := horizontal[index].paintRect(); ok {
+			result = append(result, rectangle)
+		}
+	}
+	for index := range vertical {
+		if rectangle, ok := vertical[index].paintRect(); ok {
+			result = append(result, rectangle)
+		}
+	}
+	for _, junction := range junctions {
+		if rectangle, ok := junction.paintRect(); ok {
+			result = append(result, rectangle)
 		}
 	}
 	return result

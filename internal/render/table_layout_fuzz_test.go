@@ -117,6 +117,10 @@ func FuzzTableLayoutSpansStayFinite(f *testing.F) {
 				if rawModes&8 != 0 && rowIndex == 0 && columnIndex == 0 {
 					borderStyle = "hidden"
 				}
+				borderColor := "#abcdef"
+				if rawColumnSpan&8 != 0 && (rowIndex+columnIndex)%3 == 0 {
+					borderColor = "transparent"
+				}
 				cellVisibility := ""
 				if rawModes&32 != 0 && columnIndex == 0 {
 					cellVisibility = "visibility:visible;"
@@ -137,8 +141,8 @@ func FuzzTableLayoutSpansStayFinite(f *testing.F) {
 					cellHeight = fmt.Sprintf("%d%%", 1+(rowIndex+columnIndex+int(rawColumnSpan))%220)
 				}
 				attributes := []dom.Attribute{{Name: "style", Value: fmt.Sprintf(
-					"%swidth:%s;%sheight:%s;padding:%dpx;vertical-align:%s;border:%dpx %s #abcdef",
-					cellVisibility, cellWidth, maxWidth, cellHeight, rowIndex%3, alignment, 1+(rowIndex+columnIndex)%4, borderStyle,
+					"%swidth:%s;%sheight:%s;padding:%dpx;vertical-align:%s;border:%dpx %s %s",
+					cellVisibility, cellWidth, maxWidth, cellHeight, rowIndex%3, alignment, 1+(rowIndex+columnIndex)%4, borderStyle, borderColor,
 				)}}
 				if columnIndex == 0 {
 					attributes = append(attributes,
@@ -184,6 +188,9 @@ func FuzzTableLayoutSpansStayFinite(f *testing.F) {
 		tableBox := findBox(frame.Root, table)
 		if tableBox == nil || tableBox.Bounds.Width < 0 || tableBox.Bounds.Height < 0 {
 			t.Fatalf("table box = %#v", tableBox)
+		}
+		if len(frame.DisplayList.Commands) > 100_000 {
+			t.Fatalf("table paint command count = %d, want bounded output", len(frame.DisplayList.Commands))
 		}
 		for _, command := range frame.DisplayList.Commands {
 			values := []float64{command.Rect.X, command.Rect.Y, command.Rect.Width, command.Rect.Height, command.X, command.BaselineY}

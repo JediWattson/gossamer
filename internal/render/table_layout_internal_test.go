@@ -242,6 +242,98 @@ func TestCollapsedBorderSpecificityOrder(t *testing.T) {
 	}
 }
 
+func TestCollapsedBorderJunctionGeometryTrimsIncidentsAndPaintsWinnerLast(t *testing.T) {
+	t.Parallel()
+
+	red := color.NRGBA{R: 0xaa, A: 0xff}
+	green := color.NRGBA{G: 0xaa, A: 0xff}
+	grid := &collapsedBorderGrid{
+		rows: 2, columns: 2,
+		vertical: make([]collapsedBorder, 6), horizontal: make([]collapsedBorder, 6),
+	}
+	*grid.horizontalAt(1, 0) = collapsedBorder{width: 4, style: borderStyleSolid, color: red, source: collapsedBorderCell, logicalRow: 0}
+	*grid.horizontalAt(1, 1) = collapsedBorder{width: 4, style: borderStyleSolid, color: red, source: collapsedBorderCell, logicalRow: 0, logicalColumn: 1}
+	*grid.verticalAt(1, 0) = collapsedBorder{width: 10, style: borderStyleDotted, color: green, source: collapsedBorderCell, logicalRow: 0}
+
+	rectangles := grid.paintRects(0, 0, []float64{0, 40}, []float64{40, 80}, []float64{0, 30}, []float64{30, 60})
+	if len(rectangles) != 4 {
+		t.Fatalf("paint rectangles = %#v, want three trimmed segments and one junction", rectangles)
+	}
+	want := []Rect{
+		{X: 0, Y: 28, Width: 35, Height: 4},
+		{X: 45, Y: 28, Width: 35, Height: 4},
+		{X: 35, Y: 0, Width: 10, Height: 25},
+		{X: 35, Y: 25, Width: 10, Height: 10},
+	}
+	for index := range want {
+		if rectangles[index].Rect != want[index] {
+			t.Errorf("paint rectangle %d = %#v, want %#v", index, rectangles[index].Rect, want[index])
+		}
+	}
+	if junction := rectangles[len(rectangles)-1]; junction.Color != green || junction.Style != borderStyleDotted || junction.Edge != borderPaintLeft {
+		t.Fatalf("junction = %#v, want winning green dotted vertical border", junction)
+	}
+}
+
+func TestCollapsedBorderJunctionTransparentWinnerSuppressesLowerBorders(t *testing.T) {
+	t.Parallel()
+
+	red := color.NRGBA{R: 0xaa, A: 0xff}
+	grid := &collapsedBorderGrid{
+		rows: 2, columns: 2,
+		vertical: make([]collapsedBorder, 6), horizontal: make([]collapsedBorder, 6),
+	}
+	*grid.horizontalAt(1, 0) = collapsedBorder{width: 4, style: borderStyleSolid, color: red, source: collapsedBorderCell}
+	*grid.horizontalAt(1, 1) = collapsedBorder{width: 4, style: borderStyleSolid, color: red, source: collapsedBorderCell, logicalColumn: 1}
+	*grid.verticalAt(1, 0) = collapsedBorder{width: 10, style: borderStyleSolid, color: color.NRGBA{}, source: collapsedBorderCell}
+
+	rectangles := grid.paintRects(0, 0, []float64{0, 40}, []float64{40, 80}, []float64{0, 30}, []float64{30, 60})
+	if len(rectangles) != 2 {
+		t.Fatalf("transparent junction rectangles = %#v, want only two visible horizontal segments", rectangles)
+	}
+	for _, rectangle := range rectangles {
+		if rectangle.Rect.X < 45 && rectangle.Rect.X+rectangle.Rect.Width > 35 {
+			t.Fatalf("lower border was painted through transparent winning junction: %#v", rectangle)
+		}
+	}
+}
+
+func TestCollapsedBorderJunctionExactTieUsesStableLogicalFallbackInLTRAndRTL(t *testing.T) {
+	t.Parallel()
+
+	blue := color.NRGBA{B: 0xaa, A: 0xff}
+	red := color.NRGBA{R: 0xaa, A: 0xff}
+	for _, test := range []struct {
+		name         string
+		rtl          bool
+		columnStarts []float64
+		columnEnds   []float64
+	}{
+		{name: "ltr", columnStarts: []float64{0, 40}, columnEnds: []float64{40, 80}},
+		{name: "rtl", rtl: true, columnStarts: []float64{40, 0}, columnEnds: []float64{80, 40}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			grid := &collapsedBorderGrid{
+				rows: 2, columns: 2, rtl: test.rtl,
+				vertical: make([]collapsedBorder, 6), horizontal: make([]collapsedBorder, 6),
+			}
+			// Both candidates deliberately have identical CSS conflict fields.
+			// The block-start incident is gathered first and must remain stable
+			// when physical inline geometry mirrors.
+			*grid.verticalAt(1, 0) = collapsedBorder{width: 6, style: borderStyleSolid, color: blue, source: collapsedBorderCell}
+			*grid.horizontalAt(1, 0) = collapsedBorder{width: 6, style: borderStyleSolid, color: red, source: collapsedBorderCell}
+			rectangles := grid.paintRects(0, 0, test.columnStarts, test.columnEnds, []float64{0, 30}, []float64{30, 60})
+			if len(rectangles) == 0 {
+				t.Fatal("junction paint rectangles missing")
+			}
+			junction := rectangles[len(rectangles)-1]
+			if junction.Rect != (Rect{X: 37, Y: 27, Width: 6, Height: 6}) || junction.Color != blue || junction.Edge != borderPaintLeft {
+				t.Fatalf("stable junction = %#v, want block-start blue at mirrored center", junction)
+			}
+		})
+	}
+}
+
 func TestCollapsedBorderSegmentBudgetFailsClosed(t *testing.T) {
 	t.Parallel()
 
@@ -262,6 +354,32 @@ func TestCollapsedBorderSegmentBudgetFailsClosed(t *testing.T) {
 	context := layoutContext{viewport: Viewport{Width: 800, Height: 600}}
 	if _, err := context.resolveCollapsedTableBorders(table, model); err == nil || !strings.Contains(err.Error(), "border segments") {
 		t.Fatalf("collapsed segment budget error = %v", err)
+	}
+}
+
+func TestCollapsedBorderPaintRectangleBudgetIncludesJunctions(t *testing.T) {
+	t.Parallel()
+
+	document := dom.NewDocument()
+	html := dom.NewElement("html")
+	body := dom.NewElement("body")
+	tableNode := dom.NewElement("table", dom.Attribute{Name: "style", Value: "border-collapse:collapse"})
+	body.AppendChild(tableNode)
+	html.AppendChild(dom.NewElement("head"))
+	html.AppendChild(body)
+	document.AppendChild(html)
+	computedStyle, ok := computed.Compute(document, computed.Input{}).Lookup(tableNode)
+	if !ok {
+		t.Fatal("computed table style missing")
+	}
+	table := &styledNode{node: tableNode, style: computedStyle}
+	// Segment count is 499999, just below its independent 500000 cap, but
+	// retaining all possible junction patches would bring the paint plane to
+	// 750499 rectangles.
+	model := tableModel{rows: make([]tableRowRecord, 499), columnCount: 500}
+	context := layoutContext{viewport: Viewport{Width: 800, Height: 600}}
+	if _, err := context.resolveCollapsedTableBorders(table, model); err == nil || !strings.Contains(err.Error(), "border paint rectangles") {
+		t.Fatalf("collapsed paint-rectangle budget error = %v", err)
 	}
 }
 

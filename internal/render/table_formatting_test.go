@@ -291,6 +291,73 @@ func TestCollapsedTableBorderStylePrecedenceAndPatternPaint(t *testing.T) {
 	}
 }
 
+func TestCollapsedBorderJunctionUsesWinningPatternWithoutUnderpainting(t *testing.T) {
+	t.Parallel()
+
+	green := color.NRGBA{G: 0xaa, A: 0xff}
+	red := color.NRGBA{R: 0xaa, A: 0xff}
+	white := color.NRGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff}
+	tests := []struct {
+		name            string
+		verticalBorder  string
+		wantCenter      color.NRGBA
+		stripeOffset    int
+		wantStripeColor color.NRGBA
+		wantEllipse     bool
+	}{
+		{name: "dotted winner owns junction", verticalBorder: "10px dotted #00aa00", wantCenter: green, wantEllipse: true},
+		{name: "double gap does not reveal lower border", verticalBorder: "12px double #00aa00", wantCenter: white, stripeOffset: -4, wantStripeColor: green},
+		{name: "transparent winner suppresses lower border", verticalBorder: "10px solid transparent", wantCenter: white},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			document := mustParseTableDocument(t, `<!doctype html><html><body style="margin:0"><table style="margin-left:17px;border-collapse:collapse"><tr>
+				<td id=top-left style="width:40px;height:30px;padding:0;border-right:`+test.verticalBorder+`;border-bottom:4px solid #aa0000"></td>
+				<td id=top-right style="width:40px;height:30px;padding:0;border-bottom:4px solid #aa0000"></td>
+			</tr><tr><td id=bottom-left style="width:40px;height:30px;padding:0"></td><td style="width:40px;height:30px;padding:0"></td></tr></table></body></html>`)
+			frame, err := render.Render(document, render.Viewport{Width: 120, Height: 100})
+			if err != nil {
+				t.Fatal(err)
+			}
+			topRight := findBox(frame.Root, tableElementByID(t, document, "top-right"))
+			bottomLeft := findBox(frame.Root, tableElementByID(t, document, "bottom-left"))
+			if topRight == nil || bottomLeft == nil {
+				t.Fatalf("junction cells = top-right:%#v bottom-left:%#v", topRight, bottomLeft)
+			}
+			crossX, crossY := topRight.Bounds.X, bottomLeft.Bounds.Y
+			for _, command := range frame.DisplayList.Commands {
+				if (command.Kind == render.FillRectCommand || command.Kind == render.FillEllipseCommand) && command.Color == red && pointInRect(crossX, crossY, command.Rect) {
+					t.Fatalf("lower red border was painted below winning junction: %#v", command)
+				}
+			}
+			painted, err := render.Rasterize(frame)
+			if err != nil {
+				t.Fatal(err)
+			}
+			centerX, centerY := int(math.Floor(crossX)), int(math.Floor(crossY))
+			assertBorderPixel(t, painted, centerX, centerY, test.wantCenter)
+			if test.stripeOffset != 0 {
+				assertBorderPixel(t, painted, centerX+test.stripeOffset, centerY, test.wantStripeColor)
+			}
+			if test.wantEllipse {
+				found := false
+				for _, command := range frame.DisplayList.Commands {
+					if command.Kind == render.FillEllipseCommand && command.Color == green &&
+						mathAbs(command.Rect.X+command.Rect.Width/2-crossX) <= 0.001 &&
+						mathAbs(command.Rect.Y+command.Rect.Height/2-crossY) <= 0.001 &&
+						command.Rect.Width == 10 && command.Rect.Height == 10 {
+						found = true
+						break
+					}
+				}
+				if !found {
+					t.Fatal("dotted junction ellipse was not retained at the crossing")
+				}
+			}
+		})
+	}
+}
+
 func TestCollapsedHiddenBorderSuppressesOtherwiseVisibleConflict(t *testing.T) {
 	t.Parallel()
 

@@ -386,7 +386,12 @@ shades. Collapsed tables ignore spacing and table padding, harmonize
 none/hidden/dotted/dashed/solid/double/groove/ridge/inset/outset borders across
 table, column/group, row/group, and cell
 edges, use half-width layout insets, and paint one bounded winning segment
-grid instead of duplicate cell borders. The inherited `direction` property is
+grid instead of duplicate cell borders. Crossings, T-junctions, and outer
+corners now reserve an explicit square chosen with the same conflict order:
+every incident segment stops at that square and only its winner paints there,
+so a lower edge cannot leak through a `double` gap or transparent winning
+border. The segment and worst-case junction planes share a hard retained-paint
+budget. The inherited `direction` property is
 retained independently of HTML directionality and remains excluded from
 `all`; the HTML `dir` mapping uses `:dir()` without allowing stylistic
 `direction` to change selector state. Logical text alignment and table column
@@ -481,8 +486,8 @@ parent track model through explicit nesting and work budgets. A Subgrid without
 a compatible parent formatting context computes to the retained keyword but
 uses `none`, as exposed by live resolved CSSOM geometry.
 
-- Complete the remaining advanced table intrinsic edge cases, vertical
-  writing-mode placement, and collapsed-border junction geometry.
+- Complete the remaining advanced table intrinsic edge cases and vertical
+  writing-mode placement.
 - Extend Grid Subgrid through orthogonal writing modes and the remaining
   advanced intrinsic/overflow interactions.
 - Add multicolumn and fragmentation only after their block/inline consumers
