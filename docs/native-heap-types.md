@@ -12,6 +12,13 @@ with `ErrTypeMismatch`. Ownership and queue operations remain properties of the
 containing region, so adding a payload type cannot bypass Transfer, Publish,
 Copy, Promote, stale-reference checks, or bulk region release.
 
+Mutable writes are also lifetime barriers. If an object owned by a longer-lived
+region stores a Ref into a shorter-lived private region, RegionStore copies the
+reachable graph into destination-owned storage and rewrites the stored Ref.
+The source graph remains task-private and dies in bulk; repeated writes of the
+same source root reuse the promoted root, and aliases inside the copied graph
+remain aliases.
+
 `runtime.Realm.Profile` snapshots these physical counters beside the ownership
 ledger and queue depths. The stock-V8 profiling command records that Go
 snapshot and V8's heap/wrapper counters at the same between-task checkpoints,
@@ -183,6 +190,5 @@ and host-runtime responsibilities.
 ## Deliberate boundaries
 
 These native payloads are not yet ECMAScript implementations. String
-interning, ropes, UTF-16 indexing, coercion, property descriptors, automatic
-promotion, tracing GC, packed refs, and V8 heap integration are outside this
-layer.
+interning, ropes, UTF-16 indexing, coercion, property descriptors, tracing GC,
+packed refs, and V8 heap integration are outside this layer.

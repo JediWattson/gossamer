@@ -50,6 +50,14 @@ func (store *Store) mapSetLocked(owner ownership.OwnerID, ref Ref, key, value Va
 	if slot.Kind != HeapMap {
 		return typeError(ref, slot.Kind, HeapMap)
 	}
+	key, err = store.prepareEscapingValueLocked(region, key, internal)
+	if err != nil {
+		return err
+	}
+	value, err = store.prepareEscapingValueLocked(region, value, internal)
+	if err != nil {
+		return err
+	}
 	if err := store.validateValueAccessLocked(owner, key, internal); err != nil {
 		return err
 	}
@@ -59,17 +67,20 @@ func (store *Store) mapSetLocked(owner ownership.OwnerID, ref Ref, key, value Va
 	}
 	if index >= 0 {
 		old := slot.Map.Entries[index].Value
-		if err := store.replaceValueLocked(owner, region, slot, old, value, internal); err != nil {
+		value, err = store.replaceValueLocked(owner, region, slot, old, value, internal)
+		if err != nil {
 			return err
 		}
 		slot.Map.Entries[index].Value = value
 		return nil
 	}
-	if err := store.replaceValueLocked(owner, region, slot, Value{}, key, internal); err != nil {
+	key, err = store.replaceValueLocked(owner, region, slot, Value{}, key, internal)
+	if err != nil {
 		return err
 	}
-	if err := store.replaceValueLocked(owner, region, slot, Value{}, value, internal); err != nil {
-		_ = store.replaceValueLocked(owner, region, slot, key, Value{}, true)
+	value, err = store.replaceValueLocked(owner, region, slot, Value{}, value, internal)
+	if err != nil {
+		_, _ = store.replaceValueLocked(owner, region, slot, key, Value{}, true)
 		return err
 	}
 	slot.Map.Entries = append(slot.Map.Entries, MapEntry{Key: key, Value: value})
@@ -123,11 +134,11 @@ func (store *Store) MapDelete(owner ownership.OwnerID, ref Ref, key Value) (bool
 		return false, err
 	}
 	entry := slot.Map.Entries[index]
-	if err := store.replaceValueLocked(owner, region, slot, entry.Key, Value{}, false); err != nil {
+	if _, err := store.replaceValueLocked(owner, region, slot, entry.Key, Value{}, false); err != nil {
 		return false, err
 	}
-	if err := store.replaceValueLocked(owner, region, slot, entry.Value, Value{}, false); err != nil {
-		_ = store.replaceValueLocked(owner, region, slot, Value{}, entry.Key, true)
+	if _, err := store.replaceValueLocked(owner, region, slot, entry.Value, Value{}, false); err != nil {
+		_, _ = store.replaceValueLocked(owner, region, slot, Value{}, entry.Key, true)
 		return false, err
 	}
 	copy(slot.Map.Entries[index:], slot.Map.Entries[index+1:])
@@ -152,9 +163,9 @@ func (store *Store) MapClear(owner ownership.OwnerID, ref Ref) error {
 	values := slotReferences(slot)
 	unlinked := make([]Value, 0, len(values))
 	for _, value := range values {
-		if err := store.replaceValueLocked(owner, region, slot, value, Value{}, false); err != nil {
+		if _, err := store.replaceValueLocked(owner, region, slot, value, Value{}, false); err != nil {
 			for index := len(unlinked) - 1; index >= 0; index-- {
-				_ = store.replaceValueLocked(owner, region, slot, Value{}, unlinked[index], true)
+				_, _ = store.replaceValueLocked(owner, region, slot, Value{}, unlinked[index], true)
 			}
 			return err
 		}

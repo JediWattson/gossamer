@@ -118,10 +118,7 @@ func (store *Store) initializeTypedArrayLocked(owner ownership.OwnerID, ref Ref,
 	if !valid || view.ByteOffset%size != 0 {
 		return fmt.Errorf("%w: element=%d offset=%d", ErrInvalidTypedArray, view.Element, view.ByteOffset)
 	}
-	_, bufferSlot, err := store.readSlotLocked(owner, view.Buffer)
-	if err != nil && internal {
-		_, bufferSlot, err = store.slotLocked(view.Buffer)
-	}
+	_, bufferSlot, err := store.slotLocked(view.Buffer)
 	if err != nil {
 		return err
 	}
@@ -138,9 +135,11 @@ func (store *Store) initializeTypedArrayLocked(owner ownership.OwnerID, ref Ref,
 	if _, _, err := bufferRange(len(bufferSlot.ArrayBuffer.Bytes), view.ByteOffset, byteLength); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidTypedArray, err)
 	}
-	if err := store.replaceValueLocked(owner, region, slot, Value{}, RefValue(view.Buffer), internal); err != nil {
+	buffer, err := store.replaceValueLocked(owner, region, slot, Value{}, RefValue(view.Buffer), internal)
+	if err != nil {
 		return err
 	}
+	view.Buffer = buffer.Ref()
 	slot.TypedArray = view
 	return nil
 }

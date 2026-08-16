@@ -51,33 +51,40 @@ var (
 
 // Stats describes physical heap activity, independently from ledger telemetry.
 type Stats struct {
-	Allocations        uint64 `json:"allocations"`
-	Frees              uint64 `json:"frees"`
-	LiveSlots          uint64 `json:"liveSlots"`
-	LiveCells          uint64 `json:"liveCells"`
-	LiveStrings        uint64 `json:"liveStrings"`
-	LiveObjects        uint64 `json:"liveObjects"`
-	LiveArrays         uint64 `json:"liveArrays"`
-	LiveContexts       uint64 `json:"liveContexts"`
-	LiveFunctions      uint64 `json:"liveFunctions"`
-	LivePromises       uint64 `json:"livePromises"`
-	LiveBigInts        uint64 `json:"liveBigInts"`
-	LiveSymbols        uint64 `json:"liveSymbols"`
-	LiveArrayBuffers   uint64 `json:"liveArrayBuffers"`
-	LiveTypedArrays    uint64 `json:"liveTypedArrays"`
-	LiveMaps           uint64 `json:"liveMaps"`
-	LiveSets           uint64 `json:"liveSets"`
-	LiveDates          uint64 `json:"liveDates"`
-	LiveRegExps        uint64 `json:"liveRegExps"`
-	LiveErrors         uint64 `json:"liveErrors"`
-	LiveBytes          uint64 `json:"liveBytes"`
-	LiveRegions        uint64 `json:"liveRegions"`
-	BulkRegionReleases uint64 `json:"bulkRegionReleases"`
+	Allocations         uint64 `json:"allocations"`
+	Frees               uint64 `json:"frees"`
+	LiveSlots           uint64 `json:"liveSlots"`
+	LiveCells           uint64 `json:"liveCells"`
+	LiveStrings         uint64 `json:"liveStrings"`
+	LiveObjects         uint64 `json:"liveObjects"`
+	LiveArrays          uint64 `json:"liveArrays"`
+	LiveContexts        uint64 `json:"liveContexts"`
+	LiveFunctions       uint64 `json:"liveFunctions"`
+	LivePromises        uint64 `json:"livePromises"`
+	LiveBigInts         uint64 `json:"liveBigInts"`
+	LiveSymbols         uint64 `json:"liveSymbols"`
+	LiveArrayBuffers    uint64 `json:"liveArrayBuffers"`
+	LiveTypedArrays     uint64 `json:"liveTypedArrays"`
+	LiveMaps            uint64 `json:"liveMaps"`
+	LiveSets            uint64 `json:"liveSets"`
+	LiveDates           uint64 `json:"liveDates"`
+	LiveRegExps         uint64 `json:"liveRegExps"`
+	LiveErrors          uint64 `json:"liveErrors"`
+	LiveBytes           uint64 `json:"liveBytes"`
+	LiveRegions         uint64 `json:"liveRegions"`
+	BulkRegionReleases  uint64 `json:"bulkRegionReleases"`
+	AutomaticPromotions uint64 `json:"automaticPromotions"`
+	PromotionCacheHits  uint64 `json:"promotionCacheHits"`
 }
 
 type objectEdge struct {
 	from ownership.ObjectID
 	to   ownership.ObjectID
+}
+
+type promotionKey struct {
+	owner  ownership.OwnerID
+	source Ref
 }
 
 func typeError(ref Ref, got, want HeapKind) error {
@@ -137,6 +144,7 @@ type Store struct {
 	closedOwners map[ownership.OwnerID]bool
 	barrier      *Barrier
 	objectEdges  map[objectEdge]uint32
+	promotions   map[promotionKey]Ref
 	stats        Stats
 
 	sharedOwner ownership.OwnerID
@@ -154,6 +162,7 @@ func NewStore(ledger *ownership.Ledger) *Store {
 		closedOwners: make(map[ownership.OwnerID]bool),
 		barrier:      newBarrier(),
 		objectEdges:  make(map[objectEdge]uint32),
+		promotions:   make(map[promotionKey]Ref),
 	}
 }
 
@@ -376,7 +385,8 @@ func (store *Store) setLocked(owner ownership.OwnerID, object Ref, field int, va
 		}
 		return nil
 	}
-	if err := store.replaceValueLocked(owner, region, slot, old, value, internal); err != nil {
+	value, err = store.replaceValueLocked(owner, region, slot, old, value, internal)
+	if err != nil {
 		return err
 	}
 	if field >= len(slot.Cell.Fields) {
@@ -386,26 +396,33 @@ func (store *Store) setLocked(owner ownership.OwnerID, object Ref, field int, va
 	return nil
 }
 
-func (store *Store) replaceValueLocked(owner ownership.OwnerID, region *Region, slot *Slot, old, value Value, internal bool) error {
+func (store *Store) replaceValueLocked(owner ownership.OwnerID, region *Region, slot *Slot, old, value Value, internal bool) (Value, error) {
 	if old == value {
-		return nil
+		return value, nil
+	}
+	prepared, err := store.prepareEscapingValueLocked(region, value, internal)
+	if err != nil {
+		return Value{}, err
+	}
+	value = prepared
+	if old == value {
+		return value, nil
 	}
 	var targetRegion *Region
 	var targetSlot *Slot
-	var err error
 	if value.IsRef() {
 		targetRegion, targetSlot, err = store.readSlotLocked(owner, value.Ref())
 		if err != nil && internal {
 			targetRegion, targetSlot, err = store.slotLocked(value.Ref())
 		}
 		if err != nil {
-			return err
+			return Value{}, err
 		}
 		if targetRegion.State == RegionPrivate && targetRegion.Owner != region.Owner {
-			return fmt.Errorf("%w: R%d owned by %s cannot reference R%d owned by %s", ErrAccessDenied, region.ID, region.Owner, targetRegion.ID, targetRegion.Owner)
+			return Value{}, fmt.Errorf("%w: R%d owned by %s cannot reference R%d owned by %s", ErrAccessDenied, region.ID, region.Owner, targetRegion.ID, targetRegion.Owner)
 		}
 		if err := store.linkLocked(region.ID, slot.object, targetRegion.ID, targetSlot.object); err != nil {
-			return err
+			return Value{}, err
 		}
 	}
 	if old.IsRef() {
@@ -414,16 +431,57 @@ func (store *Store) replaceValueLocked(owner ownership.OwnerID, region *Region, 
 			if value.IsRef() {
 				_ = store.unlinkLocked(region.ID, slot.object, targetRegion.ID, targetSlot.object)
 			}
-			return oldErr
+			return Value{}, oldErr
 		}
 		if err := store.unlinkLocked(region.ID, slot.object, oldRegion.ID, oldSlot.object); err != nil {
 			if value.IsRef() {
 				_ = store.unlinkLocked(region.ID, slot.object, targetRegion.ID, targetSlot.object)
 			}
-			return err
+			return Value{}, err
 		}
 	}
-	return nil
+	return value, nil
+}
+
+// prepareEscapingValueLocked implements the physical half of the lifetime
+// ownership barrier. A mutable longer-lived region cannot point directly into
+// a shorter-lived private region: the reachable graph is copied into storage
+// owned by the destination lifetime and the stored Ref is rewritten. Repeated
+// publication of the same source root to the same lifetime reuses the first
+// promoted root.
+func (store *Store) prepareEscapingValueLocked(destination *Region, value Value, internal bool) (Value, error) {
+	if !value.IsRef() || internal {
+		return value, nil
+	}
+	source, _, err := store.slotLocked(value.Ref())
+	if err != nil {
+		return Value{}, err
+	}
+	if source.State == RegionPublished || source.Owner == destination.Owner {
+		return value, nil
+	}
+	if source.State == RegionInTransit {
+		return Value{}, fmt.Errorf("%w: R%d", ErrRegionInTransit, source.ID)
+	}
+	if destination.Owner.Kind <= source.Owner.Kind {
+		return Value{}, fmt.Errorf("%w: R%d owned by %s cannot retain R%d owned by %s", ErrAccessDenied, destination.ID, destination.Owner, source.ID, source.Owner)
+	}
+	key := promotionKey{owner: destination.Owner, source: value.Ref()}
+	if cached := store.promotions[key]; cached != (Ref{}) {
+		cachedRegion, _, cacheErr := store.slotLocked(cached)
+		if cacheErr == nil && cachedRegion.Owner == destination.Owner {
+			store.stats.PromotionCacheHits++
+			return RefValue(cached), nil
+		}
+		delete(store.promotions, key)
+	}
+	promoted, err := store.copyLocked(source.Owner, destination.Owner, []Ref{value.Ref()})
+	if err != nil {
+		return Value{}, err
+	}
+	store.promotions[key] = promoted[0]
+	store.stats.AutomaticPromotions++
+	return RefValue(promoted[0]), nil
 }
 
 func (store *Store) Free(owner ownership.OwnerID, ref Ref) error {

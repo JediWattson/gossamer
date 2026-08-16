@@ -75,7 +75,8 @@ func (store *Store) setErrorStringLocked(owner ownership.OwnerID, ref Ref, value
 	if err := store.validateOptionalTypedValueLocked(owner, value, HeapString, label, internal); err != nil {
 		return err
 	}
-	if err := store.replaceValueLocked(owner, region, slot, old, value, internal); err != nil {
+	value, err = store.replaceValueLocked(owner, region, slot, old, value, internal)
+	if err != nil {
 		return err
 	}
 	if stack {
@@ -103,7 +104,8 @@ func (store *Store) SetErrorCause(owner ownership.OwnerID, ref Ref, cause Value)
 	if slot.Error.HasCause {
 		old = slot.Error.Cause
 	}
-	if err := store.replaceValueLocked(owner, region, slot, old, cause, false); err != nil {
+	cause, err = store.replaceValueLocked(owner, region, slot, old, cause, false)
+	if err != nil {
 		return err
 	}
 	slot.Error.Cause = cause
@@ -127,7 +129,7 @@ func (store *Store) ClearErrorCause(owner ownership.OwnerID, ref Ref) error {
 	if !slot.Error.HasCause {
 		return nil
 	}
-	if err := store.replaceValueLocked(owner, region, slot, slot.Error.Cause, Value{}, false); err != nil {
+	if _, err := store.replaceValueLocked(owner, region, slot, slot.Error.Cause, Value{}, false); err != nil {
 		return err
 	}
 	slot.Error.Cause = Value{}
@@ -161,16 +163,16 @@ func (store *Store) setAggregateErrorsLocked(owner ownership.OwnerID, ref Ref, e
 	}
 	unlinked := make([]Value, 0, len(slot.Error.Errors))
 	for _, old := range slot.Error.Errors {
-		if err := store.replaceValueLocked(owner, region, slot, old, Value{}, internal); err != nil {
+		if _, err := store.replaceValueLocked(owner, region, slot, old, Value{}, internal); err != nil {
 			for index := len(unlinked) - 1; index >= 0; index-- {
-				_ = store.replaceValueLocked(owner, region, slot, Value{}, unlinked[index], true)
+				_, _ = store.replaceValueLocked(owner, region, slot, Value{}, unlinked[index], true)
 			}
 			store.unlinkValuesLocked(region, slot, linked)
 			return err
 		}
 		unlinked = append(unlinked, old)
 	}
-	slot.Error.Errors = append([]Value(nil), errors...)
+	slot.Error.Errors = append([]Value(nil), linked...)
 	return nil
 }
 
@@ -205,9 +207,18 @@ func (store *Store) initializeErrorLocked(owner ownership.OwnerID, ref Ref, valu
 		values = append(values, value.Cause)
 	}
 	values = append(values, value.Errors...)
-	if _, err := store.linkValuesLocked(owner, region, slot, values, internal); err != nil {
+	linked, err := store.linkValuesLocked(owner, region, slot, values, internal)
+	if err != nil {
 		return err
 	}
+	value.Message = linked[0]
+	value.Stack = linked[1]
+	next := 2
+	if value.HasCause {
+		value.Cause = linked[next]
+		next++
+	}
+	value.Errors = append([]Value(nil), linked[next:]...)
 	slot.Error = cloneError(value)
 	return nil
 }
@@ -215,7 +226,8 @@ func (store *Store) initializeErrorLocked(owner ownership.OwnerID, ref Ref, valu
 func (store *Store) linkValuesLocked(owner ownership.OwnerID, region *Region, slot *Slot, values []Value, internal bool) ([]Value, error) {
 	linked := make([]Value, 0, len(values))
 	for _, value := range values {
-		if err := store.replaceValueLocked(owner, region, slot, Value{}, value, internal); err != nil {
+		value, err := store.replaceValueLocked(owner, region, slot, Value{}, value, internal)
+		if err != nil {
 			store.unlinkValuesLocked(region, slot, linked)
 			return nil, err
 		}
@@ -226,6 +238,6 @@ func (store *Store) linkValuesLocked(owner ownership.OwnerID, region *Region, sl
 
 func (store *Store) unlinkValuesLocked(region *Region, slot *Slot, values []Value) {
 	for index := len(values) - 1; index >= 0; index-- {
-		_ = store.replaceValueLocked(region.Owner, region, slot, values[index], Value{}, true)
+		_, _ = store.replaceValueLocked(region.Owner, region, slot, values[index], Value{}, true)
 	}
 }

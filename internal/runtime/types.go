@@ -562,7 +562,9 @@ func (context *TaskContext) Free(ref memory.Ref) error {
 }
 
 // PublishRefs explicitly makes the reachable region graph immutable and
-// globally readable. Task completion never promotes refs automatically.
+// globally readable. Ordinary task completion does not publish refs; writes
+// into longer-lived native objects instead use the Store's copy-on-escape
+// ownership barrier.
 func (context *TaskContext) PublishRefs(refs ...memory.Ref) error {
 	if context == nil || context.Realm == nil {
 		return fmt.Errorf("runtime: nil task context")

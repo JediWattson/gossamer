@@ -61,10 +61,7 @@ func (store *Store) setPrototypeLocked(owner ownership.OwnerID, object Ref, prot
 		if !prototype.IsRef() {
 			return fmt.Errorf("%w: Object prototype must be null or an Object Ref", ErrTypeMismatch)
 		}
-		_, prototypeSlot, lookupErr := store.readSlotLocked(owner, prototype.Ref())
-		if lookupErr != nil && internal {
-			_, prototypeSlot, lookupErr = store.slotLocked(prototype.Ref())
-		}
+		_, prototypeSlot, lookupErr := store.slotLocked(prototype.Ref())
 		if lookupErr != nil {
 			return lookupErr
 		}
@@ -72,7 +69,8 @@ func (store *Store) setPrototypeLocked(owner ownership.OwnerID, object Ref, prot
 			return typeError(prototype.Ref(), prototypeSlot.Kind, HeapObject)
 		}
 	}
-	if err := store.replaceValueLocked(owner, region, slot, slot.Object.Prototype, prototype, internal); err != nil {
+	prototype, err = store.replaceValueLocked(owner, region, slot, slot.Object.Prototype, prototype, internal)
+	if err != nil {
 		return err
 	}
 	slot.Object.Prototype = prototype
@@ -109,20 +107,23 @@ func (store *Store) setPropertyLocked(owner ownership.OwnerID, object, name Ref,
 	}
 	if index >= 0 {
 		old := slot.Object.Properties[index].Value
-		if err := store.replaceValueLocked(owner, region, slot, old, value, internal); err != nil {
+		value, err = store.replaceValueLocked(owner, region, slot, old, value, internal)
+		if err != nil {
 			return err
 		}
 		slot.Object.Properties[index].Value = value
 		return nil
 	}
-	if err := store.replaceValueLocked(owner, region, slot, Value{}, RefValue(name), internal); err != nil {
+	preparedName, err := store.replaceValueLocked(owner, region, slot, Value{}, RefValue(name), internal)
+	if err != nil {
 		return err
 	}
-	if err := store.replaceValueLocked(owner, region, slot, Value{}, value, internal); err != nil {
-		_ = store.replaceValueLocked(owner, region, slot, RefValue(name), Value{}, true)
+	value, err = store.replaceValueLocked(owner, region, slot, Value{}, value, internal)
+	if err != nil {
+		_, _ = store.replaceValueLocked(owner, region, slot, preparedName, Value{}, true)
 		return err
 	}
-	slot.Object.Properties = append(slot.Object.Properties, Property{Name: name, Value: value})
+	slot.Object.Properties = append(slot.Object.Properties, Property{Name: preparedName.Ref(), Value: value})
 	return nil
 }
 
@@ -175,11 +176,11 @@ func (store *Store) DeleteProperty(owner ownership.OwnerID, object, name Ref) (b
 		return false, err
 	}
 	property := slot.Object.Properties[index]
-	if err := store.replaceValueLocked(owner, region, slot, RefValue(property.Name), Value{}, false); err != nil {
+	if _, err := store.replaceValueLocked(owner, region, slot, RefValue(property.Name), Value{}, false); err != nil {
 		return false, err
 	}
-	if err := store.replaceValueLocked(owner, region, slot, property.Value, Value{}, false); err != nil {
-		_ = store.replaceValueLocked(owner, region, slot, Value{}, RefValue(property.Name), true)
+	if _, err := store.replaceValueLocked(owner, region, slot, property.Value, Value{}, false); err != nil {
+		_, _ = store.replaceValueLocked(owner, region, slot, Value{}, RefValue(property.Name), true)
 		return false, err
 	}
 	copy(slot.Object.Properties[index:], slot.Object.Properties[index+1:])
@@ -189,10 +190,7 @@ func (store *Store) DeleteProperty(owner ownership.OwnerID, object, name Ref) (b
 }
 
 func (store *Store) stringTextLocked(owner ownership.OwnerID, ref Ref, internal bool) (string, error) {
-	_, slot, err := store.readSlotLocked(owner, ref)
-	if err != nil && internal {
-		_, slot, err = store.slotLocked(ref)
-	}
+	_, slot, err := store.slotLocked(ref)
 	if err != nil {
 		return "", err
 	}

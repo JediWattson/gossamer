@@ -112,8 +112,10 @@ be evaluated later against the semantic telemetry. They are implementation
 details, not the Phase 0 ownership model.
 
 The RegionStore intentionally does not implement JavaScript semantics, tracing
-garbage collection, automatic escape promotion, packed refs, or V8 heap
-integration. Those remain later milestones.
+garbage collection, packed refs, or V8 heap integration. It does implement the
+native copy-on-escape barrier: a longer-lived native object cannot retain a
+direct Ref into shorter-lived private storage. Those remaining capabilities
+stay later milestones.
 
 See [`native-heap-types.md`](native-heap-types.md) for the typed-slot contract
 and the payloads currently implemented behind it.

@@ -60,14 +60,18 @@ func (store *Store) addPromiseReactionLocked(owner ownership.OwnerID, promise Re
 	values := []Value{reaction.OnFulfilled, reaction.OnRejected, reaction.Downstream}
 	linked := make([]Value, 0, len(values))
 	for _, value := range values {
-		if err := store.replaceValueLocked(owner, region, slot, Value{}, value, internal); err != nil {
+		value, err = store.replaceValueLocked(owner, region, slot, Value{}, value, internal)
+		if err != nil {
 			for index := len(linked) - 1; index >= 0; index-- {
-				_ = store.replaceValueLocked(owner, region, slot, linked[index], Value{}, true)
+				_, _ = store.replaceValueLocked(owner, region, slot, linked[index], Value{}, true)
 			}
 			return err
 		}
 		linked = append(linked, value)
 	}
+	reaction.OnFulfilled = linked[0]
+	reaction.OnRejected = linked[1]
+	reaction.Downstream = linked[2]
 	slot.Promise.Reactions = append(slot.Promise.Reactions, reaction)
 	return nil
 }
@@ -106,7 +110,8 @@ func (store *Store) settlePromiseLocked(owner ownership.OwnerID, promise Ref, st
 	if state == PromiseFulfilled && result.IsRef() && result.Ref() == promise {
 		return ErrPromiseSelfResolution
 	}
-	if err := store.replaceValueLocked(owner, region, slot, Value{}, result, internal); err != nil {
+	result, err = store.replaceValueLocked(owner, region, slot, Value{}, result, internal)
+	if err != nil {
 		return err
 	}
 	slot.Promise.State = state
@@ -159,9 +164,9 @@ func (store *Store) DrainPromiseReactions(owner ownership.OwnerID, promise Ref) 
 	}
 	unlinked := make([]Value, 0, len(values))
 	for _, value := range values {
-		if err := store.replaceValueLocked(owner, region, slot, value, Value{}, false); err != nil {
+		if _, err := store.replaceValueLocked(owner, region, slot, value, Value{}, false); err != nil {
 			for index := len(unlinked) - 1; index >= 0; index-- {
-				_ = store.replaceValueLocked(owner, region, slot, Value{}, unlinked[index], true)
+				_, _ = store.replaceValueLocked(owner, region, slot, Value{}, unlinked[index], true)
 			}
 			return PromiseSettlement{}, err
 		}
@@ -183,10 +188,7 @@ func (store *Store) validateOptionalTypedValueLocked(owner ownership.OwnerID, va
 	if !value.IsRef() {
 		return fmt.Errorf("%w: %s must be null or a %s Ref", ErrTypeMismatch, label, kind)
 	}
-	_, slot, err := store.readSlotLocked(owner, value.Ref())
-	if err != nil && internal {
-		_, slot, err = store.slotLocked(value.Ref())
-	}
+	_, slot, err := store.slotLocked(value.Ref())
 	if err != nil {
 		return err
 	}

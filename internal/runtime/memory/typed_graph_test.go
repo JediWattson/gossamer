@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/JediWattson/gossamer/internal/runtime/memory"
+	"github.com/JediWattson/gossamer/internal/runtime/ownership"
 )
 
 func TestEveryHeapKindSurvivesCopyPromotionAndBulkRelease(t *testing.T) {
@@ -118,6 +119,94 @@ func TestEveryHeapKindSurvivesCopyPromotionAndBulkRelease(t *testing.T) {
 	if _, err := store.Deref(reader, promoted[0]); err != nil {
 		t.Fatalf("published graph after private release: %v", err)
 	}
+}
+
+func TestTypedWriteBarriersReuseOneEscapedGraph(t *testing.T) {
+	t.Parallel()
+
+	store := memory.NewStore(nil)
+	defer store.Close()
+	task := ownership.OwnerID{Kind: ownership.OwnerTask, Value: 902}
+	document := ownership.OwnerID{Kind: ownership.OwnerDocument, Value: 902}
+	taskRegion := mustRegion(t, store, task)
+	documentRegion := mustRegion(t, store, document)
+	source := mustAlloc(t, store, task, taskRegion)
+	leaf := mustAlloc(t, store, task, taskRegion)
+	if err := store.Set(task, source, 0, memory.RefValue(leaf)); err != nil {
+		t.Fatal(err)
+	}
+	name, err := store.AllocString(document, documentRegion, "escaped")
+	if err != nil {
+		t.Fatal(err)
+	}
+	object, err := store.AllocObject(document, documentRegion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	array, err := store.AllocArray(document, documentRegion, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nativeMap, err := store.AllocMap(document, documentRegion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nativeSet, err := store.AllocSet(document, documentRegion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	errorRef, err := store.AllocError(document, documentRegion, memory.ErrorType, memory.NullValue())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.SetProperty(document, object, name, memory.RefValue(source)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetArrayElement(document, array, 0, memory.RefValue(source)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MapSet(document, nativeMap, memory.RefValue(name), memory.RefValue(source)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetAdd(document, nativeSet, memory.RefValue(source)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetErrorCause(document, errorRef, memory.RefValue(source)); err != nil {
+		t.Fatal(err)
+	}
+
+	objectValue, found, err := store.GetOwnProperty(document, object, name)
+	if err != nil || !found {
+		t.Fatalf("object escaped value = %v, %t, %v", objectValue, found, err)
+	}
+	promoted := objectValue.Ref()
+	arrayValue, found, err := store.ArrayElement(document, array, 0)
+	if err != nil || !found || arrayValue.Ref() != promoted {
+		t.Fatalf("array escaped value = %v, %t, %v, want %v", arrayValue, found, err, promoted)
+	}
+	mapValue, found, err := store.MapGet(document, nativeMap, memory.RefValue(name))
+	if err != nil || !found || mapValue.Ref() != promoted {
+		t.Fatalf("map escaped value = %v, %t, %v, want %v", mapValue, found, err, promoted)
+	}
+	nativeSetValue, err := store.DerefSet(document, nativeSet)
+	if err != nil || len(nativeSetValue.Values) != 1 || nativeSetValue.Values[0].Ref() != promoted {
+		t.Fatalf("set escaped value = %#v, %v, want %v", nativeSetValue, err, promoted)
+	}
+	errorValue, err := store.DerefError(document, errorRef)
+	if err != nil || !errorValue.HasCause || errorValue.Cause.Ref() != promoted {
+		t.Fatalf("error escaped cause = %#v, %v, want %v", errorValue, err, promoted)
+	}
+	if stats := store.Stats(); stats.AutomaticPromotions != 1 || stats.PromotionCacheHits != 4 {
+		t.Fatalf("typed promotion stats = %#v", stats)
+	}
+	if err := store.ReleaseOwner(task); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Deref(document, promoted); err != nil {
+		t.Fatalf("escaped graph after task release: %v", err)
+	}
+	assertStoreInvariants(t, store, "typed escape barriers")
 }
 
 func assertEveryHeapKindCount(t *testing.T, stats memory.Stats, multiplier uint64) {

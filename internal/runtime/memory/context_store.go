@@ -66,10 +66,7 @@ func (store *Store) setContextParentLocked(owner ownership.OwnerID, context Ref,
 		if !parent.IsRef() {
 			return fmt.Errorf("%w: Context parent must be null or a Context Ref", ErrTypeMismatch)
 		}
-		_, parentSlot, lookupErr := store.readSlotLocked(owner, parent.Ref())
-		if lookupErr != nil && internal {
-			_, parentSlot, lookupErr = store.slotLocked(parent.Ref())
-		}
+		_, parentSlot, lookupErr := store.slotLocked(parent.Ref())
 		if lookupErr != nil {
 			return lookupErr
 		}
@@ -80,7 +77,8 @@ func (store *Store) setContextParentLocked(owner ownership.OwnerID, context Ref,
 			return err
 		}
 	}
-	if err := store.replaceValueLocked(owner, region, slot, slot.Context.Parent, parent, internal); err != nil {
+	parent, err = store.replaceValueLocked(owner, region, slot, slot.Context.Parent, parent, internal)
+	if err != nil {
 		return err
 	}
 	slot.Context.Parent = parent
@@ -113,10 +111,11 @@ func (store *Store) declareBindingLocked(owner ownership.OwnerID, context, name 
 	} else if index >= 0 {
 		return fmt.Errorf("%w: %q", ErrBindingExists, nameText)
 	}
-	if err := store.replaceValueLocked(owner, region, slot, Value{}, RefValue(name), internal); err != nil {
+	preparedName, err := store.replaceValueLocked(owner, region, slot, Value{}, RefValue(name), internal)
+	if err != nil {
 		return err
 	}
-	slot.Context.Bindings = append(slot.Context.Bindings, Binding{Name: name, Mutable: mutable})
+	slot.Context.Bindings = append(slot.Context.Bindings, Binding{Name: preparedName.Ref(), Mutable: mutable})
 	return nil
 }
 
@@ -151,7 +150,8 @@ func (store *Store) initializeBindingLocked(owner ownership.OwnerID, context, na
 	if slot.Context.Bindings[index].Initialized {
 		return fmt.Errorf("%w: %q is already initialized", ErrBindingExists, nameText)
 	}
-	if err := store.replaceValueLocked(owner, region, slot, Value{}, value, internal); err != nil {
+	value, err = store.replaceValueLocked(owner, region, slot, Value{}, value, internal)
+	if err != nil {
 		return err
 	}
 	slot.Context.Bindings[index].Value = value
@@ -188,7 +188,8 @@ func (store *Store) SetBinding(owner ownership.OwnerID, context, name Ref, value
 	if region.Owner != owner {
 		return store.accessError(region, owner)
 	}
-	if err := store.replaceValueLocked(owner, region, slot, binding.Value, value, false); err != nil {
+	value, err = store.replaceValueLocked(owner, region, slot, binding.Value, value, false)
+	if err != nil {
 		return err
 	}
 	binding.Value = value

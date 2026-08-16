@@ -421,6 +421,68 @@ func TestPromoteCopiesOnlyReachableCellsIntoSharedRegion(t *testing.T) {
 	}
 }
 
+func TestLongerLivedWriteAutomaticallyPromotesReachableGraph(t *testing.T) {
+	t.Parallel()
+
+	store := memory.NewStore(nil)
+	defer store.Close()
+	task := ownership.OwnerID{Kind: ownership.OwnerTask, Value: 901}
+	document := ownership.OwnerID{Kind: ownership.OwnerDocument, Value: 901}
+	taskRegion := mustRegion(t, store, task)
+	documentRegion := mustRegion(t, store, document)
+	documentRoot := mustAlloc(t, store, document, documentRegion)
+	taskRoot := mustAlloc(t, store, task, taskRegion)
+	taskLeaf := mustAlloc(t, store, task, taskRegion)
+	if err := store.Set(task, taskRoot, 0, memory.RefValue(taskLeaf)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Set(task, taskRoot, 1, memory.RefValue(taskLeaf)); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.Set(document, documentRoot, 0, memory.RefValue(taskRoot)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Set(document, documentRoot, 1, memory.RefValue(taskRoot)); err != nil {
+		t.Fatal(err)
+	}
+	documentCell, err := store.Deref(document, documentRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	promotedRoot := documentCell.Fields[0].Ref()
+	if promotedRoot == taskRoot || documentCell.Fields[1].Ref() != promotedRoot {
+		t.Fatalf("promoted roots = %v and %v, source=%v", promotedRoot, documentCell.Fields[1].Ref(), taskRoot)
+	}
+	promotedCell, err := store.Deref(document, promotedRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(promotedCell.Fields) != 2 || promotedCell.Fields[0].Ref() != promotedCell.Fields[1].Ref() || promotedCell.Fields[0].Ref() == taskLeaf {
+		t.Fatalf("promoted shared aliases = %#v, source leaf=%v", promotedCell, taskLeaf)
+	}
+	stats := store.Stats()
+	if stats.AutomaticPromotions != 1 || stats.PromotionCacheHits != 1 {
+		t.Fatalf("promotion stats = %#v", stats)
+	}
+	if err := store.CheckInvariants(); err != nil {
+		t.Fatalf("promoted invariants: %v", err)
+	}
+
+	if err := store.ReleaseOwner(task); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Deref(task, taskRoot); !errors.Is(err, memory.ErrStaleRef) {
+		t.Fatalf("source after task release = %v, want stale", err)
+	}
+	if _, err := store.Deref(document, promotedRoot); err != nil {
+		t.Fatalf("promoted graph after task release: %v", err)
+	}
+	if err := store.CheckInvariants(); err != nil {
+		t.Fatalf("post-release invariants: %v", err)
+	}
+}
+
 func TestCopyClonesCyclesWithoutSharingMutableCells(t *testing.T) {
 	t.Parallel()
 

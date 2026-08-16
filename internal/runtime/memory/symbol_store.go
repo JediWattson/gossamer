@@ -80,9 +80,11 @@ func (store *Store) initializeSymbolLocked(owner ownership.OwnerID, ref Ref, sym
 	if err := store.validateOptionalTypedValueLocked(owner, symbol.Description, HeapString, "Symbol description", internal); err != nil {
 		return err
 	}
-	if err := store.replaceValueLocked(owner, region, slot, Value{}, symbol.Description, internal); err != nil {
+	description, err := store.replaceValueLocked(owner, region, slot, Value{}, symbol.Description, internal)
+	if err != nil {
 		return err
 	}
+	symbol.Description = description
 	slot.Symbol = cloneSymbol(symbol)
 	return nil
 }

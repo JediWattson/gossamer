@@ -78,19 +78,18 @@ func (store *Store) initializeRegExpLocked(owner ownership.OwnerID, ref Ref, exp
 	if expression.Flags&^allRegExpFlags != 0 || expression.Flags&RegExpUnicode != 0 && expression.Flags&RegExpUnicodeSets != 0 {
 		return fmt.Errorf("%w: flag mask %x", ErrInvalidRegExp, expression.Flags)
 	}
-	_, patternSlot, err := store.readSlotLocked(owner, expression.Pattern)
-	if err != nil && internal {
-		_, patternSlot, err = store.slotLocked(expression.Pattern)
-	}
+	_, patternSlot, err := store.slotLocked(expression.Pattern)
 	if err != nil {
 		return err
 	}
 	if patternSlot.Kind != HeapString {
 		return typeError(expression.Pattern, patternSlot.Kind, HeapString)
 	}
-	if err := store.replaceValueLocked(owner, region, slot, Value{}, RefValue(expression.Pattern), internal); err != nil {
+	pattern, err := store.replaceValueLocked(owner, region, slot, Value{}, RefValue(expression.Pattern), internal)
+	if err != nil {
 		return err
 	}
+	expression.Pattern = pattern.Ref()
 	slot.RegExp = cloneRegExp(expression)
 	return nil
 }

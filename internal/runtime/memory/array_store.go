@@ -84,7 +84,8 @@ func (store *Store) setArrayElementLocked(owner ownership.OwnerID, array Ref, in
 	if present {
 		old = slot.Array.Elements[position].Value
 	}
-	if err := store.replaceValueLocked(owner, region, slot, old, value, internal); err != nil {
+	value, err = store.replaceValueLocked(owner, region, slot, old, value, internal)
+	if err != nil {
 		return err
 	}
 	if present {
@@ -121,7 +122,7 @@ func (store *Store) deleteArrayElementLocked(owner ownership.OwnerID, array Ref,
 	if !present {
 		return false, nil
 	}
-	if err := store.replaceValueLocked(owner, region, slot, slot.Array.Elements[position].Value, Value{}, internal); err != nil {
+	if _, err := store.replaceValueLocked(owner, region, slot, slot.Array.Elements[position].Value, Value{}, internal); err != nil {
 		return false, err
 	}
 	copy(slot.Array.Elements[position:], slot.Array.Elements[position+1:])
@@ -156,9 +157,9 @@ func (store *Store) setArrayLengthLocked(owner ownership.OwnerID, array Ref, len
 	})
 	unlinked := make([]Value, 0, len(slot.Array.Elements)-firstRemoved)
 	for _, element := range slot.Array.Elements[firstRemoved:] {
-		if err := store.replaceValueLocked(owner, region, slot, element.Value, Value{}, internal); err != nil {
+		if _, err := store.replaceValueLocked(owner, region, slot, element.Value, Value{}, internal); err != nil {
 			for _, value := range unlinked {
-				_ = store.replaceValueLocked(owner, region, slot, Value{}, value, true)
+				_, _ = store.replaceValueLocked(owner, region, slot, Value{}, value, true)
 			}
 			return err
 		}

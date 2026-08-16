@@ -48,6 +48,10 @@ func (store *Store) setAddLocked(owner ownership.OwnerID, ref Ref, value Value, 
 	if slot.Kind != HeapSet {
 		return typeError(ref, slot.Kind, HeapSet)
 	}
+	value, err = store.prepareEscapingValueLocked(region, value, internal)
+	if err != nil {
+		return err
+	}
 	if err := store.validateValueAccessLocked(owner, value, internal); err != nil {
 		return err
 	}
@@ -55,7 +59,8 @@ func (store *Store) setAddLocked(owner ownership.OwnerID, ref Ref, value Value, 
 	if err != nil || index >= 0 {
 		return err
 	}
-	if err := store.replaceValueLocked(owner, region, slot, Value{}, value, internal); err != nil {
+	value, err = store.replaceValueLocked(owner, region, slot, Value{}, value, internal)
+	if err != nil {
 		return err
 	}
 	slot.Set.Values = append(slot.Set.Values, value)
@@ -103,7 +108,7 @@ func (store *Store) SetDelete(owner ownership.OwnerID, ref Ref, value Value) (bo
 		return false, err
 	}
 	stored := slot.Set.Values[index]
-	if err := store.replaceValueLocked(owner, region, slot, stored, Value{}, false); err != nil {
+	if _, err := store.replaceValueLocked(owner, region, slot, stored, Value{}, false); err != nil {
 		return false, err
 	}
 	copy(slot.Set.Values[index:], slot.Set.Values[index+1:])
@@ -127,9 +132,9 @@ func (store *Store) SetClear(owner ownership.OwnerID, ref Ref) error {
 	}
 	unlinked := make([]Value, 0, len(slot.Set.Values))
 	for _, value := range slot.Set.Values {
-		if err := store.replaceValueLocked(owner, region, slot, value, Value{}, false); err != nil {
+		if _, err := store.replaceValueLocked(owner, region, slot, value, Value{}, false); err != nil {
 			for index := len(unlinked) - 1; index >= 0; index-- {
-				_ = store.replaceValueLocked(owner, region, slot, Value{}, unlinked[index], true)
+				_, _ = store.replaceValueLocked(owner, region, slot, Value{}, unlinked[index], true)
 			}
 			return err
 		}

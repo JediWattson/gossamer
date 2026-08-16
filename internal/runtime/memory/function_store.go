@@ -91,14 +91,18 @@ func (store *Store) initializeFunctionLocked(owner ownership.OwnerID, ref Ref, f
 	values = append(values, function.Constants...)
 	linked := make([]Value, 0, len(values))
 	for _, value := range values {
-		if err := store.replaceValueLocked(owner, region, slot, Value{}, value, internal); err != nil {
+		value, err = store.replaceValueLocked(owner, region, slot, Value{}, value, internal)
+		if err != nil {
 			for index := len(linked) - 1; index >= 0; index-- {
-				_ = store.replaceValueLocked(owner, region, slot, linked[index], Value{}, true)
+				_, _ = store.replaceValueLocked(owner, region, slot, linked[index], Value{}, true)
 			}
 			return err
 		}
 		linked = append(linked, value)
 	}
+	function.Name = linked[0]
+	function.Environment = linked[1]
+	function.Constants = append([]Value(nil), linked[2:]...)
 	slot.Function = cloneFunction(function)
 	store.stats.LiveBytes += uint64(len(slot.Function.Code))
 	return nil
