@@ -107,14 +107,18 @@ allocation; mixed expressions remain immutable in computed-style snapshots,
 serialize deterministically through CSSOM, and resolve only in layout once the
 percentage base and viewport are known. Invalid dimensions, division by zero,
 missing binary-operator whitespace, percentage border widths, and expressions
-beyond the independent math-node budget fail closed.
+beyond the independent math-node budget fail closed. Absolute physical units
+compute to CSS pixels; small/large/dynamic and logical viewport units map to
+the current single horizontal viewport model, with `vmin`/`vmax` retained as
+typed terms. Color values now cover the SVG/CSS named set, all hex forms, and
+legacy/modern `rgb()`/`rgba()`, `hsl()`/`hsla()`, and `hwb()` syntax with
+token-correct comma, whitespace, slash, angle, clamping, and alpha behavior.
 
 - Extend CSS math beyond the current length-percentage subset as number,
   angle, time, resolution, transform, and color consumers arrive.
-- Expand absolute, font-relative, viewport, percentage, angle, time, and
-  resolution units.
-- Add complete color parsing, current color, system colors, and color
-  functions.
+- Expand font-relative units and add angle, time, and resolution consumers.
+- Add `currentcolor` outside borders, system colors, wide-gamut `color()`,
+  Lab/LCH/OKLab/OKLCH, and relative/color-mix functions.
 - Add URLs, images, gradients, backgrounds, radii, shadows, transforms, and
   generated content as their consumers become available.
 

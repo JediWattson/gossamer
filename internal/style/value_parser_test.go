@@ -2,6 +2,7 @@ package style
 
 import (
 	"image/color"
+	"math"
 	"strings"
 	"testing"
 
@@ -84,7 +85,6 @@ func TestPropertyValuesPreserveTokenBoundariesAndRejectUnsupportedForms(t *testi
 		{Property: "background-color", Value: `red blue`},
 		{Property: "width", Value: `1/**/px`},
 		{Property: "width", Value: `1 px`},
-		{Property: "color", Value: `rgb(255 0 0)`},
 		{Property: "display", Value: "block\u00a0"},
 		{Property: "font-weight", Value: "400.0"},
 		{Property: "border", Value: `solid/**/red/**/extra`},
@@ -92,6 +92,61 @@ func TestPropertyValuesPreserveTokenBoundariesAndRejectUnsupportedForms(t *testi
 	for _, declaration := range tests {
 		if validComputedDeclaration(declaration, viewport) {
 			t.Errorf("%s: %s unexpectedly accepted", declaration.Property, declaration.Value)
+		}
+	}
+}
+
+func TestColorFunctionsAndNamedColorsComputeToSRGB(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		source string
+		want   color.NRGBA
+	}{
+		{source: "rgb(255, 0, 0)", want: color.NRGBA{R: 255, A: 255}},
+		{source: "rgba(255, 0, 0, .5)", want: color.NRGBA{R: 255, A: 128}},
+		{source: "rgb(100% 50% 0% / 25%)", want: color.NRGBA{R: 255, G: 128, A: 64}},
+		{source: "rgb(300 -10 0 / 2)", want: color.NRGBA{R: 255, A: 255}},
+		{source: "rgb(none 0 255 / none)", want: color.NRGBA{B: 255}},
+		{source: "hsl(120 100% 25%)", want: color.NRGBA{G: 128, A: 255}},
+		{source: "hsl(.5turn 100% 50% / .5)", want: color.NRGBA{G: 255, B: 255, A: 128}},
+		{source: "hsla(240, 100%, 50%, 25%)", want: color.NRGBA{B: 255, A: 64}},
+		{source: "hwb(0 20% 30%)", want: color.NRGBA{R: 179, G: 51, B: 51, A: 255}},
+		{source: "hwb(0 80% 40%)", want: color.NRGBA{R: 170, G: 170, B: 170, A: 255}},
+		{source: "aliceblue", want: color.NRGBA{R: 240, G: 248, B: 255, A: 255}},
+		{source: "rebeccapurple", want: color.NRGBA{R: 102, G: 51, B: 153, A: 255}},
+		{source: "#0f08", want: color.NRGBA{G: 255, A: 136}},
+	}
+	for _, test := range tests {
+		t.Run(test.source, func(t *testing.T) {
+			got, ok := parseColor(test.source)
+			if !ok || got != test.want {
+				t.Fatalf("parseColor(%q) = %#v, %t, want %#v, true", test.source, got, ok, test.want)
+			}
+		})
+	}
+}
+
+func TestColorFunctionsRejectMixedOrMalformedGrammars(t *testing.T) {
+	t.Parallel()
+
+	for _, source := range []string{
+		"rgb()",
+		"rgb(1 2)",
+		"rgb(1, 2, 3 / .5)",
+		"rgb(1 2 3, .5)",
+		"rgb(100%, 0, 0)",
+		"rgb(1/**/2 3)",
+		"rgba(none, 0, 0, 1)",
+		"hsl(120 1 50%)",
+		"hsl(none, 100%, 50%)",
+		"hsl(20foo 100% 50%)",
+		"hwb(0, 0%, 0%)",
+		"hwb(0 0% 0% / .5 / .5)",
+		"color(display-p3 1 0 0)",
+	} {
+		if parsed, ok := parseColor(source); ok {
+			t.Errorf("parseColor(%q) = %#v, true; want rejection", source, parsed)
 		}
 	}
 }
@@ -184,6 +239,46 @@ func TestLengthMathFlowsThroughPropertyValidation(t *testing.T) {
 	}
 	if validComputedDeclaration(css.Declaration{Property: "border-width", Value: "calc(1px + 2%)"}, viewport) {
 		t.Fatal("percentage border width was accepted")
+	}
+}
+
+func TestAbsoluteAndViewportLengthUnitsComputeThroughTypedLengths(t *testing.T) {
+	t.Parallel()
+
+	viewport := Viewport{Width: 800, Height: 600, InitialFontSize: 16}
+	tests := []struct {
+		source  string
+		want    float64
+		wantCSS string
+	}{
+		{source: "1in", want: 96, wantCSS: "96px"},
+		{source: "2.54cm", want: 96, wantCSS: "96px"},
+		{source: "25.4mm", want: 96, wantCSS: "96px"},
+		{source: "101.6q", want: 96, wantCSS: "96px"},
+		{source: "72pt", want: 96, wantCSS: "96px"},
+		{source: "6pc", want: 96, wantCSS: "96px"},
+		{source: "10svw", want: 80, wantCSS: "10vw"},
+		{source: "10dvh", want: 60, wantCSS: "10vh"},
+		{source: "10vi", want: 80, wantCSS: "10vw"},
+		{source: "10vb", want: 60, wantCSS: "10vh"},
+		{source: "10vmin", want: 60, wantCSS: "10vmin"},
+		{source: "10vmax", want: 80, wantCSS: "10vmax"},
+		{source: "calc(10vmin + 5vmax)", want: 100, wantCSS: "calc(10vmin + 5vmax)"},
+	}
+	for _, test := range tests {
+		t.Run(test.source, func(t *testing.T) {
+			parsed, ok := parseLength(test.source, 16, 16, viewport)
+			if !ok {
+				t.Fatalf("parseLength(%q) rejected", test.source)
+			}
+			resolved, ok := parsed.Resolve(400, float64(viewport.Width), float64(viewport.Height))
+			if !ok || math.Abs(resolved-test.want) > 1e-9 {
+				t.Fatalf("Resolve(%q) = %v, %t, want %v, true", test.source, resolved, ok, test.want)
+			}
+			if got := serializeComputedLength(parsed); got != test.wantCSS {
+				t.Fatalf("serialize(%q) = %q, want %q", test.source, got, test.wantCSS)
+			}
+		})
 	}
 }
 

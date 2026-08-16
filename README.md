@@ -226,7 +226,9 @@ performance budgets; see
   invalidation
 - Screen media queries for viewport width, height, orientation, media types,
   comma alternatives, `not`, and `only`
-- Common colors and `px`, `%`, `em`, `rem`, `vw`, and `vh` lengths
+- SVG/CSS named colors, hex, `rgb()`/`rgba()`, `hsl()`/`hsla()`, and `hwb()`;
+  absolute, percentage, em/rem, and modern viewport length units; and bounded
+  typed length math
 - Block flow, inline text wrapping, inline and block images, and basic vertical
   margin collapsing
 - Content-box width and height, min/max width, margins, padding, solid borders,

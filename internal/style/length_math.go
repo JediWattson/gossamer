@@ -28,6 +28,8 @@ type linearLength struct {
 	percent float64
 	vw      float64
 	vh      float64
+	vmin    float64
+	vmax    float64
 }
 
 // lengthExpression is immutable after parsing. Slices are shared by copied
@@ -45,7 +47,9 @@ func (expression lengthExpression) resolve(percentBase, viewportWidth, viewportH
 		return expression.linear.px +
 			percentBase*expression.linear.percent/100 +
 			viewportWidth*expression.linear.vw/100 +
-			viewportHeight*expression.linear.vh/100
+			viewportHeight*expression.linear.vh/100 +
+			math.Min(viewportWidth, viewportHeight)*expression.linear.vmin/100 +
+			math.Max(viewportWidth, viewportHeight)*expression.linear.vmax/100
 	case lengthExpressionSum:
 		result := 0.0
 		for _, argument := range expression.args {
@@ -94,6 +98,10 @@ func (expression lengthExpression) finite() bool {
 			!isFinite(expression.linear.vw) || !isFinite(expression.linear.vh)) {
 		return false
 	}
+	if expression.kind == lengthExpressionLinear &&
+		(!isFinite(expression.linear.vmin) || !isFinite(expression.linear.vmax)) {
+		return false
+	}
 	if expression.kind == lengthExpressionScale && !isFinite(expression.factor) {
 		return false
 	}
@@ -116,6 +124,10 @@ func expressionFromLength(value length) (lengthExpression, bool) {
 		linear.vw = value.value
 	case lengthVH:
 		linear.vh = value.value
+	case lengthVMin:
+		linear.vmin = value.value
+	case lengthVMax:
+		linear.vmax = value.value
 	case lengthCalc:
 		if value.calculation == nil {
 			return lengthExpression{}, false
@@ -141,6 +153,8 @@ func lengthFromExpression(expression lengthExpression) length {
 			{linear.percent, lengthPercent},
 			{linear.vw, lengthVW},
 			{linear.vh, lengthVH},
+			{linear.vmin, lengthVMin},
+			{linear.vmax, lengthVMax},
 		} {
 			if candidate.value != 0 {
 				count++
@@ -399,6 +413,8 @@ func addLengthExpressions(left, right lengthExpression) lengthExpression {
 			percent: left.linear.percent + right.linear.percent,
 			vw:      left.linear.vw + right.linear.vw,
 			vh:      left.linear.vh + right.linear.vh,
+			vmin:    left.linear.vmin + right.linear.vmin,
+			vmax:    left.linear.vmax + right.linear.vmax,
 		}}
 	}
 	arguments := make([]lengthExpression, 0, 4)
@@ -424,6 +440,8 @@ func scaleLengthExpression(expression lengthExpression, factor float64) lengthEx
 		expression.linear.percent *= factor
 		expression.linear.vw *= factor
 		expression.linear.vh *= factor
+		expression.linear.vmin *= factor
+		expression.linear.vmax *= factor
 		return expression
 	}
 	if factor == 0 {
@@ -496,16 +514,18 @@ func positiveLengthExpression(expression lengthExpression) (lengthExpression, bo
 		return lengthExpression{}, false
 	}
 	linear := expression.linear
-	if linear.px > 0 || linear.percent > 0 || linear.vw > 0 || linear.vh > 0 {
+	if linear.px > 0 || linear.percent > 0 || linear.vw > 0 || linear.vh > 0 || linear.vmin > 0 || linear.vmax > 0 {
 		return lengthExpression{}, false
 	}
-	if linear.px == 0 && linear.percent == 0 && linear.vw == 0 && linear.vh == 0 {
+	if linear.px == 0 && linear.percent == 0 && linear.vw == 0 && linear.vh == 0 && linear.vmin == 0 && linear.vmax == 0 {
 		return lengthExpression{}, false
 	}
 	linear.px = -linear.px
 	linear.percent = -linear.percent
 	linear.vw = -linear.vw
 	linear.vh = -linear.vh
+	linear.vmin = -linear.vmin
+	linear.vmax = -linear.vmax
 	return lengthExpression{kind: lengthExpressionLinear, linear: linear}, true
 }
 
@@ -537,6 +557,8 @@ func serializeLinearLength(linear linearLength) string {
 	appendPart(linear.percent, "%")
 	appendPart(linear.vw, "vw")
 	appendPart(linear.vh, "vh")
+	appendPart(linear.vmin, "vmin")
+	appendPart(linear.vmax, "vmax")
 	appendPart(linear.px, "px")
 	if len(parts) == 0 {
 		return "0px"

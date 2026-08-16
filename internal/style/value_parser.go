@@ -145,12 +145,28 @@ func parseSimpleLengthToken(token css.Token, emBase float64, viewport Viewport, 
 			return finiteScaledLength(token.Number, environmentInitialFontSize(viewport), lengthPX)
 		case "px":
 			return finiteScaledLength(token.Number, 1, lengthPX)
+		case "in":
+			return finiteScaledLength(token.Number, 96, lengthPX)
+		case "cm":
+			return finiteScaledLength(token.Number, 96/2.54, lengthPX)
+		case "mm":
+			return finiteScaledLength(token.Number, 96/25.4, lengthPX)
+		case "q":
+			return finiteScaledLength(token.Number, 96/101.6, lengthPX)
+		case "pt":
+			return finiteScaledLength(token.Number, 96.0/72, lengthPX)
+		case "pc":
+			return finiteScaledLength(token.Number, 16, lengthPX)
 		case "em":
 			return finiteScaledLength(token.Number, emBase, lengthPX)
-		case "vw":
+		case "vw", "svw", "lvw", "dvw", "vi", "svi", "lvi", "dvi":
 			return length{value: token.Number, unit: lengthVW}, true
-		case "vh":
+		case "vh", "svh", "lvh", "dvh", "vb", "svb", "lvb", "dvb":
 			return length{value: token.Number, unit: lengthVH}, true
+		case "vmin", "svmin", "lvmin", "dvmin":
+			return length{value: token.Number, unit: lengthVMin}, true
+		case "vmax", "svmax", "lvmax", "dvmax":
+			return length{value: token.Number, unit: lengthVMax}, true
 		}
 	}
 	return length{}, false
@@ -165,6 +181,9 @@ func finiteScaledLength(number, scale float64, unit lengthUnit) (length, bool) {
 }
 
 func parseColorComponent(component css.ComponentValue) (color.NRGBA, bool) {
+	if component.Kind == css.ComponentFunction {
+		return parseFunctionalColor(component)
+	}
 	token, ok := componentToken(component)
 	if !ok {
 		return color.NRGBA{}, false
@@ -193,24 +212,7 @@ func parseColorComponent(component css.ComponentValue) (color.NRGBA, bool) {
 	if !ok {
 		return color.NRGBA{}, false
 	}
-	switch keyword {
-	case "black":
-		return color.NRGBA{A: 0xff}, true
-	case "white":
-		return color.NRGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff}, true
-	case "red":
-		return color.NRGBA{R: 0xff, A: 0xff}, true
-	case "green":
-		return color.NRGBA{G: 0x80, A: 0xff}, true
-	case "blue":
-		return color.NRGBA{B: 0xff, A: 0xff}, true
-	case "gray", "grey":
-		return color.NRGBA{R: 0x80, G: 0x80, B: 0x80, A: 0xff}, true
-	case "transparent":
-		return color.NRGBA{}, true
-	default:
-		return color.NRGBA{}, false
-	}
+	return parseNamedColor(keyword)
 }
 
 func lowerASCIIValue(value string) string {

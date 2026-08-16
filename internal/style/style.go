@@ -196,6 +196,8 @@ const (
 	LengthPercent
 	LengthVW
 	LengthVH
+	LengthVMin
+	LengthVMax
 	// LengthCalculated is a bounded immutable CSS math expression. Callers
 	// resolve it with the percentage base and viewport rather than inspecting a
 	// single scalar unit.
@@ -210,6 +212,8 @@ const (
 	lengthPercent = LengthPercent
 	lengthVW      = LengthVW
 	lengthVH      = LengthVH
+	lengthVMin    = LengthVMin
+	lengthVMax    = LengthVMax
 	lengthCalc    = LengthCalculated
 )
 
@@ -252,6 +256,10 @@ func (length Length) Resolve(percentBase, viewportWidth, viewportHeight float64)
 		resolved = viewportWidth * length.value / 100
 	case LengthVH:
 		resolved = viewportHeight * length.value / 100
+	case LengthVMin:
+		resolved = math.Min(viewportWidth, viewportHeight) * length.value / 100
+	case LengthVMax:
+		resolved = math.Max(viewportWidth, viewportHeight) * length.value / 100
 	case LengthCalculated:
 		if length.calculation == nil {
 			return 0, false

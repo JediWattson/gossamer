@@ -69,6 +69,10 @@ func serializeComputedLength(value Length) string {
 		suffix = "vw"
 	case LengthVH:
 		suffix = "vh"
+	case LengthVMin:
+		suffix = "vmin"
+	case LengthVMax:
+		suffix = "vmax"
 	}
 	return serializeComputedNumber(value.value) + suffix
 }
