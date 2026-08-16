@@ -356,14 +356,42 @@ func (context *layoutContext) layoutBlockSized(node *styledNode, containingX, co
 }
 
 type blockLayoutOverrides struct {
+	ignoreSpecifiedWidth   bool
 	ignoreSpecifiedHeight  bool
 	forceZeroContentHeight bool
+	forceContentHeight     *float64
+	ignoreHorizontalMargin bool
 	childContainingHeight  *float64
 	tableCellFirstPass     bool
 }
 
 func (context *layoutContext) layoutBlockSizedWithSubgrid(node *styledNode, containingX, contentY, availableWidth float64, containingHeight, forcedContentWidth *float64, independentFormattingContext bool, subgrid *gridSubgridContext, overrides blockLayoutOverrides) (*Box, error) {
 	style := node.style
+	verticalFlow := style.Display().Inside() == computed.DisplayInsideFlow &&
+		!style.verticalLayout() && style.WritingMode() != writingModeHorizontalTB
+	horizontalFlowInVertical := style.Display().Inside() == computed.DisplayInsideFlow &&
+		style.verticalLayout() && style.WritingMode() == writingModeHorizontalTB
+	reversedVerticalFlow := style.Display().Inside() == computed.DisplayInsideFlow &&
+		style.verticalLayout() && style.WritingMode() != writingModeHorizontalTB && style.WritingMode() != style.layoutAxes
+	horizontalTableInVertical := style.Display().Inside() == computed.DisplayInsideTable &&
+		style.verticalLayout() && style.WritingMode() == writingModeHorizontalTB
+	reversedVerticalTable := style.Display().Inside() == computed.DisplayInsideTable &&
+		style.verticalLayout() && style.WritingMode() != writingModeHorizontalTB && style.WritingMode() != style.layoutAxes
+	if verticalFlow {
+		return context.layoutVerticalFlowContainer(node, containingX, contentY, availableWidth, containingHeight, forcedContentWidth, overrides)
+	}
+	if horizontalFlowInVertical {
+		return context.layoutHorizontalFlowInVerticalPlane(node, containingX, contentY, availableWidth, containingHeight, forcedContentWidth, overrides, style.layoutAxes)
+	}
+	if reversedVerticalFlow {
+		return context.layoutReversedVerticalFlowInVerticalPlane(node, containingX, contentY, availableWidth, containingHeight, forcedContentWidth, overrides, style.layoutAxes)
+	}
+	if horizontalTableInVertical {
+		return context.layoutHorizontalTableInVerticalPlane(node, containingX, contentY, availableWidth, containingHeight, forcedContentWidth, overrides, style.layoutAxes)
+	}
+	if reversedVerticalTable {
+		return context.layoutReversedVerticalTableInVerticalPlane(node, containingX, contentY, availableWidth, containingHeight, forcedContentWidth, overrides, style.layoutAxes)
+	}
 	verticalTable := style.Display().Inside() == computed.DisplayInsideTable &&
 		!style.verticalLayout() && style.WritingMode() != writingModeHorizontalTB
 	verticalGrid := style.Display().Inside() == computed.DisplayInsideGrid &&
@@ -378,10 +406,13 @@ func (context *layoutContext) layoutBlockSizedWithSubgrid(node *styledNode, cont
 		style.verticalLayout() && style.WritingMode() != writingModeHorizontalTB && style.WritingMode() != style.layoutAxes
 	reversedVerticalFlex := style.Display().Inside() == computed.DisplayInsideFlex &&
 		style.verticalLayout() && style.WritingMode() != writingModeHorizontalTB && style.WritingMode() != style.layoutAxes
-	leftAuto := style.MarginLeft().Unit() == lengthAuto
-	rightAuto := style.MarginRight().Unit() == lengthAuto
-	left := resolveLength(style.MarginLeft(), availableWidth, context.viewport, 0)
-	right := resolveLength(style.MarginRight(), availableWidth, context.viewport, 0)
+	leftAuto := !overrides.ignoreHorizontalMargin && style.MarginLeft().Unit() == lengthAuto
+	rightAuto := !overrides.ignoreHorizontalMargin && style.MarginRight().Unit() == lengthAuto
+	left, right := 0.0, 0.0
+	if !overrides.ignoreHorizontalMargin {
+		left = resolveLength(style.MarginLeft(), availableWidth, context.viewport, 0)
+		right = resolveLength(style.MarginRight(), availableWidth, context.viewport, 0)
+	}
 	padding := context.resolvePadding(style, availableWidth)
 	border := context.resolveBorder(style, availableWidth)
 	if style.Display().Inside() == computed.DisplayInsideTable && style.BorderCollapse() == computed.BorderCollapseCollapse {
@@ -410,6 +441,10 @@ func (context *layoutContext) layoutBlockSizedWithSubgrid(node *styledNode, cont
 	}
 	if overrides.forceZeroContentHeight {
 		specifiedContentHeight = 0
+		hasDefiniteHeight = true
+	}
+	if overrides.forceContentHeight != nil {
+		specifiedContentHeight = math.Max(0, *overrides.forceContentHeight)
 		hasDefiniteHeight = true
 	}
 	var childContainingHeight *float64
@@ -476,7 +511,7 @@ func (context *layoutContext) layoutBlockSizedWithSubgrid(node *styledNode, cont
 	}
 	if forcedContentWidth != nil {
 		width = *forcedContentWidth
-	} else if style.Width().Unit() != lengthAuto {
+	} else if !overrides.ignoreSpecifiedWidth && style.Width().Unit() != lengthAuto {
 		width = resolveLength(style.Width(), availableWidth, context.viewport, availableWidth)
 		if style.BoxSizing() == boxSizingBorderBox {
 			width -= horizontalInsets

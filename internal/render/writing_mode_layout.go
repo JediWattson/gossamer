@@ -3,6 +3,8 @@ package render
 import (
 	"fmt"
 	"math"
+
+	computed "github.com/JediWattson/gossamer/internal/style"
 )
 
 // layoutVerticalTableContainer runs the existing table algorithms in the
@@ -454,6 +456,217 @@ func (context *layoutContext) layoutReversedVerticalFlexInVerticalPlane(
 	box.Bounds.Height = logicalBorder.Top + logicalPadding.Top + box.ContentBounds.Height + logicalPadding.Bottom + logicalBorder.Bottom
 	transformParallelVerticalLayoutBox(box, box.Bounds.Y, box.Bounds.Height, parentMode)
 	return contentBlockSize, nil
+}
+
+func (context *layoutContext) layoutVerticalFlowContainer(
+	node *styledNode,
+	containingX, contentY, availableWidth float64,
+	containingHeight, forcedPhysicalWidth *float64,
+	overrides blockLayoutOverrides,
+) (*Box, error) {
+	if node == nil || node.style.WritingMode() == writingModeHorizontalTB || node.style.verticalLayout() {
+		return nil, fmt.Errorf("render: invalid vertical flow layout input")
+	}
+	mode := node.style.WritingMode()
+	logical := context.cloneStyledNodeWithLayoutAxes(node, mode)
+	inlineAvailable := float64(context.viewport.Height)
+	inlineBaseDefinite := containingHeight != nil && isFinite(*containingHeight) && *containingHeight >= 0
+	if inlineBaseDefinite {
+		inlineAvailable = *containingHeight
+	}
+	inlineAvailable = math.Max(0, inlineAvailable)
+	forcedInline, err := context.orthogonalFlowInlineSize(logical, inlineAvailable, inlineBaseDefinite, overrides.ignoreSpecifiedHeight)
+	if err != nil {
+		return nil, err
+	}
+	if overrides.forceZeroContentHeight {
+		zero := 0.0
+		forcedInline = &zero
+	}
+	logicalOverrides := blockLayoutOverrides{
+		forceContentHeight:     forcedPhysicalWidth,
+		ignoreHorizontalMargin: true,
+		tableCellFirstPass:     overrides.tableCellFirstPass,
+	}
+	logicalBlockAvailable := math.Max(0, availableWidth)
+	box, err := context.layoutBlockSizedWithSubgrid(
+		logical, 0, 0, inlineAvailable, &logicalBlockAvailable, forcedInline, true, nil, logicalOverrides,
+	)
+	if err != nil {
+		return nil, err
+	}
+	transformVerticalLayoutBox(box, 0, 0, box.Bounds.Height, mode)
+	context.positionIndependentFlowRoot(box, node.style, containingX, contentY, availableWidth)
+	return box, nil
+}
+
+func (context *layoutContext) layoutHorizontalFlowInVerticalPlane(
+	node *styledNode,
+	containingX, contentY, availableInlineInParent float64,
+	availableBlockInParent, forcedParentInlineSize *float64,
+	overrides blockLayoutOverrides,
+	parentMode writingMode,
+) (*Box, error) {
+	if node == nil || node.style.WritingMode() != writingModeHorizontalTB ||
+		(parentMode != writingModeVerticalRL && parentMode != writingModeVerticalLR) {
+		return nil, fmt.Errorf("render: invalid horizontal flow in vertical layout input")
+	}
+	physical := context.cloneStyledNodeWithLayoutAxes(node, writingModeHorizontalTB)
+	physicalInlineAvailable := float64(context.viewport.Width)
+	inlineBaseDefinite := availableBlockInParent != nil && isFinite(*availableBlockInParent) && *availableBlockInParent >= 0
+	if inlineBaseDefinite {
+		physicalInlineAvailable = *availableBlockInParent
+	}
+	physicalInlineAvailable = math.Max(0, physicalInlineAvailable)
+	forcedInline, err := context.orthogonalFlowInlineSize(physical, physicalInlineAvailable, inlineBaseDefinite, overrides.ignoreSpecifiedHeight)
+	if err != nil {
+		return nil, err
+	}
+	if overrides.forceZeroContentHeight {
+		zero := 0.0
+		forcedInline = &zero
+	}
+	physicalOverrides := blockLayoutOverrides{
+		forceContentHeight:     forcedParentInlineSize,
+		ignoreHorizontalMargin: true,
+		tableCellFirstPass:     overrides.tableCellFirstPass,
+	}
+	physicalBlockAvailable := math.Max(0, availableInlineInParent)
+	box, err := context.layoutBlockSizedWithSubgrid(
+		physical, 0, 0, physicalInlineAvailable, &physicalBlockAvailable, forcedInline, true, nil, physicalOverrides,
+	)
+	if err != nil {
+		return nil, err
+	}
+	transformHorizontalLayoutBoxIntoVerticalPlane(box, 0, 0, box.Bounds.Width, parentMode)
+	context.positionIndependentFlowRoot(box, node.style, containingX, contentY, availableInlineInParent)
+	return box, nil
+}
+
+func (context *layoutContext) layoutReversedVerticalFlowInVerticalPlane(
+	node *styledNode,
+	containingX, contentY, availableInline float64,
+	containingBlockSize, forcedInlineSize *float64,
+	overrides blockLayoutOverrides,
+	parentMode writingMode,
+) (*Box, error) {
+	if node == nil || node.style.WritingMode() == writingModeHorizontalTB ||
+		parentMode == writingModeHorizontalTB || node.style.WritingMode() == parentMode {
+		return nil, fmt.Errorf("render: invalid reversed vertical flow input")
+	}
+	logical := context.cloneStyledNodeWithLayoutAxes(node, node.style.WritingMode())
+	logicalOverrides := overrides
+	logicalOverrides.ignoreHorizontalMargin = true
+	box, err := context.layoutBlockSizedWithSubgrid(
+		logical, 0, 0, availableInline, containingBlockSize, forcedInlineSize, true, nil, logicalOverrides,
+	)
+	if err != nil {
+		return nil, err
+	}
+	transformParallelVerticalLayoutBox(box, 0, box.Bounds.Height, parentMode)
+	context.positionIndependentFlowRoot(box, node.style, containingX, contentY, availableInline)
+	return box, nil
+}
+
+func (context *layoutContext) layoutHorizontalTableInVerticalPlane(
+	node *styledNode,
+	containingX, contentY, availableInlineInParent float64,
+	availableBlockInParent, forcedParentInlineSize *float64,
+	overrides blockLayoutOverrides,
+	parentMode writingMode,
+) (*Box, error) {
+	if node == nil || node.style.Display().Inside() != computed.DisplayInsideTable ||
+		node.style.WritingMode() != writingModeHorizontalTB ||
+		(parentMode != writingModeVerticalRL && parentMode != writingModeVerticalLR) {
+		return nil, fmt.Errorf("render: invalid horizontal table in vertical layout input")
+	}
+	physical := context.cloneStyledNodeWithLayoutAxes(node, writingModeHorizontalTB)
+	physicalInlineAvailable := float64(context.viewport.Width)
+	inlineBaseDefinite := availableBlockInParent != nil && isFinite(*availableBlockInParent) && *availableBlockInParent >= 0
+	if inlineBaseDefinite {
+		physicalInlineAvailable = *availableBlockInParent
+	}
+	physicalInlineAvailable = math.Max(0, physicalInlineAvailable)
+	physicalBlockAvailable := math.Max(0, availableInlineInParent)
+	physicalOverrides := overrides
+	physicalOverrides.ignoreHorizontalMargin = true
+	physicalOverrides.forceContentHeight = forcedParentInlineSize
+	physicalOverrides.ignoreSpecifiedWidth = physical.style.Width().DependsOnPercent() && !inlineBaseDefinite
+	box, err := context.layoutBlockSizedWithSubgrid(
+		physical, 0, 0, physicalInlineAvailable, &physicalBlockAvailable, nil, true, nil, physicalOverrides,
+	)
+	if err != nil {
+		return nil, err
+	}
+	transformHorizontalLayoutBoxIntoVerticalPlane(box, 0, 0, box.Bounds.Width, parentMode)
+	context.positionIndependentFlowRoot(box, node.style, containingX, contentY, availableInlineInParent)
+	return box, nil
+}
+
+func (context *layoutContext) layoutReversedVerticalTableInVerticalPlane(
+	node *styledNode,
+	containingX, contentY, availableInline float64,
+	containingBlockSize, forcedInlineSize *float64,
+	overrides blockLayoutOverrides,
+	parentMode writingMode,
+) (*Box, error) {
+	if node == nil || node.style.Display().Inside() != computed.DisplayInsideTable ||
+		node.style.WritingMode() == writingModeHorizontalTB || parentMode == writingModeHorizontalTB ||
+		node.style.WritingMode() == parentMode {
+		return nil, fmt.Errorf("render: invalid reversed vertical table input")
+	}
+	logical := context.cloneStyledNodeWithLayoutAxes(node, node.style.WritingMode())
+	logicalOverrides := overrides
+	logicalOverrides.ignoreHorizontalMargin = true
+	box, err := context.layoutBlockSizedWithSubgrid(
+		logical, 0, 0, availableInline, containingBlockSize, forcedInlineSize, true, nil, logicalOverrides,
+	)
+	if err != nil {
+		return nil, err
+	}
+	transformParallelVerticalLayoutBox(box, 0, box.Bounds.Height, parentMode)
+	context.positionIndependentFlowRoot(box, node.style, containingX, contentY, availableInline)
+	return box, nil
+}
+
+// orthogonalFlowInlineSize returns a forced content inline size only when an
+// orthogonal block container has an automatic (or intentionally ignored)
+// inline size. CSS Writing Modes requires that case to shrink-fit against the
+// fallback inline constraint instead of stretching like a parallel block.
+func (context *layoutContext) orthogonalFlowInlineSize(node *styledNode, available float64, percentageBaseDefinite, ignoreSpecified bool) (*float64, error) {
+	if node == nil || (!ignoreSpecified && node.style.Width().Unit() != lengthAuto &&
+		(percentageBaseDefinite || !node.style.Width().DependsOnPercent())) {
+		return nil, nil
+	}
+	padding := context.resolvePadding(node.style, available)
+	border := context.resolveBorder(node.style, available)
+	insets := padding.Left + padding.Right + border.Left + border.Right
+	intrinsic, err := context.intrinsicContentWidths(node, available)
+	if err != nil {
+		return nil, err
+	}
+	contentAvailable := math.Max(0, available-insets)
+	size := math.Min(math.Max(intrinsic.minimum, contentAvailable), intrinsic.preferred)
+	size = context.constrainWidth(node.style, math.Max(0, size), available, insets)
+	return &size, nil
+}
+
+func (context *layoutContext) positionIndependentFlowRoot(box *Box, style computedStyle, containingX, contentY, availableInline float64) {
+	if box == nil {
+		return
+	}
+	leftAuto := style.MarginLeft().Unit() == lengthAuto
+	rightAuto := style.MarginRight().Unit() == lengthAuto
+	left := resolveLength(style.MarginLeft(), availableInline, context.viewport, 0)
+	right := resolveLength(style.MarginRight(), availableInline, context.viewport, 0)
+	remaining := availableInline - box.Bounds.Width - left - right
+	switch {
+	case leftAuto && rightAuto:
+		left = math.Max(0, remaining/2)
+	case leftAuto:
+		left = math.Max(0, remaining)
+	}
+	translateLayoutBox(box, containingX+left-box.Bounds.X, contentY-box.Bounds.Y)
 }
 
 func (context *layoutContext) layoutReversedVerticalGridInVerticalPlane(

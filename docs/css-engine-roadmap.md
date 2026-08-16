@@ -518,11 +518,18 @@ project their complete retained subtree rather than only rotating paint.
 Physical padding and borders, live geometry, hit testing, sideways/upright text
 composition, and horizontal Flex descendants inside vertical Grid and table
 roots share that projection and a bounded writing-mode fuzz corpus.
+Ordinary Flow and table formatting roots now cross the same boundary with the
+sizing and positioning phases kept distinct. Orthogonal automatic inline sizes
+shrink-fit against a definite containing dimension or viewport fallback;
+physical percentages map to the matching containing dimension, while automatic
+margins remain in the containing block's axes. Nested horizontal and
+opposite-vertical block/table roots retain physical edges, captions, cell
+tracks, text orientation, hit geometry, live CSSOM reads, and bounded fuzz
+behavior across vertical Grid and table parents.
 
-- Complete the remaining advanced table intrinsic edge cases, orthogonal flow
-  roots inside vertical tables, and complete vertical-script orientation.
-- Complete the remaining advanced Grid intrinsic/overflow interactions and
-  ordinary block/table independent descendant writing-mode boundaries.
+- Complete the remaining advanced table intrinsic edge cases and complete
+  vertical-script orientation.
+- Complete the remaining advanced Grid intrinsic/overflow interactions.
 - Add multicolumn and fragmentation only after their block/inline consumers
   are retained and testable.
 - Keep each formatting context as an independent computed-to-used vertical

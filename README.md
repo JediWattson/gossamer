@@ -272,7 +272,10 @@ performance budgets; see
   em/rem, and modern viewport length units; and bounded typed length math
 - Block flow, inline text wrapping, inline and block images, and signed vertical
   margin collapsing across siblings, eligible parent edges, and collapse-through
-  empty blocks without crossing flex, overflow, border, or padding barriers
+  empty blocks without crossing flex, overflow, border, or padding barriers;
+  vertical block roots use content-based orthogonal inline sizing and preserve
+  independent nested horizontal/opposite-vertical flow axes while margins stay
+  resolved in the containing block's coordinate space
 - Content- and border-box sizing, width/height and min/max constraints,
   definite containing-block percentage heights across block, atomic-inline,
   flex, replaced, and positioned boxes, margins, padding, the full CSS
@@ -330,7 +333,9 @@ performance budgets; see
   junction geometry which preserves patterned gaps and transparent winners;
   vertical table roots use logical axes for row/column placement, captions,
   spacing, physical box edges, collapsed borders, hit testing, and live CSSOM
-  geometry, with bounded sideways Latin paint and upright replaced content
+  geometry; nested horizontal/opposite-vertical table roots preserve their own
+  row/column progression inside vertical Grid and table trees, with bounded
+  sideways Latin paint and upright replaced content
 - Inherited `visibility` plus normal, nowrap, pre, pre-wrap, pre-line, and
   break-spaces text whitespace behavior
 - Bundled Go sans and monospace families with regular, bold, italic, and
@@ -368,10 +373,8 @@ The following are intentionally still outside the current milestone:
   parenting, including formatting-element reconstruction, complete template
   modes, SVG/MathML, and encoding sniffing
 - Flex wrapping and full intrinsic sizing, remaining advanced Grid
-  intrinsic/overflow interactions and ordinary block/table independent
-  descendant writing-mode boundaries, remaining advanced table intrinsic
-  sizing, ordinary orthogonal flow descendants inside vertical tables, and full
-  vertical-script text orientation,
+  intrinsic/overflow interactions, remaining advanced table intrinsic sizing,
+  and full vertical-script text orientation,
   floats, sticky and full inline positioned layout, and retained inline boxes
 - The remaining CSS math grammar beyond the current bounded length
   `calc()`/`min()`/`max()`/`clamp()` slice, plus gradients, background images,

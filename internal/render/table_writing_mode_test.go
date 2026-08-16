@@ -113,6 +113,91 @@ func TestHorizontalFlexKeepsIndependentAxesInsideVerticalTable(t *testing.T) {
 	assertNear(t, "horizontal Flex second offset", b.Bounds.X-a.Bounds.X, 40)
 }
 
+func TestHorizontalBlockKeepsIndependentAxesInsideVerticalTable(t *testing.T) {
+	t.Parallel()
+
+	document := mustParseTableDocument(t, `<!doctype html><html><body style="margin:0"><table style="writing-mode:vertical-lr;width:120px;height:180px;border-spacing:0"><tr style="width:120px"><td style="height:180px;padding:0"><div id=inner style="writing-mode:horizontal-tb;width:100px;height:60px"><i id=a style="display:block;width:40px;height:30px">A</i><i id=b style="display:block;width:60px;height:20px">B</i></div></td></tr></table></body></html>`)
+	frame, err := render.Render(document, render.Viewport{Width: 300, Height: 300})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inner := findBox(frame.Root, tableElementByID(t, document, "inner"))
+	a := findBox(frame.Root, tableElementByID(t, document, "a"))
+	b := findBox(frame.Root, tableElementByID(t, document, "b"))
+	if inner == nil || a == nil || b == nil {
+		t.Fatalf("horizontal block boxes inside vertical table missing: %v/%v/%v", inner, a, b)
+	}
+	assertNear(t, "horizontal block physical width", inner.Bounds.Width, 100)
+	assertNear(t, "horizontal block physical height", inner.Bounds.Height, 60)
+	assertNear(t, "horizontal block first width", a.Bounds.Width, 40)
+	assertNear(t, "horizontal block first height", a.Bounds.Height, 30)
+	assertNear(t, "horizontal block shared x", b.Bounds.X, a.Bounds.X)
+	assertNear(t, "horizontal block second y", b.Bounds.Y-a.Bounds.Y, 30)
+}
+
+func TestHorizontalTableKeepsIndependentAxesInsideVerticalGrid(t *testing.T) {
+	t.Parallel()
+
+	document := mustParseTableDocument(t, `<!doctype html><html><body style="margin:0"><section style="display:grid;writing-mode:vertical-lr;width:200px;height:200px;grid-template-columns:200px;grid-template-rows:200px;justify-content:start;align-content:start;justify-items:start;align-items:start"><table id=inner style="writing-mode:horizontal-tb;width:100px;height:60px;table-layout:fixed;border-spacing:0"><tr><td id=a style="width:40px;padding:0">A</td><td id=b style="width:60px;padding:0">B</td></tr></table></section></body></html>`)
+	frame, err := render.Render(document, render.Viewport{Width: 300, Height: 300})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inner := findBox(frame.Root, tableElementByID(t, document, "inner"))
+	a := findBox(frame.Root, tableElementByID(t, document, "a"))
+	b := findBox(frame.Root, tableElementByID(t, document, "b"))
+	if inner == nil || a == nil || b == nil {
+		t.Fatalf("horizontal table boxes inside vertical Grid missing: %v/%v/%v", inner, a, b)
+	}
+	assertNear(t, "horizontal table physical width", inner.Bounds.Width, 100)
+	assertNear(t, "horizontal table physical height", inner.Bounds.Height, 60)
+	assertNear(t, "horizontal table first column", a.Bounds.Width, 40)
+	assertNear(t, "horizontal table second column", b.Bounds.Width, 60)
+	assertNear(t, "horizontal table shared row", b.Bounds.Y, a.Bounds.Y)
+	assertNear(t, "horizontal table second offset", b.Bounds.X-a.Bounds.X, 40)
+}
+
+func TestHorizontalTableKeepsIndependentAxesInsideVerticalTable(t *testing.T) {
+	t.Parallel()
+
+	document := mustParseTableDocument(t, `<!doctype html><html><body style="margin:0"><table style="writing-mode:vertical-rl;width:140px;height:200px;border-spacing:0"><tr><td style="padding:0"><table id=inner style="writing-mode:horizontal-tb;width:100px;height:60px;table-layout:fixed;border-spacing:0"><tr><td id=a style="width:40px;padding:0">A</td><td id=b style="width:60px;padding:0">B</td></tr></table></td></tr></table></body></html>`)
+	frame, err := render.Render(document, render.Viewport{Width: 320, Height: 320})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inner := findBox(frame.Root, tableElementByID(t, document, "inner"))
+	a := findBox(frame.Root, tableElementByID(t, document, "a"))
+	b := findBox(frame.Root, tableElementByID(t, document, "b"))
+	if inner == nil || a == nil || b == nil {
+		t.Fatalf("horizontal table boxes inside vertical table missing: %v/%v/%v", inner, a, b)
+	}
+	assertNear(t, "nested horizontal table width", inner.Bounds.Width, 100)
+	assertNear(t, "nested horizontal table height", inner.Bounds.Height, 60)
+	assertNear(t, "nested horizontal table second x", b.Bounds.X-a.Bounds.X, 40)
+	assertNear(t, "nested horizontal table shared y", b.Bounds.Y, a.Bounds.Y)
+}
+
+func TestOppositeVerticalTableKeepsItsOwnBlockProgression(t *testing.T) {
+	t.Parallel()
+
+	document := mustParseTableDocument(t, `<!doctype html><html><body style="margin:0"><section style="display:grid;writing-mode:vertical-rl;width:200px;height:200px;grid-template-columns:200px;grid-template-rows:200px;justify-content:start;align-content:start;justify-items:start;align-items:start"><table id=inner style="writing-mode:vertical-lr;width:160px;height:100px;border-spacing:0"><tr><td id=a style="width:60px;height:100px;padding:0">A</td></tr><tr><td id=b style="width:100px;height:100px;padding:0">B</td></tr></table></section></body></html>`)
+	frame, err := render.Render(document, render.Viewport{Width: 320, Height: 320})
+	if err != nil {
+		t.Fatal(err)
+	}
+	inner := findBox(frame.Root, tableElementByID(t, document, "inner"))
+	a := findBox(frame.Root, tableElementByID(t, document, "a"))
+	b := findBox(frame.Root, tableElementByID(t, document, "b"))
+	if inner == nil || a == nil || b == nil {
+		t.Fatalf("opposite vertical table boxes missing: %v/%v/%v", inner, a, b)
+	}
+	assertNear(t, "opposite vertical table width", inner.Bounds.Width, 160)
+	assertNear(t, "opposite vertical table height", inner.Bounds.Height, 100)
+	if a.Bounds.X >= b.Bounds.X {
+		t.Fatalf("vertical-lr table did not preserve its own block progression: first=%v second=%v", a.Bounds, b.Bounds)
+	}
+}
+
 func TestVerticalTableCaptionsTextAndCollapsedBordersTransformTogether(t *testing.T) {
 	t.Parallel()
 
