@@ -57,6 +57,26 @@ const message = document.getElementById("message");
 if (message === null || message.textContent !== "Hello from Strand") {
   throw new Error("production React element did not commit to the native DOM");
 }
+
+let updateCounter;
+function Counter() {
+  const state = React.useState(0);
+  updateCounter = state[1];
+  return React.createElement("button", { id: "counter" }, "Count " + state[0]);
+}
+
+ReactDOM.flushSync(() => {
+  __strandReactRoot.render(React.createElement(Counter));
+});
+const counter = document.getElementById("counter");
+if (counter === null || counter.textContent !== "Count 0") {
+  throw new Error("production React initial component state did not commit");
+}
+
+ReactDOM.flushSync(() => updateCounter(value => value + 1));
+if (counter.textContent !== "Count 1" || document.getElementById("counter") !== counter) {
+  throw new Error("production React state update did not reconcile in place");
+}
 `}); err != nil {
 		t.Fatal(err)
 	}
