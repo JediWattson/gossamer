@@ -160,7 +160,7 @@ func (shell *graphiteShell) drawTab(canvas *image.RGBA, layout shellLayout, page
 	if layout.tab.Empty() {
 		return nil
 	}
-	fillRoundedRect(canvas, layout.tab, 7, graphitePalette.surface)
+	fillTopRoundedRect(canvas, layout.tab, graphiteTabTopRadius, graphitePalette.surface)
 	fillRect(canvas, image.Rect(layout.tab.Min.X, layout.tab.Max.Y-1, layout.tab.Max.X, layout.tab.Max.Y), graphitePalette.tealDim)
 	drawKnot(canvas, image.Pt(layout.tab.Min.X+16, layout.tab.Min.Y+14), 8)
 	titleClip := image.Rect(layout.tab.Min.X+34, layout.tab.Min.Y, layout.tabClose.Min.X-4, layout.tab.Max.Y)
@@ -184,8 +184,8 @@ func (shell *graphiteShell) drawToolbar(canvas *image.RGBA, layout shellLayout) 
 	if shell.navigationErr != "" {
 		addressBorder = graphitePalette.danger
 	}
-	fillRoundedRect(canvas, layout.address, 9, addressFill)
-	strokeRoundedRect(canvas, layout.address, 9, 1, addressBorder)
+	fillRoundedRect(canvas, layout.address, graphiteAddressRadius, addressFill)
+	strokeRoundedRect(canvas, layout.address, graphiteAddressRadius, 1, addressBorder)
 	drawShield(canvas, image.Pt(layout.address.Min.X+17, center(layout.address).Y), graphitePalette.teal)
 	addressClip := image.Rect(layout.address.Min.X+33, layout.address.Min.Y+2, layout.address.Max.X-12, layout.address.Max.Y-2)
 	addressText := shell.address
@@ -340,6 +340,34 @@ func fillRoundedRect(dst *image.RGBA, rectangle image.Rectangle, radius int, fil
 	}
 }
 
+func fillTopRoundedRect(dst *image.RGBA, rectangle image.Rectangle, radius int, fill color.NRGBA) {
+	rectangle = rectangle.Intersect(dst.Bounds())
+	if rectangle.Empty() {
+		return
+	}
+	if radius <= 0 {
+		fillRect(dst, rectangle, fill)
+		return
+	}
+	maximum := minInt(rectangle.Dx()/2, rectangle.Dy())
+	if radius > maximum {
+		radius = maximum
+	}
+	fillRect(dst, image.Rect(rectangle.Min.X+radius, rectangle.Min.Y, rectangle.Max.X-radius, rectangle.Max.Y), fill)
+	fillRect(dst, image.Rect(rectangle.Min.X, rectangle.Min.Y+radius, rectangle.Max.X, rectangle.Max.Y), fill)
+	for y := 0; y < radius; y++ {
+		for x := 0; x < radius; x++ {
+			dx := float64(radius-x) - 0.5
+			dy := float64(radius-y) - 0.5
+			if dx*dx+dy*dy > float64(radius*radius) {
+				continue
+			}
+			setNRGBA(dst, rectangle.Min.X+x, rectangle.Min.Y+y, fill)
+			setNRGBA(dst, rectangle.Max.X-1-x, rectangle.Min.Y+y, fill)
+		}
+	}
+}
+
 func strokeRoundedRect(dst *image.RGBA, rectangle image.Rectangle, radius, width int, stroke color.NRGBA) {
 	fillRoundedRect(dst, rectangle, radius, stroke)
 	inner := rectangle.Inset(width)
@@ -384,30 +412,108 @@ func fillCircle(dst *image.RGBA, center image.Point, radius int, fill color.NRGB
 }
 
 func drawKnot(dst *image.RGBA, center image.Point, radius int) {
-	left := center.Add(image.Pt(-radius/2, 0))
-	right := center.Add(image.Pt(radius/2, 0))
-	pointsLeft := []image.Point{
-		left.Add(image.Pt(0, -radius)),
-		left.Add(image.Pt(-radius, -radius/2)),
-		left.Add(image.Pt(-radius, radius/2)),
-		left.Add(image.Pt(0, radius)),
-		left.Add(image.Pt(radius, radius/2)),
-		left.Add(image.Pt(radius, -radius/2)),
-		left.Add(image.Pt(0, -radius)),
+	crossing := knotCrossingOffset(radius)
+	width := maxInt(2, radius/3)
+	gapWidth := width + 2
+	gap := graphitePalette.ink
+	tealPath := knotCapsulePath(center, radius, false)
+	violetPath := knotCapsulePath(center, radius, true)
+
+	// Paint both closed strands, then restore the teal bridge at the north and
+	// south crossings. Violet remains above at east and west, producing a real
+	// alternating over-under knot rather than two adjacent chain links.
+	drawPolyline(dst, tealPath, gapWidth, gap)
+	drawPolyline(dst, tealPath, width, graphitePalette.teal)
+	drawPolyline(dst, violetPath, gapWidth, gap)
+	drawPolyline(dst, violetPath, width, graphitePalette.violet)
+	bridge := maxInt(2, width)
+	for _, y := range []int{-crossing, crossing} {
+		from := center.Add(image.Pt(-bridge, y-bridge))
+		to := center.Add(image.Pt(bridge, y+bridge))
+		drawThickLine(dst, from, to, gapWidth, gap)
+		drawThickLine(dst, from, to, width, graphitePalette.teal)
 	}
-	pointsRight := []image.Point{
-		right.Add(image.Pt(0, -radius)),
-		right.Add(image.Pt(radius, -radius/2)),
-		right.Add(image.Pt(radius, radius/2)),
-		right.Add(image.Pt(0, radius)),
-		right.Add(image.Pt(-radius, radius/2)),
-		right.Add(image.Pt(-radius, -radius/2)),
-		right.Add(image.Pt(0, -radius)),
+	pearlRadius := maxInt(1, radius/8)
+	for _, offset := range []image.Point{
+		image.Pt(0, -crossing), image.Pt(crossing, 0),
+		image.Pt(0, crossing), image.Pt(-crossing, 0),
+	} {
+		fillCircle(dst, center.Add(offset), pearlRadius, graphitePalette.pearl)
 	}
-	drawPolyline(dst, pointsLeft, maxInt(2, radius/3), graphitePalette.teal)
-	drawPolyline(dst, pointsRight, maxInt(2, radius/3), graphitePalette.violet)
-	fillCircle(dst, center.Add(image.Pt(0, -radius/2)), maxInt(1, radius/6), graphitePalette.pearl)
-	fillCircle(dst, center.Add(image.Pt(0, radius/2)), maxInt(1, radius/6), graphitePalette.pearl)
+}
+
+func knotCrossingOffset(radius int) int {
+	return maxInt(2, int(math.Round(knotCapsuleHalfWidth(radius)*math.Sqrt2)))
+}
+
+func knotCapsuleHalfWidth(radius int) float64 {
+	return math.Max(2, float64(radius)*0.42)
+}
+
+func knotCapsulePath(center image.Point, radius int, opposite bool) []image.Point {
+	const diagonal = math.Sqrt2 / 2
+	directionX := diagonal
+	directionY := diagonal
+	if opposite {
+		directionX = -diagonal
+	}
+	normalX := -directionY
+	normalY := directionX
+	halfWidth := knotCapsuleHalfWidth(radius)
+	halfLength := math.Max(1, float64(radius)*math.Sqrt2-halfWidth)
+	centerX := float64(center.X)
+	centerY := float64(center.Y)
+	startX := centerX - directionX*halfLength
+	startY := centerY - directionY*halfLength
+	endX := centerX + directionX*halfLength
+	endY := centerY + directionY*halfLength
+	startOuter := floatPoint{
+		x: startX + normalX*halfWidth,
+		y: startY + normalY*halfWidth,
+	}
+	endOuter := floatPoint{x: endX + normalX*halfWidth, y: endY + normalY*halfWidth}
+	endInner := floatPoint{x: endX - normalX*halfWidth, y: endY - normalY*halfWidth}
+	startInner := floatPoint{x: startX - normalX*halfWidth, y: startY - normalY*halfWidth}
+	endControl := floatPoint{
+		x: endX + directionX*halfWidth*2,
+		y: endY + directionY*halfWidth*2,
+	}
+	startControl := floatPoint{
+		x: startX - directionX*halfWidth*2,
+		y: startY - directionY*halfWidth*2,
+	}
+	path := []image.Point{roundFloatPoint(startOuter), roundFloatPoint(endOuter)}
+	path = appendQuadratic(path, endOuter, endControl, endInner, maxInt(5, radius))
+	path = append(path, roundFloatPoint(startInner))
+	path = appendQuadratic(path, startInner, startControl, startOuter, maxInt(5, radius))
+	if path[len(path)-1] != path[0] {
+		path = append(path, path[0])
+	}
+	return path
+}
+
+type floatPoint struct {
+	x float64
+	y float64
+}
+
+func appendQuadratic(path []image.Point, from, control, to floatPoint, steps int) []image.Point {
+	for step := 1; step <= steps; step++ {
+		t := float64(step) / float64(steps)
+		oneMinusT := 1 - t
+		point := roundFloatPoint(floatPoint{
+			x: oneMinusT*oneMinusT*from.x + 2*oneMinusT*t*control.x + t*t*to.x,
+			y: oneMinusT*oneMinusT*from.y + 2*oneMinusT*t*control.y + t*t*to.y,
+		})
+		if path[len(path)-1] != point {
+			path = append(path, point)
+		}
+	}
+	return path
+}
+
+func roundFloatPoint(point floatPoint) image.Point {
+	return image.Pt(int(math.Round(point.x)), int(math.Round(point.y)))
 }
 
 func drawPolyline(dst *image.RGBA, points []image.Point, width int, stroke color.NRGBA) {

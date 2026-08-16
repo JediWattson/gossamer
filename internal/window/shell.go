@@ -17,6 +17,8 @@ const (
 	graphiteToolbarHeight = 48
 	graphiteChromeHeight  = graphiteTabHeight + graphiteToolbarHeight
 	graphiteRailWidth     = 48
+	graphiteAddressRadius = 16
+	graphiteTabTopRadius  = 16
 	minimumContentWidth   = 160
 	minimumContentHeight  = 120
 )

@@ -50,6 +50,13 @@ func TestGraphiteShellComposesChromeContentRailAndInspector(t *testing.T) {
 	if got := color.NRGBAModel.Convert(composed.At(820, 300)).(color.NRGBA); got == pageColor {
 		t.Fatal("collapsed rail exposed the page canvas")
 	}
+	layout := shell.layout()
+	if got := color.NRGBAModel.Convert(composed.At(layout.tab.Min.X, layout.tab.Min.Y)).(color.NRGBA); got != graphitePalette.top {
+		t.Fatalf("tab top corner = %#v, want rounded-through background %#v", got, graphitePalette.top)
+	}
+	if got := color.NRGBAModel.Convert(composed.At(layout.tab.Min.X, layout.tab.Max.Y-1)).(color.NRGBA); got != graphitePalette.tealDim {
+		t.Fatalf("tab bottom corner = %#v, want square active edge %#v", got, graphitePalette.tealDim)
+	}
 
 	shell.inspectorOpen = true
 	withInspector, err := shell.compose(pageCanvas, page)
@@ -62,6 +69,46 @@ func TestGraphiteShellComposesChromeContentRailAndInspector(t *testing.T) {
 	}
 	if got := color.NRGBAModel.Convert(withInspector.At(panel.Min.X+4, panel.Max.Y-20)).(color.NRGBA); got == pageColor {
 		t.Fatal("open inspector did not overlay the content viewport")
+	}
+}
+
+func TestGraphiteKnotHasFourAlternatingCrossings(t *testing.T) {
+	t.Parallel()
+
+	canvas := image.NewRGBA(image.Rect(0, 0, 64, 64))
+	center := image.Pt(32, 32)
+	radius := 16
+	for _, opposite := range []bool{false, true} {
+		if path := knotCapsulePath(center, radius, opposite); len(path) < 18 {
+			t.Fatalf("rounded knot capsule has %d sampled points, want at least 18", len(path))
+		}
+	}
+	drawKnot(canvas, center, radius)
+	crossing := knotCrossingOffset(radius)
+	for _, point := range []image.Point{
+		center.Add(image.Pt(0, -crossing)),
+		center.Add(image.Pt(crossing, 0)),
+		center.Add(image.Pt(0, crossing)),
+		center.Add(image.Pt(-crossing, 0)),
+	} {
+		got := color.NRGBAModel.Convert(canvas.At(point.X, point.Y)).(color.NRGBA)
+		if got != graphitePalette.pearl {
+			t.Fatalf("knot crossing at %v = %#v, want pearl %#v", point, got, graphitePalette.pearl)
+		}
+	}
+	for _, sample := range []struct {
+		point image.Point
+		want  color.NRGBA
+	}{
+		{center.Add(image.Pt(4, -crossing+4)), graphitePalette.teal},
+		{center.Add(image.Pt(crossing+4, -4)), graphitePalette.violet},
+		{center.Add(image.Pt(-4, crossing-4)), graphitePalette.teal},
+		{center.Add(image.Pt(-crossing-4, 4)), graphitePalette.violet},
+	} {
+		got := color.NRGBAModel.Convert(canvas.At(sample.point.X, sample.point.Y)).(color.NRGBA)
+		if got != sample.want {
+			t.Fatalf("knot overpass at %v = %#v, want %#v", sample.point, got, sample.want)
+		}
 	}
 }
 
