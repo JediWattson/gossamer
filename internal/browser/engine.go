@@ -43,6 +43,10 @@ const (
 	InputLoad
 	InputPopState
 	InputHashChange
+	InputBeforeUnload
+	InputPageHide
+	InputUnload
+	InputPageShow
 )
 
 // InputEvent contains browser-normalized input and a generation-safe target.
@@ -67,6 +71,7 @@ type InputEvent struct {
 	CtrlKey       bool
 	MetaKey       bool
 	ShiftKey      bool
+	Persisted     bool
 }
 
 func (eventType InputEventType) String() string {
@@ -129,6 +134,14 @@ func (eventType InputEventType) String() string {
 		return "popstate"
 	case InputHashChange:
 		return "hashchange"
+	case InputBeforeUnload:
+		return "beforeunload"
+	case InputPageHide:
+		return "pagehide"
+	case InputUnload:
+		return "unload"
+	case InputPageShow:
+		return "pageshow"
 	default:
 		return ""
 	}

@@ -341,6 +341,9 @@ func (realm *Realm) DispatchEvent(host browser.Host, event browser.InputEvent) (
 	if event.ShiftKey {
 		native.shift_key = 1
 	}
+	if event.Persisted {
+		native.persisted = 1
+	}
 	var failure *C.char
 	var defaultPrevented C.int
 	var operationErr error

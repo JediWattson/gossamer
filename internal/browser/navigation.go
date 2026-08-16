@@ -457,6 +457,16 @@ func (page *Page) commitNavigationDocument(
 	}
 	prepared.requests = requests
 
+	allowed, departureErr := page.dispatchDepartureLifecycle(task, id)
+	if !allowed {
+		page.mutex.Lock()
+		if page.matchesNavigationLocked(id, 0) {
+			page.cancelNavigationLocked(departureErr)
+		}
+		page.mutex.Unlock()
+		return nil
+	}
+
 	var replacementScript JSRealm
 	var err error
 	if page.browser.engine != nil {
@@ -721,6 +731,15 @@ func (page *Page) failNavigationLocked(err error) {
 	}
 }
 
+func (page *Page) cancelNavigationLocked(err error) {
+	page.navigation.err = err
+	page.navigation.state = NavigationCanceled
+	if page.navigation.cancel != nil {
+		page.navigation.cancel()
+		page.navigation.cancel = nil
+	}
+}
+
 func (page *Page) matchesNavigationLocked(id NavigationID, generation DocumentGeneration) bool {
 	if page.closed || page.navigation.id != id || page.navigation.state.terminal() {
 		return false
@@ -731,6 +750,7 @@ func (page *Page) matchesNavigationLocked(id NavigationID, generation DocumentGe
 var (
 	ErrNoNavigation               = errors.New("browser: page has no navigation")
 	ErrNavigationSuperseded       = errors.New("browser: navigation superseded")
+	ErrNavigationCanceled         = errors.New("browser: navigation canceled by beforeunload")
 	ErrHistoryChanged             = errors.New("browser: session history changed before traversal")
 	ErrHistoryTraversalOutOfRange = errors.New("browser: session history traversal is out of range")
 	ErrResourceLoaderUnavailable  = errors.New("browser: document loader cannot load subresources")

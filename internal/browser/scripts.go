@@ -312,6 +312,9 @@ func (page *Page) applyNavigationScript(
 		if err := page.dispatchNavigationLifecycleEvent(task, id, generation, InputLoad); err != nil {
 			page.recordNavigationScriptFailure(id, generation)
 		}
+		if err := page.dispatchWindowNavigationLifecycleEvent(task, id, generation, InputPageShow, false); err != nil {
+			page.recordNavigationScriptFailure(id, generation)
+		}
 		page.mutex.Lock()
 		defer page.mutex.Unlock()
 		if !page.matchesNavigationLocked(id, generation) || page.navigation.state != NavigationLoadingScripts {

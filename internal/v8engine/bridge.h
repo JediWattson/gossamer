@@ -425,6 +425,7 @@ typedef struct gossamer_v8_input_event {
   int ctrl_key;
   int meta_key;
   int shift_key;
+  int persisted;
 } gossamer_v8_input_event;
 
 typedef struct gossamer_v8_heap_statistics {

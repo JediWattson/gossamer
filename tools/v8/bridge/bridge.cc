@@ -193,6 +193,7 @@ struct EventState {
   bool ctrl_key = false;
   bool meta_key = false;
   bool shift_key = false;
+  bool persisted = false;
 };
 
 struct WrapperWeakData;
@@ -7872,6 +7873,8 @@ void EventPropertyGetter(v8::Local<v8::Name> property,
     info.GetReturnValue().Set(state->propagation_stopped);
   } else if (name == "returnValue") {
     info.GetReturnValue().Set(!state->default_prevented);
+  } else if (name == "persisted") {
+    info.GetReturnValue().Set(state->persisted);
   } else if (name == "state") {
     v8::Local<v8::String> encoded;
     v8::Local<v8::Value> value;
@@ -11022,7 +11025,7 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
                                  "eventPhase", "bubbles", "cancelable",
                                  "composed", "defaultPrevented", "isTrusted",
                                  "timeStamp", "relatedTarget", "state",
-                                 "oldURL", "newURL"}) {
+                                 "oldURL", "newURL", "persisted"}) {
           object->SetNativeDataProperty(
               v8::String::NewFromUtf8(isolate, name).ToLocalChecked(),
               EventPropertyGetter);
@@ -12282,6 +12285,23 @@ bool ConfigureNativeEvent(const gossamer_v8_input_event *input,
     state->type = "hashchange";
     state->interface = EventInterface::Event;
     break;
+  case 30:
+    state->type = "beforeunload";
+    state->interface = EventInterface::Event;
+    state->cancelable = true;
+    break;
+  case 31:
+    state->type = "pagehide";
+    state->interface = EventInterface::Event;
+    break;
+  case 32:
+    state->type = "unload";
+    state->interface = EventInterface::Event;
+    break;
+  case 33:
+    state->type = "pageshow";
+    state->interface = EventInterface::Event;
+    break;
   default:
     *error = "V8 received an unsupported browser event type";
     return false;
@@ -12305,6 +12325,7 @@ bool ConfigureNativeEvent(const gossamer_v8_input_event *input,
   state->ctrl_key = input->ctrl_key != 0;
   state->meta_key = input->meta_key != 0;
   state->shift_key = input->shift_key != 0;
+  state->persisted = input->persisted != 0;
   assign(input->pointer_type, input->pointer_type_length,
          &state->pointer_type);
   assign(input->key, input->key_length, &state->key);
