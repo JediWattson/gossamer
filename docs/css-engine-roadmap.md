@@ -113,6 +113,14 @@ raw CSS strings.
 
 ### 5. Rules and stylesheet graph
 
+Current foundation: browser pages own connected `<style>` and stylesheet-link
+entries by stable owner ID, document order, content/URL fingerprint, and
+monotonic sheet generation. Embedded sheets are parsed once per content
+generation; dynamic link insertion and `href`/`rel`/`type`/`disabled` changes
+start document-scoped fetches, and stale async results cannot overwrite a
+newer owner generation. Render continues receiving an immutable compatibility
+view while fetch, URL, and lifetime policy remain in `internal/browser`.
+
 - Load recursive `@import` rules in specified order with URL, layer, supports,
   and media context.
 - Add `@supports`, nested and anonymous layers, `@font-face`, keyframes, and

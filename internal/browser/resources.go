@@ -18,56 +18,55 @@ import (
 const maxNavigationImagePixels int64 = 32_000_000
 
 type pageResources struct {
-	stylesheets          map[dom.NodeID]css.Stylesheet
+	stylesheets          stylesheetGraph
 	userStylesheets      []css.Stylesheet
 	userAgentStylesheets []css.Stylesheet
 	images               map[dom.NodeID]image.Image
 }
 
 type navigationResourceRequest struct {
-	kind resource.Kind
-	url  *url.URL
-	node dom.NodeID
+	kind                 resource.Kind
+	url                  *url.URL
+	node                 dom.NodeID
+	stylesheetGeneration uint64
 }
 
 type navigationResourceResult struct {
-	target     NodeHandle
-	kind       resource.Kind
-	stylesheet css.Stylesheet
-	image      image.Image
-	err        error
+	target               NodeHandle
+	kind                 resource.Kind
+	stylesheet           css.Stylesheet
+	stylesheetGeneration uint64
+	image                image.Image
+	err                  error
 }
 
 func newPageResources() pageResources {
 	return pageResources{
-		stylesheets: make(map[dom.NodeID]css.Stylesheet),
+		stylesheets: newStylesheetGraph(),
 		images:      make(map[dom.NodeID]image.Image),
 	}
 }
 
-func (resources *pageResources) apply(result navigationResourceResult) {
-	if resources.stylesheets == nil || resources.images == nil {
+func (resources *pageResources) apply(result navigationResourceResult) bool {
+	if resources.stylesheets.entries == nil || resources.images == nil {
 		*resources = newPageResources()
 	}
 	switch result.kind {
 	case resource.Stylesheet:
-		resources.stylesheets[result.target.Node] = result.stylesheet
+		return resources.stylesheets.apply(result)
 	case resource.Image:
 		resources.images[result.target.Node] = result.image
+		return true
 	}
+	return false
 }
 
 func (resources pageResources) rendererResources(document *dom.Document) render.Resources {
 	resolved := render.Resources{
-		Stylesheets:          make(map[*dom.Node]css.Stylesheet, len(resources.stylesheets)),
+		Stylesheets:          resources.stylesheets.resolvedStylesheets(document),
 		UserStylesheets:      append([]css.Stylesheet(nil), resources.userStylesheets...),
 		UserAgentStylesheets: append([]css.Stylesheet(nil), resources.userAgentStylesheets...),
 		Images:               make(map[*dom.Node]image.Image, len(resources.images)),
-	}
-	for id, stylesheet := range resources.stylesheets {
-		if node, ok := document.Resolve(id); ok {
-			resolved.Stylesheets[node] = stylesheet
-		}
 	}
 	for id, decoded := range resources.images {
 		if node, ok := document.Resolve(id); ok {
@@ -86,7 +85,7 @@ func pageResourcesFromRenderer(document *dom.Document, resources render.Resource
 		if !ok {
 			return pageResources{}, fmt.Errorf("browser: stylesheet resource references a node outside the document")
 		}
-		stable.stylesheets[id] = stylesheet
+		stable.stylesheets.setManual(id, stylesheet)
 	}
 	for node, decoded := range resources.Images {
 		id, ok := document.ID(node)
@@ -168,8 +167,9 @@ func loadNavigationResourceSequence(
 			return err
 		}
 		result := navigationResourceResult{
-			target: NodeHandle{Document: generation, Node: request.node},
-			kind:   request.kind,
+			target:               NodeHandle{Document: generation, Node: request.node},
+			kind:                 request.kind,
+			stylesheetGeneration: request.stylesheetGeneration,
 		}
 		imageKey := ""
 		if request.kind == resource.Image {

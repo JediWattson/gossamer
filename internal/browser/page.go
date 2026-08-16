@@ -1,6 +1,7 @@
 package browser
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/url"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/JediWattson/gossamer/internal/dom"
 	"github.com/JediWattson/gossamer/internal/render"
+	"github.com/JediWattson/gossamer/internal/resource"
 	browserruntime "github.com/JediWattson/gossamer/internal/runtime"
 	"github.com/JediWattson/gossamer/internal/runtime/memory"
 	computed "github.com/JediWattson/gossamer/internal/style"
@@ -35,6 +37,9 @@ type Page struct {
 	history            []HistoryEntry
 	historyIndex       int
 	resources          pageResources
+	resourceFetcher    resource.Fetcher
+	documentContext    context.Context
+	documentCancel     context.CancelFunc
 	viewport           render.Viewport
 	frame              *render.Frame
 	frameGeneration    DocumentGeneration
@@ -86,6 +91,7 @@ func newPage(
 	if err != nil {
 		return nil, err
 	}
+	documentContext, documentCancel := context.WithCancel(context.Background())
 	page := &Page{
 		ID:                 id,
 		Realm:              realm,
@@ -97,6 +103,8 @@ func newPage(
 		children:           make(map[dom.NodeID]*Page),
 		location:           cloneURL(location),
 		resources:          newPageResources(),
+		documentContext:    documentContext,
+		documentCancel:     documentCancel,
 		viewport:           render.DefaultViewport,
 		styleRevision:      1,
 		layoutRevision:     1,
@@ -379,6 +387,9 @@ func (page *Page) Close() error {
 		page.navigation.cancel()
 		page.navigation.cancel = nil
 	}
+	documentCancel := page.documentCancel
+	page.documentCancel = nil
+	page.documentContext = nil
 	page.frame = nil
 	page.computedStyle = computedStyleState{}
 	page.layout = layoutState{}
@@ -397,6 +408,9 @@ func (page *Page) Close() error {
 	}
 	if page.browser != nil {
 		page.browser.unregisterPage(page, generation)
+	}
+	if documentCancel != nil {
+		documentCancel()
 	}
 	timerErr := page.releaseTimers(timers)
 	var childErr error
@@ -420,6 +434,9 @@ func (page *Page) renderLocked(onlyIfDirty bool) error {
 	}
 	if onlyIfDirty && !page.dirty && page.renderedVersion == page.document.Version() {
 		return nil
+	}
+	if _, err := page.syncStylesheetsLocked(); err != nil {
+		return err
 	}
 	resources := page.resources.rendererResources(page.document)
 	var frame *render.Frame
@@ -467,6 +484,9 @@ func (page *Page) ComputedStyle(handle NodeHandle) (computed.ComputedStyle, erro
 		return computed.ComputedStyle{}, ErrStaleNodeHandle
 	}
 
+	if _, err := page.syncStylesheetsLocked(); err != nil {
+		return computed.ComputedStyle{}, err
+	}
 	resources := page.resources.rendererResources(page.document)
 	var result computed.ComputedStyle
 	err := page.document.WithReadView(func(view dom.ReadView) error {
@@ -507,6 +527,9 @@ func (page *Page) ComputedStyleProperty(handle NodeHandle, property string) (str
 		return "", false, ErrStaleNodeHandle
 	}
 
+	if _, err := page.syncStylesheetsLocked(); err != nil {
+		return "", false, err
+	}
 	resources := page.resources.rendererResources(page.document)
 	var value string
 	var found bool

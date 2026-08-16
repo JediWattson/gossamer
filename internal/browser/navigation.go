@@ -304,6 +304,38 @@ func (page *Page) commitNavigationDocument(
 	id NavigationID,
 	prepared preparedNavigation,
 ) error {
+	replacementResources := newPageResources()
+	stylesheetRequests, _, graphErr := replacementResources.stylesheets.sync(prepared.document, prepared.location)
+	if graphErr != nil {
+		page.mutex.Lock()
+		if page.matchesNavigationLocked(id, 0) {
+			page.failNavigationLocked(graphErr)
+		}
+		page.mutex.Unlock()
+		return graphErr
+	}
+	stylesheetByOwner := make(map[dom.NodeID]navigationResourceRequest, len(stylesheetRequests))
+	for _, request := range stylesheetRequests {
+		stylesheetByOwner[request.node] = request
+	}
+	requests := make([]navigationResourceRequest, 0, len(prepared.requests))
+	for _, request := range prepared.requests {
+		if request.kind == resource.Stylesheet {
+			if replacement, ok := stylesheetByOwner[request.node]; ok {
+				requests = append(requests, replacement)
+				delete(stylesheetByOwner, request.node)
+			}
+			continue
+		}
+		requests = append(requests, request)
+	}
+	for _, request := range stylesheetRequests {
+		if _, remains := stylesheetByOwner[request.node]; remains {
+			requests = append(requests, request)
+		}
+	}
+	prepared.requests = requests
+
 	var replacementScript JSRealm
 	var err error
 	if page.browser.engine != nil {
@@ -348,6 +380,8 @@ func (page *Page) commitNavigationDocument(
 	}
 	oldScript := page.script
 	oldLifetimes := page.nodeLifetimes
+	oldDocumentCancel := page.documentCancel
+	documentContext, documentCancel := context.WithCancel(context.Background())
 	timers := page.takeTimersLocked()
 	children := page.takeChildFramesLocked()
 	oldGeneration := page.documentGeneration
@@ -362,7 +396,11 @@ func (page *Page) commitNavigationDocument(
 	page.layoutRevision++
 	page.location = cloneURL(prepared.location)
 	page.pushHistoryLocked(prepared.location, id)
-	page.resources = newPageResources()
+	page.resources = replacementResources
+	page.resources.stylesheets.markRequested(prepared.requests)
+	page.resourceFetcher = prepared.fetcher
+	page.documentContext = documentContext
+	page.documentCancel = documentCancel
 	page.dirty = true
 	page.navigation.documentGeneration = generation
 	page.navigation.resourcesTotal = len(prepared.requests)
@@ -380,6 +418,9 @@ func (page *Page) commitNavigationDocument(
 	page.browser.replaceDocument(page, oldGeneration, generation)
 	page.mutex.Unlock()
 
+	if oldDocumentCancel != nil {
+		oldDocumentCancel()
+	}
 	cleanupErr := page.releaseTimers(timers)
 	for _, child := range children {
 		cleanupErr = errors.Join(cleanupErr, child.Close())
@@ -452,11 +493,12 @@ func (page *Page) applyNavigationResource(
 	if result.err != nil {
 		page.navigation.resourcesFailed++
 	} else {
-		page.resources.apply(result)
-		if result.kind == resource.Stylesheet {
-			page.invalidateStyleLocked()
-		} else {
-			page.invalidateLayoutLocked()
+		if page.resources.apply(result) {
+			if result.kind == resource.Stylesheet {
+				page.invalidateStyleLocked()
+			} else {
+				page.invalidateLayoutLocked()
+			}
 		}
 	}
 	if page.navigation.resourcesPending > 0 {

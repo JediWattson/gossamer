@@ -1436,7 +1436,7 @@ func (host *taskHost) finish() error {
 	if !host.mutated || !host.autoRender {
 		return nil
 	}
-	return host.page.queueRenderFromTask(host.task)
+	return errors.Join(host.page.syncAndLoadStylesheets(), host.page.queueRenderFromTask(host.task))
 }
 
 func (host *taskHost) validateHandleLocked(handle NodeHandle) error {

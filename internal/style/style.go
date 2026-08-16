@@ -481,6 +481,15 @@ func collectAuthorStyles(root *dom.Node, external map[*dom.Node]css.Stylesheet, 
 				if !authorStyleOwnerApplies(node, viewport) {
 					break
 				}
+				if stylesheet, ok := external[node]; ok {
+					stylesheets = append(stylesheets, stylesheetSource{
+						stylesheet: stylesheet,
+						owner:      node,
+						kind:       SourceAuthorStylesheet,
+						order:      len(stylesheets),
+					})
+					break
+				}
 				var source strings.Builder
 				for _, child := range node.Children {
 					if child.Type == dom.TextNode {
