@@ -605,25 +605,7 @@ func validateFrameProgram(frame *Frame) error {
 	if frame == nil {
 		return fmt.Errorf("%w: nil frame", ErrInvalidBytecode)
 	}
-	for index, instruction := range frame.instructions {
-		switch instruction.Op {
-		case OpConstant, OpLoadBinding, OpDeclareBinding, OpInitializeBinding, OpStoreBinding, OpCreateClosure:
-			if uint64(instruction.A) >= uint64(len(frame.function.Constants)) {
-				return fmt.Errorf("%w: instruction %d uses constant %d", ErrConstantBounds, index, instruction.A)
-			}
-		case OpJump, OpJumpIfTrue, OpJumpIfFalse, OpJumpIfNullish, OpEnterTry:
-			if uint64(instruction.A) >= uint64(len(frame.instructions)) {
-				return fmt.Errorf("%w: instruction %d jumps to %d", ErrInvalidBytecode, index, instruction.A)
-			}
-		}
-		if instruction.Op == OpDeclareBinding && instruction.B > 1 {
-			return fmt.Errorf("%w: DeclareBinding mutability %d", ErrInvalidBytecode, instruction.B)
-		}
-		if instruction.Op == OpEnterTry && instruction.B != uint32(HandlerCatch) && instruction.B != uint32(HandlerFinally) {
-			return fmt.Errorf("%w: EnterTry handler kind %d", ErrInvalidBytecode, instruction.B)
-		}
-	}
-	return nil
+	return verifyInstructions(frame.instructions, len(frame.function.Constants))
 }
 
 func routeThrown(frame *Frame, err error) (bool, error) {
