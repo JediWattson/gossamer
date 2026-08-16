@@ -56,8 +56,10 @@ recursively grouped component values with code-point preprocessing, decoded
 escapes, and original byte spans. Raw and CSSOM declaration parsing share that
 layer, including token-correct `!important` handling and recovery, while
 stylesheet and inline declaration spans flow into computed-style provenance.
-Selector, media-query, and individual property-value parsers still use their
-existing scanners and should migrate independently without changing behavior.
+Selectors and media queries now consume the shared component-value tree,
+including decoded escaped identifiers and token-boundary-correct recovery.
+Individual property-value parsers remain on their existing scanners and are
+the final migration step for this milestone.
 
 - Migrate selectors, media queries, and property-value grammars onto the shared
   representation, adding grammar-specific escaped identifiers as each moves.

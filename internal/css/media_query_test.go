@@ -19,6 +19,8 @@ func TestMediaQueryListMatchesTypesModifiersAndAlternatives(t *testing.T) {
 		{name: "whitespace-only list", query: " \t\n", matches: true},
 		{name: "comment-only list", query: "/**/", matches: true},
 		{name: "comments separate tokens", query: "screen/**/and/**/(min-width: 800px)", matches: true},
+		{name: "escaped media type", query: `\73 creen`, matches: true},
+		{name: "escaped and keyword", query: `screen \61 nd (min-width: 800px)`, matches: true},
 		{name: "all", query: "all", matches: true},
 		{name: "screen", query: "screen", matches: true},
 		{name: "print", query: "print", matches: false},
@@ -69,6 +71,8 @@ func TestMediaQueryListMatchesViewportDimensions(t *testing.T) {
 		{name: "em boundary above viewport", query: "(min-width: 50.01em)", matches: false},
 		{name: "rem uses initial 16 pixel size", query: "(max-height: 37.5rem)", matches: true},
 		{name: "rem boundary below viewport", query: "(max-height: 37.49rem)", matches: false},
+		{name: "escaped feature name", query: `(min-\77 idth: 800px)`, matches: true},
+		{name: "escaped dimension unit", query: `(min-width: 50\65 m)`, matches: true},
 	}
 
 	for _, test := range tests {
@@ -95,6 +99,7 @@ func TestMediaQueryListMatchesOrientation(t *testing.T) {
 		{name: "tall viewport is portrait", environment: css.MediaEnvironment{Type: "screen", Width: 600, Height: 800}, query: "(orientation: portrait)", matches: true},
 		{name: "tall viewport is not landscape", environment: css.MediaEnvironment{Type: "screen", Width: 600, Height: 800}, query: "(orientation: landscape)", matches: false},
 		{name: "square viewport is portrait", environment: css.MediaEnvironment{Type: "screen", Width: 600, Height: 600}, query: "(orientation: portrait)", matches: true},
+		{name: "escaped feature and value", environment: css.MediaEnvironment{Type: "screen", Width: 800, Height: 600}, query: `(orient\61 tion: land\73 cape)`, matches: true},
 	}
 
 	for _, test := range tests {
