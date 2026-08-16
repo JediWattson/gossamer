@@ -173,6 +173,7 @@ func cloneSelector(source Selector) Selector {
 		specificity: source.specificity,
 		compounds:   cloneCompounds(source.compounds),
 		combinators: append([]selectorCombinator(nil), source.combinators...),
+		leading:     source.leading,
 	}
 }
 

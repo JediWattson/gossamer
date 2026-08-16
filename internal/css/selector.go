@@ -22,50 +22,256 @@ type MatchContext struct {
 	FocusVisible bool
 	Target       *dom.Node
 	Visited      func(*dom.Node) bool
+	// OperationLimit bounds combinator and relational work within one top-level
+	// selector evaluation. Zero uses a conservative engine default; exhausted
+	// evaluations fail closed.
+	OperationLimit int
+}
+
+const defaultSelectorOperationLimit = 100_000
+
+type selectorMatchState struct {
+	remaining int
+	exhausted bool
+}
+
+func newSelectorMatchState(context MatchContext) *selectorMatchState {
+	limit := context.OperationLimit
+	if limit <= 0 {
+		limit = defaultSelectorOperationLimit
+	}
+	return &selectorMatchState{remaining: limit}
+}
+
+func (state *selectorMatchState) take() bool {
+	if state == nil || state.remaining <= 0 {
+		if state != nil {
+			state.exhausted = true
+		}
+		return false
+	}
+	state.remaining--
+	return true
 }
 
 // MatchesWithContext reports whether selector matches node under context.
 func (selector Selector) MatchesWithContext(node *dom.Node, context MatchContext) bool {
+	return selector.matchesWithState(node, context, newSelectorMatchState(context))
+}
+
+type selectorMatchFrame struct {
+	compoundIndex int
+	node          *dom.Node
+}
+
+func (selector Selector) matchesWithState(node *dom.Node, context MatchContext, state *selectorMatchState) bool {
 	if node == nil || node.Type != dom.ElementNode || len(selector.compounds) == 0 {
 		return false
 	}
-	return selector.matchesAt(len(selector.compounds)-1, node, context)
-}
-
-func (selector Selector) matchesAt(compoundIndex int, node *dom.Node, context MatchContext) bool {
-	if !matchesCompound(selector.compounds[compoundIndex], node, context) {
-		return false
-	}
-	if compoundIndex == 0 {
-		return true
-	}
-	switch selector.combinators[compoundIndex-1] {
-	case childCombinator:
-		return node.Parent != nil && selector.matchesAt(compoundIndex-1, node.Parent, context)
-	case descendantCombinator:
-		for ancestor := node.Parent; ancestor != nil; ancestor = ancestor.Parent {
-			if selector.matchesAt(compoundIndex-1, ancestor, context) {
-				return true
-			}
-		}
-		return false
-	case adjacentSiblingCombinator:
-		sibling := previousElementSibling(node)
-		return sibling != nil && selector.matchesAt(compoundIndex-1, sibling, context)
-	case generalSiblingCombinator:
-		if node.Parent == nil {
+	frames := []selectorMatchFrame{{compoundIndex: len(selector.compounds) - 1, node: node}}
+	for len(frames) != 0 {
+		last := len(frames) - 1
+		frame := frames[last]
+		frames = frames[:last]
+		if !state.take() {
 			return false
 		}
-		index := childIndex(node.Parent, node)
-		for siblingIndex := index - 1; siblingIndex >= 0; siblingIndex-- {
-			sibling := node.Parent.Children[siblingIndex]
-			if sibling != nil && sibling.Type == dom.ElementNode && selector.matchesAt(compoundIndex-1, sibling, context) {
-				return true
+		if !matchesCompound(selector.compounds[frame.compoundIndex], frame.node, context, state) {
+			continue
+		}
+		if state.exhausted {
+			return false
+		}
+		if frame.compoundIndex == 0 {
+			return true
+		}
+		nextIndex := frame.compoundIndex - 1
+		var ok bool
+		frames, ok = appendReverseRelationFrames(frames, nextIndex, frame.node, selector.combinators[nextIndex], state)
+		if !ok {
+			return false
+		}
+	}
+	return false
+}
+
+func appendReverseRelationFrames(frames []selectorMatchFrame, compoundIndex int, node *dom.Node, combinator selectorCombinator, state *selectorMatchState) ([]selectorMatchFrame, bool) {
+	appendElement := func(candidate *dom.Node) bool {
+		if !state.take() {
+			return false
+		}
+		if candidate != nil && candidate.Type == dom.ElementNode {
+			frames = append(frames, selectorMatchFrame{compoundIndex: compoundIndex, node: candidate})
+		}
+		return true
+	}
+	switch combinator {
+	case childCombinator:
+		return frames, appendElement(node.Parent)
+	case descendantCombinator:
+		ancestors := make([]*dom.Node, 0, 8)
+		for ancestor := node.Parent; ancestor != nil; ancestor = ancestor.Parent {
+			if !state.take() {
+				return frames, false
+			}
+			if ancestor.Type == dom.ElementNode {
+				ancestors = append(ancestors, ancestor)
 			}
 		}
-		return false
+		for index := len(ancestors) - 1; index >= 0; index-- {
+			frames = append(frames, selectorMatchFrame{compoundIndex: compoundIndex, node: ancestors[index]})
+		}
+		return frames, true
+	case adjacentSiblingCombinator:
+		if node.Parent == nil {
+			return frames, true
+		}
+		for index := childIndex(node.Parent, node) - 1; index >= 0; index-- {
+			candidate := node.Parent.Children[index]
+			if !state.take() {
+				return frames, false
+			}
+			if candidate != nil && candidate.Type == dom.ElementNode {
+				frames = append(frames, selectorMatchFrame{compoundIndex: compoundIndex, node: candidate})
+				break
+			}
+		}
+		return frames, true
+	case generalSiblingCombinator:
+		if node.Parent == nil {
+			return frames, true
+		}
+		end := childIndex(node.Parent, node)
+		for index := 0; index < end; index++ {
+			if !appendElement(node.Parent.Children[index]) {
+				return frames, false
+			}
+		}
+		return frames, true
 	default:
+		return frames, false
+	}
+}
+
+type relativeMatchFrame struct {
+	compoundIndex int
+	node          *dom.Node
+}
+
+func matchesHas(selectors []Selector, anchor *dom.Node, context MatchContext, state *selectorMatchState) bool {
+	for _, selector := range selectors {
+		if selector.matchesRelative(anchor, context, state) {
+			return true
+		}
+	}
+	return false
+}
+
+func (selector Selector) matchesRelative(anchor *dom.Node, context MatchContext, state *selectorMatchState) bool {
+	if anchor == nil || anchor.Type != dom.ElementNode || len(selector.compounds) == 0 || selector.leading == 0 {
 		return false
+	}
+	frames, ok := appendForwardRelationFrames(nil, 0, anchor, selector.leading, state)
+	if !ok {
+		return false
+	}
+	for len(frames) != 0 {
+		last := len(frames) - 1
+		frame := frames[last]
+		frames = frames[:last]
+		if !state.take() {
+			return false
+		}
+		if !matchesCompound(selector.compounds[frame.compoundIndex], frame.node, context, state) {
+			continue
+		}
+		if state.exhausted {
+			return false
+		}
+		if frame.compoundIndex == len(selector.compounds)-1 {
+			return true
+		}
+		nextIndex := frame.compoundIndex + 1
+		frames, ok = appendForwardRelationFrames(frames, nextIndex, frame.node, selector.combinators[frame.compoundIndex], state)
+		if !ok {
+			return false
+		}
+	}
+	return false
+}
+
+func appendForwardRelationFrames(frames []relativeMatchFrame, compoundIndex int, node *dom.Node, combinator selectorCombinator, state *selectorMatchState) ([]relativeMatchFrame, bool) {
+	appendElement := func(candidate *dom.Node) bool {
+		if !state.take() {
+			return false
+		}
+		if candidate != nil && candidate.Type == dom.ElementNode {
+			frames = append(frames, relativeMatchFrame{compoundIndex: compoundIndex, node: candidate})
+		}
+		return true
+	}
+	switch combinator {
+	case childCombinator:
+		for index := len(node.Children) - 1; index >= 0; index-- {
+			if !appendElement(node.Children[index]) {
+				return frames, false
+			}
+		}
+		return frames, true
+	case descendantCombinator:
+		walk := make([]*dom.Node, 0, len(node.Children))
+		for index := len(node.Children) - 1; index >= 0; index-- {
+			walk = append(walk, node.Children[index])
+		}
+		elements := make([]*dom.Node, 0, len(walk))
+		for len(walk) != 0 {
+			last := len(walk) - 1
+			candidate := walk[last]
+			walk = walk[:last]
+			if !state.take() {
+				return frames, false
+			}
+			if candidate != nil && candidate.Type == dom.ElementNode {
+				elements = append(elements, candidate)
+			}
+			if candidate != nil {
+				for index := len(candidate.Children) - 1; index >= 0; index-- {
+					walk = append(walk, candidate.Children[index])
+				}
+			}
+		}
+		for index := len(elements) - 1; index >= 0; index-- {
+			frames = append(frames, relativeMatchFrame{compoundIndex: compoundIndex, node: elements[index]})
+		}
+		return frames, true
+	case adjacentSiblingCombinator:
+		if node.Parent == nil {
+			return frames, true
+		}
+		for index := childIndex(node.Parent, node) + 1; index < len(node.Parent.Children); index++ {
+			candidate := node.Parent.Children[index]
+			if !state.take() {
+				return frames, false
+			}
+			if candidate != nil && candidate.Type == dom.ElementNode {
+				frames = append(frames, relativeMatchFrame{compoundIndex: compoundIndex, node: candidate})
+				break
+			}
+		}
+		return frames, true
+	case generalSiblingCombinator:
+		if node.Parent == nil {
+			return frames, true
+		}
+		start := childIndex(node.Parent, node) + 1
+		for index := len(node.Parent.Children) - 1; index >= start; index-- {
+			if !appendElement(node.Parent.Children[index]) {
+				return frames, false
+			}
+		}
+		return frames, true
+	default:
+		return frames, false
 	}
 }
 
@@ -77,10 +283,15 @@ func (rule Rule) Match(node *dom.Node) (Specificity, bool) {
 
 // MatchWithContext reports the greatest matching specificity under context.
 func (rule Rule) MatchWithContext(node *dom.Node, context MatchContext) (Specificity, bool) {
+	state := newSelectorMatchState(context)
 	var greatest Specificity
 	matched := false
 	for _, selector := range rule.Selectors {
-		if !selector.MatchesWithContext(node, context) {
+		selectorMatched := selector.matchesWithState(node, context, state)
+		if state.exhausted {
+			return Specificity{}, false
+		}
+		if !selectorMatched {
 			continue
 		}
 		if !matched || selector.specificity.Compare(greatest) > 0 {
@@ -91,8 +302,11 @@ func (rule Rule) MatchWithContext(node *dom.Node, context MatchContext) (Specifi
 	return greatest, matched
 }
 
-func matchesCompound(compound compoundSelector, node *dom.Node, context MatchContext) bool {
+func matchesCompound(compound compoundSelector, node *dom.Node, context MatchContext, state *selectorMatchState) bool {
 	if node == nil || node.Type != dom.ElementNode {
+		return false
+	}
+	if !state.take() {
 		return false
 	}
 	if compound.typeName != "" && compound.typeName != "*" && !equalASCIIFold(compound.typeName, node.Data) {
@@ -100,23 +314,32 @@ func matchesCompound(compound compoundSelector, node *dom.Node, context MatchCon
 	}
 	id, hasID := attributeValue(node, "id")
 	for _, requiredID := range compound.ids {
+		if !state.take() {
+			return false
+		}
 		if !hasID || id != requiredID {
 			return false
 		}
 	}
 	classValue, hasClass := attributeValue(node, "class")
 	for _, className := range compound.classes {
+		if !state.take() {
+			return false
+		}
 		if !hasClass || !containsCSSSpaceSeparatedToken(classValue, className) {
 			return false
 		}
 	}
 	for _, attribute := range compound.attributes {
+		if !state.take() {
+			return false
+		}
 		if !matchesAttribute(attribute, node) {
 			return false
 		}
 	}
 	for _, pseudo := range compound.pseudos {
-		if !matchesPseudoClass(pseudo, node, context) {
+		if !state.take() || !matchesPseudoClass(pseudo, node, context, state) {
 			return false
 		}
 	}
@@ -156,7 +379,7 @@ func matchesAttribute(selector attributeSelector, node *dom.Node) bool {
 	}
 }
 
-func matchesPseudoClass(pseudo pseudoClassSelector, node *dom.Node, context MatchContext) bool {
+func matchesPseudoClass(pseudo pseudoClassSelector, node *dom.Node, context MatchContext, state *selectorMatchState) bool {
 	switch pseudo.name {
 	case "root":
 		return isDocumentElement(node)
@@ -207,17 +430,20 @@ func matchesPseudoClass(pseudo pseudoClassSelector, node *dom.Node, context Matc
 		eligible, required := htmlRequiredState(node)
 		return eligible && !required
 	case "is", "where":
-		return selectorListMatches(pseudo.selectors, node, context)
+		return selectorListMatches(pseudo.selectors, node, context, state)
 	case "not":
-		return !selectorListMatches(pseudo.selectors, node, context)
+		matched := selectorListMatches(pseudo.selectors, node, context, state)
+		return !state.exhausted && !matched
+	case "has":
+		return matchesHas(pseudo.selectors, node, context, state)
 	case "nth-child":
-		return matchesNth(pseudo, node, false, false, context)
+		return matchesNth(pseudo, node, false, false, context, state)
 	case "nth-last-child":
-		return matchesNth(pseudo, node, true, false, context)
+		return matchesNth(pseudo, node, true, false, context, state)
 	case "nth-of-type":
-		return matchesNth(pseudo, node, false, true, context)
+		return matchesNth(pseudo, node, false, true, context, state)
 	case "nth-last-of-type":
-		return matchesNth(pseudo, node, true, true, context)
+		return matchesNth(pseudo, node, true, true, context, state)
 	default:
 		return false
 	}
@@ -237,17 +463,20 @@ func supportedSimplePseudoClass(name string) bool {
 	}
 }
 
-func selectorListMatches(selectors []Selector, node *dom.Node, context MatchContext) bool {
+func selectorListMatches(selectors []Selector, node *dom.Node, context MatchContext, state *selectorMatchState) bool {
 	for _, selector := range selectors {
-		if selector.MatchesWithContext(node, context) {
+		if selector.matchesWithState(node, context, state) {
 			return true
+		}
+		if state.exhausted {
+			return false
 		}
 	}
 	return false
 }
 
-func matchesNth(pseudo pseudoClassSelector, node *dom.Node, fromEnd, ofType bool, context MatchContext) bool {
-	index, ok := elementSiblingIndex(node, fromEnd, ofType, pseudo.selectors, context)
+func matchesNth(pseudo pseudoClassSelector, node *dom.Node, fromEnd, ofType bool, context MatchContext, state *selectorMatchState) bool {
+	index, ok := elementSiblingIndex(node, fromEnd, ofType, pseudo.selectors, context, state)
 	if !ok {
 		return false
 	}
@@ -258,7 +487,7 @@ func matchesNth(pseudo pseudoClassSelector, node *dom.Node, fromEnd, ofType bool
 	return difference%pseudo.nth.a == 0 && difference/pseudo.nth.a >= 0
 }
 
-func elementSiblingIndex(node *dom.Node, fromEnd, ofType bool, filter []Selector, context MatchContext) (int, bool) {
+func elementSiblingIndex(node *dom.Node, fromEnd, ofType bool, filter []Selector, context MatchContext, state *selectorMatchState) (int, bool) {
 	if node.Parent == nil {
 		return 0, false
 	}
@@ -266,7 +495,10 @@ func elementSiblingIndex(node *dom.Node, fromEnd, ofType bool, filter []Selector
 	if fromEnd {
 		for siblingIndex := len(node.Parent.Children) - 1; siblingIndex >= 0; siblingIndex-- {
 			sibling := node.Parent.Children[siblingIndex]
-			if !includedSibling(sibling, node, ofType, filter, context) {
+			if !state.take() {
+				return 0, false
+			}
+			if !includedSibling(sibling, node, ofType, filter, context, state) {
 				continue
 			}
 			index++
@@ -277,7 +509,10 @@ func elementSiblingIndex(node *dom.Node, fromEnd, ofType bool, filter []Selector
 		return 0, false
 	}
 	for _, sibling := range node.Parent.Children {
-		if !includedSibling(sibling, node, ofType, filter, context) {
+		if !state.take() {
+			return 0, false
+		}
+		if !includedSibling(sibling, node, ofType, filter, context, state) {
 			continue
 		}
 		index++
@@ -288,14 +523,14 @@ func elementSiblingIndex(node *dom.Node, fromEnd, ofType bool, filter []Selector
 	return 0, false
 }
 
-func includedSibling(sibling, subject *dom.Node, ofType bool, filter []Selector, context MatchContext) bool {
+func includedSibling(sibling, subject *dom.Node, ofType bool, filter []Selector, context MatchContext, state *selectorMatchState) bool {
 	if sibling == nil || sibling.Type != dom.ElementNode {
 		return false
 	}
 	if ofType && !equalASCIIFold(sibling.Data, subject.Data) {
 		return false
 	}
-	return len(filter) == 0 || selectorListMatches(filter, sibling, context)
+	return len(filter) == 0 || selectorListMatches(filter, sibling, context, state)
 }
 
 func inclusiveAncestor(candidate, descendant *dom.Node) bool {

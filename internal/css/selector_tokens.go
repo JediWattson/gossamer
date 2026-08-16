@@ -20,6 +20,10 @@ func parseTokenSelectorListAtDepth(source string, nesting int) ([]Selector, bool
 }
 
 func parseTokenSelectorComponents(source string, values []ComponentValue, nesting int, forgiving bool) ([]Selector, bool) {
+	return parseTokenSelectorComponentsWithContext(source, values, nesting, forgiving, false)
+}
+
+func parseTokenSelectorComponentsWithContext(source string, values []ComponentValue, nesting int, forgiving, insideHas bool) ([]Selector, bool) {
 	if nesting > maxSelectorNesting {
 		return nil, false
 	}
@@ -33,7 +37,7 @@ func parseTokenSelectorComponents(source string, values []ComponentValue, nestin
 			}
 			return nil, false
 		}
-		parser := tokenSelectorParser{source: source, values: group, nesting: nesting}
+		parser := tokenSelectorParser{source: source, values: group, nesting: nesting, insideHas: insideHas}
 		selector, ok := parser.parseComplexSelector()
 		parser.skipWhitespace()
 		if !ok || !parser.done() {
@@ -50,6 +54,28 @@ func parseTokenSelectorComponents(source string, values []ComponentValue, nestin
 	return selectors, true
 }
 
+func parseTokenRelativeSelectorComponents(source string, values []ComponentValue, nesting int) ([]Selector, bool) {
+	if nesting > maxSelectorNesting {
+		return nil, false
+	}
+	groups := splitSelectorComponentGroups(values)
+	selectors := make([]Selector, 0, len(groups))
+	for _, group := range groups {
+		group = trimComponentWhitespace(group)
+		if len(group) == 0 {
+			return nil, false
+		}
+		parser := tokenSelectorParser{source: source, values: group, nesting: nesting, insideHas: true}
+		selector, ok := parser.parseRelativeSelector()
+		parser.skipWhitespace()
+		if !ok || !parser.done() {
+			return nil, false
+		}
+		selectors = append(selectors, selector)
+	}
+	return selectors, len(selectors) != 0
+}
+
 func splitSelectorComponentGroups(values []ComponentValue) [][]ComponentValue {
 	groups := make([][]ComponentValue, 0, 1)
 	start := 0
@@ -63,10 +89,37 @@ func splitSelectorComponentGroups(values []ComponentValue) [][]ComponentValue {
 }
 
 type tokenSelectorParser struct {
-	source  string
-	values  []ComponentValue
-	pos     int
-	nesting int
+	source    string
+	values    []ComponentValue
+	pos       int
+	nesting   int
+	insideHas bool
+}
+
+func (parser *tokenSelectorParser) parseRelativeSelector() (Selector, bool) {
+	parser.skipWhitespace()
+	leading := descendantCombinator
+	switch {
+	case parser.peekDelim(">"):
+		leading = childCombinator
+		parser.pos++
+	case parser.peekDelim("+"):
+		leading = adjacentSiblingCombinator
+		parser.pos++
+	case parser.peekDelim("~"):
+		leading = generalSiblingCombinator
+		parser.pos++
+	}
+	parser.skipWhitespace()
+	if parser.done() {
+		return Selector{}, false
+	}
+	selector, ok := parser.parseComplexSelector()
+	if !ok {
+		return Selector{}, false
+	}
+	selector.leading = leading
+	return selector, true
 }
 
 func (parser *tokenSelectorParser) parseComplexSelector() (Selector, bool) {
@@ -273,7 +326,7 @@ func (parser *tokenSelectorParser) parsePseudoClass() (pseudoClassSelector, Spec
 	switch name {
 	case "is", "where":
 		var ok bool
-		pseudo.selectors, ok = parseTokenSelectorComponents(parser.source, value.Values, parser.nesting+1, true)
+		pseudo.selectors, ok = parseTokenSelectorComponentsWithContext(parser.source, value.Values, parser.nesting+1, true, parser.insideHas)
 		if !ok {
 			return pseudoClassSelector{}, Specificity{}, false
 		}
@@ -283,7 +336,17 @@ func (parser *tokenSelectorParser) parsePseudoClass() (pseudoClassSelector, Spec
 		return pseudo, greatestSpecificity(pseudo.selectors), true
 	case "not":
 		var ok bool
-		pseudo.selectors, ok = parseTokenSelectorComponents(parser.source, value.Values, parser.nesting+1, false)
+		pseudo.selectors, ok = parseTokenSelectorComponentsWithContext(parser.source, value.Values, parser.nesting+1, false, parser.insideHas)
+		if !ok {
+			return pseudoClassSelector{}, Specificity{}, false
+		}
+		return pseudo, greatestSpecificity(pseudo.selectors), true
+	case "has":
+		if parser.insideHas {
+			return pseudoClassSelector{}, Specificity{}, false
+		}
+		var ok bool
+		pseudo.selectors, ok = parseTokenRelativeSelectorComponents(parser.source, value.Values, parser.nesting+1)
 		if !ok {
 			return pseudoClassSelector{}, Specificity{}, false
 		}
@@ -291,7 +354,7 @@ func (parser *tokenSelectorParser) parsePseudoClass() (pseudoClassSelector, Spec
 	case "nth-child", "nth-last-child", "nth-of-type", "nth-last-of-type":
 		allowOf := name == "nth-child" || name == "nth-last-child"
 		var ok bool
-		pseudo.nth, pseudo.selectors, ok = parseTokenNthArgument(parser.source, value.Values, allowOf, parser.nesting+1)
+		pseudo.nth, pseudo.selectors, ok = parseTokenNthArgument(parser.source, value.Values, allowOf, parser.nesting+1, parser.insideHas)
 		if !ok {
 			return pseudoClassSelector{}, Specificity{}, false
 		}
@@ -304,7 +367,7 @@ func (parser *tokenSelectorParser) parsePseudoClass() (pseudoClassSelector, Spec
 	}
 }
 
-func parseTokenNthArgument(source string, values []ComponentValue, allowOf bool, nesting int) (nthExpression, []Selector, bool) {
+func parseTokenNthArgument(source string, values []ComponentValue, allowOf bool, nesting int, insideHas bool) (nthExpression, []Selector, bool) {
 	values = trimComponentWhitespace(values)
 	if len(values) == 0 {
 		return nthExpression{}, nil, false
@@ -341,7 +404,7 @@ func parseTokenNthArgument(source string, values []ComponentValue, allowOf bool,
 	if ofIndex < 0 {
 		return expression, nil, true
 	}
-	selectors, ok := parseTokenSelectorComponents(source, selectorValues, nesting, false)
+	selectors, ok := parseTokenSelectorComponentsWithContext(source, selectorValues, nesting, false, insideHas)
 	if !ok {
 		return nthExpression{}, nil, false
 	}

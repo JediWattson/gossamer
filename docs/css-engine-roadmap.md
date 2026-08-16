@@ -196,12 +196,18 @@ and option selectedness rather than stale content attributes. `:enabled` and
 first-legend exceptions, while `:required` and `:optional` respect input-type
 applicability. Form mutations advance the document version, so style reads,
 selector queries, and task-boundary rendering share one coherent state.
+`:has()` parses its unforgiving relative-selector list from shared component
+values, rejects nested relational selectors, and evaluates descendant, child,
+adjacent, and general-sibling relations with iterative backtracking. One shared
+operation budget bounds combinator and relational work in each top-level
+evaluation and fails closed, including through negation; `@supports
+selector()` uses the same parser.
 
-- Add `:has()`, language/direction, the remaining form-state pseudo-classes,
-  and browser history plumbing for the matcher-level visited-link hook.
+- Add language/direction, the remaining form-state pseudo-classes, and browser
+  history plumbing for the matcher-level visited-link hook.
 - Finish pseudo-elements and the remaining stateful selector grammar.
-- Add bounded matching and memoization for selectors with combinator
-  backtracking.
+- Add memoization and selector/property dependency indexes after profiling the
+  now-bounded combinator backtracking paths.
 - Introduce pseudo-element style slots and generated boxes only when layout can
   consume them.
 

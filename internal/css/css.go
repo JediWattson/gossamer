@@ -93,6 +93,7 @@ type Selector struct {
 	specificity Specificity
 	compounds   []compoundSelector
 	combinators []selectorCombinator
+	leading     selectorCombinator
 }
 
 // ParseSelectorList parses the unforgiving selector-list grammar used by DOM
@@ -113,8 +114,9 @@ func MatchesAny(selectors []Selector, node *dom.Node) bool {
 
 // MatchesAnyWithContext reports whether a selector matches under context.
 func MatchesAnyWithContext(selectors []Selector, node *dom.Node, context MatchContext) bool {
+	state := newSelectorMatchState(context)
 	for _, selector := range selectors {
-		if selector.MatchesWithContext(node, context) {
+		if selector.matchesWithState(node, context, state) {
 			return true
 		}
 	}
