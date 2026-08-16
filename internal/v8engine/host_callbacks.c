@@ -183,6 +183,16 @@ extern int goGossamerV8HostFormOwner(uint64_t execution_id,
 extern int goGossamerV8HostResetForm(uint64_t execution_id,
                                      uint64_t document, uint32_t node,
                                      char **error_out);
+extern int goGossamerV8HostFormValidity(
+    uint64_t execution_id, uint64_t document, uint32_t node, int *valid_out,
+    uint32_t **invalid_nodes_out, size_t *count_out, char **error_out);
+extern int goGossamerV8HostFormDataJSON(
+    uint64_t execution_id, uint64_t document, uint32_t node,
+    uint64_t submitter_document, uint32_t submitter_node, char **json_out,
+    size_t *json_length_out, char **error_out);
+extern int goGossamerV8HostSubmitForm(
+    uint64_t execution_id, uint64_t document, uint32_t node,
+    uint64_t submitter_document, uint32_t submitter_node, char **error_out);
 extern int goGossamerV8HostFocusNode(uint64_t execution_id, uint64_t document,
                                      uint32_t node, int focused,
                                      char **error_out);
@@ -355,6 +365,9 @@ static gossamer_v8_host gossamer_v8_go_host(uint64_t execution_id) {
       .computed_style_property_count =
           goGossamerV8HostComputedStylePropertyCount,
       .computed_style_property_name = goGossamerV8HostComputedStylePropertyName,
+      .form_validity = goGossamerV8HostFormValidity,
+      .form_data_json = goGossamerV8HostFormDataJSON,
+      .submit_form = goGossamerV8HostSubmitForm,
   };
   return host;
 }

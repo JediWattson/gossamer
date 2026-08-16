@@ -361,6 +361,7 @@ func (page *Page) commitNavigationDocument(
 	page.styleRevision++
 	page.layoutRevision++
 	page.location = cloneURL(prepared.location)
+	page.pushHistoryLocked(prepared.location, id)
 	page.resources = newPageResources()
 	page.dirty = true
 	page.navigation.documentGeneration = generation

@@ -3092,6 +3092,155 @@ func TestStockV8TemplateConstructionRangeAndTraversalObjects(t *testing.T) {
 	}
 }
 
+func TestStockV8FormSubmissionNavigatesAndTearsDownOldRealm(t *testing.T) {
+	engine := newTestEngine(t)
+	browserRuntime, err := browser.NewWithEngine(engine)
+	if err != nil {
+		t.Fatalf("NewWithEngine: %v", err)
+	}
+	defer func() {
+		if err := browserRuntime.Close(); err != nil {
+			t.Errorf("Close browser: %v", err)
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	page, err := browserRuntime.LoadPage(ctx, "https://gossamer.test/form-start", staticDocumentLoader{
+		document: `<!doctype html><html><body>
+			<form id="search" action="/results">
+				<input id="query" name="q" required>
+				<input name="tag" value="memory">
+				<input name="tag" value="regions">
+				<button id="go" name="commit" value="yes">Go</button>
+			</form>
+		</body></html>`,
+	})
+	if err != nil {
+		t.Fatalf("LoadPage: %v", err)
+	}
+	oldRealm, ok := engine.LatestRealm()
+	if !ok {
+		t.Fatal("stock V8 engine has no live form submission realm")
+	}
+	page.SetFormNavigationLoader(staticDocumentLoader{
+		document: `<!doctype html><html><body><p>submitted result</p></body></html>`,
+	})
+	initialNavigation := page.Navigation().ID
+
+	_, err = page.QueueScript(browser.ScriptSource{
+		URL: "https://gossamer.test/form-start/form-api.js",
+		Source: `
+			(() => {
+				const form = document.getElementById("search");
+				const query = document.getElementById("query");
+				const button = document.getElementById("go");
+				const data = new FormData(form, button);
+				if (!(data instanceof FormData) || Object.prototype.toString.call(data) !== "[object FormData]" ||
+					data.get("q") !== "" || data.getAll("tag").join(",") !== "memory,regions" ||
+					data.get("commit") !== "yes" || !data.has("tag") ||
+					JSON.stringify([...data]) !== JSON.stringify([["q", ""], ["tag", "memory"], ["tag", "regions"], ["commit", "yes"]])) {
+					throw new Error("FormData did not snapshot successful controls");
+				}
+				data.append("tag", "queues");
+				data.set("q", "gossamer");
+				data.delete("commit");
+				const visited = [];
+				data.forEach((value, name, owner) => {
+					if (owner !== data) throw new Error("FormData forEach owner mismatch");
+					visited.push(name + "=" + value);
+				});
+				if (data.get("q") !== "gossamer" || data.has("commit") ||
+					data.getAll("tag").join(",") !== "memory,regions,queues" || visited.length !== 4 ||
+					[...data.keys()].join(",") !== "q,tag,tag,tag" ||
+					[...data.values()].join(",") !== "gossamer,memory,regions,queues") {
+					throw new Error("FormData mutation or iteration failed");
+				}
+
+				let invalid = 0;
+				query.addEventListener("invalid", event => {
+					if (event.bubbles || !event.cancelable || event.target !== query) {
+						throw new Error("invalid event shape failed");
+					}
+					invalid++;
+				});
+				if (form.checkValidity() || invalid !== 1) throw new Error("checkValidity accepted required input");
+				form.requestSubmit(button);
+				if (invalid !== 2) throw new Error("requestSubmit skipped invalid dispatch");
+
+				query.value = "gossamer";
+				globalThis.__gossamerFormSubmitted = 0;
+				globalThis.__gossamerFormCanceled = 0;
+				globalThis.__gossamerFormDefaultStates = [];
+				form.addEventListener("submit", event => {
+					__gossamerFormSubmitted++;
+					__gossamerFormDefaultStates.push(event.defaultPrevented);
+				});
+				form.addEventListener("submit", event => {
+					if (!event.bubbles || !event.cancelable || event.submitter !== button) {
+						throw new Error("submit event shape failed");
+					}
+					__gossamerFormCanceled++;
+					event.preventDefault();
+				}, {once: true});
+				form.requestSubmit(button);
+				if (__gossamerFormSubmitted !== 1) throw new Error("cancelable submit event did not run");
+			})();
+		`,
+	})
+	if err != nil {
+		t.Fatalf("QueueScript form API: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("run form API assertions: %v", err)
+	}
+	if page.Navigation().ID != initialNavigation {
+		t.Fatal("invalid or canceled V8 requestSubmit navigated")
+	}
+	for page.Realm.Tasks.Len() != 0 {
+		if err := page.Realm.RunOne(context.Background()); err != nil {
+			t.Fatalf("drain canceled submission paint: %v", err)
+		}
+	}
+
+	_, err = page.QueueScript(browser.ScriptSource{
+		URL: "https://gossamer.test/form-start/submit.js",
+		Source: `
+			const form = document.getElementById("search");
+			form.requestSubmit(document.getElementById("go"));
+			if (__gossamerFormSubmitted !== 2 || __gossamerFormCanceled !== 1 || __gossamerFormDefaultStates[1]) throw new Error("successful submit event did not run");
+		`,
+	})
+	if err != nil {
+		t.Fatalf("QueueScript submit: %v", err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatalf("run successful requestSubmit: %v", err)
+	}
+	navigation := page.Navigation().ID
+	if navigation == initialNavigation {
+		t.Fatal("successful V8 requestSubmit did not schedule navigation")
+	}
+	if err := page.WaitNavigation(ctx, navigation); err != nil {
+		t.Fatalf("WaitNavigation: %v", err)
+	}
+	if got := page.URL().String(); got != "https://gossamer.test/results?q=gossamer&tag=memory&tag=regions&commit=yes" {
+		t.Fatalf("form navigation URL = %q", got)
+	}
+	if !v8FrameContainsText(page.Frame(), "submitted result") {
+		t.Fatal("form navigation response did not reach paint")
+	}
+	if err := oldRealm.Evaluate(nil, browser.ScriptSource{URL: "old-realm.js", Source: `1`}); err != ErrRealmClosed {
+		t.Fatalf("old Realm Evaluate = %v, want %v", err, ErrRealmClosed)
+	}
+	if err := page.Close(); err != nil {
+		t.Fatalf("Close page: %v", err)
+	}
+	if ledger := browserRuntime.Ledger().Stats(); ledger.LiveObjects != 0 || ledger.PersistentObjects != 0 {
+		t.Fatalf("Milestone 25 teardown ownership = %#v", ledger)
+	}
+}
+
 func TestStockV8ReactDOMCompatibilityGate(t *testing.T) {
 	reactBundle, err := os.ReadFile("testdata/react-19.2.7.production.js")
 	if err != nil {

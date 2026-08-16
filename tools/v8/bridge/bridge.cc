@@ -25,6 +25,7 @@
 #include "include/v8-function.h"
 #include "include/v8-initialization.h"
 #include "include/v8-isolate.h"
+#include "include/v8-json.h"
 #include "include/v8-locker.h"
 #include "include/v8-message.h"
 #include "include/v8-microtask.h"
@@ -63,6 +64,7 @@ constexpr int kMutationObserverStateField = 0;
 constexpr int kRangeStateField = 0;
 constexpr int kTraversalStateField = 0;
 constexpr int kSelectionStateField = 0;
+constexpr int kFormDataEntriesField = 0;
 constexpr uint8_t kEventPhaseNone = 0;
 constexpr uint8_t kEventPhaseCapturing = 1;
 constexpr uint8_t kEventPhaseAtTarget = 2;
@@ -402,6 +404,7 @@ struct gossamer_v8_realm {
   v8::Global<v8::FunctionTemplate> html_button_element_template;
   v8::Global<v8::FunctionTemplate> html_template_element_template;
   v8::Global<v8::FunctionTemplate> html_iframe_element_template;
+  v8::Global<v8::FunctionTemplate> form_data_template;
   v8::Global<v8::FunctionTemplate> text_template;
   v8::Global<v8::FunctionTemplate> document_template;
   v8::Global<v8::FunctionTemplate> document_fragment_template;
@@ -8088,6 +8091,563 @@ NewEventObject(gossamer_v8_realm *realm, v8::Local<v8::Context> context,
   TrackEventObject(realm, object, state.release());
   return object;
 }
+
+bool ReadHostFormValidity(gossamer_v8_realm *realm, const WrapperKey &form,
+                          bool *valid, std::vector<uint32_t> *invalid,
+                          std::string *error) {
+  if (!RequireHost(realm, error))
+    return false;
+  int host_valid = 0;
+  uint32_t *host_invalid = nullptr;
+  size_t count = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->form_validity(
+          realm->active_host->execution_id, form.document, form.node,
+          &host_valid, &host_invalid, &count, &host_error) == 0) {
+    *error = TakeCString(host_error);
+    std::free(host_invalid);
+    return false;
+  }
+  std::free(host_error);
+  invalid->assign(host_invalid, host_invalid + count);
+  std::free(host_invalid);
+  *valid = host_valid != 0;
+  return true;
+}
+
+bool DispatchFormEvent(gossamer_v8_realm *realm,
+                       v8::Local<v8::Context> context,
+                       const WrapperKey &target, const char *type,
+                       bool bubbles, const WrapperKey *submitter,
+                       bool *default_prevented, std::string *error) {
+  auto state = std::make_unique<EventState>();
+  state->interface = EventInterface::Event;
+  state->type = type;
+  state->bubbles = bubbles;
+  state->cancelable = true;
+  state->timestamp = static_cast<double>(MonotonicNanos()) / 1000000.0;
+  EventState *raw_state = state.get();
+  v8::Local<v8::Object> event_object;
+  if (!NewEventObject(realm, context, std::move(state)).ToLocal(&event_object)) {
+    *error = "V8 failed to allocate a form event";
+    return false;
+  }
+  if (submitter != nullptr && submitter->node != 0) {
+    v8::Local<v8::Object> wrapper;
+    if (!GetOrCreateNodeWrapper(realm, context, *submitter, error)
+             .ToLocal(&wrapper) ||
+        !event_object
+             ->Set(context,
+                   v8::String::NewFromUtf8Literal(realm->isolate,
+                                                  "submitter"),
+                   wrapper)
+             .FromMaybe(false)) {
+      if (error->empty())
+        *error = "V8 failed to expose the form submitter";
+      return false;
+    }
+  }
+  if (!DispatchEventState(realm, context, target, event_object, raw_state,
+                          error))
+    return false;
+  *default_prevented = raw_state->default_prevented;
+  return true;
+}
+
+bool DispatchInvalidControls(gossamer_v8_realm *realm,
+                             v8::Local<v8::Context> context,
+                             uint64_t document,
+                             const std::vector<uint32_t> &invalid,
+                             std::string *error) {
+  for (uint32_t node : invalid) {
+    bool prevented = false;
+    if (!DispatchFormEvent(realm, context, WrapperKey{document, node},
+                           "invalid", false, nullptr, &prevented, error))
+      return false;
+  }
+  return true;
+}
+
+bool ReadOptionalSubmitter(v8::Isolate *isolate,
+                           const v8::FunctionCallbackInfo<v8::Value> &info,
+                           WrapperKey *submitter) {
+  *submitter = WrapperKey{};
+  if (info.Length() == 0 || info[0]->IsUndefined() || info[0]->IsNull())
+    return true;
+  if (!info[0]->IsObject()) {
+    ThrowTypeError(isolate, "form submitter must be an element");
+    return false;
+  }
+  return ReadReceiverKey(isolate, info[0].As<v8::Object>(), submitter);
+}
+
+bool SubmitHostForm(gossamer_v8_realm *realm, const WrapperKey &form,
+                    const WrapperKey &submitter, std::string *error) {
+  if (!RequireHost(realm, error))
+    return false;
+  char *host_error = nullptr;
+  if (realm->active_host->submit_form(
+          realm->active_host->execution_id, form.document, form.node,
+          submitter.document, submitter.node, &host_error) == 0) {
+    *error = TakeCString(host_error);
+    return false;
+  }
+  std::free(host_error);
+  return true;
+}
+
+void HTMLFormElementCheckValidity(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey form;
+  if (!ReadReceiverKey(isolate, info.This(), &form))
+    return;
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  bool valid = false;
+  std::vector<uint32_t> invalid;
+  std::string error;
+  if (!ReadHostFormValidity(realm, form, &valid, &invalid, &error) ||
+      (!valid && !DispatchInvalidControls(realm, isolate->GetCurrentContext(),
+                                          form.document, invalid, &error))) {
+    ThrowError(isolate,
+               error.empty() ? "checking form validity failed" : error);
+    return;
+  }
+  info.GetReturnValue().Set(valid);
+}
+
+void HTMLFormElementSubmit(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey form;
+  if (!ReadReceiverKey(isolate, info.This(), &form))
+    return;
+  std::string error;
+  if (!SubmitHostForm(CurrentRealm(isolate), form, WrapperKey{}, &error))
+    ThrowError(isolate, error.empty() ? "submitting form failed" : error);
+}
+
+void HTMLFormElementRequestSubmit(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey form;
+  WrapperKey submitter;
+  if (!ReadReceiverKey(isolate, info.This(), &form) ||
+      !ReadOptionalSubmitter(isolate, info, &submitter))
+    return;
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  std::string error;
+  bool skip_validation = false;
+  bool found = false;
+  std::string ignored;
+  if (!ReadAttribute(realm, form, "novalidate", &ignored, &found, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  skip_validation = found;
+  if (!skip_validation && submitter.node != 0) {
+    if (!ReadAttribute(realm, submitter, "formnovalidate", &ignored, &found,
+                       &error)) {
+      ThrowError(isolate, error);
+      return;
+    }
+    skip_validation = found;
+  }
+  if (!skip_validation) {
+    bool valid = false;
+    std::vector<uint32_t> invalid;
+    if (!ReadHostFormValidity(realm, form, &valid, &invalid, &error) ||
+        (!valid &&
+         !DispatchInvalidControls(realm, isolate->GetCurrentContext(),
+                                  form.document, invalid, &error))) {
+      ThrowError(isolate,
+                 error.empty() ? "checking form validity failed" : error);
+      return;
+    }
+    if (!valid)
+      return;
+  }
+  bool prevented = false;
+  const WrapperKey *event_submitter = submitter.node == 0 ? nullptr : &submitter;
+  bool dispatched = DispatchFormEvent(
+      realm, isolate->GetCurrentContext(), form, "submit", true,
+      event_submitter, &prevented, &error);
+  bool submitted = false;
+  if (dispatched && !prevented)
+    submitted = SubmitHostForm(realm, form, submitter, &error);
+  if (!dispatched || (!prevented && !submitted)) {
+    ThrowError(isolate, error.empty() ? "requesting form submission failed"
+                                     : error);
+    return;
+  }
+}
+
+v8::Local<v8::Array> ReadFormDataEntries(v8::Isolate *isolate,
+                                         v8::Local<v8::Object> receiver) {
+  if (receiver.IsEmpty() || receiver->InternalFieldCount() != 1) {
+    ThrowTypeError(isolate, "FormData receiver is invalid");
+    return {};
+  }
+  v8::Local<v8::Data> data =
+      receiver->GetInternalField(kFormDataEntriesField);
+  if (!data->IsValue() || !data.As<v8::Value>()->IsArray()) {
+    ThrowTypeError(isolate, "FormData entries are unavailable");
+    return {};
+  }
+  return data.As<v8::Value>().As<v8::Array>();
+}
+
+bool ReadFormDataPair(v8::Local<v8::Context> context,
+                      v8::Local<v8::Array> entries, uint32_t index,
+                      v8::Local<v8::Array> *pair) {
+  v8::Local<v8::Value> value;
+  if (!entries->Get(context, index).ToLocal(&value) || !value->IsArray())
+    return false;
+  *pair = value.As<v8::Array>();
+  return true;
+}
+
+bool FormDataStringArgument(v8::Isolate *isolate,
+                            const v8::FunctionCallbackInfo<v8::Value> &info,
+                            int index, const char *label,
+                            v8::Local<v8::String> *output) {
+  if (info.Length() <= index) {
+    ThrowTypeError(isolate, label);
+    return false;
+  }
+  return info[index]->ToString(isolate->GetCurrentContext()).ToLocal(output);
+}
+
+void FormDataConstructor(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  if (!info.IsConstructCall()) {
+    ThrowTypeError(isolate, "FormData constructor must be called with new");
+    return;
+  }
+  v8::Local<v8::Context> context = isolate->GetCurrentContext();
+  v8::Local<v8::Array> entries = v8::Array::New(isolate);
+  if (info.Length() > 0 && !info[0]->IsUndefined() && !info[0]->IsNull()) {
+    if (!info[0]->IsObject()) {
+      ThrowTypeError(isolate, "FormData form must be an element");
+      return;
+    }
+    WrapperKey form;
+    if (!ReadReceiverKey(isolate, info[0].As<v8::Object>(), &form))
+      return;
+    WrapperKey submitter;
+    if (info.Length() > 1 && !info[1]->IsUndefined() && !info[1]->IsNull()) {
+      if (!info[1]->IsObject() ||
+          !ReadReceiverKey(isolate, info[1].As<v8::Object>(), &submitter))
+        return;
+    }
+    gossamer_v8_realm *realm = CurrentRealm(isolate);
+    std::string error;
+    if (!RequireHost(realm, &error)) {
+      ThrowError(isolate, error);
+      return;
+    }
+    char *json_data = nullptr;
+    size_t json_length = 0;
+    char *host_error = nullptr;
+    if (realm->active_host->form_data_json(
+            realm->active_host->execution_id, form.document, form.node,
+            submitter.document, submitter.node, &json_data, &json_length,
+            &host_error) == 0) {
+      error = TakeCString(host_error);
+      std::free(json_data);
+      ThrowError(isolate, error.empty() ? "constructing FormData failed"
+                                       : error);
+      return;
+    }
+    std::free(host_error);
+    v8::Local<v8::String> json;
+    if (!NewUTF8String(isolate, json_data, json_length, &json)) {
+      std::free(json_data);
+      ThrowError(isolate, "V8 failed to decode FormData entries");
+      return;
+    }
+    std::free(json_data);
+    v8::Local<v8::Value> parsed;
+    if (!v8::JSON::Parse(context, json).ToLocal(&parsed) ||
+        !parsed->IsArray()) {
+      ThrowError(isolate, "V8 failed to parse FormData entries");
+      return;
+    }
+    v8::Local<v8::Array> objects = parsed.As<v8::Array>();
+    entries = v8::Array::New(isolate, objects->Length());
+    for (uint32_t index = 0; index < objects->Length(); ++index) {
+      v8::Local<v8::Value> value;
+      if (!objects->Get(context, index).ToLocal(&value) ||
+          !value->IsObject()) {
+        ThrowError(isolate, "FormData host returned an invalid entry");
+        return;
+      }
+      v8::Local<v8::Object> object = value.As<v8::Object>();
+      v8::Local<v8::Value> name;
+      v8::Local<v8::Value> entry_value;
+      v8::Local<v8::Array> pair = v8::Array::New(isolate, 2);
+      if (!object
+               ->Get(context,
+                     v8::String::NewFromUtf8Literal(isolate, "name"))
+               .ToLocal(&name) ||
+          !object
+               ->Get(context,
+                     v8::String::NewFromUtf8Literal(isolate, "value"))
+               .ToLocal(&entry_value) ||
+          !pair->Set(context, 0, name).FromMaybe(false) ||
+          !pair->Set(context, 1, entry_value).FromMaybe(false) ||
+          !entries->Set(context, index, pair).FromMaybe(false)) {
+        ThrowError(isolate, "V8 failed to build FormData entries");
+        return;
+      }
+    }
+  }
+  info.This()->SetInternalField(kFormDataEntriesField, entries);
+  info.GetReturnValue().Set(info.This());
+}
+
+void FormDataAppend(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  v8::Local<v8::Array> entries = ReadFormDataEntries(isolate, info.This());
+  if (entries.IsEmpty())
+    return;
+  v8::Local<v8::String> name;
+  v8::Local<v8::String> value;
+  if (!FormDataStringArgument(isolate, info, 0,
+                              "FormData.append requires a name", &name) ||
+      !FormDataStringArgument(isolate, info, 1,
+                              "FormData.append requires a value", &value))
+    return;
+  v8::Local<v8::Array> pair = v8::Array::New(isolate, 2);
+  v8::Local<v8::Context> context = isolate->GetCurrentContext();
+  if (!pair->Set(context, 0, name).FromMaybe(false) ||
+      !pair->Set(context, 1, value).FromMaybe(false) ||
+      !entries->Set(context, entries->Length(), pair).FromMaybe(false))
+    ThrowError(isolate, "V8 failed to append FormData");
+}
+
+void FormDataGet(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  v8::Local<v8::Array> entries = ReadFormDataEntries(isolate, info.This());
+  v8::Local<v8::String> name;
+  if (entries.IsEmpty() ||
+      !FormDataStringArgument(isolate, info, 0,
+                              "FormData.get requires a name", &name))
+    return;
+  v8::Local<v8::Context> context = isolate->GetCurrentContext();
+  for (uint32_t index = 0; index < entries->Length(); ++index) {
+    v8::Local<v8::Array> pair;
+    v8::Local<v8::Value> pair_name;
+    v8::Local<v8::Value> pair_value;
+    if (!ReadFormDataPair(context, entries, index, &pair) ||
+        !pair->Get(context, 0).ToLocal(&pair_name) ||
+        !pair->Get(context, 1).ToLocal(&pair_value))
+      continue;
+    if (pair_name->StrictEquals(name)) {
+      info.GetReturnValue().Set(pair_value);
+      return;
+    }
+  }
+  info.GetReturnValue().Set(v8::Null(isolate));
+}
+
+void FormDataGetAll(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  v8::Local<v8::Array> entries = ReadFormDataEntries(isolate, info.This());
+  v8::Local<v8::String> name;
+  if (entries.IsEmpty() ||
+      !FormDataStringArgument(isolate, info, 0,
+                              "FormData.getAll requires a name", &name))
+    return;
+  v8::Local<v8::Context> context = isolate->GetCurrentContext();
+  v8::Local<v8::Array> result = v8::Array::New(isolate);
+  for (uint32_t index = 0; index < entries->Length(); ++index) {
+    v8::Local<v8::Array> pair;
+    v8::Local<v8::Value> pair_name;
+    v8::Local<v8::Value> pair_value;
+    if (ReadFormDataPair(context, entries, index, &pair) &&
+        pair->Get(context, 0).ToLocal(&pair_name) &&
+        pair->Get(context, 1).ToLocal(&pair_value) &&
+        pair_name->StrictEquals(name) &&
+        !result->Set(context, result->Length(), pair_value).FromMaybe(false)) {
+      ThrowError(isolate, "V8 failed to collect FormData values");
+      return;
+    }
+  }
+  info.GetReturnValue().Set(result);
+}
+
+void FormDataHas(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  v8::Local<v8::Array> entries = ReadFormDataEntries(isolate, info.This());
+  v8::Local<v8::String> name;
+  if (entries.IsEmpty() ||
+      !FormDataStringArgument(isolate, info, 0,
+                              "FormData.has requires a name", &name))
+    return;
+  v8::Local<v8::Context> context = isolate->GetCurrentContext();
+  for (uint32_t index = 0; index < entries->Length(); ++index) {
+    v8::Local<v8::Array> pair;
+    v8::Local<v8::Value> pair_name;
+    if (ReadFormDataPair(context, entries, index, &pair) &&
+        pair->Get(context, 0).ToLocal(&pair_name) &&
+        pair_name->StrictEquals(name)) {
+      info.GetReturnValue().Set(true);
+      return;
+    }
+  }
+  info.GetReturnValue().Set(false);
+}
+
+void FormDataDelete(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  v8::Local<v8::Array> entries = ReadFormDataEntries(isolate, info.This());
+  v8::Local<v8::String> name;
+  if (entries.IsEmpty() ||
+      !FormDataStringArgument(isolate, info, 0,
+                              "FormData.delete requires a name", &name))
+    return;
+  v8::Local<v8::Context> context = isolate->GetCurrentContext();
+  v8::Local<v8::Array> retained = v8::Array::New(isolate);
+  for (uint32_t index = 0; index < entries->Length(); ++index) {
+    v8::Local<v8::Array> pair;
+    v8::Local<v8::Value> pair_name;
+    if (!ReadFormDataPair(context, entries, index, &pair) ||
+        !pair->Get(context, 0).ToLocal(&pair_name))
+      continue;
+    if (!pair_name->StrictEquals(name) &&
+        !retained->Set(context, retained->Length(), pair).FromMaybe(false)) {
+      ThrowError(isolate, "V8 failed to delete FormData entries");
+      return;
+    }
+  }
+  info.This()->SetInternalField(kFormDataEntriesField, retained);
+}
+
+void FormDataSet(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  v8::Local<v8::Array> entries = ReadFormDataEntries(isolate, info.This());
+  v8::Local<v8::String> name;
+  v8::Local<v8::String> value;
+  if (entries.IsEmpty() ||
+      !FormDataStringArgument(isolate, info, 0,
+                              "FormData.set requires a name", &name) ||
+      !FormDataStringArgument(isolate, info, 1,
+                              "FormData.set requires a value", &value))
+    return;
+  v8::Local<v8::Context> context = isolate->GetCurrentContext();
+  v8::Local<v8::Array> updated = v8::Array::New(isolate);
+  bool replaced = false;
+  for (uint32_t index = 0; index < entries->Length(); ++index) {
+    v8::Local<v8::Array> pair;
+    v8::Local<v8::Value> pair_name;
+    if (!ReadFormDataPair(context, entries, index, &pair) ||
+        !pair->Get(context, 0).ToLocal(&pair_name))
+      continue;
+    if (pair_name->StrictEquals(name)) {
+      if (replaced)
+        continue;
+      pair = v8::Array::New(isolate, 2);
+      if (!pair->Set(context, 0, name).FromMaybe(false) ||
+          !pair->Set(context, 1, value).FromMaybe(false)) {
+        ThrowError(isolate, "V8 failed to set FormData entry");
+        return;
+      }
+      replaced = true;
+    }
+    if (!updated->Set(context, updated->Length(), pair).FromMaybe(false)) {
+      ThrowError(isolate, "V8 failed to set FormData entry");
+      return;
+    }
+  }
+  if (!replaced) {
+    v8::Local<v8::Array> pair = v8::Array::New(isolate, 2);
+    if (!pair->Set(context, 0, name).FromMaybe(false) ||
+        !pair->Set(context, 1, value).FromMaybe(false) ||
+        !updated->Set(context, updated->Length(), pair).FromMaybe(false)) {
+      ThrowError(isolate, "V8 failed to set FormData entry");
+      return;
+    }
+  }
+  info.This()->SetInternalField(kFormDataEntriesField, updated);
+}
+
+void FormDataForEach(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  v8::Local<v8::Array> entries = ReadFormDataEntries(isolate, info.This());
+  if (entries.IsEmpty())
+    return;
+  if (info.Length() == 0 || !info[0]->IsFunction()) {
+    ThrowTypeError(isolate, "FormData.forEach requires a callback");
+    return;
+  }
+  v8::Local<v8::Function> callback = info[0].As<v8::Function>();
+  v8::Local<v8::Value> receiver =
+      info.Length() > 1 ? info[1] : v8::Undefined(isolate);
+  v8::Local<v8::Context> context = isolate->GetCurrentContext();
+  for (uint32_t index = 0; index < entries->Length(); ++index) {
+    v8::Local<v8::Array> pair;
+    v8::Local<v8::Value> name;
+    v8::Local<v8::Value> value;
+    if (!ReadFormDataPair(context, entries, index, &pair) ||
+        !pair->Get(context, 0).ToLocal(&name) ||
+        !pair->Get(context, 1).ToLocal(&value))
+      continue;
+    v8::Local<v8::Value> arguments[] = {value, name, info.This()};
+    v8::Local<v8::Value> ignored;
+    if (!callback->Call(context, receiver, 3, arguments).ToLocal(&ignored))
+      return;
+  }
+}
+
+bool FormDataArrayIterator(v8::Isolate *isolate,
+                           v8::Local<v8::Array> values,
+                           const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Local<v8::Context> context = isolate->GetCurrentContext();
+  v8::Local<v8::Value> method;
+  if (!values
+           ->Get(context,
+                 v8::String::NewFromUtf8Literal(isolate, "values"))
+           .ToLocal(&method) ||
+      !method->IsFunction()) {
+    ThrowError(isolate, "V8 Array iterator is unavailable");
+    return false;
+  }
+  v8::Local<v8::Value> iterator;
+  if (!method.As<v8::Function>()->Call(context, values, 0, nullptr)
+           .ToLocal(&iterator))
+    return false;
+  info.GetReturnValue().Set(iterator);
+  return true;
+}
+
+void FormDataEntries(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Local<v8::Array> entries = ReadFormDataEntries(info.GetIsolate(), info.This());
+  if (!entries.IsEmpty())
+    FormDataArrayIterator(info.GetIsolate(), entries, info);
+}
+
+void FormDataKeysOrValues(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  v8::Local<v8::Array> entries = ReadFormDataEntries(isolate, info.This());
+  if (entries.IsEmpty())
+    return;
+  bool keys = info.Data().As<v8::Boolean>()->Value();
+  v8::Local<v8::Array> values = v8::Array::New(isolate, entries->Length());
+  v8::Local<v8::Context> context = isolate->GetCurrentContext();
+  for (uint32_t index = 0; index < entries->Length(); ++index) {
+    v8::Local<v8::Array> pair;
+    v8::Local<v8::Value> value;
+    if (!ReadFormDataPair(context, entries, index, &pair) ||
+        !pair->Get(context, keys ? 0 : 1).ToLocal(&value) ||
+        !values->Set(context, index, value).FromMaybe(false)) {
+      ThrowError(isolate, "V8 failed to iterate FormData");
+      return;
+    }
+  }
+  FormDataArrayIterator(isolate, values, info);
+}
+
 void QueueMicrotaskCallback(const v8::FunctionCallbackInfo<v8::Value> &info) {
   v8::Isolate *isolate = info.GetIsolate();
   gossamer_v8_realm *realm = CurrentRealm(isolate);
@@ -8248,6 +8808,8 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
       v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
   v8::Local<v8::FunctionTemplate> style_template =
       v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
+  v8::Local<v8::FunctionTemplate> form_data_template =
+      v8::FunctionTemplate::New(isolate, FormDataConstructor);
   auto new_event_template =
       [isolate](EventInterface interface) {
         return v8::FunctionTemplate::New(
@@ -8348,6 +8910,34 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
       v8::String::NewFromUtf8Literal(isolate, "DOMStringMap"));
   style_template->SetClassName(
       v8::String::NewFromUtf8Literal(isolate, "CSSStyleDeclaration"));
+  form_data_template->SetClassName(
+      v8::String::NewFromUtf8Literal(isolate, "FormData"));
+  form_data_template->InstanceTemplate()->SetInternalFieldCount(1);
+  for (const auto &method :
+       {std::pair<const char *, v8::FunctionCallback>{"append", FormDataAppend},
+        {"delete", FormDataDelete}, {"get", FormDataGet},
+        {"getAll", FormDataGetAll}, {"has", FormDataHas},
+        {"set", FormDataSet}, {"entries", FormDataEntries},
+        {"forEach", FormDataForEach}}) {
+    form_data_template->PrototypeTemplate()->Set(
+        isolate, method.first,
+        v8::FunctionTemplate::New(isolate, method.second));
+  }
+  form_data_template->PrototypeTemplate()->Set(
+      isolate, "keys",
+      v8::FunctionTemplate::New(isolate, FormDataKeysOrValues,
+                                v8::Boolean::New(isolate, true)));
+  form_data_template->PrototypeTemplate()->Set(
+      isolate, "values",
+      v8::FunctionTemplate::New(isolate, FormDataKeysOrValues,
+                                v8::Boolean::New(isolate, false)));
+  form_data_template->PrototypeTemplate()->Set(
+      v8::Symbol::GetIterator(isolate),
+      v8::FunctionTemplate::New(isolate, FormDataEntries));
+  form_data_template->PrototypeTemplate()->Set(
+      v8::Symbol::GetToStringTag(isolate),
+      v8::String::NewFromUtf8Literal(isolate, "FormData"),
+      static_cast<v8::PropertyAttribute>(v8::ReadOnly | v8::DontEnum));
   event_template->SetClassName(
       v8::String::NewFromUtf8Literal(isolate, "Event"));
   mouse_event_template->SetClassName(
@@ -9004,6 +9594,18 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   html_form_element_template->PrototypeTemplate()->Set(
       isolate, "reset",
       v8::FunctionTemplate::New(isolate, HTMLFormElementReset));
+  html_form_element_template->PrototypeTemplate()->Set(
+      isolate, "checkValidity",
+      v8::FunctionTemplate::New(isolate, HTMLFormElementCheckValidity));
+  html_form_element_template->PrototypeTemplate()->Set(
+      isolate, "reportValidity",
+      v8::FunctionTemplate::New(isolate, HTMLFormElementCheckValidity));
+  html_form_element_template->PrototypeTemplate()->Set(
+      isolate, "requestSubmit",
+      v8::FunctionTemplate::New(isolate, HTMLFormElementRequestSubmit));
+  html_form_element_template->PrototypeTemplate()->Set(
+      isolate, "submit",
+      v8::FunctionTemplate::New(isolate, HTMLFormElementSubmit));
   for (v8::Local<v8::FunctionTemplate> interface_template :
        {html_input_element_template, html_text_area_element_template,
         html_select_element_template, html_button_element_template}) {
@@ -9344,6 +9946,7 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   realm->element_template.Reset(isolate, element_template);
   realm->html_element_template.Reset(isolate, html_element_template);
   realm->html_form_element_template.Reset(isolate, html_form_element_template);
+  realm->form_data_template.Reset(isolate, form_data_template);
   realm->html_input_element_template.Reset(isolate,
                                             html_input_element_template);
   realm->html_text_area_element_template.Reset(
@@ -9512,6 +10115,7 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
          expose_interface("Element", element_template) &&
          expose_interface("HTMLElement", html_element_template) &&
          expose_interface("HTMLFormElement", html_form_element_template) &&
+         expose_interface("FormData", form_data_template) &&
          expose_interface("HTMLInputElement", html_input_element_template) &&
          expose_interface("HTMLTextAreaElement",
                           html_text_area_element_template) &&
@@ -9684,6 +10288,17 @@ bool ConfigureNativeEvent(const gossamer_v8_input_event *input,
     state->interface = EventInterface::CompositionEvent;
     state->bubbles = state->composed = true;
     break;
+  case 22:
+    state->type = "submit";
+    state->interface = EventInterface::Event;
+    state->bubbles = true;
+    state->cancelable = true;
+    break;
+  case 23:
+    state->type = "invalid";
+    state->interface = EventInterface::Event;
+    state->cancelable = true;
+    break;
   default:
     *error = "V8 received an unsupported browser event type";
     return false;
@@ -9813,6 +10428,7 @@ void ClearRealmHandles(gossamer_v8_realm *realm) {
   realm->element_template.Reset();
   realm->html_element_template.Reset();
   realm->html_form_element_template.Reset();
+  realm->form_data_template.Reset();
   realm->html_input_element_template.Reset();
   realm->html_text_area_element_template.Reset();
   realm->html_select_element_template.Reset();

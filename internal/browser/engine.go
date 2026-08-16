@@ -35,6 +35,8 @@ const (
 	InputCompositionStart
 	InputCompositionUpdate
 	InputCompositionEnd
+	InputSubmit
+	InputInvalid
 )
 
 // InputEvent contains browser-normalized input and a generation-safe target.
@@ -105,6 +107,10 @@ func (eventType InputEventType) String() string {
 		return "compositionupdate"
 	case InputCompositionEnd:
 		return "compositionend"
+	case InputSubmit:
+		return "submit"
+	case InputInvalid:
+		return "invalid"
 	default:
 		return ""
 	}
@@ -277,6 +283,9 @@ type DOMElementHost interface {
 	FormControlNodes(NodeHandle, dom.FormCollectionKind) ([]NodeHandle, error)
 	FormOwner(NodeHandle) (NodeHandle, bool, error)
 	ResetForm(NodeHandle) error
+	FormValidity(NodeHandle) (bool, []NodeHandle, error)
+	FormData(NodeHandle, NodeHandle) ([]dom.FormEntry, error)
+	SubmitForm(NodeHandle, NodeHandle) error
 	Focus(NodeHandle) error
 	Blur(NodeHandle) error
 	ActiveElement() (NodeHandle, bool, error)

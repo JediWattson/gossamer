@@ -272,6 +272,19 @@ typedef struct gossamer_v8_host {
       uint64_t execution_id, uint64_t document, uint32_t node,
       const char *pseudo, size_t pseudo_length, size_t index, char **name_out,
       size_t *name_length_out, int *found_out, char **error_out);
+  // Keep bridge extensions append-only so independently rebuilt Go and C++
+  // sides preserve the offsets of every existing callback.
+  int (*form_validity)(uint64_t execution_id, uint64_t document,
+                       uint32_t node, int *valid_out,
+                       uint32_t **invalid_nodes_out, size_t *count_out,
+                       char **error_out);
+  int (*form_data_json)(uint64_t execution_id, uint64_t document,
+                        uint32_t node, uint64_t submitter_document,
+                        uint32_t submitter_node, char **json_out,
+                        size_t *json_length_out, char **error_out);
+  int (*submit_form)(uint64_t execution_id, uint64_t document, uint32_t node,
+                     uint64_t submitter_document, uint32_t submitter_node,
+                     char **error_out);
 } gossamer_v8_host;
 
 typedef struct gossamer_v8_node_handle {

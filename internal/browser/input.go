@@ -1012,6 +1012,43 @@ func (host *taskHost) ResetForm(handle NodeHandle) error {
 	})
 }
 
+func (host *taskHost) FormValidity(handle NodeHandle) (bool, []NodeHandle, error) {
+	host.page.mutex.RLock()
+	defer host.page.mutex.RUnlock()
+	if err := host.validateHandleLocked(handle); err != nil {
+		return false, nil, err
+	}
+	valid, invalid, err := host.page.document.FormValidity(handle.Node)
+	if err != nil {
+		return false, nil, err
+	}
+	handles := make([]NodeHandle, len(invalid))
+	for index, node := range invalid {
+		handles[index] = NodeHandle{Document: host.generation, Node: node}
+	}
+	return valid, handles, nil
+}
+
+func (host *taskHost) FormData(form, submitter NodeHandle) ([]dom.FormEntry, error) {
+	host.page.mutex.RLock()
+	defer host.page.mutex.RUnlock()
+	if err := host.validateHandleLocked(form); err != nil {
+		return nil, err
+	}
+	submitterID := dom.InvalidNodeID
+	if submitter.Node != dom.InvalidNodeID {
+		if err := host.validateHandleLocked(submitter); err != nil {
+			return nil, err
+		}
+		submitterID = submitter.Node
+	}
+	return host.page.document.FormData(form.Node, submitterID)
+}
+
+func (host *taskHost) SubmitForm(form, submitter NodeHandle) error {
+	return host.page.requestSubmitFromTask(host.task, form, submitter, false, false)
+}
+
 func (host *taskHost) MutationSequence() (uint64, error) {
 	host.page.mutex.RLock()
 	defer host.page.mutex.RUnlock()

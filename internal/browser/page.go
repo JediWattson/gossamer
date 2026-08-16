@@ -31,6 +31,9 @@ type Page struct {
 	frameOwner         NodeHandle
 	children           map[dom.NodeID]*Page
 	location           *url.URL
+	formLoader         DocumentLoader
+	history            []HistoryEntry
+	historyIndex       int
 	resources          pageResources
 	viewport           render.Viewport
 	frame              *render.Frame
@@ -83,7 +86,7 @@ func newPage(
 	if err != nil {
 		return nil, err
 	}
-	return &Page{
+	page := &Page{
 		ID:                 id,
 		Realm:              realm,
 		browser:            browser,
@@ -99,7 +102,13 @@ func newPage(
 		layoutRevision:     1,
 		timers:             make(map[TimerID]*pageTimer),
 		dirty:              true,
-	}, nil
+		historyIndex:       -1,
+	}
+	if location != nil {
+		page.history = append(page.history, HistoryEntry{URL: cloneURL(location)})
+		page.historyIndex = 0
+	}
+	return page, nil
 }
 
 func (page *Page) Document() *dom.Document {

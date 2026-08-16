@@ -9,6 +9,7 @@ package v8engine
 import "C"
 
 import (
+	"encoding/json"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -1471,6 +1472,88 @@ func goGossamerV8HostResetForm(
 			return err
 		}
 		return domHost.ResetForm(browserNodeHandle(document, node))
+	}, executionID)
+}
+
+//export goGossamerV8HostFormValidity
+func goGossamerV8HostFormValidity(
+	executionID C.uint64_t,
+	document C.uint64_t,
+	node C.uint32_t,
+	validOut *C.int,
+	invalidNodesOut **C.uint32_t,
+	countOut *C.size_t,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domElementHost(host)
+		if err != nil {
+			return err
+		}
+		valid, invalid, err := domHost.FormValidity(browserNodeHandle(document, node))
+		if err != nil {
+			return err
+		}
+		if validOut != nil {
+			if valid {
+				*validOut = 1
+			} else {
+				*validOut = 0
+			}
+		}
+		return writeHostNodes(invalid, browser.DocumentGeneration(document), invalidNodesOut, countOut)
+	}, executionID)
+}
+
+//export goGossamerV8HostFormDataJSON
+func goGossamerV8HostFormDataJSON(
+	executionID C.uint64_t,
+	document C.uint64_t,
+	node C.uint32_t,
+	submitterDocument C.uint64_t,
+	submitterNode C.uint32_t,
+	jsonOut **C.char,
+	jsonLengthOut *C.size_t,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domElementHost(host)
+		if err != nil {
+			return err
+		}
+		entries, err := domHost.FormData(
+			browserNodeHandle(document, node),
+			browserNodeHandle(submitterDocument, submitterNode),
+		)
+		if err != nil {
+			return err
+		}
+		encoded, err := json.Marshal(entries)
+		if err != nil {
+			return fmt.Errorf("marshal FormData entries: %w", err)
+		}
+		return writeHostString(string(encoded), jsonOut, jsonLengthOut)
+	}, executionID)
+}
+
+//export goGossamerV8HostSubmitForm
+func goGossamerV8HostSubmitForm(
+	executionID C.uint64_t,
+	document C.uint64_t,
+	node C.uint32_t,
+	submitterDocument C.uint64_t,
+	submitterNode C.uint32_t,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		domHost, err := domElementHost(host)
+		if err != nil {
+			return err
+		}
+		return domHost.SubmitForm(
+			browserNodeHandle(document, node),
+			browserNodeHandle(submitterDocument, submitterNode),
+		)
 	}, executionID)
 }
 
