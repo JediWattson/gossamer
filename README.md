@@ -97,6 +97,14 @@ collection, and V8 internals. See
 [`docs/native-heap-types.md`](docs/native-heap-types.md) for the typed payload
 contract.
 
+A synchronous native interpreter can now execute hand-assembled Function
+bytecode over those payloads. Its borrowed frames expose Ref roots, all heap
+mutation stays behind TaskContext barriers, and returned private values still
+require explicit promotion or queue semantics before task release. Stock V8
+remains the browser's JavaScript engine. See
+[`docs/native-interpreter.md`](docs/native-interpreter.md) for the instruction
+and lifetime contract.
+
 The DOM now also has additive stable `NodeID` identity over its existing
 pointer-backed storage. A minimal `Browser`/`Page` boundary ties an indexed
 Document to its Realm, URL, resources, invalidation state, and current Frame.

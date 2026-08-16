@@ -74,6 +74,11 @@ claim(region, object) is either present or absent
   are unlinked and reclaimed in deterministic slot order. Reachable weak tables
   do not retain keys; live-key ephemeron values are traced to a fixed point and
   dead entries are swept at the same checkpoint.
+- The synchronous native interpreter executes checked hand-assembled Function
+  bytecode for stack, storage, binding, operator, branch, call, construction,
+  closure, native dispatch, and exception verbs. Frames expose borrowed Ref
+  roots, share bounded execution budgets, and never promote returned values
+  implicitly. See [`native-interpreter.md`](native-interpreter.md).
 - Every owner has a logical region.
 - Task-local fake objects receive an initial task reference.
 - Enqueue publishes carried objects to the destination queue.
