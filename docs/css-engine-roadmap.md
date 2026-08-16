@@ -397,7 +397,11 @@ retained independently of HTML directionality and remains excluded from
 `direction` to change selector state. Logical text alignment and table column
 geometry now follow `ltr`/`rtl`, and equal collapsed conflicts use stable
 row-start/column-start ordering so the physical left or right winner follows
-the mirrored table. Table rows, row groups, columns, and
+the mirrored table. The inherited `writing-mode` property now retains and
+serializes `horizontal-tb`, `vertical-rl`, and `vertical-lr` through the
+central registry, `all`, browser snapshots, and the live JS declaration
+surface; its vertical table-axis placement remains the next formatting step.
+Table rows, row groups, columns, and
 column groups with `visibility: collapse` continue to participate in intrinsic
 and fixed sizing, then suppress their used track geometry and adjacent border
 spacing without a second layout. Spanning cells retain their logical content

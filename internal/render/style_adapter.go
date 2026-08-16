@@ -40,6 +40,14 @@ const (
 	directionRTL = computed.DirectionRTL
 )
 
+type writingMode = computed.WritingMode
+
+const (
+	writingModeHorizontalTB = computed.WritingModeHorizontalTB
+	writingModeVerticalRL   = computed.WritingModeVerticalRL
+	writingModeVerticalLR   = computed.WritingModeVerticalLR
+)
+
 type textAlignment = computed.TextAlignment
 
 const (

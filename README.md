@@ -261,6 +261,7 @@ performance budgets; see
 - Versioned, immutable computed-style snapshots and a live, read-only
   `getComputedStyle()` subset for the currently supported longhands and custom
   properties, including inherited `direction` kept outside the `all` shorthand
+  and inherited `writing-mode` values which participate in `all`
 - Inherited custom properties and nested `var()` fallbacks with cycle
   invalidation
 - Screen media queries for viewport width, height, orientation, media types,

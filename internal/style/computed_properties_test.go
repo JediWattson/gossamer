@@ -12,6 +12,7 @@ func TestComputedPropertyValueSerializesEverySupportedLonghand(t *testing.T) {
 	computed := ComputedStyle{
 		display:         DisplayBlock,
 		direction:       DirectionRTL,
+		writingMode:     WritingModeVerticalRL,
 		flexDirection:   FlexDirectionColumn,
 		justifyContent:  JustifySpaceBetween,
 		justifyItems:    AlignEndItems,
@@ -138,6 +139,7 @@ func TestComputedPropertyValueSerializesEverySupportedLonghand(t *testing.T) {
 		"visibility":           "hidden",
 		"white-space":          "pre-wrap",
 		"width":                "auto",
+		"writing-mode":         "vertical-rl",
 		"z-index":              "0",
 	}
 
@@ -179,6 +181,9 @@ func TestComputedPropertyValueSerializesInitialAndAlternateEnums(t *testing.T) {
 		{name: "inline display", property: "display", want: "inline"},
 		{name: "ltr direction", property: "direction", want: "ltr"},
 		{name: "rtl direction", computed: ComputedStyle{direction: DirectionRTL}, property: "direction", want: "rtl"},
+		{name: "horizontal writing mode", property: "writing-mode", want: "horizontal-tb"},
+		{name: "vertical rl writing mode", computed: ComputedStyle{writingMode: WritingModeVerticalRL}, property: "writing-mode", want: "vertical-rl"},
+		{name: "vertical lr writing mode", computed: ComputedStyle{writingMode: WritingModeVerticalLR}, property: "writing-mode", want: "vertical-lr"},
 		{name: "inline block display", computed: ComputedStyle{display: DisplayInlineBlock}, property: "display", want: "inline-block"},
 		{name: "list item display", computed: ComputedStyle{display: DisplayListItem}, property: "display", want: "list-item"},
 		{name: "table display", computed: ComputedStyle{display: DisplayTable}, property: "display", want: "table"},

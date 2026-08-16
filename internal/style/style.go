@@ -190,6 +190,16 @@ const (
 	DirectionRTL
 )
 
+// WritingMode is the computed block-flow and typographic mode. Direction
+// independently selects the inline base direction within each mode.
+type WritingMode uint8
+
+const (
+	WritingModeHorizontalTB WritingMode = iota
+	WritingModeVerticalRL
+	WritingModeVerticalLR
+)
+
 type FlexDirection uint8
 
 const (
@@ -616,6 +626,7 @@ const (
 type ComputedStyle struct {
 	display           DisplayMode
 	direction         Direction
+	writingMode       WritingMode
 	borderCollapse    BorderCollapse
 	borderSpacing     BorderSpacing
 	captionSide       CaptionSide
@@ -706,6 +717,7 @@ type computedStyle = ComputedStyle
 
 func (computed ComputedStyle) Display() DisplayMode           { return computed.display }
 func (computed ComputedStyle) Direction() Direction           { return computed.direction }
+func (computed ComputedStyle) WritingMode() WritingMode       { return computed.writingMode }
 func (computed ComputedStyle) BorderCollapse() BorderCollapse { return computed.borderCollapse }
 func (computed ComputedStyle) BorderSpacing() BorderSpacing   { return computed.borderSpacing }
 func (computed ComputedStyle) CaptionSide() CaptionSide       { return computed.captionSide }
@@ -1371,6 +1383,7 @@ func cssInitialStyle(viewport Viewport) computedStyle {
 	return computedStyle{
 		display:         displayInline,
 		direction:       DirectionLTR,
+		writingMode:     WritingModeHorizontalTB,
 		borderCollapse:  BorderCollapseSeparate,
 		borderSpacing:   BorderSpacing{horizontal: px(0), vertical: px(0)},
 		captionSide:     CaptionSideTop,

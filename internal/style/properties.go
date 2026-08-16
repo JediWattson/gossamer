@@ -84,6 +84,7 @@ const (
 	propertyVerticalAlign
 	propertyVisibility
 	propertyWhiteSpace
+	propertyWritingMode
 	propertyWidth
 	propertyZIndex
 )
@@ -198,6 +199,7 @@ var propertyDefinitions = [...]propertyDefinition{
 	{name: "visibility", kind: propertyVisibility, inherited: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "white-space", kind: propertyWhiteSpace, inherited: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "width", kind: propertyWidth, invalidation: propertyInvalidatesLayout},
+	{name: "writing-mode", kind: propertyWritingMode, inherited: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "z-index", kind: propertyZIndex, invalidation: propertyInvalidatesPaint},
 }
 
@@ -317,6 +319,8 @@ func (definition propertyDefinition) copy(destination *computedStyle, source com
 		destination.content = source.content
 	case propertyDirection:
 		destination.direction = source.direction
+	case propertyWritingMode:
+		destination.writingMode = source.writingMode
 	case propertyDisplay:
 		destination.display = source.display
 	case propertyEmptyCells:
@@ -475,6 +479,9 @@ func (definition propertyDefinition) valid(source string, viewport Viewport) boo
 	case propertyDirection:
 		keyword, ok := singleCSSKeyword(source)
 		return ok && (keyword == "ltr" || keyword == "rtl")
+	case propertyWritingMode:
+		keyword, ok := singleCSSKeyword(source)
+		return ok && (keyword == "horizontal-tb" || keyword == "vertical-rl" || keyword == "vertical-lr")
 	case propertyDisplay:
 		keyword, ok := singleCSSKeyword(source)
 		if !ok {
@@ -705,6 +712,16 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 			style.direction = DirectionRTL
 		} else {
 			style.direction = DirectionLTR
+		}
+	case propertyWritingMode:
+		keyword, _ := singleCSSKeyword(source)
+		switch keyword {
+		case "vertical-rl":
+			style.writingMode = WritingModeVerticalRL
+		case "vertical-lr":
+			style.writingMode = WritingModeVerticalLR
+		default:
+			style.writingMode = WritingModeHorizontalTB
 		}
 	case propertyDisplay:
 		keyword, _ := singleCSSKeyword(source)
@@ -1103,6 +1120,15 @@ func (definition propertyDefinition) serialize(computed ComputedStyle) string {
 			return "rtl"
 		}
 		return "ltr"
+	case propertyWritingMode:
+		switch computed.writingMode {
+		case WritingModeVerticalRL:
+			return "vertical-rl"
+		case WritingModeVerticalLR:
+			return "vertical-lr"
+		default:
+			return "horizontal-tb"
+		}
 	case propertyDisplay:
 		return serializeComputedDisplay(computed.display)
 	case propertyEmptyCells:
