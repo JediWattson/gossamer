@@ -211,6 +211,118 @@ Array.prototype[Symbol.iterator] === Array.prototype.values &&
 	}
 }
 
+func TestNativeObjectAndArrayBootstrapBuiltins(t *testing.T) {
+	t.Parallel()
+
+	image, err := compiler.Compile(`
+let key = Symbol("copied");
+let source = {visible: 7};
+source[key] = 8;
+Object.defineProperty(source, "hidden", {value: 9, enumerable: false});
+let target = Object.assign({base: 6}, null, source, undefined);
+let names = Object.getOwnPropertyNames(source);
+let stringTarget = Object.assign({}, "go");
+
+target.base === 6 && target.visible === 7 && target[key] === 8 &&
+target.hidden === undefined &&
+names.length === 2 && names[0] === "visible" && names[1] === "hidden" &&
+source.hasOwnProperty("visible") && source.hasOwnProperty(key) &&
+!source.hasOwnProperty("missing") &&
+Array.isArray([]) && !Array.isArray({}) &&
+Object.is(NaN, NaN) && !Object.is(0, -0) && Object.is(source, source) &&
+stringTarget[0] === "g" && stringTarget[1] === "o" &&
+typeof definitelyMissing === "undefined";
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	realm, err := browserruntime.NewRealm(830, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer realm.Close()
+	interpreter := browserruntime.NewInterpreter(browserruntime.InterpreterConfig{})
+	var result memory.Value
+	_, err = realm.EnqueueTask(func(task *browserruntime.TaskContext) error {
+		intrinsics, err := interpreter.Bootstrap(task)
+		if err != nil {
+			return err
+		}
+		loaded, err := program.Load(task, image, memory.RefValue(intrinsics.Global))
+		if err != nil {
+			return err
+		}
+		result, err = interpreter.Execute(task, loaded.Entry)
+		if err != nil {
+			return err
+		}
+		return task.Realm.Store().CheckInvariants()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if result.Kind() != memory.ValueBool || !result.Bool() {
+		t.Fatalf("Object/Array bootstrap result = %#v, want true", result)
+	}
+}
+
+func TestNativeFunctionInvocationBuiltinsAndArguments(t *testing.T) {
+	t.Parallel()
+
+	image, err := compiler.Compile(`
+function total(left, right) {
+  return this.base + left + right + arguments.length;
+}
+let receiver = {base: 10};
+let bound = total.bind(receiver, 5);
+let argumentsResult = (function(first) { return arguments[1] + arguments.length; })(1, 7);
+
+total.call(receiver, 1, 2) === 15 &&
+total.apply(receiver, [3, 4]) === 19 &&
+bound(6) === 23 && bound.length === 1 &&
+argumentsResult === 9;
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	realm, err := browserruntime.NewRealm(831, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer realm.Close()
+	interpreter := browserruntime.NewInterpreter(browserruntime.InterpreterConfig{})
+	var result memory.Value
+	_, err = realm.EnqueueTask(func(task *browserruntime.TaskContext) error {
+		intrinsics, err := interpreter.Bootstrap(task)
+		if err != nil {
+			return err
+		}
+		loaded, err := program.Load(task, image, memory.RefValue(intrinsics.Global))
+		if err != nil {
+			return err
+		}
+		result, err = interpreter.Execute(task, loaded.Entry)
+		if err != nil {
+			return err
+		}
+		return task.Realm.Store().CheckInvariants()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if result.Kind() != memory.ValueBool || !result.Bool() {
+		t.Fatalf("Function invocation result = %#v, want true", result)
+	}
+}
+
 func TestN10PromisesAndDeterministicMicrotaskCheckpoint(t *testing.T) {
 	t.Parallel()
 

@@ -279,6 +279,17 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 			} else {
 				frame.push(frame.Arguments[instruction.A])
 			}
+		case OpArguments:
+			arguments, err := context.NewArray(uint32(len(frame.Arguments)))
+			if err != nil {
+				return memory.Value{}, err
+			}
+			for index, value := range frame.Arguments {
+				if err := context.SetArrayElement(arguments, uint32(index), value); err != nil {
+					return memory.Value{}, err
+				}
+			}
+			frame.push(memory.RefValue(arguments))
 		case OpUndefined:
 			frame.push(memory.UndefinedValue())
 		case OpNull:
@@ -543,6 +554,31 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 				}
 			}
 			frame.push(value)
+		case OpTypeOfBinding:
+			environment, name, err := bindingOperands(frame, instruction.A)
+			if err != nil {
+				return memory.Value{}, err
+			}
+			value, found, err := context.ResolveBinding(environment, name)
+			if err != nil {
+				if handled, terminal := execution.routeFrameError(frame, err); handled {
+					continue
+				} else {
+					return memory.Value{}, terminal
+				}
+			}
+			typeName := "undefined"
+			if found {
+				typeName, err = valueTypeName(context, value)
+				if err != nil {
+					return memory.Value{}, err
+				}
+			}
+			result, err := context.NewString(typeName)
+			if err != nil {
+				return memory.Value{}, err
+			}
+			frame.push(memory.RefValue(result))
 		case OpDeclareBinding:
 			if instruction.B > 1 {
 				return memory.Value{}, fmt.Errorf("%w: DeclareBinding mutability %d", ErrInvalidBytecode, instruction.B)

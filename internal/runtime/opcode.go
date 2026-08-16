@@ -84,6 +84,8 @@ const (
 	OpOwnKeys
 	OpIn
 	OpInstanceOf
+	OpTypeOfBinding
+	OpArguments
 )
 
 func (opcode Opcode) String() string {
@@ -242,11 +244,15 @@ func (opcode Opcode) String() string {
 		return "In"
 	case OpInstanceOf:
 		return "InstanceOf"
+	case OpTypeOfBinding:
+		return "TypeOfBinding"
+	case OpArguments:
+		return "Arguments"
 	default:
 		return fmt.Sprintf("Opcode(%d)", opcode)
 	}
 }
 
 func (opcode Opcode) valid() bool {
-	return opcode >= OpConstant && opcode <= OpInstanceOf
+	return opcode >= OpConstant && opcode <= OpArguments
 }

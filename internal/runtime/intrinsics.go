@@ -85,6 +85,15 @@ const (
 	nativeSymbolValueOf
 	nativeSymbolDescription
 	nativeIteratorIdentity
+	nativeObjectAssign
+	nativeObjectGetOwnPropertyNames
+	nativeObjectIs
+	nativeObjectPrototypeHasOwnProperty
+	nativeArrayIsArray
+	nativeFunctionCall
+	nativeFunctionApply
+	nativeFunctionBind
+	nativeBoundFunction
 )
 
 // Intrinsics is one task-local instantiation of the native ECMAScript
@@ -304,6 +313,10 @@ func (interpreter *Interpreter) Bootstrap(context *TaskContext) (*Intrinsics, er
 		context.intrinsics = nil
 		return nil, err
 	}
+	if err := intrinsics.installFunctionBuiltins(context); err != nil {
+		context.intrinsics = nil
+		return nil, err
+	}
 	if err := intrinsics.installArrayBuiltins(context); err != nil {
 		context.intrinsics = nil
 		return nil, err
@@ -437,6 +450,15 @@ func (interpreter *Interpreter) registerBuiltinCallbacks() error {
 		nativeSymbolValueOf:                  builtinSymbolValueOf,
 		nativeSymbolDescription:              builtinSymbolDescription,
 		nativeIteratorIdentity:               builtinIteratorIdentity,
+		nativeObjectAssign:                   builtinObjectAssign,
+		nativeObjectGetOwnPropertyNames:      builtinObjectGetOwnPropertyNames,
+		nativeObjectIs:                       builtinObjectIs,
+		nativeObjectPrototypeHasOwnProperty:  builtinObjectPrototypeHasOwnProperty,
+		nativeArrayIsArray:                   builtinArrayIsArray,
+		nativeFunctionCall:                   builtinFunctionCall,
+		nativeFunctionApply:                  builtinFunctionApply,
+		nativeFunctionBind:                   builtinFunctionBind,
+		nativeBoundFunction:                  builtinBoundFunction,
 	}
 	for id, callback := range callbacks {
 		interpreter.nativeMutex.RLock()
@@ -539,8 +561,12 @@ func (intrinsics *Intrinsics) installObjectBuiltins(context *TaskContext) error 
 		{intrinsics.ObjectConstructor, "setPrototypeOf", 2, nativeObjectSetPrototypeOf},
 		{intrinsics.ObjectConstructor, "keys", 1, nativeObjectKeys},
 		{intrinsics.ObjectConstructor, "getOwnPropertyDescriptor", 2, nativeObjectGetOwnPropertyDescriptor},
+		{intrinsics.ObjectConstructor, "assign", 2, nativeObjectAssign},
+		{intrinsics.ObjectConstructor, "getOwnPropertyNames", 1, nativeObjectGetOwnPropertyNames},
+		{intrinsics.ObjectConstructor, "is", 2, nativeObjectIs},
 		{intrinsics.ObjectPrototype, "toString", 0, nativeObjectPrototypeToString},
 		{intrinsics.ObjectPrototype, "valueOf", 0, nativeObjectPrototypeValueOf},
+		{intrinsics.ObjectPrototype, "hasOwnProperty", 1, nativeObjectPrototypeHasOwnProperty},
 	} {
 		function, err := intrinsics.newBuiltinMethod(context, method.name, method.arity, method.id)
 		if err != nil {
@@ -554,6 +580,13 @@ func (intrinsics *Intrinsics) installObjectBuiltins(context *TaskContext) error 
 }
 
 func (intrinsics *Intrinsics) installArrayBuiltins(context *TaskContext) error {
+	isArray, err := intrinsics.newBuiltinMethod(context, "isArray", 1, nativeArrayIsArray)
+	if err != nil {
+		return err
+	}
+	if err := defineData(context, intrinsics.ArrayConstructor, "isArray", memory.RefValue(isArray), true, false, true); err != nil {
+		return err
+	}
 	for _, method := range []struct {
 		name  string
 		arity uint32

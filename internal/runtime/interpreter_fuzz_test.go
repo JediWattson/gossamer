@@ -52,7 +52,7 @@ func FuzzInterpreterPreservesStoreInvariants(f *testing.F) {
 			opcode := browserruntime.Opcode(raw[0]%byte(browserruntime.OpNotEqual) + 1)
 			instruction := browserruntime.Instruction{Op: opcode, A: uint32(raw[1]), B: uint32(raw[2])}
 			switch opcode {
-			case browserruntime.OpConstant, browserruntime.OpLoadBinding, browserruntime.OpDeclareBinding, browserruntime.OpInitializeBinding, browserruntime.OpStoreBinding, browserruntime.OpCreateClosure:
+			case browserruntime.OpConstant, browserruntime.OpLoadBinding, browserruntime.OpTypeOfBinding, browserruntime.OpDeclareBinding, browserruntime.OpInitializeBinding, browserruntime.OpStoreBinding, browserruntime.OpCreateClosure:
 				instruction.A %= 4
 				if opcode == browserruntime.OpDeclareBinding {
 					instruction.B &= 1
