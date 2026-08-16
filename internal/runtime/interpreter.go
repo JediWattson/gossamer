@@ -212,17 +212,16 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 					return memory.Value{}, err
 				}
 			}
-			frame.pending = nil
+			frame.completion = nil
 			frame.current = nil
-			frame.returning = nil
-			handled, err := routeReturn(frame, value)
+			completed, result, err := routeCompletion(frame, abruptCompletion{kind: completionReturn, value: value})
 			if err != nil {
 				return memory.Value{}, err
 			}
-			if handled {
+			if !completed {
 				continue
 			}
-			return value, nil
+			return result, nil
 		case OpNewObject:
 			ref, err := context.NewHeapObject()
 			if err != nil {
@@ -406,6 +405,24 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 			}
 		case OpJump:
 			frame.ip = instruction.A
+		case OpBreak, OpContinue:
+			environmentDepth, handlerDepth := unpackCompletionDepths(instruction.B)
+			kind := completionBreak
+			if instruction.Op == OpContinue {
+				kind = completionContinue
+			}
+			frame.completion = nil
+			completed, result, err := routeCompletion(frame, abruptCompletion{
+				kind: kind, target: instruction.A,
+				environmentDepth: environmentDepth, handlerDepth: handlerDepth,
+			})
+			if err != nil {
+				return memory.Value{}, err
+			}
+			if completed {
+				return result, nil
+			}
+			continue
 		case OpJumpIfTrue, OpJumpIfFalse, OpJumpIfNullish:
 			condition, err := frame.pop()
 			if err != nil {
@@ -442,11 +459,19 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 			}
 			result, err := execution.call(callee, this, arguments, mode)
 			if err != nil {
-				handled, routed := routeThrown(frame, err)
-				if handled {
-					continue
+				value, thrown := ThrownValue(err)
+				if !thrown {
+					return memory.Value{}, err
 				}
-				return memory.Value{}, routed
+				frame.completion = nil
+				completed, result, routed := routeCompletion(frame, abruptCompletion{kind: completionThrow, value: value})
+				if routed != nil {
+					return memory.Value{}, routed
+				}
+				if completed {
+					return result, Throw(value)
+				}
+				continue
 			}
 			if instruction.Op == OpConstruct {
 				object, err := isObjectValue(context, result)
@@ -485,12 +510,15 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 			if err != nil {
 				return memory.Value{}, err
 			}
-			frame.returning = nil
-			handled, routed := routeThrown(frame, Throw(value))
-			if handled {
+			frame.completion = nil
+			completed, result, routed := routeCompletion(frame, abruptCompletion{kind: completionThrow, value: value})
+			if routed != nil {
+				return memory.Value{}, routed
+			}
+			if !completed {
 				continue
 			}
-			return memory.Value{}, routed
+			return result, Throw(value)
 		case OpEnterTry:
 			frame.handlers = append(frame.handlers, exceptionHandler{
 				kind:             ExceptionHandlerKind(instruction.B),
@@ -505,47 +533,46 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 			frame.handlers[len(frame.handlers)-1] = exceptionHandler{}
 			frame.handlers = frame.handlers[:len(frame.handlers)-1]
 		case OpEnterCatch:
-			if frame.pending == nil {
+			if frame.completion == nil || frame.completion.kind != completionThrow {
 				return memory.Value{}, fmt.Errorf("%w: EnterCatch without a thrown value", ErrExceptionState)
 			}
-			frame.current = frame.pending
-			frame.push(frame.pending.Value)
-			frame.pending = nil
+			frame.current = &ThrownError{Value: frame.completion.value}
+			frame.push(frame.completion.value)
+			frame.completion = nil
 		case OpEnterFinally:
-			// Exceptional entry retains pending; normal entry has no pending
-			// value. EndFinally distinguishes the two paths.
+			// Abrupt entry retains its completion; normal entry has none.
+			// EndFinally resumes the retained completion unless the finalizer
+			// replaces it with a new abrupt completion.
 		case OpEndFinally:
-			if frame.pending != nil {
-				thrown := frame.pending
-				frame.pending = nil
-				handled, routed := routeThrown(frame, thrown)
-				if handled {
-					continue
-				}
-				return memory.Value{}, routed
-			}
-			if frame.returning != nil {
-				value := *frame.returning
-				frame.returning = nil
-				handled, err := routeReturn(frame, value)
+			if frame.completion != nil {
+				completion := *frame.completion
+				frame.completion = nil
+				completed, result, err := routeCompletion(frame, completion)
 				if err != nil {
 					return memory.Value{}, err
 				}
-				if handled {
+				if !completed {
 					continue
 				}
-				return value, nil
+				if completion.kind == completionThrow {
+					return memory.Value{}, Throw(completion.value)
+				}
+				return result, nil
 			}
 		case OpRethrow:
 			if frame.current == nil {
 				return memory.Value{}, fmt.Errorf("%w: Rethrow without a current exception", ErrExceptionState)
 			}
-			frame.returning = nil
-			handled, routed := routeThrown(frame, frame.current)
-			if handled {
+			frame.completion = nil
+			value := frame.current.Value
+			completed, result, routed := routeCompletion(frame, abruptCompletion{kind: completionThrow, value: value})
+			if routed != nil {
+				return memory.Value{}, routed
+			}
+			if !completed {
 				continue
 			}
-			return memory.Value{}, routed
+			return result, Throw(value)
 		case OpEnterScope:
 			environment, err := context.NewContext(frame.Environment)
 			if err != nil {
@@ -654,57 +681,67 @@ func validateFrameProgram(frame *Frame) error {
 	return verifyInstructions(frame.instructions, len(frame.function.Constants))
 }
 
-func routeThrown(frame *Frame, err error) (bool, error) {
-	var thrown *ThrownError
-	if !errors.As(err, &thrown) || thrown == nil {
-		return false, err
+func routeCompletion(frame *Frame, completion abruptCompletion) (bool, memory.Value, error) {
+	if frame == nil {
+		return false, memory.Value{}, fmt.Errorf("%w: nil completion frame", ErrExceptionState)
 	}
-	if len(frame.handlers) == 0 {
-		return false, err
-	}
-	index := len(frame.handlers) - 1
-	handler := frame.handlers[index]
-	frame.handlers[index] = exceptionHandler{}
-	frame.handlers = frame.handlers[:index]
-	if handler.stackDepth < 0 || handler.stackDepth > len(frame.Stack) {
-		return false, fmt.Errorf("%w: handler stack depth %d", ErrExceptionState, handler.stackDepth)
-	}
-	clear(frame.Stack[handler.stackDepth:])
-	frame.Stack = frame.Stack[:handler.stackDepth]
-	if err := restoreEnvironmentDepth(frame, handler.environmentDepth); err != nil {
-		return false, err
-	}
-	frame.returning = nil
-	frame.pending = thrown
-	frame.current = thrown
-	frame.ip = handler.target
-	return true, nil
-}
-
-func routeReturn(frame *Frame, value memory.Value) (bool, error) {
-	for index := len(frame.handlers) - 1; index >= 0; index-- {
-		handler := frame.handlers[index]
-		if handler.kind != HandlerFinally {
-			continue
+	floor := 0
+	if completion.kind == completionBreak || completion.kind == completionContinue {
+		floor = completion.handlerDepth
+		if floor < 0 || floor > len(frame.handlers) {
+			return false, memory.Value{}, fmt.Errorf("%w: completion handler depth %d", ErrExceptionState, floor)
 		}
-		clear(frame.handlers[index:])
-		frame.handlers = frame.handlers[:index]
+	}
+
+	handlerIndex := -1
+	for index := len(frame.handlers) - 1; index >= floor; index-- {
+		handler := frame.handlers[index]
+		if completion.kind == completionThrow || handler.kind == HandlerFinally {
+			handlerIndex = index
+			break
+		}
+	}
+	if handlerIndex >= 0 {
+		handler := frame.handlers[handlerIndex]
+		clear(frame.handlers[handlerIndex:])
+		frame.handlers = frame.handlers[:handlerIndex]
 		if handler.stackDepth < 0 || handler.stackDepth > len(frame.Stack) {
-			return false, fmt.Errorf("%w: handler stack depth %d", ErrExceptionState, handler.stackDepth)
+			return false, memory.Value{}, fmt.Errorf("%w: handler stack depth %d", ErrExceptionState, handler.stackDepth)
 		}
 		clear(frame.Stack[handler.stackDepth:])
 		frame.Stack = frame.Stack[:handler.stackDepth]
 		if err := restoreEnvironmentDepth(frame, handler.environmentDepth); err != nil {
-			return false, err
+			return false, memory.Value{}, err
 		}
-		returned := value
-		frame.returning = &returned
-		frame.pending = nil
-		frame.current = nil
+		retained := completion
+		frame.completion = &retained
+		if completion.kind != completionThrow {
+			frame.current = nil
+		}
 		frame.ip = handler.target
-		return true, nil
+		return false, memory.Value{}, nil
 	}
-	return false, nil
+
+	clear(frame.handlers[floor:])
+	frame.handlers = frame.handlers[:floor]
+	frame.completion = nil
+	switch completion.kind {
+	case completionReturn:
+		return true, completion.value, nil
+	case completionThrow:
+		return true, memory.Value{}, nil
+	case completionBreak, completionContinue:
+		if uint64(completion.target) >= uint64(len(frame.instructions)) {
+			return false, memory.Value{}, fmt.Errorf("%w: completion target %d", ErrExceptionState, completion.target)
+		}
+		if err := restoreEnvironmentDepth(frame, completion.environmentDepth); err != nil {
+			return false, memory.Value{}, err
+		}
+		frame.ip = completion.target
+		return false, memory.Value{}, nil
+	default:
+		return false, memory.Value{}, fmt.Errorf("%w: completion kind %d", ErrExceptionState, completion.kind)
+	}
 }
 
 func restoreEnvironmentDepth(frame *Frame, depth int) error {

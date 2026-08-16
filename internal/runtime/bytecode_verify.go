@@ -29,7 +29,7 @@ func verifyInstructions(instructions []Instruction, constantCount int) error {
 			if uint64(instruction.A) >= uint64(constantCount) {
 				return fmt.Errorf("%w: instruction %d uses constant %d", ErrConstantBounds, index, instruction.A)
 			}
-		case OpJump, OpJumpIfTrue, OpJumpIfFalse, OpJumpIfNullish, OpEnterTry:
+		case OpJump, OpJumpIfTrue, OpJumpIfFalse, OpJumpIfNullish, OpEnterTry, OpBreak, OpContinue:
 			if uint64(instruction.A) >= uint64(len(instructions)) {
 				return fmt.Errorf("%w: instruction %d jumps to %d", ErrInvalidBytecode, index, instruction.A)
 			}
@@ -70,7 +70,7 @@ func verifyInstructions(instructions []Instruction, constantCount int) error {
 			continue
 		}
 		switch instruction.Op {
-		case OpJump:
+		case OpJump, OpBreak, OpContinue:
 			if err := mergeStackDepth(depths, &queue, int(instruction.A), nextDepth); err != nil {
 				return err
 			}
@@ -139,6 +139,8 @@ func instructionStackEffect(instruction Instruction) (required, delta int, termi
 		OpLessThan, OpLessThanOrEqual, OpGreaterThan, OpGreaterThanOrEqual:
 		return 2, -1, false, nil
 	case OpJump:
+		return 0, 0, false, nil
+	case OpBreak, OpContinue:
 		return 0, 0, false, nil
 	case OpJumpIfTrue, OpJumpIfFalse, OpJumpIfNullish:
 		return 1, -1, false, nil

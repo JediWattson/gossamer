@@ -31,8 +31,9 @@ and ordinary task release invalidates every unpromoted loaded Ref.
 - `if`, `while`, `break`, and `continue`;
 - Function declarations and expressions, lexical capture, calls, recursion,
   construction, and explicit `this` for constructors;
-- `return`, `throw`, `try`, `catch`, and `finally`, including return and throw
-  propagation through finally blocks.
+- `return`, `throw`, `try`, `catch`, and `finally`, with general abrupt
+  completions routing return, throw, break, and continue through nested
+  finally blocks.
 
 Every compiled Function invocation enters a fresh native Context whose parent
 is its captured Context. Catch bindings enter their own Context. Exception and
@@ -53,8 +54,6 @@ This is not yet an ECMAScript-compatible engine. In particular:
 - unary plus and coercive equality are rejected;
 - prototype lookup, descriptors, accessors, coercion, regex and template
   literals, modules, generators, async Functions, and Promise jobs are absent;
-- `break` and `continue` across active try/finally handlers are rejected until
-  the interpreter has general abrupt-completion records;
 - source evaluation is not wired into `browser.Engine` or `browser.JSRealm`.
 
 Unsupported constructs fail with source-ranged compiler diagnostics. There is

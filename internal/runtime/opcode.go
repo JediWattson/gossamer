@@ -70,6 +70,8 @@ const (
 	OpRethrow
 	OpEnterScope
 	OpLeaveScope
+	OpBreak
+	OpContinue
 )
 
 func (opcode Opcode) String() string {
@@ -200,11 +202,15 @@ func (opcode Opcode) String() string {
 		return "EnterScope"
 	case OpLeaveScope:
 		return "LeaveScope"
+	case OpBreak:
+		return "Break"
+	case OpContinue:
+		return "Continue"
 	default:
 		return fmt.Sprintf("Opcode(%d)", opcode)
 	}
 }
 
 func (opcode Opcode) valid() bool {
-	return opcode >= OpConstant && opcode <= OpLeaveScope
+	return opcode >= OpConstant && opcode <= OpContinue
 }

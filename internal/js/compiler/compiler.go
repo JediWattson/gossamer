@@ -78,22 +78,23 @@ type binding struct {
 }
 
 type loopTarget struct {
-	breakLabel    browserruntime.Label
-	continueLabel browserruntime.Label
-	scopeDepth    int
+	breakLabel       browserruntime.Label
+	continueLabel    browserruntime.Label
+	environmentDepth int
+	handlerDepth     int
 }
 
 type functionCompiler struct {
-	owner          *imageCompiler
-	parent         *functionCompiler
-	builder        *browserruntime.BytecodeBuilder
-	constants      []program.Constant
-	constant       map[constantKey]uint32
-	scopes         []map[string]binding
-	loops          []loopTarget
-	inFunction     bool
-	finallyDepth   int
-	protectedDepth int
+	owner            *imageCompiler
+	parent           *functionCompiler
+	builder          *browserruntime.BytecodeBuilder
+	constants        []program.Constant
+	constant         map[constantKey]uint32
+	scopes           []map[string]binding
+	loops            []loopTarget
+	inFunction       bool
+	environmentDepth int
+	handlerDepth     int
 }
 
 type constantKey struct {
@@ -168,6 +169,14 @@ func (compiler *functionCompiler) emitJump(opcode browserruntime.Opcode, label b
 
 func (compiler *functionCompiler) emitHandler(kind browserruntime.ExceptionHandlerKind, label browserruntime.Label, span lexer.Span) error {
 	_, err := compiler.builder.EmitHandler(kind, label, runtimeSpan(span))
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrCompile, err)
+	}
+	return nil
+}
+
+func (compiler *functionCompiler) emitCompletion(opcode browserruntime.Opcode, label browserruntime.Label, environmentDepth, handlerDepth int, span lexer.Span) error {
+	_, err := compiler.builder.EmitCompletion(opcode, label, environmentDepth, handlerDepth, runtimeSpan(span))
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrCompile, err)
 	}

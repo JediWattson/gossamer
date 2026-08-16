@@ -23,6 +23,23 @@ type exceptionHandler struct {
 	environmentDepth int
 }
 
+type completionKind uint8
+
+const (
+	completionReturn completionKind = iota + 1
+	completionThrow
+	completionBreak
+	completionContinue
+)
+
+type abruptCompletion struct {
+	kind             completionKind
+	value            memory.Value
+	target           uint32
+	handlerDepth     int
+	environmentDepth int
+}
+
 // RootSource exposes borrowed Refs without changing their ownership. Cycle
 // reclamation checkpoints can use the same contract for frames and other
 // transient runtime roots.
@@ -44,9 +61,8 @@ type Frame struct {
 	ip           uint32
 	handlers     []exceptionHandler
 	environments []memory.Value
-	pending      *ThrownError
+	completion   *abruptCompletion
 	current      *ThrownError
-	returning    *memory.Value
 }
 
 func (frame *Frame) VisitRefs(visit func(memory.Ref) error) error {
@@ -63,14 +79,11 @@ func (frame *Frame) VisitRefs(visit func(memory.Ref) error) error {
 	values = append(values, frame.Arguments...)
 	values = append(values, frame.Stack...)
 	values = append(values, frame.environments...)
-	if frame.pending != nil {
-		values = append(values, frame.pending.Value)
+	if frame.completion != nil {
+		values = append(values, frame.completion.value)
 	}
-	if frame.current != nil && frame.current != frame.pending {
+	if frame.current != nil {
 		values = append(values, frame.current.Value)
-	}
-	if frame.returning != nil {
-		values = append(values, *frame.returning)
 	}
 	for _, value := range values {
 		if value.IsRef() {

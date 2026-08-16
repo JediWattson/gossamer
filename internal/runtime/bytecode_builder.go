@@ -144,6 +144,35 @@ func (builder *BytecodeBuilder) EmitJump(opcode Opcode, label Label, location So
 	return builder.emitLabelReference(Instruction{Op: opcode}, label, location)
 }
 
+// EmitCompletion emits a loop completion whose target is patched from label.
+// The lexical-environment and handler depths are carried with the completion
+// so the interpreter can cross any intervening finally handlers before it
+// resumes at the loop target.
+func (builder *BytecodeBuilder) EmitCompletion(opcode Opcode, label Label, environmentDepth, handlerDepth int, location SourceSpan) (uint32, error) {
+	if opcode != OpBreak && opcode != OpContinue {
+		return 0, fmt.Errorf("%w: %s is not a loop completion opcode", ErrInvalidBytecode, opcode)
+	}
+	depths, err := packCompletionDepths(environmentDepth, handlerDepth)
+	if err != nil {
+		return 0, err
+	}
+	return builder.emitLabelReference(Instruction{Op: opcode, B: depths}, label, location)
+}
+
+func packCompletionDepths(environmentDepth, handlerDepth int) (uint32, error) {
+	if environmentDepth < 0 || environmentDepth > math.MaxUint16 {
+		return 0, fmt.Errorf("%w: completion environment depth %d", ErrInvalidBytecode, environmentDepth)
+	}
+	if handlerDepth < 0 || handlerDepth > math.MaxUint16 {
+		return 0, fmt.Errorf("%w: completion handler depth %d", ErrInvalidBytecode, handlerDepth)
+	}
+	return uint32(environmentDepth)<<16 | uint32(handlerDepth), nil
+}
+
+func unpackCompletionDepths(depths uint32) (environmentDepth, handlerDepth int) {
+	return int(depths >> 16), int(depths & math.MaxUint16)
+}
+
 func (builder *BytecodeBuilder) EmitHandler(kind ExceptionHandlerKind, label Label, location SourceSpan) (uint32, error) {
 	if kind != HandlerCatch && kind != HandlerFinally {
 		return 0, fmt.Errorf("%w: handler kind %d", ErrInvalidBytecode, kind)

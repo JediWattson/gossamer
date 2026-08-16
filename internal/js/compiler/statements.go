@@ -35,26 +35,14 @@ func (compiler *functionCompiler) compileStatement(statement ast.Statement) erro
 		if len(compiler.loops) == 0 {
 			return compiler.problem(statement.Span(), "break is only valid inside a loop")
 		}
-		if compiler.finallyDepth != 0 || compiler.protectedDepth != 0 {
-			return compiler.problem(statement.Span(), "break through try/finally is deferred to the completion-record milestone")
-		}
 		target := compiler.loops[len(compiler.loops)-1]
-		if err := compiler.emitScopeUnwind(target.scopeDepth, statement.Span()); err != nil {
-			return err
-		}
-		return compiler.emitJump(browserruntime.OpJump, target.breakLabel, statement.Span())
+		return compiler.emitCompletion(browserruntime.OpBreak, target.breakLabel, target.environmentDepth, target.handlerDepth, statement.Span())
 	case *ast.ContinueStatement:
 		if len(compiler.loops) == 0 {
 			return compiler.problem(statement.Span(), "continue is only valid inside a loop")
 		}
-		if compiler.finallyDepth != 0 || compiler.protectedDepth != 0 {
-			return compiler.problem(statement.Span(), "continue through try/finally is deferred to the completion-record milestone")
-		}
 		target := compiler.loops[len(compiler.loops)-1]
-		if err := compiler.emitScopeUnwind(target.scopeDepth, statement.Span()); err != nil {
-			return err
-		}
-		return compiler.emitJump(browserruntime.OpJump, target.continueLabel, statement.Span())
+		return compiler.emitCompletion(browserruntime.OpContinue, target.continueLabel, target.environmentDepth, target.handlerDepth, statement.Span())
 	case *ast.FunctionDeclaration:
 		return compiler.compileFunctionDeclaration(statement)
 	case *ast.ReturnStatement:
@@ -161,7 +149,11 @@ func (compiler *functionCompiler) compileWhile(statement *ast.WhileStatement) er
 	if err := compiler.emitJump(browserruntime.OpJumpIfFalse, end, statement.Test.Span()); err != nil {
 		return err
 	}
-	compiler.loops = append(compiler.loops, loopTarget{breakLabel: end, continueLabel: start, scopeDepth: len(compiler.scopes)})
+	compiler.loops = append(compiler.loops, loopTarget{
+		breakLabel: end, continueLabel: start,
+		environmentDepth: compiler.environmentDepth,
+		handlerDepth:     compiler.handlerDepth,
+	})
 	err := compiler.compileStatement(statement.Body)
 	compiler.loops = compiler.loops[:len(compiler.loops)-1]
 	if err != nil {
@@ -172,18 +164,6 @@ func (compiler *functionCompiler) compileWhile(statement *ast.WhileStatement) er
 	}
 	if err := compiler.builder.Mark(end); err != nil {
 		return fmt.Errorf("%w: %v", ErrCompile, err)
-	}
-	return nil
-}
-
-func (compiler *functionCompiler) emitScopeUnwind(depth int, span lexer.Span) error {
-	if depth < 1 || depth > len(compiler.scopes) {
-		return compiler.problem(span, "invalid lexical scope target")
-	}
-	for index := len(compiler.scopes); index > depth; index-- {
-		if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpLeaveScope}, span); err != nil {
-			return err
-		}
 	}
 	return nil
 }
@@ -225,6 +205,7 @@ func (compiler *functionCompiler) compileNestedFunction(name string, parameters 
 	if err := child.emit(browserruntime.Instruction{Op: browserruntime.OpEnterScope}, span); err != nil {
 		return 0, err
 	}
+	child.environmentDepth++
 	for parameterIndex, parameter := range parameters {
 		if err := child.declare(parameter.Name, true, parameter.Span()); err != nil {
 			return 0, err
@@ -266,14 +247,14 @@ func (compiler *functionCompiler) compileNestedFunction(name string, parameters 
 }
 
 func (compiler *functionCompiler) compileTry(statement *ast.TryStatement) error {
+	baseHandlerDepth := compiler.handlerDepth
 	var finallyLabel browserruntime.Label
 	if statement.Finalizer != nil {
 		finallyLabel = compiler.builder.NewLabel()
 		if err := compiler.emitHandler(browserruntime.HandlerFinally, finallyLabel, statement.Span()); err != nil {
 			return err
 		}
-		compiler.finallyDepth++
-		defer func() { compiler.finallyDepth-- }()
+		compiler.handlerDepth++
 	}
 
 	var catchLabel browserruntime.Label
@@ -282,17 +263,16 @@ func (compiler *functionCompiler) compileTry(statement *ast.TryStatement) error 
 		if err := compiler.emitHandler(browserruntime.HandlerCatch, catchLabel, statement.Span()); err != nil {
 			return err
 		}
+		compiler.handlerDepth++
 	}
-	compiler.protectedDepth++
-	bodyErr := compiler.compileStatement(statement.Body)
-	compiler.protectedDepth--
-	if bodyErr != nil {
-		return bodyErr
+	if err := compiler.compileStatement(statement.Body); err != nil {
+		return err
 	}
 	if statement.Handler != nil {
 		if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpLeaveTry}, statement.Body.Span()); err != nil {
 			return err
 		}
+		compiler.handlerDepth--
 		catchDone := compiler.builder.NewLabel()
 		if err := compiler.emitJump(browserruntime.OpJump, catchDone, statement.Body.Span()); err != nil {
 			return err
@@ -315,6 +295,7 @@ func (compiler *functionCompiler) compileTry(statement *ast.TryStatement) error 
 		if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpLeaveTry}, statement.Span()); err != nil {
 			return err
 		}
+		compiler.handlerDepth--
 		if err := compiler.emitJump(browserruntime.OpJump, finallyLabel, statement.Span()); err != nil {
 			return err
 		}
@@ -331,6 +312,9 @@ func (compiler *functionCompiler) compileTry(statement *ast.TryStatement) error 
 			return err
 		}
 	}
+	if compiler.handlerDepth != baseHandlerDepth {
+		return compiler.problem(statement.Span(), "internal handler-depth imbalance")
+	}
 	return nil
 }
 
@@ -344,6 +328,7 @@ func (compiler *functionCompiler) compileCatch(clause *ast.CatchClause) error {
 	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpEnterScope}, clause.Span()); err != nil {
 		return err
 	}
+	compiler.environmentDepth++
 	compiler.pushScope()
 	defer compiler.popScope()
 	if err := compiler.declare(clause.Parameter.Name, true, clause.Parameter.Span()); err != nil {
@@ -365,7 +350,11 @@ func (compiler *functionCompiler) compileCatch(clause *ast.CatchClause) error {
 	if err := compiler.compileStatement(clause.Body); err != nil {
 		return err
 	}
-	return compiler.emit(browserruntime.Instruction{Op: browserruntime.OpLeaveScope}, clause.Span())
+	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpLeaveScope}, clause.Span()); err != nil {
+		return err
+	}
+	compiler.environmentDepth--
+	return nil
 }
 
 func (compiler *functionCompiler) addFunctionConstant(index uint32) (uint32, error) {

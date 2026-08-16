@@ -238,14 +238,64 @@ caught(true) + caught(false) + override() + nested() + capture()();
 	}
 }
 
+func TestCompileRoutesLoopCompletionsThroughFinally(t *testing.T) {
+	t.Parallel()
+
+	image, err := compiler.Compile(`
+function breakFinally() {
+  let total = 0;
+  while (true) {
+    try { break; } finally { total = total + 1; }
+  }
+  return total;
+}
+function continueFinally() {
+  let index = 0;
+  let total = 0;
+  while (index < 3) {
+    index = index + 1;
+    try { continue; } finally { total = total + index; }
+  }
+  return total;
+}
+function nestedFinally() {
+  let total = 0;
+  while (true) {
+    try {
+      try { break; } finally { total = total + 1; }
+    } finally { total = total + 10; }
+  }
+  return total;
+}
+function overridingFinally() {
+  while (true) {
+    try { break; } finally { return 7; }
+  }
+  return 1;
+}
+function discardCatch() {
+  while (true) {
+    try { break; } catch (problem) { return problem; }
+  }
+  return 2;
+}
+breakFinally() + continueFinally() + nestedFinally() + overridingFinally() + discardCatch();
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := execute(t, 817, image)
+	if result.Kind() != memory.ValueNumber || result.Number() != 27 {
+		t.Fatalf("completion result = %#v, want 27", result)
+	}
+}
+
 func TestCompileRejectsInvalidFunctionControlFlow(t *testing.T) {
 	t.Parallel()
 
 	for _, source := range []string{
 		"return 1;",
 		"function duplicate(value, value) { return value; } duplicate(1, 2);",
-		"function invalid() { while (true) { try { break; } finally {} } } invalid();",
-		"function invalid() { while (true) { try { break; } catch {} } } invalid();",
 	} {
 		_, err := compiler.Compile(source)
 		if !errors.Is(err, compiler.ErrCompile) {
