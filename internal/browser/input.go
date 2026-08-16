@@ -794,6 +794,7 @@ func (page *Page) selectorMatchContextLocked() css.MatchContext {
 		Focused:         resolve(page.activeElement),
 		FocusVisible:    page.focusVisible,
 		DefaultLanguage: page.documentLanguage,
+		Visited:         page.visitedLinkMatcherLocked(page.document.Root()),
 	}
 	if page.location != nil && page.location.Fragment != "" {
 		if id, ok := page.document.ElementByID(page.location.Fragment); ok {

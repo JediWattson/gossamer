@@ -849,7 +849,19 @@ func isLastElementSibling(node *dom.Node, sameType bool) bool {
 }
 
 func isUnvisitedLink(node *dom.Node) bool {
-	if !equalASCIIFold(node.Data, "a") && !equalASCIIFold(node.Data, "area") && !equalASCIIFold(node.Data, "link") {
+	if node == nil || node.Type != dom.ElementNode {
+		return false
+	}
+	switch node.NamespaceURI {
+	case dom.HTMLNamespace:
+		if !equalASCIIFold(node.Data, "a") && !equalASCIIFold(node.Data, "area") {
+			return false
+		}
+	case dom.SVGNamespace:
+		if !equalASCIIFold(node.Data, "a") {
+			return false
+		}
+	default:
 		return false
 	}
 	_, hasHref := attributeValue(node, "href")

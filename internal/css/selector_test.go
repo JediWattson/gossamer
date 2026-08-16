@@ -114,6 +114,8 @@ func TestSelectorMatchesLinkStateWithoutHistory(t *testing.T) {
 	link := dom.NewElement("a", dom.Attribute{Name: "href", Value: ""})
 	area := dom.NewElement("area", dom.Attribute{Name: "href", Value: "/map"})
 	stylesheetLink := dom.NewElement("link", dom.Attribute{Name: "href", Value: "/site.css"})
+	svgLink := dom.NewElement("a", dom.Attribute{Name: "href", Value: "/vector"})
+	svgLink.NamespaceURI = dom.SVGNamespace
 	plainAnchor := dom.NewElement("a")
 	other := dom.NewElement("div", dom.Attribute{Name: "href", Value: "/not-a-link"})
 
@@ -125,7 +127,8 @@ func TestSelectorMatchesLinkStateWithoutHistory(t *testing.T) {
 	}{
 		{name: "link", selector: "a:link", node: link, want: true},
 		{name: "any link", selector: ":any-link", node: area, want: true},
-		{name: "stylesheet link", selector: "link:any-link", node: stylesheetLink, want: true},
+		{name: "stylesheet link is not a hyperlink", selector: "link:any-link", node: stylesheetLink, want: false},
+		{name: "SVG anchor", selector: "a:any-link", node: svgLink, want: true},
 		{name: "visited has no history state", selector: "a:visited", node: link, want: false},
 		{name: "anchor without href", selector: "a:link", node: plainAnchor, want: false},
 		{name: "other element with href", selector: ":link", node: other, want: false},

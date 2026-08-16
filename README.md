@@ -250,7 +250,8 @@ performance budgets; see
 ### CSS, layout, and paint
 
 - Type, ID, class, attribute, and combinator selectors with structural,
-  linguistic `:lang()`/`:dir()`, logical and relational `:has()`, link, target,
+  linguistic `:lang()`/`:dir()`, logical and relational `:has()`,
+  privacy-partitioned link/visited, target,
   hover, active, focus, focus-visible, focus-within, checked, enabled/disabled,
   required/optional, read-only/read-write, placeholder-shown, default,
   indeterminate, valid/invalid, user-valid/user-invalid, and

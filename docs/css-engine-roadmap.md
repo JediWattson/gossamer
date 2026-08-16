@@ -187,7 +187,8 @@ Current foundation: selector matching accepts an explicit non-retained match
 context. Nested logical selectors and nth-child filters share it; hover and
 active propagate through the inclusive ancestor chain, focus/focus-visible and
 focus-within use the Page's stable focused node and modality bit, URL fragments
-drive `:target`, and a history hook distinguishes `:link` from `:visited`.
+drive `:target`, and Page session history distinguishes `:link` from
+`:visited`.
 Pointer and focus transitions advance the Page style revision, invalidate the
 cached snapshot, and coalesce a render at the existing task boundary even when
 scripting is disabled. HTML `:checked` consumes live dirty input checkedness
@@ -213,6 +214,13 @@ values. Language ancestor walks and Unicode direction scans consume the same
 fail-closed selector operation budget. Browser navigation supplies a single
 protocol-level default language through match context without letting the
 selector package reach outside a coherent DOM read.
+Visited-link state resolves hyperlinks against the first HTML base URL, ignores
+fragments, canonicalizes default ports, and passes only stable visited NodeIDs
+into style snapshots. Gossamer deliberately partitions this state to
+same-origin destinations in the current Page's own session history, so selector
+APIs and computed style cannot probe arbitrary cross-origin browsing history.
+History and href/base mutations invalidate style without publishing an early
+frame.
 HTML mutability selectors now distinguish the input types to which `readonly`
 applies, actual disabledness, textarea state, and inherited `contenteditable`
 editing hosts. `:placeholder-shown` follows applicable input/textarea controls
@@ -246,7 +254,6 @@ They honor valid one-sided or two-sided limits, reversed periodic time ranges,
 empty-value semantics, range-input defaults/sanitization, and live value or
 attribute mutations.
 
-- Add browser history plumbing for the matcher-level visited link hook.
 - Finish pseudo-elements and the remaining stateful selector grammar.
 - Add memoization and selector/property dependency indexes after profiling the
   now-bounded combinator backtracking paths.

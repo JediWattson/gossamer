@@ -1002,7 +1002,7 @@ func TestStockV8SelectorTraversalStaticNodeListAndLifetime(t *testing.T) {
 	page, err := browserRuntime.LoadPage(
 		ctx,
 		"https://gossamer.test/selectors",
-		staticDocumentLoader{document: `<!doctype html><html><body><main id="scope"><section id="first" class="card"><span class="leaf"></span></section><section id="second" class="card"></section></main></body></html>`},
+		staticDocumentLoader{document: `<!doctype html><html><body><main id="scope"><section id="first" class="card"><span class="leaf"></span></section><section id="second" class="card"></section></main><a id="visited-self" href="/selectors#fragment">visited</a><a id="unvisited-link" href="/future">unvisited</a></body></html>`},
 	)
 	if err != nil {
 		t.Fatalf("LoadPage: %v", err)
@@ -1043,6 +1043,13 @@ func TestStockV8SelectorTraversalStaticNodeListAndLifetime(t *testing.T) {
 				try { document.querySelectorAll(".card, :unsupported()"); }
 				catch (error) { invalidRejected = String(error).includes("invalid selector"); }
 				if (!invalidRejected) throw new Error("invalid selector list was accepted");
+				const visitedSelf = document.getElementById("visited-self");
+				const unvisitedLink = document.getElementById("unvisited-link");
+				if (!visitedSelf.matches(":visited") || visitedSelf.matches(":link") ||
+					unvisitedLink.matches(":visited") || !unvisitedLink.matches(":link") ||
+					document.querySelector(":visited") !== visitedSelf) {
+					throw new Error("session-history link selectors are incorrect");
+				}
 			})();
 		`,
 	})
@@ -3114,7 +3121,7 @@ func TestStockV8FormSubmissionNavigatesAndTearsDownOldRealm(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	page, err := browserRuntime.LoadPage(ctx, "https://gossamer.test/form-start", staticDocumentLoader{
-			document: `<!doctype html><html><body>
+		document: `<!doctype html><html><body>
 			<form id="search" action="/results">
 				<input id="query" name="q" required>
 				<input name="tag" value="memory">

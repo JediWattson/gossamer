@@ -62,6 +62,7 @@ func (page *Page) pushHistoryLocked(location *url.URL, navigation NavigationID) 
 	}
 	page.history = append(page.history, HistoryEntry{URL: cloneURL(location), Navigation: navigation})
 	page.historyIndex = len(page.history) - 1
+	page.invalidateStyleLocked()
 }
 
 // QueueRequestSubmit runs validation, invalid/submit event dispatch, and the

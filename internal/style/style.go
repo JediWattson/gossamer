@@ -51,6 +51,10 @@ type SelectorState struct {
 	FocusVisible bool
 	Target       dom.NodeID
 	TargetID     string
+	// Visited contains same-document stable identities whose resolved hyperlink
+	// destinations are visible to the browser's privacy-partitioned history
+	// policy. The style package never receives raw browsing-history URLs.
+	Visited []dom.NodeID
 	// DefaultLanguage is the document's higher-level protocol fallback when no
 	// element establishes a content language.
 	DefaultLanguage string
@@ -586,6 +590,13 @@ func ComputeReadView(view dom.ReadView, input Input) (*Snapshot, error) {
 		Target:          resolveSelectorTarget(root, access, input.SelectorState),
 		DefaultLanguage: input.SelectorState.DefaultLanguage,
 	}
+	visited := resolveSelectorStateNodes(access, input.SelectorState.Visited)
+	if len(visited) != 0 {
+		input.selectorContext.Visited = func(node *dom.Node) bool {
+			_, ok := visited[node]
+			return ok
+		}
+	}
 	styledRoot := buildStyleTree(root, input)
 	snapshot := &Snapshot{
 		documentIdentity: access.Identity(),
@@ -597,6 +608,19 @@ func ComputeReadView(view dom.ReadView, input Input) (*Snapshot, error) {
 	snapshot.provenance = indexStableProvenance(styledRoot, access)
 	snapshot.rootID, _ = access.ID(root)
 	return snapshot, nil
+}
+
+func resolveSelectorStateNodes(access *dom.ReadAccess, ids []dom.NodeID) map[*dom.Node]struct{} {
+	if len(ids) == 0 {
+		return nil
+	}
+	nodes := make(map[*dom.Node]struct{}, len(ids))
+	for _, id := range ids {
+		if node, ok := access.Resolve(id); ok && node != nil {
+			nodes[node] = struct{}{}
+		}
+	}
+	return nodes
 }
 
 func resolveSelectorStateNode(access *dom.ReadAccess, id dom.NodeID) *dom.Node {

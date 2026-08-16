@@ -627,7 +627,11 @@ func (page *Page) styleSnapshotForViewLocked(view dom.ReadView, resources render
 		return state.snapshot, nil
 	}
 
-	resources.SelectorState = page.selectorStateLocked()
+	selectorState, err := page.selectorStateForViewLocked(view)
+	if err != nil {
+		return nil, err
+	}
+	resources.SelectorState = selectorState
 	snapshot, err := render.ComputeStyleSnapshotFromReadView(view, page.viewport, resources)
 	if err != nil {
 		return nil, err
@@ -641,7 +645,7 @@ func (page *Page) styleSnapshotForViewLocked(view dom.ReadView, resources render
 	return snapshot, nil
 }
 
-func (page *Page) selectorStateLocked() computed.SelectorState {
+func (page *Page) selectorStateForViewLocked(view dom.ReadView) (computed.SelectorState, error) {
 	state := computed.SelectorState{
 		Hovered:         page.hoveredElement,
 		Active:          page.pressedElement,
@@ -652,7 +656,12 @@ func (page *Page) selectorStateLocked() computed.SelectorState {
 	if page.location != nil && page.location.Fragment != "" {
 		state.TargetID = page.location.Fragment
 	}
-	return state
+	visited, err := page.visitedLinkIDsForViewLocked(view)
+	if err != nil {
+		return computed.SelectorState{}, err
+	}
+	state.Visited = visited
+	return state, nil
 }
 
 // layoutSnapshotForViewLocked returns the current non-published layout result
