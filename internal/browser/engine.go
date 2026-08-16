@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/JediWattson/gossamer/internal/dom"
+	browserruntime "github.com/JediWattson/gossamer/internal/runtime"
 	"github.com/JediWattson/gossamer/internal/runtime/memory"
 )
 
@@ -231,6 +232,13 @@ type Host interface {
 	QueueMicrotask(ValueHandle) error
 	SetTimeout(ValueHandle, time.Duration) (TimerID, error)
 	ClearTimeout(TimerID) error
+}
+
+// NativeTaskHost is the optional engine-neutral seam used by the Go-native
+// interpreter. It exposes the current execution scope without allowing an
+// engine to retain the Host itself beyond the JSRealm call.
+type NativeTaskHost interface {
+	RuntimeTaskContext() *browserruntime.TaskContext
 }
 
 type AnimationFrameID uint64

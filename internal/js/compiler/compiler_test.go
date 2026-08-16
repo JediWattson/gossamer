@@ -146,6 +146,21 @@ func TestCompileRejectsSemanticWorkOutsideN7(t *testing.T) {
 	}
 }
 
+func TestCompileWithOptionsDefersUnknownGlobalResolutionToRuntime(t *testing.T) {
+	t.Parallel()
+
+	image, err := compiler.CompileWithOptions("earlierBinding + 2;", compiler.Options{AllowUnresolvedGlobals: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if image.FunctionCount() != 1 {
+		t.Fatalf("function count = %d, want 1", image.FunctionCount())
+	}
+	if _, err := compiler.Compile("earlierBinding + 2;"); !errors.Is(err, compiler.ErrCompile) {
+		t.Fatalf("closed-world Compile error = %v", err)
+	}
+}
+
 func TestCompileUsesPropertyReferencesAndMethodReceivers(t *testing.T) {
 	t.Parallel()
 

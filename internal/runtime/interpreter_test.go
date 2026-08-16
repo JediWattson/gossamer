@@ -242,6 +242,70 @@ func TestInterpreterObjectAndArrayVerbsUseRegionStore(t *testing.T) {
 	}
 }
 
+func TestExecuteWithoutCheckpointDefersNativeJobs(t *testing.T) {
+	t.Parallel()
+
+	realm, err := browserruntime.NewRealm(1001, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer realm.Close()
+	interpreter := browserruntime.NewInterpreter(browserruntime.InterpreterConfig{})
+	var calls int
+	if err := interpreter.RegisterNative(1001, func(*browserruntime.TaskContext, memory.Value, []memory.Value) (memory.Value, error) {
+		calls++
+		return memory.UndefinedValue(), nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = realm.EnqueueTask(func(task *browserruntime.TaskContext) error {
+		intrinsics, err := interpreter.Bootstrap(task)
+		if err != nil {
+			return err
+		}
+		name, err := task.NewString("job")
+		if err != nil {
+			return err
+		}
+		callback, err := task.NewNativeFunction(memory.RefValue(name), memory.RefValue(intrinsics.Global), 0, 1001)
+		if err != nil {
+			return err
+		}
+		code := browserruntime.Assemble(
+			browserruntime.Instruction{Op: browserruntime.OpConstant, A: 0},
+			browserruntime.Instruction{Op: browserruntime.OpConstant, A: 1},
+			browserruntime.Instruction{Op: browserruntime.OpCall, A: 1},
+			browserruntime.Instruction{Op: browserruntime.OpReturn},
+		)
+		entry, err := task.NewBytecodeFunction(
+			memory.NullValue(), memory.RefValue(intrinsics.Global), 0, code,
+			[]memory.Value{memory.RefValue(intrinsics.QueueMicrotask), memory.RefValue(callback)},
+		)
+		if err != nil {
+			return err
+		}
+		if _, err := interpreter.ExecuteWithoutCheckpoint(task, entry); err != nil {
+			return err
+		}
+		if calls != 0 {
+			t.Fatalf("calls before checkpoint = %d, want 0", calls)
+		}
+		if err := interpreter.DrainJobs(task); err != nil {
+			return err
+		}
+		if calls != 1 {
+			t.Fatalf("calls after checkpoint = %d, want 1", calls)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestInterpreterBindingVerbsUseCapturedContexts(t *testing.T) {
 	t.Parallel()
 

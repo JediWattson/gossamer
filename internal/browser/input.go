@@ -392,11 +392,19 @@ type taskHost struct {
 	autoRender         bool
 }
 
+func (host *taskHost) RuntimeTaskContext() *browserruntime.TaskContext {
+	if host == nil {
+		return nil
+	}
+	return host.task
+}
+
 var _ DOMComputedStyleHost = (*taskHost)(nil)
 var _ DOMMutationObserverHost = (*taskHost)(nil)
 var _ DOMGeometryHost = (*taskHost)(nil)
 var _ AnimationFrameHost = (*taskHost)(nil)
 var _ SessionHistoryHost = (*taskHost)(nil)
+var _ NativeTaskHost = (*taskHost)(nil)
 
 func (host *taskHost) GetElementByID(value string) (NodeHandle, bool, error) {
 	host.page.mutex.RLock()

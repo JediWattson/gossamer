@@ -2,9 +2,9 @@
 
 Gossamer's Go interpreter executes checked native Function descriptors against
 a `runtime.TaskContext`. The native lexer, parser, compiler, and portable
-Program loader now provide a bounded source-to-bytecode path. Stock V8 remains
-the browser's JavaScript engine because this kernel is not selected by the
-browser Realm adapter yet.
+Program loader provide a bounded source-to-bytecode path. The optional
+`internal/nativeengine` adapter can now select this kernel at the browser Realm
+boundary; stock V8 remains available for the broader web platform surface.
 
 ## Bytecode contract
 
@@ -44,7 +44,9 @@ adding ownership claims or reference-count traffic.
 - Built-ins: core Object, Array, String, Error, Map, and Set constructors and
   prototype methods, including explicit deterministic iterator objects.
 - Jobs: Promise reactions and `queueMicrotask` callbacks drained FIFO after
-  top-level execution, with nested jobs appended to the same checkpoint.
+  top-level execution, with nested jobs appended to the same checkpoint. The
+  browser adapter uses deferred execution so `JSRealm.DrainMicrotasks` owns the
+  externally visible checkpoint.
 - Exceptions: thrown Values, nested catch handlers, rethrow, and finally
   unwinding on normal and exceptional paths.
 
@@ -75,7 +77,7 @@ task region, and reads the immutable promoted graph from the microtask.
 
 This is not an ECMAScript implementation. It does not provide implicit
 promotion of bare return values, complete built-in coverage, modules,
-generators, async Functions, browser method opcodes, or V8 replacement.
+generators, async Functions, browser method opcodes, or complete V8 replacement.
 RegionStore has opaque HostObjects for browser facade identity, but invoking
 browser behavior remains an embedder boundary. The Store's existing
 copy-on-escape barrier still governs writes into longer-lived native owners.
