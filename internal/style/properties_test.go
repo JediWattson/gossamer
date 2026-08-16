@@ -6,14 +6,17 @@ import (
 )
 
 func TestPropertyDefinitionsAreCanonicalAndComplete(t *testing.T) {
-	if len(propertyDefinitions) != 79 {
-		t.Fatalf("property definition count = %d, want 79", len(propertyDefinitions))
+	if len(propertyDefinitions) != 80 {
+		t.Fatalf("property definition count = %d, want 80", len(propertyDefinitions))
 	}
 	if !slices.IsSorted(computedPropertyNames) {
 		t.Fatalf("computed property names are not sorted: %q", computedPropertyNames)
 	}
-	if !slices.Equal(computedPropertyNames, allPropertyNames) {
-		t.Fatalf("all targets = %q, want current ordinary longhands %q", allPropertyNames, computedPropertyNames)
+	wantAll := slices.DeleteFunc(append([]string(nil), computedPropertyNames...), func(name string) bool {
+		return name == "direction"
+	})
+	if !slices.Equal(wantAll, allPropertyNames) {
+		t.Fatalf("all targets = %q, want ordinary longhands except direction %q", allPropertyNames, wantAll)
 	}
 
 	viewport := Environment{Width: 800, Height: 600, InitialFontSize: 16}
@@ -99,6 +102,8 @@ func registryTestValue(definition propertyDefinition) string {
 		return "bottom"
 	case propertyContent:
 		return `"prefix" attr(data-label)`
+	case propertyDirection:
+		return "rtl"
 	case propertyDisplay:
 		return "block"
 	case propertyEmptyCells:

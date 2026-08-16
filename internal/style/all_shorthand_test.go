@@ -97,6 +97,20 @@ func TestAllInitialResetsEverySupportedLonghand(t *testing.T) {
 	}
 }
 
+func TestAllDoesNotResetDirection(t *testing.T) {
+	t.Parallel()
+
+	fixture := computeAllFixture(t, "", "direction:rtl", "div", "direction:inherit; all:initial")
+	if got := allComputedValue(t, fixture.target, "direction"); got != "rtl" {
+		t.Fatalf("direction after all:initial = %q, want inherited rtl", got)
+	}
+	for _, target := range style.ComputedPropertyNames(fixture.target) {
+		if target == "all" {
+			t.Fatal("computed enumeration contains all")
+		}
+	}
+}
+
 func TestAllInheritCopiesEverySupportedLonghand(t *testing.T) {
 	t.Parallel()
 

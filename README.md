@@ -260,7 +260,7 @@ performance budgets; see
   styles, and named top-level `@layer` rules
 - Versioned, immutable computed-style snapshots and a live, read-only
   `getComputedStyle()` subset for the currently supported longhands and custom
-  properties
+  properties, including inherited `direction` kept outside the `all` shorthand
 - Inherited custom properties and nested `var()` fallbacks with cycle
   invalidation
 - Screen media queries for viewport width, height, orientation, media types,
@@ -311,7 +311,8 @@ performance budgets; see
   wrappers retain caption margin boxes and caption-inclusive offset/client/
   scroll dimensions while root and caption border boxes remain separately
   observable through CSSOM; bounded collapsed-border conflict resolution,
-  layered backgrounds, retained geometry, and live CSSOM reads
+  layered backgrounds, retained geometry, live CSSOM reads, mirrored RTL
+  columns, and row-start/column-start exact-tie ordering
 - Inherited `visibility` plus normal, nowrap, pre, pre-wrap, pre-line, and
   break-spaces text whitespace behavior
 - Bundled Go sans and monospace families with regular, bold, italic, and

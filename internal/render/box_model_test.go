@@ -113,6 +113,49 @@ func TestRenderTextAlignPositionsLinesWithinContentBox(t *testing.T) {
 	}
 }
 
+func TestRenderLogicalTextAlignmentFollowsDirection(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		direction string
+		alignment string
+		wantRight bool
+	}{
+		{name: "ltr start", direction: "ltr", alignment: "start"},
+		{name: "ltr end", direction: "ltr", alignment: "end", wantRight: true},
+		{name: "rtl start", direction: "rtl", alignment: "start", wantRight: true},
+		{name: "rtl end", direction: "rtl", alignment: "end"},
+		{name: "rtl physical left", direction: "rtl", alignment: "left"},
+		{name: "rtl physical right", direction: "rtl", alignment: "right", wantRight: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			document, body := boxModelDocument()
+			container := dom.NewElement("div", dom.Attribute{
+				Name: "style", Value: "width:200px;direction:" + test.direction + ";text-align:" + test.alignment,
+			})
+			container.AppendChild(dom.NewText("logical"))
+			body.AppendChild(container)
+
+			frame, err := render.Render(document, render.Viewport{Width: 320, Height: 120})
+			if err != nil {
+				t.Fatal(err)
+			}
+			box := findBox(frame.Root, container)
+			fragment := findTextFragment(collectTextFragments(frame.Root), "logical")
+			if box == nil || fragment == nil {
+				t.Fatalf("layout output = box:%v fragment:%v", box, fragment)
+			}
+			want := box.ContentBounds.X
+			if test.wantRight {
+				want += box.ContentBounds.Width - fragment.Width
+			}
+			assertNear(t, "logical text x", fragment.X, want)
+		})
+	}
+}
+
 func TestRenderInlineBlockCreatesAtomicFormattingRoot(t *testing.T) {
 	t.Parallel()
 

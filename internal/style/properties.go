@@ -38,6 +38,7 @@ const (
 	propertyCaptionSide
 	propertyColor
 	propertyContent
+	propertyDirection
 	propertyDisplay
 	propertyEmptyCells
 	propertyFlexBasis
@@ -108,8 +109,7 @@ type propertyDefinition struct {
 	inherited bool
 	// Font-size computes before other em-dependent longhands.
 	computeEarly bool
-	// CSS excludes direction and unicode-bidi from all. They are not supported
-	// yet, but this flag keeps that exception in the registry when they arrive.
+	// CSS excludes direction and unicode-bidi from all.
 	excludedFromAll bool
 	invalidation    propertyInvalidationClass
 }
@@ -141,6 +141,7 @@ var propertyDefinitions = [...]propertyDefinition{
 	{name: "color", kind: propertyColor, inherited: true, invalidation: propertyInvalidatesPaint},
 	{name: "column-gap", kind: propertyGap, edge: propertyRight, invalidation: propertyInvalidatesLayout},
 	{name: "content", kind: propertyContent, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
+	{name: "direction", kind: propertyDirection, inherited: true, excludedFromAll: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "display", kind: propertyDisplay, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "empty-cells", kind: propertyEmptyCells, inherited: true, invalidation: propertyInvalidatesPaint},
 	{name: "flex-basis", kind: propertyFlexBasis, invalidation: propertyInvalidatesLayout},
@@ -314,6 +315,8 @@ func (definition propertyDefinition) copy(destination *computedStyle, source com
 		destination.color = source.color
 	case propertyContent:
 		destination.content = source.content
+	case propertyDirection:
+		destination.direction = source.direction
 	case propertyDisplay:
 		destination.display = source.display
 	case propertyEmptyCells:
@@ -469,6 +472,9 @@ func (definition propertyDefinition) valid(source string, viewport Viewport) boo
 	case propertyContent:
 		_, ok := parseContentValue(source)
 		return ok
+	case propertyDirection:
+		keyword, ok := singleCSSKeyword(source)
+		return ok && (keyword == "ltr" || keyword == "rtl")
 	case propertyDisplay:
 		keyword, ok := singleCSSKeyword(source)
 		if !ok {
@@ -692,6 +698,13 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 	case propertyContent:
 		if parsed, ok := parseContentValue(source); ok {
 			style.content = parsed
+		}
+	case propertyDirection:
+		keyword, _ := singleCSSKeyword(source)
+		if keyword == "rtl" {
+			style.direction = DirectionRTL
+		} else {
+			style.direction = DirectionLTR
 		}
 	case propertyDisplay:
 		keyword, _ := singleCSSKeyword(source)
@@ -1085,6 +1098,11 @@ func (definition propertyDefinition) serialize(computed ComputedStyle) string {
 		return serializeComputedColor(computed.color)
 	case propertyContent:
 		return serializeContentValue(computed.content)
+	case propertyDirection:
+		if computed.direction == DirectionRTL {
+			return "rtl"
+		}
+		return "ltr"
 	case propertyDisplay:
 		return serializeComputedDisplay(computed.display)
 	case propertyEmptyCells:

@@ -11263,7 +11263,7 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
       isolate, "removeProperty",
       v8::FunctionTemplate::New(isolate, StyleRemoveProperty));
   for (const char *name : {
-           "display",          "color",              "content",
+           "display",          "direction",          "color",              "content",
            "background",
            "backgroundColor",  "boxSizing",          "fontFamily",
            "fontSize",         "fontStyle",           "fontWeight",

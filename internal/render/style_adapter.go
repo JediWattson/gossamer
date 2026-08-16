@@ -33,6 +33,13 @@ const (
 	displayNone        = computed.DisplayNone
 )
 
+type direction = computed.Direction
+
+const (
+	directionLTR = computed.DirectionLTR
+	directionRTL = computed.DirectionRTL
+)
+
 type textAlignment = computed.TextAlignment
 
 const (

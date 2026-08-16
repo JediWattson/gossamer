@@ -229,6 +229,9 @@ func TestCollapsedBorderSpecificityOrder(t *testing.T) {
 		{name: "wider beats role", candidate: collapsedBorder{style: borderStyleSolid, width: 3, source: collapsedBorderTable}, current: collapsedBorder{style: borderStyleSolid, width: 2, source: collapsedBorderCell}, wins: true},
 		{name: "cell beats table on tie", candidate: collapsedBorder{style: borderStyleSolid, width: 2, source: collapsedBorderCell}, current: solid, wins: true},
 		{name: "first top-left cell survives exact tie", candidate: collapsedBorder{style: borderStyleSolid, width: 2, source: collapsedBorderCell, color: color.NRGBA{R: 1}}, current: collapsedBorder{style: borderStyleSolid, width: 2, source: collapsedBorderCell, color: color.NRGBA{B: 1}}, wins: false},
+		{name: "earlier logical row wins independent of traversal", candidate: collapsedBorder{style: borderStyleSolid, width: 2, source: collapsedBorderCell, logicalRow: 0, logicalColumn: 2}, current: collapsedBorder{style: borderStyleSolid, width: 2, source: collapsedBorderCell, logicalRow: 1}, wins: true},
+		{name: "later logical row loses independent of traversal", candidate: collapsedBorder{style: borderStyleSolid, width: 2, source: collapsedBorderCell, logicalRow: 2}, current: collapsedBorder{style: borderStyleSolid, width: 2, source: collapsedBorderCell, logicalRow: 1}, wins: false},
+		{name: "earlier logical column wins independent of traversal", candidate: collapsedBorder{style: borderStyleSolid, width: 2, source: collapsedBorderCell, logicalColumn: 1}, current: collapsedBorder{style: borderStyleSolid, width: 2, source: collapsedBorderCell, logicalColumn: 2}, wins: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

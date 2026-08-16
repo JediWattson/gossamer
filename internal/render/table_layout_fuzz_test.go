@@ -29,6 +29,10 @@ func FuzzTableLayoutSpansStayFinite(f *testing.F) {
 		if rawModes&1 != 0 {
 			borderCollapse = "collapse"
 		}
+		direction := "ltr"
+		if rawRows&0x40 != 0 {
+			direction = "rtl"
+		}
 		tableLayout := "auto"
 		width := "auto"
 		if rawModes&2 != 0 {
@@ -45,8 +49,8 @@ func FuzzTableLayoutSpansStayFinite(f *testing.F) {
 			tableHeight = fmt.Sprintf("%g%%", float64(1+rawColumns%200))
 		}
 		table := dom.NewElement("table", dom.Attribute{Name: "style", Value: fmt.Sprintf(
-			"border-collapse:%s;border-spacing:%dpx %dpx;table-layout:%s;width:%s;height:%s;border:%dpx solid #123456;empty-cells:hide",
-			borderCollapse, rawModes%7, (rawModes/7)%7, tableLayout, width, tableHeight, 1+rawModes%5,
+			"direction:%s;border-collapse:%s;border-spacing:%dpx %dpx;table-layout:%s;width:%s;height:%s;border:%dpx solid #123456;empty-cells:hide",
+			direction, borderCollapse, rawModes%7, (rawModes/7)%7, tableLayout, width, tableHeight, 1+rawModes%5,
 		)})
 		captionSide := "top"
 		if rawModes&4 != 0 {

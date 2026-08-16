@@ -106,17 +106,20 @@ const (
 )
 
 type collapsedBorder struct {
-	width  float64
-	style  borderStyle
-	color  color.NRGBA
-	node   *dom.Node
-	pseudo css.PseudoElement
-	source collapsedBorderSource
+	width         float64
+	style         borderStyle
+	color         color.NRGBA
+	node          *dom.Node
+	pseudo        css.PseudoElement
+	source        collapsedBorderSource
+	logicalRow    int
+	logicalColumn int
 }
 
 type collapsedBorderGrid struct {
 	rows       int
 	columns    int
+	rtl        bool
 	vertical   []collapsedBorder
 	horizontal []collapsedBorder
 }
@@ -194,7 +197,7 @@ func (context *layoutContext) resolveCollapsedTableBorders(table *styledNode, mo
 		return nil, fmt.Errorf("render: collapsed table exceeds %d border segments", maxTableCollapsedSegments)
 	}
 	grid := &collapsedBorderGrid{
-		rows: len(model.rows), columns: model.columnCount,
+		rows: len(model.rows), columns: model.columnCount, rtl: table.style.Direction() == directionRTL,
 		vertical: make([]collapsedBorder, verticalCount), horizontal: make([]collapsedBorder, horizontalCount),
 	}
 	context.considerCollapsedBox(grid, table, collapsedBorderTable, 0, model.columnCount, 0, len(model.rows))
@@ -240,21 +243,25 @@ func (context *layoutContext) considerCollapsedBox(grid *collapsedBorderGrid, no
 	if grid == nil || node == nil || columnStart < 0 || rowStart < 0 || columnEnd > grid.columns || rowEnd > grid.rows || columnStart >= columnEnd || rowStart >= rowEnd {
 		return
 	}
-	top := context.collapsedBorderCandidate(node, node.style.BorderTop(), source)
-	right := context.collapsedBorderCandidate(node, node.style.BorderRight(), source)
-	bottom := context.collapsedBorderCandidate(node, node.style.BorderBottom(), source)
-	left := context.collapsedBorderCandidate(node, node.style.BorderLeft(), source)
+	top := context.collapsedBorderCandidate(node, node.style.BorderTop(), source, rowStart, columnStart)
+	right := context.collapsedBorderCandidate(node, node.style.BorderRight(), source, rowStart, columnStart)
+	bottom := context.collapsedBorderCandidate(node, node.style.BorderBottom(), source, rowStart, columnStart)
+	left := context.collapsedBorderCandidate(node, node.style.BorderLeft(), source, rowStart, columnStart)
 	for column := columnStart; column < columnEnd; column++ {
 		considerCollapsedBorder(grid.horizontalAt(rowStart, column), top)
 		considerCollapsedBorder(grid.horizontalAt(rowEnd, column), bottom)
 	}
+	startSide, endSide := left, right
+	if grid.rtl {
+		startSide, endSide = right, left
+	}
 	for row := rowStart; row < rowEnd; row++ {
-		considerCollapsedBorder(grid.verticalAt(columnStart, row), left)
-		considerCollapsedBorder(grid.verticalAt(columnEnd, row), right)
+		considerCollapsedBorder(grid.verticalAt(columnStart, row), startSide)
+		considerCollapsedBorder(grid.verticalAt(columnEnd, row), endSide)
 	}
 }
 
-func (context *layoutContext) collapsedBorderCandidate(node *styledNode, side borderSide, source collapsedBorderSource) collapsedBorder {
+func (context *layoutContext) collapsedBorderCandidate(node *styledNode, side borderSide, source collapsedBorderSource, logicalRow, logicalColumn int) collapsedBorder {
 	borderColor, explicit := side.Color()
 	if !explicit {
 		borderColor = node.style.Color()
@@ -269,6 +276,7 @@ func (context *layoutContext) collapsedBorderCandidate(node *styledNode, side bo
 	return collapsedBorder{
 		width: width, style: side.Style(), color: borderColor,
 		node: node.node, pseudo: node.pseudo, source: source,
+		logicalRow: logicalRow, logicalColumn: logicalColumn,
 	}
 }
 
@@ -299,9 +307,17 @@ func collapsedBorderMoreSpecific(candidate, current collapsedBorder) bool {
 		return candidatePriority > currentPriority
 	}
 	// Once widths and styles tie, CSS gives the element role priority.
-	// Equal-role conflicts retain the first top/left candidate by traversal
-	// order until direction/writing-mode placement supplies the logical tie.
-	return candidate.source > current.source
+	if candidate.source != current.source {
+		return candidate.source > current.source
+	}
+	// CSS Tables orders equal-role candidates by row-start then column-start.
+	// In an RTL table column-start is physically right because the track
+	// geometry is mirrored; keeping this comparison logical makes it stable
+	// across writing direction and independent of traversal order.
+	if candidate.logicalRow != current.logicalRow {
+		return candidate.logicalRow < current.logicalRow
+	}
+	return candidate.logicalColumn < current.logicalColumn
 }
 
 func collapsedBorderStylePriority(style borderStyle) int {
@@ -341,10 +357,14 @@ func (grid *collapsedBorderGrid) outerHalfEdges() Edges {
 		}
 	}
 	for row := 0; row < grid.rows; row++ {
-		if left := grid.verticalAt(0, row); left != nil {
+		leftLine, rightLine := 0, grid.columns
+		if grid.rtl {
+			leftLine, rightLine = rightLine, leftLine
+		}
+		if left := grid.verticalAt(leftLine, row); left != nil {
 			edges.Left = math.Max(edges.Left, left.width/2)
 		}
-		if right := grid.verticalAt(grid.columns, row); right != nil {
+		if right := grid.verticalAt(rightLine, row); right != nil {
 			edges.Right = math.Max(edges.Right, right.width/2)
 		}
 	}
@@ -365,10 +385,14 @@ func (grid *collapsedBorderGrid) cellHalfEdges(placement tableCellPlacement) Edg
 		}
 	}
 	for row := placement.row; row < placement.row+placement.rowSpan; row++ {
-		if left := grid.verticalAt(placement.column, row); left != nil {
+		leftLine, rightLine := placement.column, placement.column+placement.columnSpan
+		if grid.rtl {
+			leftLine, rightLine = rightLine, leftLine
+		}
+		if left := grid.verticalAt(leftLine, row); left != nil {
 			edges.Left = math.Max(edges.Left, left.width/2)
 		}
-		if right := grid.verticalAt(placement.column+placement.columnSpan, row); right != nil {
+		if right := grid.verticalAt(rightLine, row); right != nil {
 			edges.Right = math.Max(edges.Right, right.width/2)
 		}
 	}
@@ -1376,6 +1400,9 @@ func (context *layoutContext) layoutTableContainer(
 	}
 	logicalColumnStarts, logicalColumnEnds, _ := tableTrackGeometry(columnWidths, horizontalSpacing, nil)
 	columnStarts, columnEnds, gridWidth := tableTrackGeometry(columnWidths, horizontalSpacing, collapsedColumns)
+	if table.style.Direction() == directionRTL {
+		mirrorTableTrackGeometry(columnStarts, columnEnds, gridWidth)
+	}
 	usedWidth := math.Max(contentWidth, gridWidth)
 	if tableHasCollapsedTrack(collapsedColumns) {
 		usedWidth = gridWidth
@@ -1437,7 +1464,7 @@ func (context *layoutContext) layoutTableContainer(
 			border = collapsed.cellHalfEdges(placement)
 		}
 		content := math.Max(0, spanWidth-padding.Left-padding.Right-border.Left-border.Right)
-		cellX := tableBox.ContentBounds.X + columnStarts[placement.column]
+		cellX := tableBox.ContentBounds.X + tableTrackStart(columnStarts, columnEnds, placement.column, placement.columnSpan)
 		cellBox, layoutErr := context.layoutBlockSizedWithSubgrid(
 			placement.node, cellX, 0, spanWidth, nil, &content, true, nil,
 			blockLayoutOverrides{
@@ -1684,8 +1711,8 @@ func layoutTableColumnSpec(spec tableColumnSpec, x, y float64, columnStarts, col
 		height = rowEnds[len(rowEnds)-1]
 	}
 	box := tableStructuralBox(spec.node, Rect{
-		X: x + columnStarts[spec.start], Y: y,
-		Width: columnEnds[spec.start+spec.span-1] - columnStarts[spec.start], Height: height,
+		X: x + tableTrackStart(columnStarts, columnEnds, spec.start, spec.span), Y: y,
+		Width: tableTrackSpan(columnStarts, columnEnds, spec.start, spec.span), Height: height,
 	})
 	if clipBackground && tableNodeHasBackground(spec.node) {
 		for row := range rowStarts {
@@ -1766,6 +1793,14 @@ func tableTrackGeometry(widths []float64, spacing float64, collapsed []bool) ([]
 	return starts, ends, cursor
 }
 
+func mirrorTableTrackGeometry(starts, ends []float64, width float64) {
+	for index := range min(len(starts), len(ends)) {
+		start, end := starts[index], ends[index]
+		starts[index] = width - end
+		ends[index] = width - start
+	}
+}
+
 func tableCollapsedRows(model tableModel) []bool {
 	result := make([]bool, len(model.rows))
 	for index, row := range model.rows {
@@ -1834,7 +1869,26 @@ func tableTrackSpan(starts, ends []float64, start, span int) float64 {
 	if span <= 0 || start < 0 || start >= len(starts) || start+span > len(ends) {
 		return 0
 	}
-	return math.Max(0, ends[start+span-1]-starts[start])
+	minimum, maximum := math.Inf(1), math.Inf(-1)
+	for index := start; index < start+span; index++ {
+		minimum = math.Min(minimum, math.Min(starts[index], ends[index]))
+		maximum = math.Max(maximum, math.Max(starts[index], ends[index]))
+	}
+	return math.Max(0, maximum-minimum)
+}
+
+func tableTrackStart(starts, ends []float64, start, span int) float64 {
+	if span <= 0 || start < 0 || start >= len(starts) || start+span > len(ends) {
+		return 0
+	}
+	minimum := math.Inf(1)
+	for index := start; index < start+span; index++ {
+		minimum = math.Min(minimum, math.Min(starts[index], ends[index]))
+	}
+	if math.IsInf(minimum, 1) {
+		return 0
+	}
+	return minimum
 }
 
 func (context *layoutContext) fixedTableColumnWidths(model tableModel, assignableWidth, tableWidth, horizontalSpacing float64, collapsed *collapsedBorderGrid) ([]float64, error) {
@@ -1999,6 +2053,16 @@ func (grid *collapsedBorderGrid) paintRects(x, y float64, columnStarts, columnEn
 		return nil
 	}
 	xLine := func(line int) float64 {
+		if grid.rtl {
+			switch {
+			case line <= 0:
+				return x + columnEnds[0]
+			case line >= len(columnEnds):
+				return x + columnStarts[len(columnStarts)-1]
+			default:
+				return x + (columnStarts[line-1]+columnEnds[line])/2
+			}
+		}
 		switch {
 		case line <= 0:
 			return x + columnStarts[0]
@@ -2025,7 +2089,8 @@ func (grid *collapsedBorderGrid) paintRects(x, y float64, columnStarts, columnEn
 			if border == nil || border.style == borderStyleNone || border.style == borderStyleHidden || border.width <= 0 || border.color.A == 0 {
 				continue
 			}
-			left, right := xLine(column), xLine(column+1)
+			first, second := xLine(column), xLine(column+1)
+			left, right := math.Min(first, second), math.Max(first, second)
 			result = append(result, boxPaintRect{
 				Node: border.node, Pseudo: border.pseudo, Color: border.color, Style: collapsedBorderPaintStyle(border.style), Edge: borderPaintTop,
 				Rect: Rect{X: left, Y: yLine(line) - border.width/2, Width: math.Max(0, right-left), Height: border.width},

@@ -77,7 +77,7 @@ shared tokenizer.
 
 Current foundation: cascade and computed-value calculation live in
 `internal/style`; browser pages cache versioned, stable-ID snapshots; and
-render consumes the exact snapshot retained by each frame. The current 79
+render consumes the exact snapshot retained by each frame. The current 80
 longhands share one registry for inheritance, validation, computation, copying,
 serialization, and invalidation metadata, and `all` participates in the full
 layer/importance cascade without resetting custom properties. User-agent,
@@ -386,7 +386,13 @@ shades. Collapsed tables ignore spacing and table padding, harmonize
 none/hidden/dotted/dashed/solid/double/groove/ridge/inset/outset borders across
 table, column/group, row/group, and cell
 edges, use half-width layout insets, and paint one bounded winning segment
-grid instead of duplicate cell borders. Table rows, row groups, columns, and
+grid instead of duplicate cell borders. The inherited `direction` property is
+retained independently of HTML directionality and remains excluded from
+`all`; the HTML `dir` mapping uses `:dir()` without allowing stylistic
+`direction` to change selector state. Logical text alignment and table column
+geometry now follow `ltr`/`rtl`, and equal collapsed conflicts use stable
+row-start/column-start ordering so the physical left or right winner follows
+the mirrored table. Table rows, row groups, columns, and
 column groups with `visibility: collapse` continue to participate in intrinsic
 and fixed sizing, then suppress their used track geometry and adjacent border
 spacing without a second layout. Spanning cells retain their logical content
@@ -475,8 +481,8 @@ parent track model through explicit nesting and work budgets. A Subgrid without
 a compatible parent formatting context computes to the retained keyword but
 uses `none`, as exposed by live resolved CSSOM geometry.
 
-- Complete the remaining advanced table intrinsic edge cases,
-  direction/writing-mode placement, and collapsed-border junction geometry.
+- Complete the remaining advanced table intrinsic edge cases, vertical
+  writing-mode placement, and collapsed-border junction geometry.
 - Extend Grid Subgrid through orthogonal writing modes and the remaining
   advanced intrinsic/overflow interactions.
 - Add multicolumn and fragmentation only after their block/inline consumers

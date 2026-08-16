@@ -2,6 +2,7 @@ package render_test
 
 import (
 	"image/color"
+	"math"
 	"testing"
 
 	"github.com/JediWattson/gossamer/internal/dom"
@@ -339,6 +340,132 @@ func TestCollapsedEqualWidthConflictPrefersCellThenTopCell(t *testing.T) {
 	if firstCommandWithColor(frame.DisplayList.Commands, color.NRGBA{G: 0xff, A: 0xff}) != nil ||
 		firstCommandWithColor(frame.DisplayList.Commands, color.NRGBA{B: 0xff, A: 0xff}) != nil {
 		t.Fatal("lower-priority row or lower cell border survived equal-width conflict")
+	}
+}
+
+func TestTableDirectionMirrorsColumnsAndKeepsColumnStartConflictWinner(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name         string
+		direction    string
+		firstBorder  string
+		secondBorder string
+		firstIsRight bool
+	}{
+		{
+			name: "ltr", direction: "ltr",
+			firstBorder: "border-right:6px solid #ff0000", secondBorder: "border-left:6px solid #00ff00",
+		},
+		{
+			name: "rtl", direction: "rtl", firstIsRight: true,
+			firstBorder: "border-left:6px solid #ff0000", secondBorder: "border-right:6px solid #00ff00",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			document := mustParseTableDocument(t, `<!doctype html><html><body style="margin:0">
+				<table id=table style="direction:`+test.direction+`;border-collapse:collapse;table-layout:fixed;width:120px">
+					<tr><td id=first style="height:20px;padding:0;`+test.firstBorder+`">first</td>
+					<td id=second style="height:20px;padding:0;`+test.secondBorder+`">second</td></tr>
+				</table></body></html>`)
+			frame, err := render.Render(document, render.Viewport{Width: 200, Height: 80})
+			if err != nil {
+				t.Fatal(err)
+			}
+			firstNode := tableElementByID(t, document, "first")
+			secondNode := tableElementByID(t, document, "second")
+			first := findBox(frame.Root, firstNode)
+			second := findBox(frame.Root, secondNode)
+			if first == nil || second == nil {
+				t.Fatalf("directional cells = first:%#v second:%#v", first, second)
+			}
+			if got := first.Bounds.X > second.Bounds.X; got != test.firstIsRight {
+				t.Fatalf("first cell right of second = %t, want %t; first=%#v second=%#v", got, test.firstIsRight, first.Bounds, second.Bounds)
+			}
+			winner := commandForNodeColor(frame.DisplayList.Commands, firstNode, color.NRGBA{R: 0xff, A: 0xff})
+			if winner == nil || winner.Rect.Width != 6 {
+				t.Fatalf("column-start collapsed winner = %#v, want first cell 6px red", winner)
+			}
+			if firstCommandWithColor(frame.DisplayList.Commands, color.NRGBA{G: 0xff, A: 0xff}) != nil {
+				t.Fatal("column-end cell survived exact collapsed conflict")
+			}
+			boundary := math.Max(first.Bounds.X, second.Bounds.X)
+			assertNear(t, "directional collapsed boundary", winner.Rect.X+winner.Rect.Width/2, boundary)
+		})
+	}
+}
+
+func TestRTLTableMirrorsColumnBoxesAndSpanningCells(t *testing.T) {
+	t.Parallel()
+
+	document := mustParseTableDocument(t, `<!doctype html><html><body style="margin:0">
+		<table style="direction:rtl;table-layout:fixed;width:180px;border-spacing:5px 0">
+			<colgroup id=group><col id=col0 style="width:40px"><col id=col1 style="width:50px"></colgroup>
+			<col id=col2 style="width:60px">
+			<tr><td id=span colspan=2>span</td><td id=last>last</td></tr>
+		</table>
+	</body></html>`)
+	frame, err := render.Render(document, render.Viewport{Width: 240, Height: 80})
+	if err != nil {
+		t.Fatal(err)
+	}
+	box := func(id string) *render.Box {
+		return findBox(frame.Root, tableElementByID(t, document, id))
+	}
+	group, col0, col1, col2 := box("group"), box("col0"), box("col1"), box("col2")
+	span, last := box("span"), box("last")
+	if group == nil || col0 == nil || col1 == nil || col2 == nil || span == nil || last == nil {
+		t.Fatalf("rtl table boxes = group:%#v col0:%#v col1:%#v col2:%#v span:%#v last:%#v", group, col0, col1, col2, span, last)
+	}
+	if !(col0.Bounds.X > col1.Bounds.X && col1.Bounds.X > col2.Bounds.X) {
+		t.Fatalf("rtl column order = col0:%#v col1:%#v col2:%#v", col0.Bounds, col1.Bounds, col2.Bounds)
+	}
+	assertNear(t, "rtl group start", group.Bounds.X, col1.Bounds.X)
+	assertNear(t, "rtl group width", group.Bounds.Width, col0.Bounds.X+col0.Bounds.Width-col1.Bounds.X)
+	assertNear(t, "rtl spanning start", span.Bounds.X, col1.Bounds.X)
+	assertNear(t, "rtl spanning width", span.Bounds.Width, group.Bounds.Width)
+	if span.Bounds.X <= last.Bounds.X {
+		t.Fatalf("rtl spanning cell %#v is not right of final logical cell %#v", span.Bounds, last.Bounds)
+	}
+}
+
+func TestRTLCollapsedBordersKeepPhysicalLeftAndRightInsets(t *testing.T) {
+	t.Parallel()
+
+	document := mustParseTableDocument(t, `<!doctype html><html><body style="margin:0">
+		<table id=table style="direction:rtl;border-collapse:collapse;border-left:8px solid #ff0000;border-right:4px solid #0000ff">
+			<tr><td id=cell style="width:40px;height:20px;padding:0;border-left:2px solid #00ff00;border-right:6px solid #ffff00"></td></tr>
+		</table>
+	</body></html>`)
+	frame, err := render.Render(document, render.Viewport{Width: 100, Height: 60})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tableNode := tableElementByID(t, document, "table")
+	wrapper := findBox(frame.Root, tableNode)
+	cell := findBox(frame.Root, tableElementByID(t, document, "cell"))
+	if wrapper == nil || cell == nil {
+		t.Fatalf("rtl collapsed boxes = wrapper:%#v cell:%#v", wrapper, cell)
+	}
+	var root *render.Box
+	for _, child := range wrapper.Children {
+		if child.Node == tableNode {
+			root = child
+			break
+		}
+	}
+	if root == nil {
+		t.Fatal("rtl table-root box missing")
+	}
+	assertNear(t, "rtl root physical left half", root.Border.Left, 4)
+	assertNear(t, "rtl root physical right half", root.Border.Right, 3)
+	assertNear(t, "rtl cell physical left half", cell.Border.Left, 4)
+	assertNear(t, "rtl cell physical right half", cell.Border.Right, 3)
+	if commandForNodeColor(frame.DisplayList.Commands, tableNode, color.NRGBA{R: 0xff, A: 0xff}) == nil {
+		t.Fatal("physical left table border did not win")
+	}
+	if commandForNodeColor(frame.DisplayList.Commands, tableElementByID(t, document, "cell"), color.NRGBA{R: 0xff, G: 0xff, A: 0xff}) == nil {
+		t.Fatal("physical right cell border did not win")
 	}
 }
 

@@ -1441,6 +1441,7 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 		return inlineLayout{}, err
 	}
 	alignment := containerStyle.TextAlignment()
+	inlineDirection := containerStyle.Direction()
 
 	var result inlineLayout
 	var line []inlinePiece
@@ -1512,9 +1513,17 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 		switch alignment {
 		case alignCenter:
 			lineOffset = (width - lineWidth) / 2
-		case alignRight, alignEnd:
+		case alignRight:
 			lineOffset = width - lineWidth
-		case alignLeft, alignStart, alignJustify:
+		case alignEnd:
+			if inlineDirection == directionLTR {
+				lineOffset = width - lineWidth
+			}
+		case alignStart:
+			if inlineDirection == directionRTL {
+				lineOffset = width - lineWidth
+			}
+		case alignLeft, alignJustify:
 		}
 		justifyStep := 0.0
 		if alignment == alignJustify && justify && lineWidth < width {

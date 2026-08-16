@@ -11,6 +11,7 @@ import (
 func TestComputedPropertyValueSerializesEverySupportedLonghand(t *testing.T) {
 	computed := ComputedStyle{
 		display:         DisplayBlock,
+		direction:       DirectionRTL,
 		flexDirection:   FlexDirectionColumn,
 		justifyContent:  JustifySpaceBetween,
 		justifyItems:    AlignEndItems,
@@ -97,6 +98,7 @@ func TestComputedPropertyValueSerializesEverySupportedLonghand(t *testing.T) {
 		"box-sizing":           "border-box",
 		"color":                "rgb(18, 52, 86)",
 		"column-gap":           "7px",
+		"direction":            "rtl",
 		"display":              "block",
 		"flex-basis":           "25%",
 		"flex-direction":       "column",
@@ -175,6 +177,8 @@ func TestComputedPropertyValueSerializesInitialAndAlternateEnums(t *testing.T) {
 		{name: "normal font style", property: "font-style", want: "normal"},
 		{name: "oblique font style", computed: ComputedStyle{fontStyle: FontStyleOblique}, property: "font-style", want: "oblique"},
 		{name: "inline display", property: "display", want: "inline"},
+		{name: "ltr direction", property: "direction", want: "ltr"},
+		{name: "rtl direction", computed: ComputedStyle{direction: DirectionRTL}, property: "direction", want: "rtl"},
 		{name: "inline block display", computed: ComputedStyle{display: DisplayInlineBlock}, property: "display", want: "inline-block"},
 		{name: "list item display", computed: ComputedStyle{display: DisplayListItem}, property: "display", want: "list-item"},
 		{name: "table display", computed: ComputedStyle{display: DisplayTable}, property: "display", want: "table"},

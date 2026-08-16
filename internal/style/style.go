@@ -181,6 +181,15 @@ const (
 	displayNone        = DisplayNone
 )
 
+// Direction is the computed inline base direction. It is inherited and, as
+// required by CSS Cascading, deliberately excluded from the all shorthand.
+type Direction uint8
+
+const (
+	DirectionLTR Direction = iota
+	DirectionRTL
+)
+
 type FlexDirection uint8
 
 const (
@@ -606,6 +615,7 @@ const (
 // lookups return it by value, so callers cannot mutate stored styles.
 type ComputedStyle struct {
 	display           DisplayMode
+	direction         Direction
 	borderCollapse    BorderCollapse
 	borderSpacing     BorderSpacing
 	captionSide       CaptionSide
@@ -695,6 +705,7 @@ type ComputedStyle struct {
 type computedStyle = ComputedStyle
 
 func (computed ComputedStyle) Display() DisplayMode           { return computed.display }
+func (computed ComputedStyle) Direction() Direction           { return computed.direction }
 func (computed ComputedStyle) BorderCollapse() BorderCollapse { return computed.borderCollapse }
 func (computed ComputedStyle) BorderSpacing() BorderSpacing   { return computed.borderSpacing }
 func (computed ComputedStyle) CaptionSide() CaptionSide       { return computed.captionSide }
@@ -1359,6 +1370,7 @@ func initialStyle(node *dom.Node, parent *styledNode, viewport Viewport) (comput
 func cssInitialStyle(viewport Viewport) computedStyle {
 	return computedStyle{
 		display:         displayInline,
+		direction:       DirectionLTR,
 		borderCollapse:  BorderCollapseSeparate,
 		borderSpacing:   BorderSpacing{horizontal: px(0), vertical: px(0)},
 		captionSide:     CaptionSideTop,
@@ -1422,6 +1434,8 @@ func cssInitialStyle(viewport Viewport) computedStyle {
 }
 
 var builtInUserAgentStylesheet = mustParseBuiltInUserAgentStylesheet(`
+[dir]:dir(ltr), bdi:dir(ltr), input[type=tel i]:dir(ltr) { direction:ltr }
+[dir]:dir(rtl), bdi:dir(rtl) { direction:rtl }
 html, body, address, article, aside, blockquote, div, dl, dt, dd,
 fieldset, figcaption, figure, footer, form, header, hgroup, main, nav,
 ol, p, pre, section, ul, h1, h2, h3, h4, h5, h6 { display:block }
