@@ -268,8 +268,9 @@ performance budgets; see
 - SVG/CSS named colors, hex, `rgb()`/`rgba()`, `hsl()`/`hsla()`, `hwb()`, and
   `currentcolor` across text, backgrounds, and borders; absolute, percentage,
   em/rem, and modern viewport length units; and bounded typed length math
-- Block flow, inline text wrapping, inline and block images, and basic vertical
-  margin collapsing
+- Block flow, inline text wrapping, inline and block images, and signed vertical
+  margin collapsing across siblings, eligible parent edges, and collapse-through
+  empty blocks without crossing flex, overflow, border, or padding barriers
 - Content- and border-box sizing, width/height and min/max constraints,
   definite containing-block percentage heights across block, atomic-inline,
   flex, replaced, and positioned boxes, margins, padding, solid borders,

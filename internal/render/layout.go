@@ -18,6 +18,47 @@ type layoutContext struct {
 	styles         map[*dom.Node]computedStyle
 	images         map[*dom.Node]image.Image
 	intrinsicCache map[intrinsicCacheKey]intrinsicWidths
+	marginCache    map[marginCacheKey]blockMarginProfile
+}
+
+// marginStrut is one collapsed vertical-margin group. CSS collapses the
+// largest positive margin with the most negative margin rather than applying
+// pairwise max, which is observably different for mixed-sign groups.
+type marginStrut struct {
+	positive float64
+	negative float64
+}
+
+func (strut marginStrut) add(value float64) marginStrut {
+	if value >= 0 {
+		strut.positive = math.Max(strut.positive, value)
+	} else {
+		strut.negative = math.Min(strut.negative, value)
+	}
+	return strut
+}
+
+func (strut marginStrut) merge(other marginStrut) marginStrut {
+	strut.positive = math.Max(strut.positive, other.positive)
+	strut.negative = math.Min(strut.negative, other.negative)
+	return strut
+}
+
+func (strut marginStrut) value() float64 {
+	return strut.positive + strut.negative
+}
+
+type blockMarginProfile struct {
+	start   marginStrut
+	end     marginStrut
+	through bool
+}
+
+type marginCacheKey struct {
+	node             *styledNode
+	availableWidth   float64
+	containingHeight float64
+	heightDefinite   bool
 }
 
 type inlineToken struct {
@@ -64,6 +105,7 @@ func layoutDocument(root *styledNode, viewport Viewport, images map[*dom.Node]im
 		styles:         make(map[*dom.Node]computedStyle),
 		images:         images,
 		intrinsicCache: make(map[intrinsicCacheKey]intrinsicWidths),
+		marginCache:    make(map[marginCacheKey]blockMarginProfile),
 	}
 	context.indexStyles(root)
 
@@ -92,18 +134,23 @@ func layoutDocument(root *styledNode, viewport Viewport, images map[*dom.Node]im
 	if body == nil || body.style.Display() == displayNone {
 		return documentBox, context.styles, nil
 	}
-	bodyY := resolveLength(body.style.MarginTop(), float64(viewport.Width), viewport, 0)
 	var bodyContainingHeight *float64
 	viewportHeight := float64(viewport.Height)
 	if height, definite := context.resolveSpecifiedContentHeight(html.style, &viewportHeight, 0); definite {
 		bodyContainingHeight = &height
 	}
+	bodyMargins := context.blockMargins(body, float64(viewport.Width), bodyContainingHeight)
+	bodyY := bodyMargins.start.value()
 	bodyBox, err := context.layoutBlock(body, 0, bodyY, float64(viewport.Width), bodyContainingHeight)
 	if err != nil {
 		return nil, nil, err
 	}
 	htmlBox.Children = append(htmlBox.Children, bodyBox)
-	bodyBottom := bodyBox.Bounds.Y + bodyBox.Bounds.Height + resolveLength(body.style.MarginBottom(), float64(viewport.Width), viewport, 0)
+	bodyBottomMargin := bodyMargins.end.value()
+	if bodyMargins.through {
+		bodyBottomMargin = 0
+	}
+	bodyBottom := bodyBox.Bounds.Y + bodyBox.Bounds.Height + bodyBottomMargin
 	if bodyBottom > htmlBox.Bounds.Height {
 		htmlBox.Bounds.Height = bodyBottom
 		htmlBox.ContentBounds.Height = bodyBottom
@@ -126,11 +173,171 @@ func (context *layoutContext) indexStyles(node *styledNode) {
 	}
 }
 
-func (context *layoutContext) layoutBlock(node *styledNode, containingX, contentY, availableWidth float64, containingHeight *float64) (*Box, error) {
-	return context.layoutBlockSized(node, containingX, contentY, availableWidth, containingHeight, nil)
+func (context *layoutContext) blockMargins(node *styledNode, availableWidth float64, containingHeight *float64) blockMarginProfile {
+	if node == nil {
+		return blockMarginProfile{}
+	}
+	key := marginCacheKey{node: node, availableWidth: availableWidth}
+	if containingHeight != nil {
+		key.containingHeight = *containingHeight
+		key.heightDefinite = true
+	}
+	if cached, ok := context.marginCache[key]; ok {
+		return cached
+	}
+
+	style := node.style
+	profile := blockMarginProfile{
+		start: marginStrut{}.add(resolveLength(style.MarginTop(), availableWidth, context.viewport, 0)),
+		end:   marginStrut{}.add(resolveLength(style.MarginBottom(), availableWidth, context.viewport, 0)),
+	}
+	padding := context.resolvePadding(style, availableWidth)
+	border := context.resolveBorder(style, availableWidth)
+	verticalInsets := padding.Top + padding.Bottom + border.Top + border.Bottom
+	childAvailableWidth := context.blockContentWidth(style, availableWidth, padding, border)
+	var childContainingHeight *float64
+	if height, definite := context.resolveSpecifiedContentHeight(style, containingHeight, verticalInsets); definite {
+		childContainingHeight = &height
+	}
+	canCollapseContents := context.marginCollapsingContext(style)
+	canCollapseStart := canCollapseContents && padding.Top == 0 && border.Top == 0
+	canCollapseEnd := canCollapseContents && padding.Bottom == 0 && border.Bottom == 0 &&
+		!resolvableHeight(style.Height(), containingHeight) &&
+		context.minimumContentHeight(style, containingHeight, verticalInsets) == 0
+
+	if canCollapseStart {
+		for _, child := range node.children {
+			if child == nil || child.style.Display() == displayNone || isOutOfFlow(child.style.Position()) {
+				continue
+			}
+			if isBlockFlowChild(child) {
+				childProfile := context.blockMargins(child, childAvailableWidth, childContainingHeight)
+				profile.start = profile.start.merge(childProfile.start)
+				if childProfile.through {
+					continue
+				}
+				break
+			}
+			if context.inlineNodeProducesLayout(child) {
+				break
+			}
+		}
+	}
+	if canCollapseEnd {
+		for index := len(node.children) - 1; index >= 0; index-- {
+			child := node.children[index]
+			if child == nil || child.style.Display() == displayNone || isOutOfFlow(child.style.Position()) {
+				continue
+			}
+			if isBlockFlowChild(child) {
+				childProfile := context.blockMargins(child, childAvailableWidth, childContainingHeight)
+				profile.end = profile.end.merge(childProfile.end)
+				if childProfile.through {
+					continue
+				}
+				break
+			}
+			if context.inlineNodeProducesLayout(child) {
+				break
+			}
+		}
+	}
+
+	profile.through = canCollapseStart && canCollapseEnd && !context.blockGeneratesOwnContent(node)
+	if profile.through {
+		for _, child := range node.children {
+			if child == nil || child.style.Display() == displayNone || isOutOfFlow(child.style.Position()) {
+				continue
+			}
+			if isBlockFlowChild(child) {
+				if !context.blockMargins(child, childAvailableWidth, childContainingHeight).through {
+					profile.through = false
+					break
+				}
+				continue
+			}
+			if context.inlineNodeProducesLayout(child) {
+				profile.through = false
+				break
+			}
+		}
+	}
+	if profile.through {
+		collapsed := profile.start.merge(profile.end)
+		profile.start = collapsed
+		profile.end = collapsed
+	}
+	context.marginCache[key] = profile
+	return profile
 }
 
-func (context *layoutContext) layoutBlockSized(node *styledNode, containingX, contentY, availableWidth float64, containingHeight, forcedContentWidth *float64) (*Box, error) {
+func (context *layoutContext) marginCollapsingContext(style computedStyle) bool {
+	if style.Display().Inside() != computed.DisplayInsideFlow || isOutOfFlow(style.Position()) {
+		return false
+	}
+	for _, overflow := range []computed.OverflowMode{style.OverflowX(), style.OverflowY()} {
+		if overflow != computed.OverflowVisible && overflow != computed.OverflowClip {
+			return false
+		}
+	}
+	return true
+}
+
+func (context *layoutContext) minimumContentHeight(style computedStyle, containingHeight *float64, verticalInsets float64) float64 {
+	minimum := style.MinHeight()
+	if !resolvableHeight(minimum, containingHeight) {
+		return 0
+	}
+	percentageBase := 0.0
+	if containingHeight != nil {
+		percentageBase = *containingHeight
+	}
+	value := math.Max(0, resolveLength(minimum, percentageBase, context.viewport, 0))
+	if style.BoxSizing() == boxSizingBorderBox {
+		value = math.Max(0, value-verticalInsets)
+	}
+	return value
+}
+
+func (context *layoutContext) blockContentWidth(style computedStyle, availableWidth float64, padding, border Edges) float64 {
+	horizontalInsets := padding.Left + padding.Right + border.Left + border.Right
+	left := resolveLength(style.MarginLeft(), availableWidth, context.viewport, 0)
+	right := resolveLength(style.MarginRight(), availableWidth, context.viewport, 0)
+	width := availableWidth - left - right - horizontalInsets
+	if style.Width().Unit() != lengthAuto {
+		width = resolveLength(style.Width(), availableWidth, context.viewport, availableWidth)
+		if style.BoxSizing() == boxSizingBorderBox {
+			width -= horizontalInsets
+		}
+	}
+	return context.constrainWidth(style, math.Max(0, width), availableWidth, horizontalInsets)
+}
+
+func (context *layoutContext) inlineNodeProducesLayout(node *styledNode) bool {
+	if node == nil {
+		return false
+	}
+	builder := inlineTokenBuilder{images: context.images}
+	builder.add(node, 1)
+	return len(builder.tokens) != 0
+}
+
+func (context *layoutContext) blockGeneratesOwnContent(node *styledNode) bool {
+	if node == nil {
+		return false
+	}
+	if node.style.Display() == displayListItem && node.style.ListStyleType() != listStyleNone {
+		return true
+	}
+	return node.node != nil && node.node.Type == dom.ElementNode && node.node.Data == "img" &&
+		(context.images[node.node] != nil || hasExplicitImageDimensions(node.style))
+}
+
+func (context *layoutContext) layoutBlock(node *styledNode, containingX, contentY, availableWidth float64, containingHeight *float64) (*Box, error) {
+	return context.layoutBlockSized(node, containingX, contentY, availableWidth, containingHeight, nil, false)
+}
+
+func (context *layoutContext) layoutBlockSized(node *styledNode, containingX, contentY, availableWidth float64, containingHeight, forcedContentWidth *float64, independentFormattingContext bool) (*Box, error) {
 	style := node.style
 	leftAuto := style.MarginLeft().Unit() == lengthAuto
 	rightAuto := style.MarginRight().Unit() == lengthAuto
@@ -242,8 +449,18 @@ func (context *layoutContext) layoutBlockSized(node *styledNode, containingX, co
 		return context.finalizeBlock(node, box, availableWidth)
 	}
 	cursorY := box.ContentBounds.Y
-	previousBottomMargin := 0.0
-	hasContent := false
+	pendingMargin := marginStrut{}
+	var pendingThroughBoxes []*Box
+	beforeFirstContent := true
+	canCollapseStart := !independentFormattingContext && context.marginCollapsingContext(style) && padding.Top == 0 && border.Top == 0
+	canCollapseEnd := !independentFormattingContext && context.marginCollapsingContext(style) && padding.Bottom == 0 && border.Bottom == 0 &&
+		!hasDefiniteHeight && context.minimumContentHeight(style, containingHeight, verticalInsets) == 0
+	placePendingThroughBoxes := func(targetY float64) {
+		for _, pending := range pendingThroughBoxes {
+			translateLayoutBox(pending, 0, targetY-pending.Bounds.Y)
+		}
+		pendingThroughBoxes = nil
+	}
 
 	for index := 0; index < len(node.children); {
 		child := node.children[index]
@@ -256,22 +473,36 @@ func (context *layoutContext) layoutBlockSized(node *styledNode, containingX, co
 			continue
 		}
 		if isBlockFlowChild(child) {
-			topMargin := resolveLength(child.style.MarginTop(), width, context.viewport, 0)
-			gap := math.Max(previousBottomMargin, topMargin)
-			// A first block child's top margin collapses through an auto-height
-			// parent with no border or padding in this initial box model.
-			if !hasContent && padding.Top == 0 && border.Top == 0 {
-				gap = 0
+			margins := context.blockMargins(child, width, childContainingHeight)
+			if margins.through {
+				if !(beforeFirstContent && canCollapseStart) {
+					pendingMargin = pendingMargin.merge(margins.start)
+				}
+				childBox, err := context.layoutBlock(child, box.ContentBounds.X, cursorY, width, childContainingHeight)
+				if err != nil {
+					return nil, err
+				}
+				box.Children = append(box.Children, childBox)
+				box.flow = append(box.flow, flowItem{box: childBox})
+				pendingThroughBoxes = append(pendingThroughBoxes, childBox)
+				index++
+				continue
 			}
-			childBox, err := context.layoutBlock(child, box.ContentBounds.X, cursorY+gap, width, childContainingHeight)
+			if !(beforeFirstContent && canCollapseStart) {
+				pendingMargin = pendingMargin.merge(margins.start)
+			}
+			gap := pendingMargin.value()
+			targetY := cursorY + gap
+			placePendingThroughBoxes(targetY)
+			childBox, err := context.layoutBlock(child, box.ContentBounds.X, targetY, width, childContainingHeight)
 			if err != nil {
 				return nil, err
 			}
 			box.Children = append(box.Children, childBox)
 			box.flow = append(box.flow, flowItem{box: childBox})
 			cursorY = childBox.Bounds.Y + childBox.Bounds.Height
-			previousBottomMargin = resolveLength(child.style.MarginBottom(), width, context.viewport, 0)
-			hasContent = true
+			pendingMargin = margins.end
+			beforeFirstContent = false
 			index++
 			continue
 		}
@@ -287,10 +518,10 @@ func (context *layoutContext) layoutBlockSized(node *styledNode, containingX, co
 			return nil, err
 		}
 		if len(inline.flow) != 0 {
-			if hasContent {
-				cursorY += previousBottomMargin
-				translateInlineLayout(&inline, 0, previousBottomMargin)
-			}
+			gap := pendingMargin.value()
+			placePendingThroughBoxes(cursorY + gap)
+			cursorY += gap
+			translateInlineLayout(&inline, 0, gap)
 			box.Fragments = append(box.Fragments, inline.fragments...)
 			for _, item := range inline.flow {
 				box.flow = append(box.flow, item)
@@ -303,14 +534,18 @@ func (context *layoutContext) layoutBlockSized(node *styledNode, containingX, co
 				}
 			}
 			cursorY += inline.height
-			previousBottomMargin = 0
-			hasContent = true
+			pendingMargin = marginStrut{}
+			beforeFirstContent = false
 		}
 		index = end
 	}
 
-	if hasContent && (padding.Bottom > 0 || border.Bottom > 0) {
-		cursorY += previousBottomMargin
+	if canCollapseEnd {
+		placePendingThroughBoxes(cursorY)
+	} else {
+		gap := pendingMargin.value()
+		placePendingThroughBoxes(cursorY + gap)
+		cursorY += gap
 	}
 	contentHeight := math.Max(0, cursorY-box.ContentBounds.Y)
 	if hasDefiniteHeight {
@@ -416,7 +651,7 @@ func (context *layoutContext) layoutFlexRow(node *styledNode, box *Box, contentW
 		item := &items[index]
 		marginTop := resolveLength(item.node.style.MarginTop(), contentWidth, context.viewport, 0)
 		marginBottom := resolveLength(item.node.style.MarginBottom(), contentWidth, context.viewport, 0)
-		childBox, err := context.layoutBlockSized(item.node, cursorX, box.ContentBounds.Y+marginTop, item.outerMain, definiteHeight, &item.mainSize)
+		childBox, err := context.layoutBlockSized(item.node, cursorX, box.ContentBounds.Y+marginTop, item.outerMain, definiteHeight, &item.mainSize, true)
 		if err != nil {
 			return 0, err
 		}
@@ -447,7 +682,7 @@ func (context *layoutContext) layoutFlexColumn(node *styledNode, box *Box, conte
 	totalMain := gap * math.Max(0, float64(len(items)-1))
 	for index := range items {
 		item := &items[index]
-		childBox, err := context.layoutBlock(item.node, box.ContentBounds.X, box.ContentBounds.Y, contentWidth, definiteHeight)
+		childBox, err := context.layoutBlockSized(item.node, box.ContentBounds.X, box.ContentBounds.Y, contentWidth, definiteHeight, nil, true)
 		if err != nil {
 			return 0, err
 		}
@@ -1090,7 +1325,7 @@ func (context *layoutContext) layoutAtomicInline(node *styledNode, availableWidt
 		}
 		availableContent := math.Max(0, availableWidth-marginLeft-marginRight-horizontalInsets)
 		contentWidth := math.Min(math.Max(intrinsic.minimum, availableContent), intrinsic.preferred)
-		box, err = context.layoutBlockSized(node, 0, marginTop, availableWidth, containingHeight, &contentWidth)
+		box, err = context.layoutBlockSized(node, 0, marginTop, availableWidth, containingHeight, &contentWidth, true)
 	} else {
 		box, err = context.layoutBlock(node, 0, marginTop, availableWidth, containingHeight)
 	}

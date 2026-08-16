@@ -287,13 +287,17 @@ box-model paint, stable-ID geometry, and flow-ordered hit testing. Block
 children no longer escape those roots, and live computed width/height reads use
 their retained geometry. Relative, absolute, and fixed positioning, basic
 stacking order, and single-line row/column flex layout also have tested
-foundations. Scrollbar layout, inline fragmentation, anchoring, snapping, and
-advanced formatting contexts remain pending.
+foundations. Vertical block margins now use signed margin struts: sibling,
+parent-child, nested, and collapse-through empty-block groups retain the
+largest positive plus most-negative margins, while formatting roots, overflow,
+padding, borders, specified height, and nonzero minimum height stop propagation
+at the corresponding edge. Scrollbar layout, inline fragmentation, anchoring,
+snapping, and advanced formatting contexts remain pending.
 
 - Complete inline formatting with retained inline boxes, whitespace, bidi,
   shaping, line breaking, and vertical alignment.
 - Extend definite sizing through the remaining Flexbox stretch/intrinsic edge
-  cases; complete margin collapsing and justified line layout.
+  cases; complete clearance/floats and justified line layout.
 - Extend positioning, stacking contexts, overflow/scrolling, and Flexbox in
   measured slices; add floats as a dedicated compatibility slice.
 - Keep computed values separate from used values that depend on geometry.
