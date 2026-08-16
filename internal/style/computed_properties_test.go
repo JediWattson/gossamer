@@ -13,7 +13,11 @@ func TestComputedPropertyValueSerializesEverySupportedLonghand(t *testing.T) {
 		display:         DisplayBlock,
 		flexDirection:   FlexDirectionColumn,
 		justifyContent:  JustifySpaceBetween,
+		justifyItems:    AlignEndItems,
+		justifySelf:     AlignSelfStart,
 		alignItems:      AlignCenterItems,
+		alignContent:    JustifySpaceEvenly,
+		alignSelf:       AlignFlexEnd,
 		rowGap:          Length{value: 6, unit: LengthPX},
 		columnGap:       Length{value: 7, unit: LengthPX},
 		flexGrow:        2,
@@ -73,7 +77,9 @@ func TestComputedPropertyValueSerializesEverySupportedLonghand(t *testing.T) {
 	}
 
 	want := map[string]string{
+		"align-content":        "space-evenly",
 		"align-items":          "center",
+		"align-self":           "flex-end",
 		"background-color":     "rgba(10, 20, 30, 0.5)",
 		"border-bottom-color":  "rgb(0, 128, 0)",
 		"border-bottom-style":  "none",
@@ -102,6 +108,8 @@ func TestComputedPropertyValueSerializesEverySupportedLonghand(t *testing.T) {
 		"font-weight":          "725",
 		"height":               "12px",
 		"justify-content":      "space-between",
+		"justify-items":        "end",
+		"justify-self":         "self-start",
 		"left":                 "auto",
 		"line-height":          "21.25px",
 		"list-style-type":      "square",

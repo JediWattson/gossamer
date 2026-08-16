@@ -193,7 +193,11 @@ const (
 type JustifyContent uint8
 
 const (
-	JustifyFlexStart JustifyContent = iota
+	JustifyNormal JustifyContent = iota
+	JustifyStretch
+	JustifyStart
+	JustifyEnd
+	JustifyFlexStart
 	JustifyFlexEnd
 	JustifyCenter
 	JustifySpaceBetween
@@ -204,9 +208,15 @@ const (
 type AlignItems uint8
 
 const (
-	AlignStretch AlignItems = iota
+	AlignAuto AlignItems = iota
+	AlignNormal
+	AlignStretch
+	AlignStartItems
+	AlignEndItems
 	AlignFlexStart
 	AlignFlexEnd
+	AlignSelfStart
+	AlignSelfEnd
 	AlignCenterItems
 )
 
@@ -574,7 +584,11 @@ type ComputedStyle struct {
 	tableLayout       TableLayout
 	flexDirection     FlexDirection
 	justifyContent    JustifyContent
+	justifyItems      AlignItems
+	justifySelf       AlignItems
 	alignItems        AlignItems
+	alignContent      JustifyContent
+	alignSelf         AlignItems
 	rowGap            Length
 	columnGap         Length
 	content           ContentValue
@@ -663,6 +677,8 @@ func (computed ComputedStyle) WithAnonymousDisplay(display DisplayMode) Computed
 func (computed ComputedStyle) WithAnonymousGridItem() ComputedStyle {
 	computed.display = DisplayBlock
 	computed.order = 0
+	computed.alignSelf = AlignAuto
+	computed.justifySelf = AlignAuto
 	computed.gridColumnStart = GridLine{kind: GridLineAuto}
 	computed.gridColumnEnd = GridLine{kind: GridLineAuto}
 	computed.gridRowStart = GridLine{kind: GridLineAuto}
@@ -673,7 +689,11 @@ func (computed ComputedStyle) FlexDirection() FlexDirection {
 	return computed.flexDirection
 }
 func (computed ComputedStyle) JustifyContent() JustifyContent { return computed.justifyContent }
+func (computed ComputedStyle) JustifyItems() AlignItems       { return computed.justifyItems }
+func (computed ComputedStyle) JustifySelf() AlignItems        { return computed.justifySelf }
 func (computed ComputedStyle) AlignItems() AlignItems         { return computed.alignItems }
+func (computed ComputedStyle) AlignContent() JustifyContent   { return computed.alignContent }
+func (computed ComputedStyle) AlignSelf() AlignItems          { return computed.alignSelf }
 func (computed ComputedStyle) RowGap() Length                 { return computed.rowGap }
 func (computed ComputedStyle) ColumnGap() Length              { return computed.columnGap }
 func (computed ComputedStyle) Content() ContentValue          { return computed.content }
@@ -1251,8 +1271,12 @@ func cssInitialStyle(viewport Viewport) computedStyle {
 		emptyCells:      EmptyCellsShow,
 		tableLayout:     TableLayoutAuto,
 		flexDirection:   FlexDirectionRow,
-		justifyContent:  JustifyFlexStart,
-		alignItems:      AlignStretch,
+		justifyContent:  JustifyNormal,
+		justifyItems:    AlignNormal,
+		justifySelf:     AlignAuto,
+		alignItems:      AlignNormal,
+		alignContent:    JustifyNormal,
+		alignSelf:       AlignAuto,
 		rowGap:          px(0),
 		columnGap:       px(0),
 		content:         ContentValue{kind: contentNormal},

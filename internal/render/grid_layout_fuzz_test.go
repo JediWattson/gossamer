@@ -43,13 +43,15 @@ func FuzzGridLayoutPlacementStaysFinite(f *testing.F) {
 		if rawModes&2 != 0 {
 			flow += " dense"
 		}
+		contentAlignment := []string{"normal", "start", "end", "center", "space-between", "space-around", "space-evenly"}[int(rawModes)%7]
+		selfAlignment := []string{"normal", "stretch", "start", "end", "center"}[int(rawSpan)%5]
 
 		document := dom.NewDocument()
 		html := dom.NewElement("html")
 		body := dom.NewElement("body", dom.Attribute{Name: "style", Value: "margin:0"})
 		grid := dom.NewElement("section", dom.Attribute{Name: "style", Value: fmt.Sprintf(
-			"display:grid;width:%dpx;height:%dpx;grid-template-columns:repeat(%d,%s);grid-template-rows:repeat(%d,auto);grid-auto-columns:%s auto;grid-auto-rows:%dpx auto;grid-auto-flow:%s;gap:%dpx",
-			100+int(rawColumns)*2, 80+int(rawRows)*2, columns, track, rows, track, 8+rawModes%12, flow, rawModes%7,
+			"display:grid;width:%dpx;height:%dpx;grid-template-columns:repeat(%d,%s);grid-template-rows:repeat(%d,auto);grid-auto-columns:%s auto;grid-auto-rows:%dpx auto;grid-auto-flow:%s;gap:%dpx;justify-content:%s;align-content:%s;justify-items:%s;align-items:%s",
+			100+int(rawColumns)*2, 80+int(rawRows)*2, columns, track, rows, track, 8+rawModes%12, flow, rawModes%7, contentAlignment, contentAlignment, selfAlignment, selfAlignment,
 		)})
 		for index := range itemCount {
 			placement := ""
@@ -61,7 +63,7 @@ func FuzzGridLayoutPlacementStaysFinite(f *testing.F) {
 			case 2:
 				placement = fmt.Sprintf("grid-row-end:span %d;", min(span, rows))
 			}
-			item := dom.NewElement("div", dom.Attribute{Name: "style", Value: placement + fmt.Sprintf("min-width:%dpx;min-height:%dpx;background:#123456", index%13, index%11)})
+			item := dom.NewElement("div", dom.Attribute{Name: "style", Value: placement + fmt.Sprintf("min-width:%dpx;min-height:%dpx;background:#123456;justify-self:%s;align-self:%s", index%13, index%11, selfAlignment, selfAlignment)})
 			item.AppendChild(dom.NewText(strings.Repeat("x", index%9)))
 			grid.AppendChild(item)
 		}

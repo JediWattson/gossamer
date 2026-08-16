@@ -88,3 +88,23 @@ func TestInlineFlexUsesAtomicInlineOuterDisplay(t *testing.T) {
 		t.Fatalf("following inline text = %#v, want after atomic inline-flex box %#v", after, flexGeometry.Bounds)
 	}
 }
+
+func TestFlexItemsHonorAlignSelfOverrides(t *testing.T) {
+	t.Parallel()
+
+	document, err := htmlparser.Parse(strings.NewReader(`<!doctype html><html><body style="margin:0">
+		<section style="display:flex;width:100px;height:100px;align-items:start"><div id=row style="width:20px;height:20px;align-self:end"></div></section>
+		<section style="display:flex;flex-direction:column;width:100px;height:40px;align-items:start"><div id=column style="width:20px;height:20px;align-self:end"></div></section>
+	</body></html>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame, err := render.Render(document, render.Viewport{Width: 140, Height: 180})
+	if err != nil {
+		t.Fatal(err)
+	}
+	row, _ := frame.Layout.Geometry(findStaticPageElementByID(document, "row"))
+	column, _ := frame.Layout.Geometry(findStaticPageElementByID(document, "column"))
+	assertNear(t, "row flex align-self end", row.Bounds.Y, 80)
+	assertNear(t, "column flex align-self end", column.Bounds.X, 80)
+}

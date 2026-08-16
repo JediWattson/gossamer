@@ -15,6 +15,12 @@ func TestGridPropertiesComputeSerializeAndStayImmutable(t *testing.T) {
 	body := dom.NewElement("body")
 	target := dom.NewElement("div", dom.Attribute{Name: "style", Value: `
 		display:grid;
+		align-content:space-around;
+		align-items:end;
+		align-self:self-start;
+		justify-content:center;
+		justify-items:stretch;
+		justify-self:flex-end;
 		grid-template-columns:repeat(2, 40px minmax(min-content, 1fr)) max-content fit-content(75px);
 		grid-template-rows:auto min-content 25%;
 		grid-auto-columns:minmax(20px, max-content) 1fr fit-content(30px);
@@ -33,6 +39,9 @@ func TestGridPropertiesComputeSerializeAndStayImmutable(t *testing.T) {
 		t.Fatal("target has no computed style")
 	}
 	properties := map[string]string{
+		"align-content":         "space-around",
+		"align-items":           "end",
+		"align-self":            "self-start",
 		"display":               "grid",
 		"grid-template-columns": "repeat(2, 40px minmax(min-content, 1fr)) max-content fit-content(75px)",
 		"grid-template-rows":    "auto min-content 25%",
@@ -43,6 +52,9 @@ func TestGridPropertiesComputeSerializeAndStayImmutable(t *testing.T) {
 		"grid-column-end":       "span 3",
 		"grid-row-start":        "-2",
 		"grid-row-end":          "4",
+		"justify-content":       "center",
+		"justify-items":         "stretch",
+		"justify-self":          "flex-end",
 	}
 	for property, want := range properties {
 		if got, found := ComputedPropertyValue(computed, property); !found || got != want {
@@ -75,6 +87,9 @@ func TestGridPropertyGrammarRejectsUnboundedOrUnsupportedTracks(t *testing.T) {
 	t.Parallel()
 
 	valid := []css.Declaration{
+		{Property: "align-content", Value: "space-evenly"},
+		{Property: "align-items", Value: "self-end"},
+		{Property: "align-self", Value: "auto"},
 		{Property: "display", Value: "inline-grid"},
 		{Property: "grid-template-columns", Value: "repeat(4, min(10px, 2vw) 1fr)"},
 		{Property: "grid-auto-columns", Value: "0fr"},
@@ -85,6 +100,9 @@ func TestGridPropertyGrammarRejectsUnboundedOrUnsupportedTracks(t *testing.T) {
 		{Property: "grid-auto-columns", Value: "10px min-content 2fr"},
 		{Property: "grid-auto-flow", Value: "dense row"},
 		{Property: "grid-column", Value: "span 2 / -1"},
+		{Property: "justify-content", Value: "stretch"},
+		{Property: "justify-items", Value: "start"},
+		{Property: "justify-self", Value: "center"},
 	}
 	for _, declaration := range valid {
 		if !SupportsDeclaration(declaration) {
@@ -93,6 +111,9 @@ func TestGridPropertyGrammarRejectsUnboundedOrUnsupportedTracks(t *testing.T) {
 	}
 
 	invalid := []css.Declaration{
+		{Property: "align-content", Value: "auto"},
+		{Property: "align-items", Value: "auto"},
+		{Property: "align-self", Value: "space-between"},
 		{Property: "grid-template-columns", Value: "repeat(0, 1fr)"},
 		{Property: "grid-template-columns", Value: "repeat(1025, 1fr)"},
 		{Property: "grid-template-columns", Value: "minmax(1fr, 20px)"},
@@ -106,6 +127,8 @@ func TestGridPropertyGrammarRejectsUnboundedOrUnsupportedTracks(t *testing.T) {
 		{Property: "grid-column-start", Value: "0"},
 		{Property: "grid-column-end", Value: "span -1"},
 		{Property: "grid-row", Value: "1 / 2 / 3"},
+		{Property: "justify-content", Value: "self-start"},
+		{Property: "justify-items", Value: "space-around"},
 	}
 	for _, declaration := range invalid {
 		if SupportsDeclaration(declaration) {

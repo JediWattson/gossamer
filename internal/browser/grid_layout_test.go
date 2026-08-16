@@ -105,3 +105,44 @@ func TestComputedGridMinMaxTracksResolveAndStayLive(t *testing.T) {
 		t.Fatal("minmax computed-style reads published a frame or cleared dirtiness")
 	}
 }
+
+func TestComputedGridAlignmentPropertiesDriveLiveGeometry(t *testing.T) {
+	t.Parallel()
+
+	engine, page, gridID := computedStyleTestPage(t, `<!doctype html><html><body style="margin:0"><section id=target style="display:grid;width:300px;height:200px;grid-template-columns:50px 50px;grid-template-rows:40px 40px;gap:10px;justify-content:space-between;align-content:center;justify-items:center;align-items:end"><div id=child style="width:20px;height:10px"></div></section></body></html>`)
+	defer engine.Close()
+	generation := page.DocumentGeneration()
+	grid := NodeHandle{Document: generation, Node: gridID}
+	child := NodeHandle{Document: generation, Node: mustPageElementID(t, page, "child")}
+
+	for property, expected := range map[string]string{
+		"align-content":   "center",
+		"align-items":     "end",
+		"justify-content": "space-between",
+		"justify-items":   "center",
+	} {
+		assertResolvedProperty(t, page, grid, property, expected)
+	}
+	initial, err := page.ElementGeometry(child)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if initial.Rect.X != 15 || initial.Rect.Y != 85 {
+		t.Fatalf("initial aligned child = %#v, want x=15 y=85", initial.Rect)
+	}
+	if err := page.document.SetAttribute(gridID, "style", "display:grid;width:300px;height:200px;grid-template-columns:50px 50px;grid-template-rows:40px 40px;gap:10px;justify-content:end;align-content:end;justify-items:end;align-items:start"); err != nil {
+		t.Fatal(err)
+	}
+	assertResolvedProperty(t, page, grid, "justify-content", "end")
+	assertResolvedProperty(t, page, grid, "align-content", "end")
+	mutated, err := page.ElementGeometry(child)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mutated.Rect.X != 220 || mutated.Rect.Y != 110 {
+		t.Fatalf("mutated aligned child = %#v, want x=220 y=110", mutated.Rect)
+	}
+	if page.Frame() != nil || !page.Dirty() {
+		t.Fatal("alignment computed/geometry reads published a frame or cleared dirtiness")
+	}
+}

@@ -25,7 +25,9 @@ const (
 type propertyKind uint8
 
 const (
-	propertyAlignItems propertyKind = iota
+	propertyAlignContent propertyKind = iota
+	propertyAlignItems
+	propertyAlignSelf
 	propertyBackgroundColor
 	propertyBorderColor
 	propertyBorderCollapse
@@ -58,6 +60,8 @@ const (
 	propertyHeight
 	propertyInset
 	propertyJustifyContent
+	propertyJustifyItems
+	propertyJustifySelf
 	propertyLineHeight
 	propertyListStyleType
 	propertyMargin
@@ -112,7 +116,9 @@ type propertyDefinition struct {
 // propertyDefinitions is kept in canonical byte order so CSSStyleDeclaration
 // enumeration, all expansion, and deterministic test/debug output agree.
 var propertyDefinitions = [...]propertyDefinition{
+	{name: "align-content", kind: propertyAlignContent, invalidation: propertyInvalidatesLayout},
 	{name: "align-items", kind: propertyAlignItems, invalidation: propertyInvalidatesLayout},
+	{name: "align-self", kind: propertyAlignSelf, invalidation: propertyInvalidatesLayout},
 	{name: "background-color", kind: propertyBackgroundColor, invalidation: propertyInvalidatesPaint},
 	{name: "border-bottom-color", kind: propertyBorderColor, edge: propertyBottom, invalidation: propertyInvalidatesPaint},
 	{name: "border-bottom-style", kind: propertyBorderStyle, edge: propertyBottom, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
@@ -155,6 +161,8 @@ var propertyDefinitions = [...]propertyDefinition{
 	{name: "grid-template-rows", kind: propertyGridTemplateRows, invalidation: propertyInvalidatesLayout},
 	{name: "height", kind: propertyHeight, invalidation: propertyInvalidatesLayout},
 	{name: "justify-content", kind: propertyJustifyContent, invalidation: propertyInvalidatesLayout},
+	{name: "justify-items", kind: propertyJustifyItems, invalidation: propertyInvalidatesLayout},
+	{name: "justify-self", kind: propertyJustifySelf, invalidation: propertyInvalidatesLayout},
 	{name: "left", kind: propertyInset, edge: propertyLeft, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "line-height", kind: propertyLineHeight, inherited: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "list-style-type", kind: propertyListStyleType, inherited: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
@@ -267,8 +275,12 @@ func copyComputedProperty(destination *computedStyle, source computedStyle, prop
 
 func (definition propertyDefinition) copy(destination *computedStyle, source computedStyle) {
 	switch definition.kind {
+	case propertyAlignContent:
+		destination.alignContent = source.alignContent
 	case propertyAlignItems:
 		destination.alignItems = source.alignItems
+	case propertyAlignSelf:
+		destination.alignSelf = source.alignSelf
 	case propertyBackgroundColor:
 		destination.background = source.background
 		destination.hasBackground = source.hasBackground
@@ -339,6 +351,10 @@ func (definition propertyDefinition) copy(destination *computedStyle, source com
 		*definition.boxLength(destination) = *definition.boxLength(&source)
 	case propertyJustifyContent:
 		destination.justifyContent = source.justifyContent
+	case propertyJustifyItems:
+		destination.justifyItems = source.justifyItems
+	case propertyJustifySelf:
+		destination.justifySelf = source.justifySelf
 	case propertyLineHeight:
 		destination.lineHeight = source.lineHeight
 	case propertyListStyleType:
@@ -393,9 +409,15 @@ func (definition propertyDefinition) resetToInitial(destination *computedStyle, 
 
 func (definition propertyDefinition) valid(source string, viewport Viewport) bool {
 	switch definition.kind {
-	case propertyAlignItems:
-		keyword, ok := singleCSSKeyword(source)
-		return ok && (keyword == "stretch" || keyword == "flex-start" || keyword == "flex-end" || keyword == "center")
+	case propertyAlignContent, propertyJustifyContent:
+		_, ok := parseContentAlignment(source)
+		return ok
+	case propertyAlignItems, propertyJustifyItems:
+		_, ok := parseSelfAlignment(source, false)
+		return ok
+	case propertyAlignSelf, propertyJustifySelf:
+		_, ok := parseSelfAlignment(source, true)
+		return ok
 	case propertyBackgroundColor:
 		_, ok := parseComputedColor(source)
 		return ok
@@ -488,9 +510,6 @@ func (definition propertyDefinition) valid(source string, viewport Viewport) boo
 	case propertyInset:
 		_, ok := parseLength(source, 1, 1, viewport)
 		return ok
-	case propertyJustifyContent:
-		keyword, ok := singleCSSKeyword(source)
-		return ok && (keyword == "flex-start" || keyword == "flex-end" || keyword == "center" || keyword == "space-between" || keyword == "space-around" || keyword == "space-evenly")
 	case propertyLineHeight:
 		if keyword, ok := singleCSSKeyword(source); ok && keyword == "normal" {
 			return true
@@ -581,17 +600,17 @@ func (definition propertyDefinition) valid(source string, viewport Viewport) boo
 
 func (definition propertyDefinition) apply(style *computedStyle, source string, context propertyApplyContext) {
 	switch definition.kind {
+	case propertyAlignContent:
+		if parsed, ok := parseContentAlignment(source); ok {
+			style.alignContent = parsed
+		}
 	case propertyAlignItems:
-		keyword, _ := singleCSSKeyword(source)
-		switch keyword {
-		case "flex-start":
-			style.alignItems = AlignFlexStart
-		case "flex-end":
-			style.alignItems = AlignFlexEnd
-		case "center":
-			style.alignItems = AlignCenterItems
-		default:
-			style.alignItems = AlignStretch
+		if parsed, ok := parseSelfAlignment(source, false); ok {
+			style.alignItems = parsed
+		}
+	case propertyAlignSelf:
+		if parsed, ok := parseSelfAlignment(source, true); ok {
+			style.alignSelf = parsed
 		}
 	case propertyBackgroundColor:
 		if parsed, ok := parseComputedColor(source); ok {
@@ -802,20 +821,16 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 			*definition.boxLength(style) = parsed
 		}
 	case propertyJustifyContent:
-		keyword, _ := singleCSSKeyword(source)
-		switch keyword {
-		case "flex-end":
-			style.justifyContent = JustifyFlexEnd
-		case "center":
-			style.justifyContent = JustifyCenter
-		case "space-between":
-			style.justifyContent = JustifySpaceBetween
-		case "space-around":
-			style.justifyContent = JustifySpaceAround
-		case "space-evenly":
-			style.justifyContent = JustifySpaceEvenly
-		default:
-			style.justifyContent = JustifyFlexStart
+		if parsed, ok := parseContentAlignment(source); ok {
+			style.justifyContent = parsed
+		}
+	case propertyJustifyItems:
+		if parsed, ok := parseSelfAlignment(source, false); ok {
+			style.justifyItems = parsed
+		}
+	case propertyJustifySelf:
+		if parsed, ok := parseSelfAlignment(source, true); ok {
+			style.justifySelf = parsed
 		}
 	case propertyLineHeight:
 		if keyword, ok := singleCSSKeyword(source); ok && keyword == "normal" {
@@ -990,17 +1005,12 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 
 func (definition propertyDefinition) serialize(computed ComputedStyle) string {
 	switch definition.kind {
+	case propertyAlignContent:
+		return serializeContentAlignment(computed.alignContent)
 	case propertyAlignItems:
-		switch computed.alignItems {
-		case AlignFlexStart:
-			return "flex-start"
-		case AlignFlexEnd:
-			return "flex-end"
-		case AlignCenterItems:
-			return "center"
-		default:
-			return "stretch"
-		}
+		return serializeSelfAlignment(computed.alignItems)
+	case propertyAlignSelf:
+		return serializeSelfAlignment(computed.alignSelf)
 	case propertyBackgroundColor:
 		background, _ := computed.Background()
 		return serializeComputedColor(background)
@@ -1097,20 +1107,11 @@ func (definition propertyDefinition) serialize(computed ComputedStyle) string {
 	case propertyInset:
 		return serializeComputedLength(*definition.boxLength(&computed))
 	case propertyJustifyContent:
-		switch computed.justifyContent {
-		case JustifyFlexEnd:
-			return "flex-end"
-		case JustifyCenter:
-			return "center"
-		case JustifySpaceBetween:
-			return "space-between"
-		case JustifySpaceAround:
-			return "space-around"
-		case JustifySpaceEvenly:
-			return "space-evenly"
-		default:
-			return "flex-start"
-		}
+		return serializeContentAlignment(computed.justifyContent)
+	case propertyJustifyItems:
+		return serializeSelfAlignment(computed.justifyItems)
+	case propertyJustifySelf:
+		return serializeSelfAlignment(computed.justifySelf)
 	case propertyLineHeight:
 		if computed.lineHeight.normal {
 			return "normal"
@@ -1549,6 +1550,118 @@ func validOverflowKeyword(keyword string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func parseSelfAlignment(source string, allowAuto bool) (AlignItems, bool) {
+	keyword, ok := singleCSSKeyword(source)
+	if !ok {
+		return AlignAuto, false
+	}
+	switch keyword {
+	case "auto":
+		return AlignAuto, allowAuto
+	case "normal":
+		return AlignNormal, true
+	case "stretch":
+		return AlignStretch, true
+	case "start":
+		return AlignStartItems, true
+	case "end":
+		return AlignEndItems, true
+	case "flex-start":
+		return AlignFlexStart, true
+	case "flex-end":
+		return AlignFlexEnd, true
+	case "self-start":
+		return AlignSelfStart, true
+	case "self-end":
+		return AlignSelfEnd, true
+	case "center":
+		return AlignCenterItems, true
+	default:
+		return AlignAuto, false
+	}
+}
+
+func serializeSelfAlignment(alignment AlignItems) string {
+	switch alignment {
+	case AlignAuto:
+		return "auto"
+	case AlignNormal:
+		return "normal"
+	case AlignStretch:
+		return "stretch"
+	case AlignStartItems:
+		return "start"
+	case AlignEndItems:
+		return "end"
+	case AlignFlexStart:
+		return "flex-start"
+	case AlignFlexEnd:
+		return "flex-end"
+	case AlignSelfStart:
+		return "self-start"
+	case AlignSelfEnd:
+		return "self-end"
+	default:
+		return "center"
+	}
+}
+
+func parseContentAlignment(source string) (JustifyContent, bool) {
+	keyword, ok := singleCSSKeyword(source)
+	if !ok {
+		return JustifyNormal, false
+	}
+	switch keyword {
+	case "normal":
+		return JustifyNormal, true
+	case "stretch":
+		return JustifyStretch, true
+	case "start":
+		return JustifyStart, true
+	case "end":
+		return JustifyEnd, true
+	case "flex-start":
+		return JustifyFlexStart, true
+	case "flex-end":
+		return JustifyFlexEnd, true
+	case "center":
+		return JustifyCenter, true
+	case "space-between":
+		return JustifySpaceBetween, true
+	case "space-around":
+		return JustifySpaceAround, true
+	case "space-evenly":
+		return JustifySpaceEvenly, true
+	default:
+		return JustifyNormal, false
+	}
+}
+
+func serializeContentAlignment(alignment JustifyContent) string {
+	switch alignment {
+	case JustifyStretch:
+		return "stretch"
+	case JustifyStart:
+		return "start"
+	case JustifyEnd:
+		return "end"
+	case JustifyFlexStart:
+		return "flex-start"
+	case JustifyFlexEnd:
+		return "flex-end"
+	case JustifyCenter:
+		return "center"
+	case JustifySpaceBetween:
+		return "space-between"
+	case JustifySpaceAround:
+		return "space-around"
+	case JustifySpaceEvenly:
+		return "space-evenly"
+	default:
+		return "normal"
 	}
 }
 

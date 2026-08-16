@@ -77,7 +77,7 @@ shared tokenizer.
 
 Current foundation: cascade and computed-value calculation live in
 `internal/style`; browser pages cache versioned, stable-ID snapshots; and
-render consumes the exact snapshot retained by each frame. The current 74
+render consumes the exact snapshot retained by each frame. The current 78
 longhands share one registry for inheritance, validation, computation, copying,
 serialization, and invalidation metadata, and `all` participates in the full
 layer/importance cascade without resetting custom properties. User-agent,
@@ -385,9 +385,12 @@ used-value track model retains separate bases, growth limits, intrinsic
 contributions, and flexible maxima; it floors inverted ranges and treats
 percentage breadths as automatic only when their axis is indefinite.
 Items support numbered and negative lines, spans, stable `order`, row/column
-auto-flow, dense backfill, gaps, and overlap paint/hit order. Definite and
-indefinite flexible tracks follow their distinct fraction sizing rules, and
-retained stable-ID geometry exposes resolved explicit and implicit
+auto-flow, dense backfill, gaps, content distribution, container item
+alignment, and per-item self overrides. Normal/stretch alignment expands
+automatic tracks, positional and distributed content alignment shifts track
+geometry, and non-stretch automatic items shrink to their intrinsic width.
+Definite and indefinite flexible tracks follow their distinct fraction sizing
+rules, and retained stable-ID geometry exposes resolved explicit and implicit
 `grid-template-*` tracks to live CSSOM reads.
 
 - Complete table track merging/missing-cell fixup, percentage/intrinsic sizing
@@ -395,8 +398,8 @@ retained stable-ID geometry exposes resolved explicit and implicit
   direction/writing-mode placement, and collapsed-border junctions once the
   wider border-style set exists.
 - Extend Grid with line names, auto-fill/auto-fit, template areas,
-  justify/align properties, subgrid, and the remaining intrinsic/overflow
-  interactions.
+  baseline/safe/unsafe alignment, subgrid, and the remaining
+  intrinsic/overflow interactions.
 - Add multicolumn and fragmentation only after their block/inline consumers
   are retained and testable.
 - Keep each formatting context as an independent computed-to-used vertical

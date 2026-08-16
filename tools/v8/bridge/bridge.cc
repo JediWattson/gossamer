@@ -1009,7 +1009,8 @@ bool IsDashedStylePropertyName(const std::string &name) {
 
 bool IsSupportedDashedStylePropertyName(const std::string &name) {
   for (const char *supported : {
-           "align-items",         "background-color",    "column-gap",
+           "align-content",       "align-items",         "align-self",
+           "background-color",    "column-gap",
            "flex-basis",          "flex-direction",      "flex-grow",
            "flex-shrink",         "font-size",           "font-weight",
            "line-height",         "text-decoration",     "text-decoration-line",
@@ -1024,7 +1025,11 @@ bool IsSupportedDashedStylePropertyName(const std::string &name) {
            "border-bottom-style", "border-left-style",   "border-top-color",
            "border-right-color",  "border-bottom-color", "border-left-color",
            "list-style",          "list-style-type",      "overflow-x",
-           "justify-content",     "overflow-y",          "row-gap",
+           "grid-auto-columns",   "grid-auto-flow",      "grid-auto-rows",
+           "grid-column-end",     "grid-column-start",   "grid-row-end",
+           "grid-row-start",      "grid-template-columns",
+           "grid-template-rows",  "justify-content",     "justify-items",
+           "justify-self",        "overflow-y",          "row-gap",
            "z-index",
        }) {
     if (name == supported)
@@ -11206,10 +11211,12 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
            "overflow",         "overflowX",          "overflowY",
            "position",         "top",                "right",
            "bottom",           "left",               "zIndex",
-           "alignItems",       "columnGap",           "flex",
+           "alignContent",     "alignItems",          "alignSelf",
+           "columnGap",        "flex",
            "flexBasis",        "flexDirection",       "flexGrow",
            "flexShrink",       "gap",                 "justifyContent",
-           "order",            "rowGap",              "gridAutoColumns",
+           "justifyItems",     "justifySelf",         "order",
+           "rowGap",           "gridAutoColumns",
            "gridAutoFlow",     "gridAutoRows",        "gridColumn",
            "gridColumnEnd",    "gridColumnStart",     "gridRow",
            "gridRowEnd",       "gridRowStart",        "gridTemplateColumns",

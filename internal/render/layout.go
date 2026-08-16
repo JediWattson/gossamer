@@ -732,10 +732,11 @@ func (context *layoutContext) layoutFlexRow(node *styledNode, box *Box, contentW
 		marginTop := resolveLength(item.node.style.MarginTop(), contentWidth, context.viewport, 0)
 		marginBottom := resolveLength(item.node.style.MarginBottom(), contentWidth, context.viewport, 0)
 		availableCross := math.Max(0, containerHeight-marginTop-marginBottom)
-		if node.style.AlignItems() == computed.AlignStretch && item.node.style.Height().Unit() == lengthAuto {
+		alignment := resolvedSelfAlignment(item.node.style.AlignSelf(), node.style.AlignItems())
+		if alignmentStretches(alignment) && item.node.style.Height().Unit() == lengthAuto {
 			setBoxOuterHeight(item.box, availableCross)
 		}
-		offset := alignFlexOffset(node.style.AlignItems(), math.Max(0, availableCross-item.box.Bounds.Height))
+		offset := alignFlexOffset(alignment, math.Max(0, availableCross-item.box.Bounds.Height))
 		translateLayoutBox(item.box, 0, box.ContentBounds.Y+marginTop+offset-item.box.Bounds.Y)
 		box.Children = append(box.Children, item.box)
 		box.flow = append(box.flow, flowItem{box: item.box})
@@ -748,7 +749,16 @@ func (context *layoutContext) layoutFlexColumn(node *styledNode, box *Box, conte
 	totalMain := gap * math.Max(0, float64(len(items)-1))
 	for index := range items {
 		item := &items[index]
-		childBox, err := context.layoutBlockSized(item.node, box.ContentBounds.X, box.ContentBounds.Y, contentWidth, definiteHeight, nil, true)
+		itemWidth := contentWidth
+		alignment := resolvedSelfAlignment(item.node.style.AlignSelf(), node.style.AlignItems())
+		if !alignmentStretches(alignment) && item.node.style.Width().Unit() == lengthAuto {
+			intrinsic, intrinsicErr := context.intrinsicOuterWidths(item.node, contentWidth)
+			if intrinsicErr != nil {
+				return 0, intrinsicErr
+			}
+			itemWidth = math.Min(contentWidth, intrinsic.preferred)
+		}
+		childBox, err := context.layoutBlockSized(item.node, box.ContentBounds.X, box.ContentBounds.Y, itemWidth, definiteHeight, nil, true)
 		if err != nil {
 			return 0, err
 		}
@@ -798,7 +808,8 @@ func (context *layoutContext) layoutFlexColumn(node *styledNode, box *Box, conte
 		marginRight := resolveLength(item.node.style.MarginRight(), contentWidth, context.viewport, 0)
 		setBoxOuterHeight(item.box, item.mainSize)
 		availableCross := math.Max(0, contentWidth-marginLeft-marginRight)
-		xOffset := alignFlexOffset(node.style.AlignItems(), math.Max(0, availableCross-item.box.Bounds.Width))
+		alignment := resolvedSelfAlignment(item.node.style.AlignSelf(), node.style.AlignItems())
+		xOffset := alignFlexOffset(alignment, math.Max(0, availableCross-item.box.Bounds.Width))
 		translateLayoutBox(item.box, box.ContentBounds.X+marginLeft+xOffset-item.box.Bounds.X, cursorY+marginTop-item.box.Bounds.Y)
 		box.Children = append(box.Children, item.box)
 		box.flow = append(box.flow, flowItem{box: item.box})
@@ -827,7 +838,7 @@ func justifyFlexSpace(justify computed.JustifyContent, free float64, count int) 
 		return 0, 0
 	}
 	switch justify {
-	case computed.JustifyFlexEnd:
+	case computed.JustifyEnd, computed.JustifyFlexEnd:
 		return free, 0
 	case computed.JustifyCenter:
 		return free / 2, 0
@@ -847,13 +858,24 @@ func justifyFlexSpace(justify computed.JustifyContent, free float64, count int) 
 
 func alignFlexOffset(align computed.AlignItems, free float64) float64 {
 	switch align {
-	case computed.AlignFlexEnd:
+	case computed.AlignEndItems, computed.AlignFlexEnd, computed.AlignSelfEnd:
 		return free
 	case computed.AlignCenterItems:
 		return free / 2
 	default:
 		return 0
 	}
+}
+
+func resolvedSelfAlignment(self, parent computed.AlignItems) computed.AlignItems {
+	if self == computed.AlignAuto {
+		return parent
+	}
+	return self
+}
+
+func alignmentStretches(align computed.AlignItems) bool {
+	return align == computed.AlignNormal || align == computed.AlignStretch
 }
 
 func (context *layoutContext) finalizeBlock(node *styledNode, box *Box, containingWidth float64) (*Box, error) {

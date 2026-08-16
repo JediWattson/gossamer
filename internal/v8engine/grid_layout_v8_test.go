@@ -59,6 +59,17 @@ func TestStockV8GridComputedStyleAndGeometryStayLive(t *testing.T) {
 				if (retained.gridTemplateColumns !== "160px 140px" || retained.gridAutoColumns !== "fit-content(25%) 20px") {
 					throw new Error("live minmax tracks: " + [retained.gridTemplateColumns, retained.gridAutoColumns]);
 				}
+				grid.style.height = "100px";
+				grid.style.justifyContent = "center";
+				grid.style.alignContent = "end";
+				grid.style["justify-items"] = "end";
+				grid.style.alignItems = "start";
+				first.style.width = "20px";
+				first.style.height = "10px";
+				const aligned = first.getBoundingClientRect();
+				if (retained.justifyContent !== "center" || retained.alignContent !== "end" || retained["align-content"] !== "end" || retained.justifyItems !== "end" || retained["justify-items"] !== "end" || retained.alignItems !== "start" || aligned.left !== 280 || aligned.top !== 30) {
+					throw new Error("live grid alignment: " + [retained.justifyContent, retained.alignContent, retained.justifyItems, retained.alignItems, aligned.left, aligned.top]);
+				}
 			})();
 		`,
 	}); err != nil {

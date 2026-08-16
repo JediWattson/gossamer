@@ -454,6 +454,52 @@ func TestGridAlignmentOverlapPaintAndHitOrderFollowOrderModifiedItems(t *testing
 	}
 }
 
+func TestGridContentAndSelfAlignmentUseTrackAndAreaFreeSpace(t *testing.T) {
+	t.Parallel()
+
+	document, err := htmlparser.Parse(strings.NewReader(`<!doctype html><html><body style="margin:0">
+		<section id=grid style="display:grid;width:300px;height:200px;grid-template-columns:50px 50px;grid-template-rows:40px 40px;gap:10px;justify-content:space-between;align-content:center;justify-items:center;align-items:end">
+			<div id=centered style="grid-column:1;grid-row:1;width:20px;height:10px"></div>
+			<div id=overridden style="grid-column:2;grid-row:2;width:20px;height:10px;justify-self:end;align-self:start"></div>
+		</section>
+	</body></html>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame, err := render.Render(document, render.Viewport{Width: 340, Height: 240})
+	if err != nil {
+		t.Fatal(err)
+	}
+	centered, _ := frame.Layout.Geometry(findStaticPageElementByID(document, "centered"))
+	overridden, _ := frame.Layout.Geometry(findStaticPageElementByID(document, "overridden"))
+	assertNear(t, "centered grid item x", centered.Bounds.X, 15)
+	assertNear(t, "end-aligned grid item y", centered.Bounds.Y, 85)
+	assertNear(t, "self-end grid item x", overridden.Bounds.X, 280)
+	assertNear(t, "self-start grid item y", overridden.Bounds.Y, 105)
+}
+
+func TestGridNormalStretchesAutoTracksButStartKeepsMaxContent(t *testing.T) {
+	t.Parallel()
+
+	document, err := htmlparser.Parse(strings.NewReader(`<!doctype html><html><body style="margin:0">
+		<section id=normal style="display:grid;width:200px;grid-template-columns:auto"><div>aa</div></section>
+		<section id=start style="display:grid;width:200px;grid-template-columns:auto;justify-content:start"><div>aa</div></section>
+	</body></html>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame, err := render.Render(document, render.Viewport{Width: 240, Height: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	normal, _ := frame.Layout.Geometry(findStaticPageElementByID(document, "normal"))
+	start, _ := frame.Layout.Geometry(findStaticPageElementByID(document, "start"))
+	assertNear(t, "normal auto track stretch", normal.GridColumnSizes()[0], 200)
+	if got := start.GridColumnSizes()[0]; got <= 0 || got >= 200 {
+		t.Fatalf("start-aligned auto track = %v, want intrinsic width", got)
+	}
+}
+
 func TestGridCreatesAnonymousTextItemsAndBlockifiesElementItems(t *testing.T) {
 	t.Parallel()
 
