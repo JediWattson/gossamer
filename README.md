@@ -497,11 +497,7 @@ go test ./internal/css -run '^$' -fuzz=FuzzParseDoesNotPanic
 
 ## Roadmap
 
-The next broad milestones are richer CSS values and formatting contexts, deeper
-HTML tree-builder coverage, a real tab model and back-forward cache, and
-expanding the first interactive backend beyond its macOS
-mouse/keyboard/scroll slice. The existing renderer is structured so each
-capability can extend the pipeline instead of replacing it.
-
-The staged CSS architecture and its V8/DOM invalidation boundary are tracked in
+See the general project roadmap in [docs/roadmap.md](docs/roadmap.md). The
+existing renderer is structured so each capability can extend the pipeline
+instead of replacing it. CSS-specific milestones remain in
 [`docs/css-engine-roadmap.md`](docs/css-engine-roadmap.md).
