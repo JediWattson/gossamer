@@ -165,6 +165,12 @@ JavaScript execution semantics and V8 internals. See
 [`docs/native-heap-types.md`](docs/native-heap-types.md) for the typed payload
 contract.
 
+<p align="center">
+  <img src="./docs/gossamer-region-memory-architecture.png" alt="Gossamer RegionStore owner lifetimes, region states, queue transfer lifecycle, and ownership ledger" width="1200">
+</p>
+
+<p align="center"><em>Generation-checked regions move through explicit ownership boundaries before bulk release.</em></p>
+
 Browser async work now uses that same physical boundary. Timers retain one
 Realm-owned HostObject while waiting, transfer it through the task queue when
 they fire, and release it with the consumer task. Queued callbacks and
