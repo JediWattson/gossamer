@@ -655,6 +655,25 @@ function Factory() { return function(value) { return {value: value + 1}; }; }
 	}
 }
 
+func TestCompileExecutesObjectSpreadAndComputedPropertiesInOrder(t *testing.T) {
+	t.Parallel()
+
+	image, err := compiler.Compile(`
+let reads = 0;
+let source = {a: 1, get copied() { reads++; return 2; }};
+let key = "chosen";
+let result = {a: 0, ...source, [key]: 3, a: 4, ...null};
+(result.a === 4 && result.copied === 2 && result.chosen === 3 && reads === 1) ? 1 : 0;
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := execute(t, 826, image)
+	if result.Kind() != memory.ValueNumber || result.Number() != 1 {
+		t.Fatalf("object spread/computed result = %#v, want 1", result)
+	}
+}
+
 func TestCompileLowersLazyForOfGenerator(t *testing.T) {
 	t.Parallel()
 

@@ -368,10 +368,13 @@ func (*SpreadElement) expressionNode() {}
 
 type ObjectProperty struct {
 	Base
-	Key       string
-	Value     Expression
-	Shorthand bool
-	Accessor  ObjectPropertyAccessor
+	Key           string
+	KeyExpression Expression
+	Value         Expression
+	Shorthand     bool
+	Computed      bool
+	Spread        bool
+	Accessor      ObjectPropertyAccessor
 }
 
 type ObjectPropertyAccessor uint8

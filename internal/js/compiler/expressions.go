@@ -347,17 +347,38 @@ func (compiler *functionCompiler) compileObject(object *ast.ObjectLiteral) error
 		if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpDup}, property.Span()); err != nil {
 			return err
 		}
-		name, err := compiler.stringConstant(property.Key)
-		if err != nil {
-			return err
+		if property.Spread {
+			if err := compiler.compileExpression(property.Value); err != nil {
+				return err
+			}
+			if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpCopyDataProperties}, property.Span()); err != nil {
+				return err
+			}
+			if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpPop}, property.Span()); err != nil {
+				return err
+			}
+			continue
 		}
-		if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpConstant, A: name}, property.Span()); err != nil {
-			return err
+		if property.Computed {
+			if err := compiler.compileExpression(property.KeyExpression); err != nil {
+				return err
+			}
+		} else {
+			name, err := compiler.stringConstant(property.Key)
+			if err != nil {
+				return err
+			}
+			if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpConstant, A: name}, property.Span()); err != nil {
+				return err
+			}
 		}
 		if err := compiler.compileExpression(property.Value); err != nil {
 			return err
 		}
 		opcode := browserruntime.OpSetOwnProperty
+		if property.Computed {
+			opcode = browserruntime.OpSetProperty
+		}
 		mode := uint32(0)
 		if property.Accessor != ast.ObjectPropertyData {
 			opcode = browserruntime.OpDefineAccessor

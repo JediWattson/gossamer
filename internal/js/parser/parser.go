@@ -1455,6 +1455,50 @@ func (input *parser) parseArrayLiteral(open lexer.Token) (ast.Expression, error)
 func (input *parser) parseObjectLiteral(open lexer.Token) (ast.Expression, error) {
 	properties := make([]*ast.ObjectProperty, 0)
 	for !input.check(lexer.RightBrace) {
+		if input.match(lexer.Ellipsis) {
+			spread := input.previous()
+			argument, err := input.parseAssignment()
+			if err != nil {
+				return nil, err
+			}
+			properties = append(properties, &ast.ObjectProperty{
+				Base: ast.Base{Range: join(spread.Span, argument.Span())}, Value: argument, Spread: true,
+			})
+			if !input.match(lexer.Comma) {
+				break
+			}
+			if input.check(lexer.RightBrace) {
+				break
+			}
+			continue
+		}
+		if input.match(lexer.LeftBracket) {
+			start := input.previous()
+			key, err := input.parseExpression()
+			if err != nil {
+				return nil, err
+			}
+			if _, err := input.consume(lexer.RightBracket, "expected ']' after computed object property"); err != nil {
+				return nil, err
+			}
+			if _, err := input.consume(lexer.Colon, "expected ':' after computed object property"); err != nil {
+				return nil, err
+			}
+			value, err := input.parseAssignment()
+			if err != nil {
+				return nil, err
+			}
+			properties = append(properties, &ast.ObjectProperty{
+				Base: ast.Base{Range: join(start.Span, value.Span())}, KeyExpression: key, Value: value, Computed: true,
+			})
+			if !input.match(lexer.Comma) {
+				break
+			}
+			if input.check(lexer.RightBrace) {
+				break
+			}
+			continue
+		}
 		key := input.advance()
 		if !isPropertyName(key.Kind) && key.Kind != lexer.String && key.Kind != lexer.Number {
 			return nil, input.errorAt(key, "object property requires identifier, String, or number key")

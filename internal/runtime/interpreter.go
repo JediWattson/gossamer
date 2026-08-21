@@ -603,6 +603,24 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 				}
 			}
 			frame.push(arrayValue)
+		case OpCopyDataProperties:
+			source, err := frame.pop()
+			if err != nil {
+				return memory.Value{}, err
+			}
+			target, err := frame.pop()
+			if err != nil {
+				return memory.Value{}, err
+			}
+			result, err := builtinObjectAssign(execution, memory.Ref{}, memory.Function{}, memory.UndefinedValue(), []memory.Value{target, source})
+			if err != nil {
+				if handled, terminal := execution.routeFrameError(frame, err); handled {
+					continue
+				} else {
+					return memory.Value{}, terminal
+				}
+			}
+			frame.push(result)
 		case OpSetLength:
 			lengthValue, err := frame.pop()
 			if err != nil {

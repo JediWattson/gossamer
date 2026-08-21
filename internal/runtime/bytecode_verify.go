@@ -144,6 +144,8 @@ func instructionStackEffect(instruction Instruction) (required, delta int, termi
 		return 1, -1, false, nil
 	case OpAppendSpread:
 		return 2, -1, false, nil
+	case OpCopyDataProperties:
+		return 2, -1, false, nil
 	case OpSetLength:
 		return 2, -1, false, nil
 	case OpDeclareBinding, OpEnterTry, OpLeaveTry, OpEnterFinally, OpEndFinally, OpEnterScope, OpLeaveScope:

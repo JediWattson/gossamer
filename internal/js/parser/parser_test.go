@@ -257,6 +257,21 @@ func TestParsePostfixMembersAndCallsAfterConstruction(t *testing.T) {
 	}
 }
 
+func TestParseObjectSpreadAndComputedProperties(t *testing.T) {
+	t.Parallel()
+
+	script, err := parser.Parse("const copy = {before: 1, ...source, [key]: value, ...null};")
+	if err != nil {
+		t.Fatal(err)
+	}
+	object := script.Body[0].(*ast.VariableDeclaration).Declarations[0].Init.(*ast.ObjectLiteral)
+	if len(object.Properties) != 4 || !object.Properties[1].Spread ||
+		!object.Properties[2].Computed || object.Properties[2].KeyExpression.(*ast.Identifier).Name != "key" ||
+		!object.Properties[3].Spread {
+		t.Fatalf("object spread/computed properties = %#v", object.Properties)
+	}
+}
+
 func TestParseLowersDestructuredArrowParameter(t *testing.T) {
 	t.Parallel()
 
