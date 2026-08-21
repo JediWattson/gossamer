@@ -78,9 +78,13 @@ task region, and reads the immutable promoted graph from the microtask.
 
 ## Deliberate boundaries
 
-This is not an ECMAScript implementation. It does not provide implicit
-promotion of bare return values, complete built-in coverage, modules,
-generators, async Functions, browser method opcodes, or complete V8 replacement.
-RegionStore has opaque HostObjects for browser facade identity, but invoking
-browser behavior remains an embedder boundary. The Store's existing
-copy-on-escape barrier still governs writes into longer-lived native owners.
+This is not a complete ECMAScript implementation. It does not provide implicit
+promotion of bare standalone-interpreter return values, complete built-in
+coverage, general generator resumption, arbitrary async Function bodies,
+top-level await, or complete V8 replacement. Static and literal-dynamic module
+graphs, bounded generators and async Functions, production Solid and React,
+and browser methods are implemented above the bytecode kernel through portable
+program metadata and registered numeric native calls. RegionStore HostObjects
+carry pointer-free browser facade identity; the execution-scoped embedder host
+performs the actual DOM operation. The Store's copy-on-escape barrier still
+governs writes into longer-lived native owners.

@@ -20,7 +20,7 @@ backend-neutral display list for screenshots and interactive presentation.
 
 ## Quick start
 
-### Run the Graphite browser with stock V8
+### Run the Graphite browser with Strand or stock V8
 
 The interactive browser currently requires:
 
@@ -52,6 +52,18 @@ Then launch the native Graphite browser with an absolute HTTP or HTTPS URL:
 ```sh
 ./tools/v8/window.sh https://example.com
 ```
+
+The tagged launcher defaults to stock V8. Select the native Strand engine with
+the same Graphite shell and browser kernel:
+
+```sh
+./tools/v8/window.sh --engine=strand https://example.com
+```
+
+Strand does not require V8 to be linked, so a native-only development build can
+also run directly with `go run ./cmd/gossamer-window --engine=strand <url>`.
+Its JavaScript and Web API surface is deliberately smaller than the stock-V8
+reference path.
 
 Subsequent launches only need `window.sh`; rerun `build.sh` after changing the
 C++ V8 bridge. URLs containing shell characters such as `&` should be quoted.
@@ -189,8 +201,8 @@ A synchronous native interpreter can now execute hand-assembled Function
 bytecode over those payloads. Its borrowed frames expose Ref roots, all heap
 mutation stays behind TaskContext barriers, and returned private values still
 require explicit promotion or queue semantics before task release. Stock V8
-remains the browser's complete JavaScript engine. An optional native engine
-adapter now runs the supported source subset through the same Page `JSRealm`
+remains the browser's broad compatibility/reference engine. The native Strand
+engine runs the supported source subset through the same Page `JSRealm`
 socket: its global graph is copied explicitly between Realm-owned retention and
 task-owned execution, and its Promise jobs drain at the existing browser
 microtask checkpoint. See
@@ -257,10 +269,10 @@ tests and stock V8; native code never receives a DOM node, V8 handle, or Go
 pointer.
 The Graphite shell is composited in Go around that frame. Its chrome consumes
 or translates native events before document hit testing, and its telemetry rail
-reads the same Realm profile used by the ownership gates. Stock V8 remains the
-active compatibility/reference engine in this checkout; the socket is kept
-engine-neutral for Strand to replace it without moving DOM or GUI ownership out
-of Go.
+reads the same Realm profile used by the ownership gates. Graphite selects
+either engine with `--engine=strand|v8`; stock V8 remains the default
+compatibility/reference path. Switching engines does not move DOM or GUI
+ownership out of Go.
 Browser input currently covers click, pointer, keyboard, input, focus, and
 change event families. Profiling covers heap totals, sampled allocations,
 GC callbacks, weak-wrapper collection, wrapper-root region sweeps, callback
@@ -422,7 +434,7 @@ performance budgets; see
 | `internal/runtime` | Realms, task and microtask queues, actor scheduling, and shadow ownership telemetry |
 | `internal/browser` | Browser/Page ownership, loading, stable-ID mutation scheduling, and frame invalidation |
 | `internal/window` | Graphite browser shell, backend-neutral interactive loop, copied frame presentation, and normalized native input |
-| `cmd/gossamer-window` | Stock-V8 reference launcher for the Graphite AppKit shell |
+| `cmd/gossamer-window` | Strand/stock-V8 selectable launcher for the Graphite AppKit shell |
 
 ## Current limitations
 

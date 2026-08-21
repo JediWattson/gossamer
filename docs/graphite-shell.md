@@ -2,8 +2,8 @@
 
 Graphite is Gossamer's first functional browser-owned GUI. It is a Go
 compositor around the current immutable Page frame, not a DOM tree implemented
-in AppKit and not a V8 UI. The stock-V8 launcher uses it today as the reference
-engine path; the JavaScript socket remains replaceable by Strand.
+in AppKit and not a JavaScript-engine UI. Its launcher selects Strand or stock
+V8 through the same engine-neutral browser socket.
 
 ```text
                          Graphite (Go)
@@ -12,8 +12,8 @@ engine path; the JavaScript socket remains replaceable by Strand.
         +---------------------+--------------------+
         |                                          |
   engine socket                               browser kernel
-  V8 reference now                            DOM / CSS / layout
-  Strand target                               regions / queue ARC
+  Strand native                               DOM / CSS / layout
+  V8 reference                                regions / queue ARC
         |                                          |
         +----------- numeric wrappers -------------+
                               |
@@ -24,8 +24,9 @@ engine path; the JavaScript socket remains replaceable by Strand.
 
 The knot mark carries the intended final architecture: teal is Strand, violet
 is the Go browser kernel, and pearl crossings are the numeric wrapper and
-ownership boundary. The inspector names V8 separately as the active reference
-engine so the temporary adapter is never confused with the teal Strand side.
+ownership boundary. Stock V8 remains the default reference engine, while
+`--engine=strand|v8` selects either implementation without changing Graphite,
+Page scheduling, or browser-object ownership.
 
 ## Geometry and event ownership
 
@@ -93,6 +94,12 @@ balanced Realm creation/closure plus zero native ownership.
 go test ./internal/window
 tools/v8/window.sh --check -count=1
 tools/v8/gate.sh
+```
+
+The ordinary macOS build can launch Strand without the V8 build tag:
+
+```sh
+go run ./cmd/gossamer-window --engine=strand https://example.com
 ```
 
 ## Deliberate next boundaries

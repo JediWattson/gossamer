@@ -24,6 +24,12 @@ The gate has three layers:
    shell/input/viewport and clipboard/composition sessions, forced GC,
    form-to-navigation teardown, and the replacement stress test.
 
+Engine-parity tests additionally run production Solid and React artifacts,
+split Vite module graphs, native microtask scheduling, Range/Selection, and the
+renderer DOM surface under both Strand and stock V8. These gates establish a
+shared implemented subset; they do not imply that Strand yet covers every API
+available through the V8 adapter.
+
 The local Web Platform subset is deliberately narrow. It exercises supported
 behavior using testharness-style assertions, but it does not claim that the
 complete upstream WPT runner or unsupported platform APIs pass.

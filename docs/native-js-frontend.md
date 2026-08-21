@@ -70,6 +70,8 @@ and ordinary task release invalidates every unpromoted loaded Ref.
 - member access and further calls on freshly constructed values;
 - default values on ordinary and parenthesized arrow Function parameters,
   evaluated in source order with access to earlier parameters;
+- object and Array binding patterns in ordinary and arrow Function parameters,
+  lowered in source order before the Function body;
 - `return`, `throw`, `try`, `catch`, and `finally`, with general abrupt
   completions routing return, throw, break, and continue through nested
   finally blocks;
@@ -106,17 +108,20 @@ This is not yet an ECMAScript-compatible engine. In particular:
   Object coercion uses explicit or inherited `valueOf`/`toString` hooks;
 - optional calls on an already-resolved method (`object.method?.()`) remain
   outside the current optional-chain subset;
-- full BigInt/Symbol and UTF-16 edge semantics, regex,
+- full BigInt and UTF-16 edge semantics,
   computed or script-level dynamic import, import attributes, general generator
   control flow, `yield*`, generator `next(value)`/`throw()` resumption, async
   generators, multi-statement async Function bodies, async arrows, top-level
   `await`, thenable assimilation,
-  Promise combinators/finally, and browser-level unhandled-rejection reporting
+  the remaining Promise combinators/finally, and browser-level
+  unhandled-rejection reporting
   are absent;
 - the native browser facade is intentionally smaller than the stock V8 facade:
-  `Event` and `CustomEvent` are constructible and dispatch synchronously, but
-  most other DOM interfaces remain illegal constructors and tag-name lookup is
-  a snapshot rather than a live collection.
+  `Event` and `CustomEvent` are constructible and dispatch synchronously;
+  canonical Node wrappers, live same-object child collections, MutationObserver,
+  layout and style reads, and heap-backed Range/Selection facades are present,
+  but many less common Web interfaces remain absent and tag-name lookup is a
+  snapshot rather than a live collection.
 
 ## N11 browser Realm adapter
 
@@ -160,11 +165,13 @@ heap. A RegionStore Map reachable from the global Context provides one
 canonical wrapper per handle across source evaluations, task copies, and
 microtask checkpoints.
 
-The initial wrapper prototypes expose document root traversal and element
-creation; node parent, sibling, child, text, insertion, removal, containment,
-and cloning operations; and element attributes, IDs, selectors, matching, and
-closest-ancestor queries. `childNodes`, `children`, and `querySelectorAll()`
-currently return snapshot Arrays. All reads and mutations cross the
+The wrapper prototypes expose document root traversal and element creation;
+node parent, sibling, child, text, insertion, removal, containment, and cloning
+operations; element attributes, IDs, selectors, matching, and closest-ancestor
+queries; live same-object `childNodes` and `children` collections; and snapshot
+`querySelectorAll()` results. Range and the Realm-canonical Selection keep
+their boundary wrappers in the traced RegionStore graph while Go owns clone,
+extract, delete, insertion, and UTF-16 text mutation. All reads and mutations cross the
 execution-scoped `browser.Host`, so the indexed Go Document remains the source
 of truth and render invalidation follows the existing Page task boundary.
 
@@ -243,3 +250,10 @@ module at most once, and matches the same rendered and teardown result as stock
 V8. Its lazy details interaction also traverses Vite's emitted preload helper,
 including `Promise.all()`, static tag-name lookup, `String.endsWith()`, canonical
 `import.meta.resolve()`, and the final dynamic module import.
+
+The React gates use the unmodified React 19.2.7 production runtime. The first
+executes initial render, state updates, delegated click dispatch, effect cleanup,
+and unmount using Strand's native Promise and `queueMicrotask` implementation.
+The second is a five-chunk Vite application with static imports, async data,
+lazy Suspense details, duplicate entry tags, and teardown. Both gates run the
+same artifacts and assertions under Strand and stock V8.
