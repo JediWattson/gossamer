@@ -74,6 +74,9 @@ type Page struct {
 	navigation          navigationRecord
 	nextTimer           TimerID
 	timers              map[TimerID]*pageTimer
+	nextWebSocket       WebSocketID
+	webSockets          map[WebSocketID]*pageWebSocket
+	webSocketDialer     WebSocketDialer
 	closed              bool
 }
 
@@ -137,6 +140,7 @@ func newPage(
 		styleRevision:      1,
 		layoutRevision:     1,
 		timers:             make(map[TimerID]*pageTimer),
+		webSockets:         make(map[WebSocketID]*pageWebSocket),
 		dirty:              true,
 		historyIndex:       -1,
 		backForwardCache:   make(map[uint64]*cachedDocumentState),
@@ -438,6 +442,7 @@ func (page *Page) Close() error {
 	page.computedStyle = computedStyleState{}
 	page.layout = layoutState{}
 	timers := page.takeTimersLocked()
+	webSockets := page.takeWebSocketsLocked()
 	animationRefs := page.takeAnimationFramesLocked()
 	script := page.script
 	page.script = nil
@@ -449,6 +454,7 @@ func (page *Page) Close() error {
 	page.parent = nil
 	generation := page.documentGeneration
 	page.mutex.Unlock()
+	closeWebSockets(webSockets)
 	if parent != nil {
 		parent.removeChildFrame(page)
 	}

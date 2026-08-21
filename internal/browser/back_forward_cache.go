@@ -266,6 +266,7 @@ func (page *Page) restoreBackForwardCacheDocument(
 	oldLifetimes := page.nodeLifetimes
 	oldDocumentCancel := page.documentCancel
 	timers := page.takeTimersLocked()
+	webSockets := page.takeWebSocketsLocked()
 	animationRefs := page.takeAnimationFramesLocked()
 	children := page.takeChildFramesLocked()
 	var retiredCachedDocuments []*cachedDocumentState
@@ -316,6 +317,7 @@ func (page *Page) restoreBackForwardCacheDocument(
 	page.navigation.documentGeneration = restored.generation
 	page.browser.replaceDocument(page, oldGeneration, restored.generation)
 	page.mutex.Unlock()
+	closeWebSockets(webSockets)
 
 	if oldDocumentCancel != nil {
 		oldDocumentCancel()

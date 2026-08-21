@@ -10,8 +10,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/JediWattson/gossamer/internal/browser"
+	"github.com/JediWattson/gossamer/internal/dom"
 	"github.com/JediWattson/gossamer/internal/loader"
 )
 
@@ -81,6 +83,117 @@ func TestStockV8StorageAndCookiesSurviveDocumentNavigation(t *testing.T) {
 		t.Fatalf("storage result = %q", text)
 	}
 }
+
+func TestStockV8WebSocketUsesBrowserOwnedSocketAndQueuedEvents(t *testing.T) {
+	engine := newTestEngine(t)
+	runtime, err := browser.NewWithEngine(engine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	page, err := runtime.NewPage(dom.NewDocument(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection := newV8ScriptWebSocket()
+	page.SetWebSocketDialer(v8ScriptWebSocketDialer{connection: connection})
+	navigation, err := page.Navigate(context.Background(), "https://strand.test/socket-page", v8SocketDocumentLoader{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := page.WaitNavigation(context.Background(), navigation); err != nil {
+		t.Fatal(err)
+	}
+	var write v8ScriptWebSocketItem
+	for attempt := 0; attempt < 6; attempt++ {
+		select {
+		case write = <-connection.writes:
+			attempt = 6
+			continue
+		default:
+		}
+		runContext, cancel := context.WithTimeout(context.Background(), time.Second)
+		err := page.Realm.RunOne(runContext)
+		cancel()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if write.message != browser.WebSocketTextMessage || string(write.data) != "ping" {
+		t.Fatalf("websocket write = %#v", write)
+	}
+	connection.reads <- v8ScriptWebSocketItem{message: browser.WebSocketTextMessage, data: []byte("hello")}
+	result, _ := page.Document().ElementByID("result")
+	var text string
+	for attempt := 0; attempt < 8; attempt++ {
+		text, _ = page.Document().TextContent(result)
+		if text == "hello:1000:done" {
+			break
+		}
+		runContext, cancel := context.WithTimeout(context.Background(), time.Second)
+		err := page.Realm.RunOne(runContext)
+		cancel()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if text != "hello:1000:done" {
+		t.Fatalf("websocket result = %q", text)
+	}
+}
+
+type v8SocketDocumentLoader struct{}
+
+func (v8SocketDocumentLoader) Load(_ context.Context, rawURL string) (*loader.Response, error) {
+	location, _ := url.Parse(rawURL)
+	return &loader.Response{
+		URL: location, StatusCode: http.StatusOK, Header: make(http.Header),
+		Body: io.NopCloser(strings.NewReader(`<!doctype html><html><body><div id="result">pending</div><script>
+const socket = new WebSocket("/socket", "chat");
+socket.onopen = function () { document.getElementById("result").textContent = "open"; socket.send("ping"); };
+socket.addEventListener("message", function (event) { document.getElementById("result").textContent = event.data; socket.close(1000, "done"); });
+socket.onclose = function (event) { document.getElementById("result").textContent += ":" + event.code + ":" + event.reason; };
+</script></body></html>`)),
+	}, nil
+}
+
+type v8ScriptWebSocketDialer struct{ connection *v8ScriptWebSocket }
+
+func (dialer v8ScriptWebSocketDialer) Dial(_ context.Context, _ string, _ []string, _ http.Header) (browser.WebSocketConnection, error) {
+	return dialer.connection, nil
+}
+
+type v8ScriptWebSocketItem struct {
+	message browser.WebSocketMessageType
+	data    []byte
+	err     error
+}
+
+type v8ScriptWebSocket struct {
+	reads  chan v8ScriptWebSocketItem
+	writes chan v8ScriptWebSocketItem
+}
+
+func newV8ScriptWebSocket() *v8ScriptWebSocket {
+	return &v8ScriptWebSocket{reads: make(chan v8ScriptWebSocketItem, 4), writes: make(chan v8ScriptWebSocketItem, 4)}
+}
+
+func (connection *v8ScriptWebSocket) Read(ctx context.Context) (browser.WebSocketMessageType, []byte, error) {
+	select {
+	case item := <-connection.reads:
+		return item.message, item.data, item.err
+	case <-ctx.Done():
+		return 0, nil, ctx.Err()
+	}
+}
+
+func (connection *v8ScriptWebSocket) Write(_ context.Context, message browser.WebSocketMessageType, data []byte) error {
+	connection.writes <- v8ScriptWebSocketItem{message: message, data: append([]byte(nil), data...)}
+	return nil
+}
+
+func (*v8ScriptWebSocket) Close(_ uint16, _ string) error { return nil }
+func (*v8ScriptWebSocket) Protocol() string               { return "chat" }
 
 type v8StorageLoader struct {
 	*loader.Loader

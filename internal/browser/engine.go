@@ -262,6 +262,47 @@ type StorageHost interface {
 	SetDocumentCookie(string) error
 }
 
+type WebSocketID uint64
+
+type WebSocketMessageType uint8
+
+const (
+	WebSocketTextMessage WebSocketMessageType = iota + 1
+	WebSocketBinaryMessage
+)
+
+type WebSocketEventType uint8
+
+const (
+	WebSocketOpenEvent WebSocketEventType = iota + 1
+	WebSocketMessageEvent
+	WebSocketErrorEvent
+	WebSocketCloseEvent
+)
+
+type WebSocketEvent struct {
+	Type       WebSocketEventType
+	Message    WebSocketMessageType
+	Data       []byte
+	Code       uint16
+	Reason     string
+	WasClean   bool
+	Protocol   string
+	Extensions string
+}
+
+type WebSocketHost interface {
+	OpenWebSocket(string, []string) (WebSocketID, string, error)
+	SendWebSocket(WebSocketID, WebSocketMessageType, []byte) error
+	CloseWebSocket(WebSocketID, uint16, string) error
+}
+
+// JSWebSocketRealm receives browser-queued socket events. Socket I/O and
+// lifetime stay in Go; engines retain only the wrapper keyed by WebSocketID.
+type JSWebSocketRealm interface {
+	DispatchWebSocket(Host, WebSocketID, WebSocketEvent) error
+}
+
 // Host is the execution-scoped browser API visible to an engine. Methods that
 // schedule work preserve the current task as the publication boundary.
 type Host interface {

@@ -411,6 +411,7 @@ var _ SessionHistoryHost = (*taskHost)(nil)
 var _ NativeTaskHost = (*taskHost)(nil)
 var _ FetchHost = (*taskHost)(nil)
 var _ StorageHost = (*taskHost)(nil)
+var _ WebSocketHost = (*taskHost)(nil)
 
 const maxFetchResponseBytes int64 = 16 << 20
 

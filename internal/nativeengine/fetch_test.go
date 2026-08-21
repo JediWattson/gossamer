@@ -8,8 +8,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/JediWattson/gossamer/internal/browser"
+	"github.com/JediWattson/gossamer/internal/dom"
 	"github.com/JediWattson/gossamer/internal/loader"
 	"github.com/JediWattson/gossamer/internal/nativeengine"
 )
@@ -87,6 +89,117 @@ func TestNativeStorageAndCookiesSurviveDocumentNavigation(t *testing.T) {
 		t.Fatalf("storage result = %q", text)
 	}
 }
+
+func TestNativeWebSocketQueuesOpenMessageAndCloseEvents(t *testing.T) {
+	t.Parallel()
+
+	engine := nativeengine.New(nativeengine.Config{})
+	runtime, err := browser.NewWithEngine(engine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	page, err := runtime.NewPage(dom.NewDocument(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection := newNativeScriptWebSocket()
+	page.SetWebSocketDialer(nativeScriptWebSocketDialer{connection: connection})
+	client := nativeSocketDocumentLoader{}
+	navigation, err := page.Navigate(context.Background(), "https://strand.test/socket-page", client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := page.WaitNavigation(context.Background(), navigation); err != nil {
+		t.Fatal(err)
+	}
+	var write nativeScriptWebSocketItem
+	for attempt := 0; attempt < 6; attempt++ {
+		select {
+		case write = <-connection.writes:
+			attempt = 6
+			continue
+		default:
+		}
+		runContext, cancel := context.WithTimeout(context.Background(), time.Second)
+		err := page.Realm.RunOne(runContext)
+		cancel()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if write.message != browser.WebSocketTextMessage || string(write.data) != "ping" {
+		t.Fatalf("websocket write = %#v", write)
+	}
+	connection.reads <- nativeScriptWebSocketItem{message: browser.WebSocketTextMessage, data: []byte("hello")}
+	result, _ := page.Document().ElementByID("result")
+	var text string
+	for attempt := 0; attempt < 8; attempt++ {
+		text, _ = page.Document().TextContent(result)
+		if text == "hello:1000:done" {
+			break
+		}
+		runContext, cancel := context.WithTimeout(context.Background(), time.Second)
+		err := page.Realm.RunOne(runContext)
+		cancel()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if text != "hello:1000:done" {
+		t.Fatalf("websocket result = %q", text)
+	}
+}
+
+type nativeSocketDocumentLoader struct{}
+
+func (nativeSocketDocumentLoader) Load(_ context.Context, rawURL string) (*loader.Response, error) {
+	location, _ := url.Parse(rawURL)
+	return &loader.Response{
+		URL: location, StatusCode: http.StatusOK, Header: make(http.Header),
+		Body: io.NopCloser(strings.NewReader(`<!doctype html><html><body><div id="result">pending</div><script>
+const socket = new WebSocket("/socket", "chat");
+socket.onopen = function () { document.getElementById("result").textContent = "open"; socket.send("ping"); };
+socket.addEventListener("message", function (event) { document.getElementById("result").textContent = event.data; socket.close(1000, "done"); });
+socket.onclose = function (event) { document.getElementById("result").textContent += ":" + event.code + ":" + event.reason; };
+</script></body></html>`)),
+	}, nil
+}
+
+type nativeScriptWebSocketDialer struct{ connection *nativeScriptWebSocket }
+
+func (dialer nativeScriptWebSocketDialer) Dial(_ context.Context, _ string, _ []string, _ http.Header) (browser.WebSocketConnection, error) {
+	return dialer.connection, nil
+}
+
+type nativeScriptWebSocketItem struct {
+	message browser.WebSocketMessageType
+	data    []byte
+	err     error
+}
+
+type nativeScriptWebSocket struct {
+	reads  chan nativeScriptWebSocketItem
+	writes chan nativeScriptWebSocketItem
+}
+
+func newNativeScriptWebSocket() *nativeScriptWebSocket {
+	return &nativeScriptWebSocket{reads: make(chan nativeScriptWebSocketItem, 4), writes: make(chan nativeScriptWebSocketItem, 4)}
+}
+func (connection *nativeScriptWebSocket) Read(ctx context.Context) (browser.WebSocketMessageType, []byte, error) {
+	select {
+	case item := <-connection.reads:
+		return item.message, item.data, item.err
+	case <-ctx.Done():
+		return 0, nil, ctx.Err()
+	}
+}
+func (connection *nativeScriptWebSocket) Write(_ context.Context, message browser.WebSocketMessageType, data []byte) error {
+	connection.writes <- nativeScriptWebSocketItem{message: message, data: append([]byte(nil), data...)}
+	return nil
+}
+func (*nativeScriptWebSocket) Close(_ uint16, _ string) error { return nil }
+func (*nativeScriptWebSocket) Protocol() string               { return "chat" }
 
 type nativeStorageLoader struct {
 	*loader.Loader

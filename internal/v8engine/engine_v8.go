@@ -11,6 +11,7 @@ package v8engine
 import "C"
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -359,6 +360,63 @@ func (realm *Realm) DispatchEvent(host browser.Host, event browser.InputEvent) (
 	return browser.EventDispatchResult{DefaultPrevented: defaultPrevented != 0},
 		errors.Join(operationErr, realm.drainCollectedWrappersLocked(host))
 }
+
+func (realm *Realm) DispatchWebSocket(host browser.Host, id browser.WebSocketID, event browser.WebSocketEvent) error {
+	if realm == nil {
+		return ErrRealmClosed
+	}
+	realm.mutex.Lock()
+	defer realm.mutex.Unlock()
+	if realm.isClosed || realm.pointer == nil {
+		return ErrRealmClosed
+	}
+	if err := realm.drainCollectedWrappersLocked(host); err != nil {
+		return err
+	}
+	typeName := map[browser.WebSocketEventType]string{
+		browser.WebSocketOpenEvent: "open", browser.WebSocketMessageEvent: "message",
+		browser.WebSocketErrorEvent: "error", browser.WebSocketCloseEvent: "close",
+	}[event.Type]
+	if typeName == "" {
+		return fmt.Errorf("v8engine: invalid WebSocket event %d", event.Type)
+	}
+	messageName := ""
+	if event.Message == browser.WebSocketTextMessage {
+		messageName = "text"
+	} else if event.Message == browser.WebSocketBinaryMessage {
+		messageName = "binary"
+	}
+	data := make([]int, len(event.Data))
+	for index, value := range event.Data {
+		data[index] = int(value)
+	}
+	encoded, err := json.Marshal(v8WebSocketEvent{
+		ID: uint64(id), Type: typeName, Message: messageName, Data: data,
+		Code: event.Code, Reason: event.Reason, WasClean: event.WasClean,
+		Protocol: event.Protocol, Extensions: event.Extensions,
+	})
+	if err != nil {
+		return fmt.Errorf("v8engine: encode WebSocket event: %w", err)
+	}
+	executionID := registerHostExecution(host)
+	defer unregisterHostExecution(executionID)
+	eventJSON := C.CBytes(encoded)
+	defer C.free(eventJSON)
+	var failure *C.char
+	var operationErr error
+	if C.gossamer_v8_go_realm_dispatch_websocket(
+		realm.pointer,
+		C.uint64_t(executionID),
+		(*C.char)(eventJSON),
+		C.size_t(len(encoded)),
+		&failure,
+	) == 0 {
+		operationErr = takeError(failure)
+	}
+	return errors.Join(operationErr, realm.drainCollectedWrappersLocked(host))
+}
+
+var _ browser.JSWebSocketRealm = (*Realm)(nil)
 
 func (realm *Realm) Invoke(host browser.Host, callback browser.ValueHandle) error {
 	if realm == nil {

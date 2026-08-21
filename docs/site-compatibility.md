@@ -81,3 +81,19 @@ pages do not share session values. `document.cookie` reads and writes the
 navigation loader's cookie jar, so cookies set by script, navigation, or fetch
 all describe the same session. Strand and V8 share these host contracts and run
 the same reload-persistence gate.
+
+## WebSocket rung
+
+WebSocket connections are now Page-owned browser resources. Go performs the
+HTTP upgrade, carries the shared session cookies and document `Origin`, masks
+client frames, validates server frames and negotiated subprotocols, assembles
+fragmented messages, answers ping/close control frames, and closes every live
+connection during document replacement or Page teardown. Network goroutines
+never enter an engine: they publish open, message, error, and close events as
+ordered Realm tasks.
+
+Strand and stock V8 expose the same `WebSocket` constructor, state constants,
+text and binary `send()`, explicit `close()`, handler properties, and event
+listener surface. Their parity gates use an injected browser socket to prove
+that open handlers can send, inbound messages run from the Page queue, close
+metadata reaches JavaScript, and no engine retains a Go connection pointer.

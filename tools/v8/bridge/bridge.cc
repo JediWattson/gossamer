@@ -9312,6 +9312,42 @@ void StorageHostCallback(const v8::FunctionCallbackInfo<v8::Value> &info) {
   info.GetReturnValue().Set(result);
 }
 
+void WebSocketHostCallback(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  std::string error;
+  if (!RequireHost(realm, &error) || realm->active_host->websocket == nullptr) {
+    ThrowError(isolate, error.empty() ? "WebSocket is unavailable" : error);
+    return;
+  }
+  v8::Local<v8::String> request_value;
+  if (info.Length() < 1 ||
+      !info[0]->ToString(isolate->GetCurrentContext()).ToLocal(&request_value))
+    return;
+  std::string request = UTF8Value(isolate, request_value);
+  char *response = nullptr;
+  size_t response_length = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->websocket(
+          realm->active_host->execution_id, request.data(), request.size(),
+          &response, &response_length, &host_error) == 0) {
+    error = TakeCString(host_error);
+    std::free(response);
+    ThrowError(isolate, error.empty() ? "WebSocket operation failed" : error);
+    return;
+  }
+  std::free(host_error);
+  v8::Local<v8::String> result;
+  if (!v8::String::NewFromUtf8(isolate, response, v8::NewStringType::kNormal,
+                               static_cast<int>(response_length))
+           .ToLocal(&result)) {
+    std::free(response);
+    return;
+  }
+  std::free(response);
+  info.GetReturnValue().Set(result);
+}
+
 bool TimerIDFromValue(v8::Local<v8::Context> context,
                       v8::Local<v8::Value> value, uint64_t *timer) {
   if (value->IsBigInt()) {
@@ -10975,6 +11011,8 @@ bool InstallURLSearchParams(v8::Local<v8::Context> context) {
   delete global.__gossamerHostFetch;
   const hostStorage = global.__gossamerHostStorage;
   delete global.__gossamerHostStorage;
+  const hostWebSocket = global.__gossamerHostWebSocket;
+  delete global.__gossamerHostWebSocket;
   const storageCall = request => JSON.parse(hostStorage(JSON.stringify(request)));
   class Storage {
     constructor(area) { if (area !== 1 && area !== 2) throw new TypeError("Illegal constructor"); Object.defineProperty(this, "_area", {value: area}); }
@@ -10994,6 +11032,113 @@ bool InstallURLSearchParams(v8::Local<v8::Context> context) {
     set(value) { storageCall({operation: "cookie-set", value: String(value)}); },
     enumerable: true, configurable: true
   });
+  const webSocketCall = request => JSON.parse(hostWebSocket(JSON.stringify(request)));
+  const webSocketState = new WeakMap();
+  const webSockets = new Map();
+  const webSocketProtocols = value => {
+    if (value === undefined) return [];
+    const result = typeof value === "string" ? [value] : Array.from(value, String);
+    const seen = new Set();
+    for (const protocol of result) {
+      if (!protocol || /[()<>@,;:\\"\/\[\]?={} \t\r\n]/.test(protocol)) throw new SyntaxError("Invalid WebSocket protocol");
+      if (seen.has(protocol)) throw new SyntaxError("Duplicate WebSocket protocol");
+      seen.add(protocol);
+    }
+    return result;
+  };
+  const webSocketRequire = socket => {
+    const state = webSocketState.get(socket);
+    if (!state) throw new TypeError("Illegal invocation");
+    return state;
+  };
+  class WebSocket {
+    constructor(url, protocols) {
+      if (arguments.length === 0) throw new TypeError("WebSocket requires a URL");
+      const requestedProtocols = webSocketProtocols(protocols);
+      let resolvedURL = String(url);
+      try { resolvedURL = new URL(resolvedURL, global.location.href).href; } catch (_) {}
+      const response = webSocketCall({operation: "open", url: resolvedURL, protocols: requestedProtocols});
+      const state = {id: response.id, readyState: 0, protocol: response.protocol || "", extensions: "", binaryType: "blob", listeners: new Map()};
+      webSocketState.set(this, state);
+      webSockets.set(response.id, this);
+      Object.defineProperties(this, {
+        url: {value: resolvedURL, enumerable: true},
+        bufferedAmount: {value: 0, enumerable: true},
+        onopen: {value: null, writable: true, enumerable: true},
+        onmessage: {value: null, writable: true, enumerable: true},
+        onerror: {value: null, writable: true, enumerable: true},
+        onclose: {value: null, writable: true, enumerable: true}
+      });
+    }
+    get readyState() { return webSocketRequire(this).readyState; }
+    get protocol() { return webSocketRequire(this).protocol; }
+    get extensions() { return webSocketRequire(this).extensions; }
+    get binaryType() { return webSocketRequire(this).binaryType; }
+    set binaryType(value) { value = String(value); if (value === "blob" || value === "arraybuffer") webSocketRequire(this).binaryType = value; }
+    send(value) {
+      const state = webSocketRequire(this);
+      if (state.readyState !== 1) throw new Error("WebSocket is not open");
+      let message = "text", data;
+      if (typeof value === "string") data = Array.from(new TextEncoder().encode(value));
+      else if (value instanceof ArrayBuffer) { message = "binary"; data = Array.from(new Uint8Array(value)); }
+      else if (ArrayBuffer.isView(value)) { message = "binary"; data = Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength)); }
+      else data = Array.from(new TextEncoder().encode(String(value)));
+      webSocketCall({operation: "send", id: state.id, message, data});
+    }
+    close(code = 1000, reason = "") {
+      const state = webSocketRequire(this);
+      if (state.readyState === 2 || state.readyState === 3) return;
+      code = Number(code); reason = String(reason);
+      if (code !== 1000 && (code < 3000 || code > 4999)) throw new RangeError("Invalid WebSocket close code");
+      if (new TextEncoder().encode(reason).length > 123) throw new SyntaxError("WebSocket close reason is too long");
+      state.readyState = 2;
+      webSocketCall({operation: "close", id: state.id, code, reason});
+    }
+    addEventListener(type, callback) {
+      const state = webSocketRequire(this);
+      if (typeof callback !== "function") return;
+      type = String(type).toLowerCase();
+      let listeners = state.listeners.get(type);
+      if (!listeners) state.listeners.set(type, listeners = []);
+      if (!listeners.includes(callback)) listeners.push(callback);
+    }
+    removeEventListener(type, callback) {
+      const listeners = webSocketRequire(this).listeners.get(String(type).toLowerCase());
+      if (!listeners) return;
+      const index = listeners.indexOf(callback);
+      if (index >= 0) listeners.splice(index, 1);
+    }
+  }
+  for (const [name, value] of Object.entries({CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3})) {
+    Object.defineProperty(WebSocket, name, {value});
+    Object.defineProperty(WebSocket.prototype, name, {value});
+  }
+  Object.defineProperty(WebSocket.prototype, Symbol.toStringTag, {value: "WebSocket", configurable: true});
+  Object.defineProperty(global, "__gossamerDispatchWebSocket", {value: eventJSON => {
+    const wire = JSON.parse(eventJSON);
+    const socket = webSockets.get(wire.id);
+    if (!socket) return;
+    const state = webSocketState.get(socket);
+    if (wire.type === "open") {
+      state.readyState = 1;
+      state.protocol = wire.protocol || state.protocol;
+      state.extensions = wire.extensions || "";
+    } else if (wire.type === "close") state.readyState = 3;
+    let data;
+    if (wire.type === "message") {
+      const bytes = Uint8Array.from(wire.data || []);
+      data = wire.message === "text" ? new TextDecoder().decode(bytes) : bytes.buffer;
+    }
+    const event = {type: wire.type, target: socket, currentTarget: socket, data,
+      code: wire.code || 0, reason: wire.reason || "", wasClean: !!wire.wasClean,
+      message: wire.type === "error" ? wire.reason || "" : undefined};
+    const handler = socket["on" + wire.type];
+    if (typeof handler === "function") handler.call(socket, event);
+    const listeners = state.listeners.get(wire.type);
+    if (listeners) for (const callback of listeners.slice()) callback.call(socket, event);
+    if (wire.type === "close") webSockets.delete(wire.id);
+  }, configurable: false});
+  global.WebSocket = WebSocket;
   const headerState = new WeakMap();
   const normalizeHeaderName = name => {
     name = String(name).trim().toLowerCase();
@@ -12651,6 +12796,7 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   v8::Local<v8::Function> cancel_animation_frame;
   v8::Local<v8::Function> fetch_host;
   v8::Local<v8::Function> storage_host;
+  v8::Local<v8::Function> websocket_host;
   v8::Local<v8::Function> get_computed_style;
   v8::Local<v8::Function> get_selection;
   v8::Local<v8::Function> window_scroll;
@@ -12666,6 +12812,8 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
            .ToLocal(&cancel_animation_frame) ||
       !v8::Function::New(context, FetchHostCallback).ToLocal(&fetch_host) ||
       !v8::Function::New(context, StorageHostCallback).ToLocal(&storage_host) ||
+      !v8::Function::New(context, WebSocketHostCallback)
+           .ToLocal(&websocket_host) ||
       !v8::Function::New(context, GetComputedStyle)
            .ToLocal(&get_computed_style) ||
       !v8::Function::New(context, GetSelection).ToLocal(&get_selection)) {
@@ -12735,6 +12883,12 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
                  v8::String::NewFromUtf8Literal(isolate,
                                                 "__gossamerHostStorage"),
                  storage_host)
+           .FromMaybe(false) ||
+      !global
+           ->Set(context,
+                 v8::String::NewFromUtf8Literal(isolate,
+                                                "__gossamerHostWebSocket"),
+                 websocket_host)
            .FromMaybe(false)) {
     return false;
   }
@@ -13703,6 +13857,55 @@ extern "C" int gossamer_v8_realm_dispatch_event(gossamer_v8_realm *realm,
   }
   if (default_prevented_out != nullptr)
     *default_prevented_out = event_state->default_prevented ? 1 : 0;
+  return 1;
+}
+
+extern "C" int gossamer_v8_realm_dispatch_websocket(
+    gossamer_v8_realm *realm, const gossamer_v8_host *host,
+    const char *event_json, size_t event_json_length, char **error_out) {
+  if (!RequireRealm(realm, error_out))
+    return 0;
+  if (event_json == nullptr) {
+    SetError(error_out, "V8 received a null WebSocket event");
+    return 0;
+  }
+  std::lock_guard<std::mutex> guard(realm->mutex);
+  if (!RequireRealm(realm, error_out))
+    return 0;
+
+  v8::Locker locker(realm->isolate);
+  v8::Isolate::Scope isolate_scope(realm->isolate);
+  v8::HandleScope handle_scope(realm->isolate);
+  v8::Local<v8::Context> context = realm->context.Get(realm->isolate);
+  v8::Context::Scope context_scope(context);
+  HostScope host_scope(realm, host);
+  v8::TryCatch caught(realm->isolate);
+  v8::Local<v8::Value> dispatcher_value;
+  if (!context->Global()
+           ->Get(context, v8::String::NewFromUtf8Literal(
+                              realm->isolate,
+                              "__gossamerDispatchWebSocket"))
+           .ToLocal(&dispatcher_value) ||
+      !dispatcher_value->IsFunction()) {
+    SetError(error_out, "V8 WebSocket dispatcher is unavailable");
+    return 0;
+  }
+  v8::Local<v8::String> event_value;
+  if (!v8::String::NewFromUtf8(realm->isolate, event_json,
+                               v8::NewStringType::kNormal,
+                               static_cast<int>(event_json_length))
+           .ToLocal(&event_value)) {
+    SetError(error_out, "V8 failed to allocate a WebSocket event");
+    return 0;
+  }
+  v8::Local<v8::Value> result;
+  v8::Local<v8::Value> arguments[] = {event_value};
+  if (!dispatcher_value.As<v8::Function>()
+           ->Call(context, context->Global(), 1, arguments)
+           .ToLocal(&result)) {
+    SetError(error_out, DescribeException(realm->isolate, context, caught));
+    return 0;
+  }
   return 1;
 }
 

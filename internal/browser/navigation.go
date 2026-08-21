@@ -573,6 +573,7 @@ func (page *Page) commitNavigationDocument(
 	}
 	documentContext, documentCancel := context.WithCancel(context.Background())
 	timers := page.takeTimersLocked()
+	webSockets := page.takeWebSocketsLocked()
 	animationRefs := page.takeAnimationFramesLocked()
 	children := page.takeChildFramesLocked()
 	oldGeneration := page.documentGeneration
@@ -631,6 +632,7 @@ func (page *Page) commitNavigationDocument(
 	navigationContext := page.navigation.context
 	page.browser.replaceDocument(page, oldGeneration, generation)
 	page.mutex.Unlock()
+	closeWebSockets(webSockets)
 
 	if oldDocumentCancel != nil {
 		oldDocumentCancel()

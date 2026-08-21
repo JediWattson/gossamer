@@ -335,6 +335,10 @@ extern int goGossamerV8HostStorage(
     uint64_t execution_id, const char *request_json,
     size_t request_json_length, char **response_json_out,
     size_t *response_json_length_out, char **error_out);
+extern int goGossamerV8HostWebSocket(
+    uint64_t execution_id, const char *request_json,
+    size_t request_json_length, char **response_json_out,
+    size_t *response_json_length_out, char **error_out);
 extern int goGossamerV8HostElementGeometry(
     uint64_t execution_id, uint64_t document, uint32_t node,
     gossamer_v8_element_geometry *geometry_out, char **error_out);
@@ -467,6 +471,7 @@ static gossamer_v8_host gossamer_v8_go_host(uint64_t execution_id) {
           goGossamerV8HostMarkFormUserValidityForSubmission,
       .fetch = goGossamerV8HostFetch,
       .storage = goGossamerV8HostStorage,
+      .websocket = goGossamerV8HostWebSocket,
   };
   return host;
 }
@@ -499,6 +504,14 @@ int gossamer_v8_go_realm_dispatch_event(gossamer_v8_realm *realm,
   gossamer_v8_host host = gossamer_v8_go_host(execution_id);
   return gossamer_v8_realm_dispatch_event(
       realm, &host, event, default_prevented_out, error_out);
+}
+
+int gossamer_v8_go_realm_dispatch_websocket(
+    gossamer_v8_realm *realm, uint64_t execution_id, const char *event_json,
+    size_t event_json_length, char **error_out) {
+  gossamer_v8_host host = gossamer_v8_go_host(execution_id);
+  return gossamer_v8_realm_dispatch_websocket(
+      realm, &host, event_json, event_json_length, error_out);
 }
 
 int gossamer_v8_go_realm_invoke(gossamer_v8_realm *realm, uint64_t execution_id,

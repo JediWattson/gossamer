@@ -244,6 +244,9 @@ const (
 	bindingStorageConstructor           = "\x00gossamer.storage.constructor"
 	bindingLocalStorage                 = "\x00gossamer.local-storage"
 	bindingSessionStorage               = "\x00gossamer.session-storage"
+	bindingWebSocketPrototype           = "\x00gossamer.websocket.prototype"
+	bindingWebSocketConstructor         = "\x00gossamer.websocket.constructor"
+	bindingWebSocketCache               = "\x00gossamer.websocket.cache"
 	hostRecordProperty                  = "\x00gossamer.host.record"
 )
 
@@ -298,6 +301,9 @@ type browserBindings struct {
 	storageConstructor           memory.Ref
 	localStorage                 memory.Ref
 	sessionStorage               memory.Ref
+	webSocketPrototype           memory.Ref
+	webSocketConstructor         memory.Ref
+	webSocketCache               memory.Ref
 	rangePrototype               memory.Ref
 	selectionPrototype           memory.Ref
 	selection                    memory.Ref
@@ -585,6 +591,11 @@ func (realm *Realm) installBrowserNatives() error {
 		{nativeStorageLength, realm.storageLength},
 		{nativeDocumentCookieGet, realm.documentCookieGet},
 		{nativeDocumentCookieSet, realm.documentCookieSet},
+		{nativeWebSocketConstructor, realm.webSocketConstructor},
+		{nativeWebSocketSend, realm.webSocketSend},
+		{nativeWebSocketClose, realm.webSocketClose},
+		{nativeWebSocketAddEventListener, realm.webSocketAddEventListener},
+		{nativeWebSocketRemoveEventListener, realm.webSocketRemoveEventListener},
 		{nativeNodeAppend, realm.nodeConvenienceMutation(dom.MutationAppend)},
 		{nativeNodePrepend, realm.nodeConvenienceMutation(dom.MutationPrepend)},
 		{nativeNodeBefore, realm.nodeConvenienceMutation(dom.MutationBefore)},
@@ -677,6 +688,9 @@ func (realm *Realm) prepareBrowserBindingsLocked(context *browserruntime.TaskCon
 			{bindingStorageConstructor, &bindings.storageConstructor},
 			{bindingLocalStorage, &bindings.localStorage},
 			{bindingSessionStorage, &bindings.sessionStorage},
+			{bindingWebSocketPrototype, &bindings.webSocketPrototype},
+			{bindingWebSocketConstructor, &bindings.webSocketConstructor},
+			{bindingWebSocketCache, &bindings.webSocketCache},
 			{bindingRangePrototype, &bindings.rangePrototype},
 			{bindingSelectionPrototype, &bindings.selectionPrototype},
 			{bindingSelection, &bindings.selection},
@@ -794,6 +808,14 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		return err
 	}
 	bindings.storageConstructor, bindings.storagePrototype, bindings.localStorage, bindings.sessionStorage, err = realm.newStorageBindings(context)
+	if err != nil {
+		return err
+	}
+	bindings.webSocketConstructor, bindings.webSocketPrototype, err = realm.newWebSocketConstructor(context)
+	if err != nil {
+		return err
+	}
+	bindings.webSocketCache, err = context.NewMap()
 	if err != nil {
 		return err
 	}
@@ -922,6 +944,7 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{"Storage", memory.RefValue(bindings.storageConstructor)},
 		{"localStorage", memory.RefValue(bindings.localStorage)},
 		{"sessionStorage", memory.RefValue(bindings.sessionStorage)},
+		{"WebSocket", memory.RefValue(bindings.webSocketConstructor)},
 		{"MutationObserver", memory.RefValue(bindings.mutationObserverConstructor)},
 		{bindingDOMException, memory.RefValue(bindings.domExceptionConstructor)},
 		{"URLSearchParams", memory.RefValue(bindings.urlSearchParamsConstructor)},
@@ -1002,6 +1025,9 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{bindingStorageConstructor, bindings.storageConstructor, false},
 		{bindingLocalStorage, bindings.localStorage, false},
 		{bindingSessionStorage, bindings.sessionStorage, false},
+		{bindingWebSocketPrototype, bindings.webSocketPrototype, false},
+		{bindingWebSocketConstructor, bindings.webSocketConstructor, false},
+		{bindingWebSocketCache, bindings.webSocketCache, false},
 		{bindingRangePrototype, bindings.rangePrototype, false},
 		{bindingSelectionPrototype, bindings.selectionPrototype, false},
 		{bindingSelection, bindings.selection, false},
@@ -1033,6 +1059,7 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{"Storage", bindings.storageConstructor, true},
 		{"localStorage", bindings.localStorage, false},
 		{"sessionStorage", bindings.sessionStorage, false},
+		{"WebSocket", bindings.webSocketConstructor, true},
 		{"Event", eventConstructor, true},
 		{"CustomEvent", customEventConstructor, true},
 		{"setTimeout", setTimeout, true},

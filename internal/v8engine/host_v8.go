@@ -140,6 +140,34 @@ type v8StorageResponse struct {
 	Length int    `json:"length,omitempty"`
 }
 
+type v8WebSocketRequest struct {
+	Operation string   `json:"operation"`
+	URL       string   `json:"url"`
+	Protocols []string `json:"protocols"`
+	ID        uint64   `json:"id"`
+	Message   string   `json:"message"`
+	Data      []int    `json:"data"`
+	Code      uint16   `json:"code"`
+	Reason    string   `json:"reason"`
+}
+
+type v8WebSocketResponse struct {
+	ID       uint64 `json:"id,omitempty"`
+	Protocol string `json:"protocol,omitempty"`
+}
+
+type v8WebSocketEvent struct {
+	ID         uint64 `json:"id"`
+	Type       string `json:"type"`
+	Message    string `json:"message,omitempty"`
+	Data       []int  `json:"data,omitempty"`
+	Code       uint16 `json:"code,omitempty"`
+	Reason     string `json:"reason,omitempty"`
+	WasClean   bool   `json:"wasClean,omitempty"`
+	Protocol   string `json:"protocol,omitempty"`
+	Extensions string `json:"extensions,omitempty"`
+}
+
 //export goGossamerV8HostFetch
 func goGossamerV8HostFetch(
 	executionID C.uint64_t,
@@ -230,6 +258,62 @@ func goGossamerV8HostStorage(
 			err = storageHost.SetDocumentCookie(request.Value)
 		default:
 			err = fmt.Errorf("unknown V8 storage operation %q", request.Operation)
+		}
+		if err != nil {
+			return err
+		}
+		encoded, err := json.Marshal(response)
+		if err != nil {
+			return err
+		}
+		return writeHostString(string(encoded), responseJSONOut, responseJSONLengthOut)
+	}, executionID)
+}
+
+//export goGossamerV8HostWebSocket
+func goGossamerV8HostWebSocket(
+	executionID C.uint64_t,
+	requestJSON *C.char,
+	requestJSONLength C.size_t,
+	responseJSONOut **C.char,
+	responseJSONLengthOut *C.size_t,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		webSocketHost, ok := host.(browser.WebSocketHost)
+		if !ok {
+			return fmt.Errorf("V8 host does not support WebSocket")
+		}
+		var request v8WebSocketRequest
+		if err := json.Unmarshal([]byte(goString(requestJSON, requestJSONLength)), &request); err != nil {
+			return fmt.Errorf("decode V8 WebSocket request: %w", err)
+		}
+		response := v8WebSocketResponse{}
+		var err error
+		switch request.Operation {
+		case "open":
+			var id browser.WebSocketID
+			id, response.Protocol, err = webSocketHost.OpenWebSocket(request.URL, request.Protocols)
+			response.ID = uint64(id)
+		case "send":
+			data := make([]byte, len(request.Data))
+			for index, value := range request.Data {
+				if value < 0 || value > 255 {
+					return fmt.Errorf("decode V8 WebSocket body byte %d: %d", index, value)
+				}
+				data[index] = byte(value)
+			}
+			message := browser.WebSocketBinaryMessage
+			if request.Message == "text" {
+				message = browser.WebSocketTextMessage
+			} else if request.Message != "binary" {
+				return fmt.Errorf("unknown V8 WebSocket message type %q", request.Message)
+			}
+			err = webSocketHost.SendWebSocket(browser.WebSocketID(request.ID), message, data)
+		case "close":
+			err = webSocketHost.CloseWebSocket(browser.WebSocketID(request.ID), request.Code, request.Reason)
+		default:
+			err = fmt.Errorf("unknown V8 WebSocket operation %q", request.Operation)
 		}
 		if err != nil {
 			return err
