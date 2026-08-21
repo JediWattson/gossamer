@@ -79,7 +79,8 @@ and ordinary task release invalidates every unpromoted loaded Ref.
   local, indirect, namespace, and star exports; cyclic graph linking; immutable
   live import bindings; canonical namespace objects; strict top-level and
   Function `this`; canonical null-prototype `import.meta` objects with host
-  initialized URLs; literal dynamic imports with Promise results; and per-Realm
+  initialized URLs and canonical `resolve()` results; literal dynamic imports
+  with Promise results; and per-Realm
   evaluation and failure caching.
 
 Every compiled Function invocation and ordinary block enters a fresh native

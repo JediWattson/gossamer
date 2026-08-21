@@ -12564,6 +12564,78 @@ void ClearRealmHandles(gossamer_v8_realm *realm) {
   realm->scroll_restoration = "auto";
 }
 
+std::string ResolveURLReference(const std::string &base,
+                                const std::string &reference) {
+  size_t scheme = reference.find(':');
+  size_t first_delimiter = reference.find_first_of("/?#");
+  if (scheme != std::string::npos &&
+      (first_delimiter == std::string::npos || scheme < first_delimiter))
+    return reference;
+  size_t authority = base.find("://");
+  if (authority == std::string::npos)
+    return reference;
+  size_t origin_end = base.find('/', authority + 3);
+  std::string origin =
+      origin_end == std::string::npos ? base : base.substr(0, origin_end);
+  if (reference.rfind("//", 0) == 0)
+    return base.substr(0, authority + 1) + reference;
+  if (!reference.empty() && reference[0] == '/')
+    return origin + reference;
+
+  std::string base_path = origin_end == std::string::npos
+                              ? "/"
+                              : base.substr(origin_end);
+  size_t suffix = base_path.find_first_of("?#");
+  if (suffix != std::string::npos)
+    base_path.resize(suffix);
+  if (!reference.empty() && (reference[0] == '?' || reference[0] == '#'))
+    return origin + base_path + reference;
+  size_t slash = base_path.rfind('/');
+  std::string combined =
+      (slash == std::string::npos ? "/" : base_path.substr(0, slash + 1)) +
+      reference;
+  std::vector<std::string> segments;
+  size_t start = 0;
+  while (start <= combined.size()) {
+    size_t end = combined.find('/', start);
+    std::string segment = combined.substr(
+        start, end == std::string::npos ? std::string::npos : end - start);
+    if (segment == "..") {
+      if (!segments.empty())
+        segments.pop_back();
+    } else if (!segment.empty() && segment != ".") {
+      segments.push_back(segment);
+    }
+    if (end == std::string::npos)
+      break;
+    start = end + 1;
+  }
+  std::string resolved = origin + "/";
+  for (size_t index = 0; index < segments.size(); ++index) {
+    if (index != 0)
+      resolved.push_back('/');
+    resolved += segments[index];
+  }
+  return resolved;
+}
+
+void ImportMetaResolve(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  std::string base = UTF8Value(isolate, info.Data());
+  std::string reference;
+  if (!StringFromValue(isolate,
+                       info.Length() == 0 ? v8::Undefined(isolate) : info[0],
+                       &reference))
+    return;
+  std::string resolved = ResolveURLReference(base, reference);
+  v8::Local<v8::String> value;
+  if (!NewUTF8String(isolate, resolved.data(), resolved.size(), &value)) {
+    ThrowError(isolate, "V8 failed to allocate resolved module URL");
+    return;
+  }
+  info.GetReturnValue().Set(value);
+}
+
 void InitializeImportMetaObject(v8::Local<v8::Context> context,
                                 v8::Local<v8::Module> module,
                                 v8::Local<v8::Object> meta) {
@@ -12574,6 +12646,13 @@ void InitializeImportMetaObject(v8::Local<v8::Context> context,
   meta->CreateDataProperty(
       context, v8::String::NewFromUtf8Literal(isolate, "url"), resource_name)
       .FromMaybe(false);
+  v8::Local<v8::Function> resolve;
+  if (v8::Function::New(context, ImportMetaResolve, resource_name)
+          .ToLocal(&resolve)) {
+    meta->CreateDataProperty(
+        context, v8::String::NewFromUtf8Literal(isolate, "resolve"), resolve)
+        .FromMaybe(false);
+  }
 }
 
 } // namespace

@@ -379,6 +379,8 @@ globalThis.__moduleMeta = [
   descriptor.enumerable,
   descriptor.configurable,
   rootMeta.extra,
+  rootMeta.resolve("./dependency.js"),
+  rootMeta.resolve("/assets/chunk.js"),
   dependencyURL,
   dependencyMeta !== rootMeta,
   sameDependencyMeta(),
@@ -404,7 +406,7 @@ export function sameDependencyMeta() { return dependencyMeta === import.meta; }
 		t.Fatalf("import.meta navigation = %#v", snapshot)
 	}
 	if _, err := page.QueueScript(browser.ScriptSource{URL: nativeModuleGraphPageURL + "assert-import-meta.js", Source: `
-const expected = "true|true|true|https://modules.gossamer.test/root.js|true|url,extra|true|true|true|mutable|https://modules.gossamer.test/dependency.js|true|true|true";
+const expected = "true|true|true|https://modules.gossamer.test/root.js|true|url,resolve,extra|true|true|true|mutable|https://modules.gossamer.test/dependency.js|https://modules.gossamer.test/assets/chunk.js|https://modules.gossamer.test/dependency.js|true|true|true";
 if (__moduleMeta !== expected) throw new Error("module metadata: " + __moduleMeta);
 `}); err != nil {
 		t.Fatal(err)

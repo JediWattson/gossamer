@@ -2,6 +2,7 @@ package nativeengine
 
 import (
 	"fmt"
+	"net/url"
 	"sort"
 
 	"github.com/JediWattson/gossamer/internal/browser"
@@ -345,6 +346,13 @@ func (realm *Realm) instantiateModuleLocalsLocked(context *browserruntime.TaskCo
 			if err := context.DefineProperty(meta, urlName, memory.DataProperty(memory.RefValue(urlValue), true, true, true)); err != nil {
 				return err
 			}
+			resolve, err := realm.newNativeFunction(context, "resolve", 1, nativeModuleImportMetaResolve)
+			if err != nil {
+				return err
+			}
+			if err := defineData(context, meta, "resolve", memory.RefValue(resolve), true, true, true); err != nil {
+				return err
+			}
 			if err := context.InitializeBinding(environment, name, memory.RefValue(meta)); err != nil {
 				return err
 			}
@@ -409,6 +417,37 @@ func (realm *Realm) instantiateModuleLocalsLocked(context *browserruntime.TaskCo
 		}
 	}
 	return nil
+}
+
+func (realm *Realm) moduleImportMetaResolve(context *browserruntime.TaskContext, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+	if !this.IsRef() {
+		return memory.Value{}, fmt.Errorf("%w: import.meta.resolve has no module metadata receiver", ErrModuleLink)
+	}
+	urlName, err := context.NewString("url")
+	if err != nil {
+		return memory.Value{}, err
+	}
+	baseValue, found, err := context.GetOwnProperty(this.Ref(), urlName)
+	if err != nil || !found || !baseValue.IsRef() {
+		return memory.Value{}, fmt.Errorf("%w: import.meta.resolve has no module URL", ErrModuleLink)
+	}
+	baseText, err := context.DerefString(baseValue.Ref())
+	if err != nil {
+		return memory.Value{}, err
+	}
+	base, err := url.Parse(baseText)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	specifier, err := stringArgument(context, arguments, 0)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	reference, err := url.Parse(specifier)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	return newString(context, base.ResolveReference(reference).String())
 }
 
 func (realm *Realm) moduleDynamicImport(context *browserruntime.TaskContext, this memory.Value, arguments []memory.Value) (memory.Value, error) {
