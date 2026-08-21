@@ -79,6 +79,20 @@ func (intrinsics *Intrinsics) installCollectionBuiltins(context *TaskContext) er
 	}); err != nil {
 		return err
 	}
+	setValuesName, err := context.NewString("values")
+	if err != nil {
+		return err
+	}
+	setValues, found, err := context.GetOwnProperty(intrinsics.SetPrototype, setValuesName)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("runtime: missing Set values iterator method")
+	}
+	if err := defineData(context, intrinsics.SetPrototype, "keys", setValues, true, false, true); err != nil {
+		return err
+	}
 	mapSize, err := intrinsics.newBuiltinMethod(context, "get size", 0, nativeMapSize)
 	if err != nil {
 		return err

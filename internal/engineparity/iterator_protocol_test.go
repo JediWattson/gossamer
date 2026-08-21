@@ -251,13 +251,16 @@ let set = new Set();
 set.add(4); set.add(5);
 let setTotal = 0;
 for (let value of set) setTotal = setTotal + value;
+let setKeyTotal = 0;
+for (let value of set.keys()) setKeyTotal = setKeyTotal + value;
 let iterator = [4][Symbol.iterator]();
 
 if (normal !== "ab" || broken !== 1 || continued !== 2 || returned !== 7 ||
     !closeOverridesReturn || !originalThrowPreserved || !primitiveCloseRejected || overriddenValue !== 9 ||
     iteratorCalls !== 10 || nextReads !== 10 || iteratorCloses !== 7 || stepFailureCloses !== 0 ||
     !nonIterableRejected || !invalidIteratorRejected || !invalidStepRejected ||
-    arrayText !== "xy" || stringText !== "A😀B" || mapTotal !== 5 || setTotal !== 9 ||
+    arrayText !== "xy" || stringText !== "A😀B" || mapTotal !== 5 || setTotal !== 9 || setKeyTotal !== 9 ||
+    Set.prototype.keys !== Set.prototype.values ||
     iterator[Symbol.iterator]() !== iterator) {
   throw new Error("iterator protocol parity failed");
 }

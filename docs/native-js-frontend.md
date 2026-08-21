@@ -37,7 +37,7 @@ and ordinary task release invalidates every unpromoted loaded Ref.
   `join`, and `slice`;
 - String construction and core inspection/transformation methods; Array
   callback/search methods; Map and Set constructors, mutation, lookup, size,
-  and callback methods;
+  callback methods, and the canonical Set `keys`/`values` alias;
 - explicit Array, String, Map, and Set iterator objects whose `next()` method
   returns ordinary `{value, done}` Objects in deterministic native order;
 - `for...of` through the well-known `Symbol.iterator` protocol, including
