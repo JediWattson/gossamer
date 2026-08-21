@@ -52,8 +52,8 @@ and ordinary task release invalidates every unpromoted loaded Ref.
 - lazy generator Functions for the production `for...of` shape with direct or
   conditional yields, self-iterable iterator objects, and `return()` forwarding
   to the source iterator;
-- Promise construction, `resolve`, `reject`, `then`, and `catch`, including
-  chained fulfillment/rejection and Promise adoption, plus FIFO
+- Promise construction, `resolve`, `reject`, ordered iterable `all`, `then`, and
+  `catch`, including chained fulfillment/rejection and Promise adoption, plus FIFO
   `queueMicrotask` callbacks drained at the native execution checkpoint;
 - async Function declarations and expressions whose body is empty or a single
   return statement, including multiple nested `await` expressions lowered to
@@ -114,7 +114,8 @@ This is not yet an ECMAScript-compatible engine. In particular:
   are absent;
 - the native browser facade is intentionally smaller than the stock V8 facade:
   it does not yet provide constructible DOM interfaces, synchronous
-  `dispatchEvent()`, live collection objects, or geometry facades.
+  `dispatchEvent()`, live collection objects, or geometry facades. It does
+  provide static tag-name lookup for generated module-preload helpers.
 
 ## N11 browser Realm adapter
 

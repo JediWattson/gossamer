@@ -135,6 +135,7 @@ const (
 	nativeElementHiddenGet
 	nativeElementHiddenSet
 	nativeModuleDynamicImport
+	nativeDocumentGetElementsByTagName
 )
 
 const (
@@ -212,6 +213,7 @@ type nativeRegistration struct {
 func (realm *Realm) installBrowserNatives() error {
 	registrations := []nativeRegistration{
 		{nativeDocumentGetElementByID, realm.documentGetElementByID},
+		{nativeDocumentGetElementsByTagName, realm.documentGetElementsByTagName},
 		{nativeDocumentCreateElement, realm.documentCreateElement},
 		{nativeDocumentCreateTextNode, realm.documentCreateTextNode},
 		{nativeDocumentElement, realm.documentRelation(browser.RelationDocumentElement)},
@@ -610,6 +612,7 @@ func (realm *Realm) installDOMPrototypeProperties(context *browserruntime.TaskCo
 		id     uint64
 	}{
 		{realm.bindings.documentPrototype, "getElementById", 1, nativeDocumentGetElementByID},
+		{realm.bindings.documentPrototype, "getElementsByTagName", 1, nativeDocumentGetElementsByTagName},
 		{realm.bindings.documentPrototype, "createElement", 1, nativeDocumentCreateElement},
 		{realm.bindings.documentPrototype, "createTextNode", 1, nativeDocumentCreateTextNode},
 		{realm.bindings.documentPrototype, "createElementNS", 2, nativeDocumentCreateElementNS},
@@ -1499,6 +1502,26 @@ func (realm *Realm) elementQuerySelector(all bool) browserruntime.NativeFunction
 		}
 		return realm.wrappedNodeValue(context, handles[0])
 	}
+}
+
+func (realm *Realm) documentGetElementsByTagName(context *browserruntime.TaskContext, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+	handle, err := realm.unwrapNode(context, this)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	tag, err := stringArgument(context, arguments, 0)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	host, ok := realm.host.(browser.DOMElementHost)
+	if !ok {
+		return memory.Value{}, fmt.Errorf("nativeengine: browser host does not expose selectors")
+	}
+	handles, err := host.QuerySelector(handle, tag, true)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	return realm.nodeArray(context, handles)
 }
 
 func (realm *Realm) elementMatches(context *browserruntime.TaskContext, this memory.Value, arguments []memory.Value) (memory.Value, error) {

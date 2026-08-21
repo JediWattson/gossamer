@@ -3744,6 +3744,34 @@ void NodeQuerySelector(const v8::FunctionCallbackInfo<v8::Value> &info) {
   info.GetReturnValue().Set(wrapper);
 }
 
+void DocumentGetElementsByTagName(
+    const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  WrapperKey scope;
+  if (!ReadReceiverKey(isolate, info.This(), &scope))
+    return;
+  std::string tag;
+  if (!StringFromValue(isolate,
+                       info.Length() == 0 ? v8::Undefined(isolate) : info[0],
+                       &tag))
+    return;
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  std::vector<uint32_t> nodes;
+  std::string error;
+  if (!ReadSelectorNodes(realm, scope, tag, true, &nodes, &error)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  v8::Local<v8::Object> list;
+  if (!CreateStaticNodeList(realm, isolate->GetCurrentContext(), scope, nodes,
+                            &error)
+           .ToLocal(&list)) {
+    ThrowError(isolate, error);
+    return;
+  }
+  info.GetReturnValue().Set(list);
+}
+
 void ElementMatchesSelector(
     const v8::FunctionCallbackInfo<v8::Value> &info) {
   v8::Isolate *isolate = info.GetIsolate();
@@ -11521,6 +11549,9 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   document_prototype->Set(
       isolate, "getElementById",
       v8::FunctionTemplate::New(isolate, DocumentGetElementByID));
+  document_prototype->Set(
+      isolate, "getElementsByTagName",
+      v8::FunctionTemplate::New(isolate, DocumentGetElementsByTagName));
   document_prototype->Set(
       isolate, "querySelector",
       v8::FunctionTemplate::New(isolate, NodeQuerySelector,

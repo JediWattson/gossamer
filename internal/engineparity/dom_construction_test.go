@@ -55,6 +55,11 @@ if (document.defaultView !== window || document.ownerDocument !== null ||
 }
 let root = document.getElementById("root");
 let old = document.getElementById("old");
+if (document.getElementsByTagName("main").length !== 1 ||
+    document.getElementsByTagName("p")[0] !== old ||
+    document.getElementsByTagName("missing").length !== 0) {
+  throw new Error("document.getElementsByTagName parity failed");
+}
 let fragment = document.createDocumentFragment();
 if (fragment.nodeType !== 11 || fragment.nodeName !== "#document-fragment" ||
     fragment.ownerDocument !== document || fragment.isConnected) {
