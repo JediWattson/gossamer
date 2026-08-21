@@ -1,4 +1,4 @@
-//go:build !v8 || !cgo || !darwin || !arm64
+//go:build !cgo || !darwin || !arm64
 
 package main
 
@@ -8,6 +8,6 @@ import (
 )
 
 func main() {
-	_, _ = fmt.Fprintln(os.Stderr, "gossamer-window requires macOS on Apple Silicon, cgo, and the v8 build tag; use tools/v8/window.sh")
+	_, _ = fmt.Fprintln(os.Stderr, "gossamer-window requires macOS on Apple Silicon with cgo")
 	os.Exit(2)
 }

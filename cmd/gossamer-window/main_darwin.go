@@ -1,4 +1,4 @@
-//go:build v8 && cgo && darwin && arm64
+//go:build cgo && darwin && arm64
 
 package main
 
@@ -14,7 +14,7 @@ import (
 
 	"github.com/JediWattson/gossamer/internal/browser"
 	"github.com/JediWattson/gossamer/internal/loader"
-	"github.com/JediWattson/gossamer/internal/v8engine"
+	"github.com/JediWattson/gossamer/internal/nativeengine"
 	"github.com/JediWattson/gossamer/internal/window"
 )
 
@@ -24,6 +24,7 @@ func main() {
 	defer runtime.UnlockOSThread()
 
 	icuData := flag.String("icu-data", os.Getenv("GOSSAMER_V8_ICU_DATA"), "path to the pinned V8 build's icudtl.dat")
+	engineName := flag.String("engine", "v8", "JavaScript engine: strand or v8")
 	title := flag.String("title", "", "native window title")
 	sessionFile := flag.String("session-file", "", "optional path for Graphite tab-session restore")
 	flag.Parse()
@@ -32,9 +33,9 @@ func main() {
 	}
 	rawURL := flag.Arg(0)
 
-	engine, err := v8engine.New(v8engine.Config{ICUDataPath: *icuData})
+	engine, err := selectEngine(*engineName, *icuData)
 	if err != nil {
-		fatalf("initialize stock V8: %v", err)
+		fatalf("initialize %s engine: %v", strings.TrimSpace(*engineName), err)
 	}
 	browserRuntime, err := browser.NewWithEngine(engine)
 	if err != nil {
@@ -66,6 +67,17 @@ func main() {
 		Session: sessionStore,
 	}); err != nil {
 		fatalf("run interactive window: %v", err)
+	}
+}
+
+func selectEngine(name, icuData string) (browser.Engine, error) {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "strand":
+		return nativeengine.New(nativeengine.Config{}), nil
+	case "v8":
+		return newStockV8Engine(icuData)
+	default:
+		return nil, fmt.Errorf("unknown engine %q (want strand or v8)", name)
 	}
 }
 
