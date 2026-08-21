@@ -14,10 +14,15 @@ import (
 const (
 	nativeEventTargetAdd uint64 = 12_000 + iota
 	nativeEventTargetRemove
+	nativeEventTargetDispatch
+	nativeEventConstructor
+	nativeCustomEventConstructor
 	nativeEventPreventDefault
 	nativeEventStopPropagation
 	nativeEventStopImmediatePropagation
 )
+
+const eventBrandProperty = "\x00gossamer.event"
 
 const (
 	eventPhaseNone      = 0
@@ -69,6 +74,155 @@ type eventListenerOptions struct {
 	capture bool
 	once    bool
 	passive bool
+}
+
+func (realm *Realm) newEventConstructor(
+	context *browserruntime.TaskContext,
+	name string,
+	nativeID uint64,
+	parentPrototype memory.Ref,
+) (memory.Ref, memory.Ref, error) {
+	nameValue, err := newString(context, name)
+	if err != nil {
+		return memory.Ref{}, memory.Ref{}, err
+	}
+	constructor, err := context.NewNativeConstructor(nameValue, memory.RefValue(realm.active.Global), 1, nativeID)
+	if err != nil {
+		return memory.Ref{}, memory.Ref{}, err
+	}
+	prototypeName, err := context.NewString("prototype")
+	if err != nil {
+		return memory.Ref{}, memory.Ref{}, err
+	}
+	prototype, found, err := context.GetOwnProperty(constructor, prototypeName)
+	if err != nil || !found || !prototype.IsRef() {
+		return memory.Ref{}, memory.Ref{}, fmt.Errorf("nativeengine: %s constructor lost its prototype", name)
+	}
+	if parentPrototype != (memory.Ref{}) {
+		if err := context.SetPrototype(prototype.Ref(), memory.RefValue(parentPrototype)); err != nil {
+			return memory.Ref{}, memory.Ref{}, err
+		}
+	}
+	if name == "Event" {
+		for constant, value := range map[string]float64{
+			"NONE": eventPhaseNone, "CAPTURING_PHASE": eventPhaseCapturing,
+			"AT_TARGET": eventPhaseTarget, "BUBBLING_PHASE": eventPhaseBubbling,
+		} {
+			if err := defineData(context, constructor, constant, memory.NumberValue(value), false, false, false); err != nil {
+				return memory.Ref{}, memory.Ref{}, err
+			}
+			if err := defineData(context, prototype.Ref(), constant, memory.NumberValue(value), false, false, false); err != nil {
+				return memory.Ref{}, memory.Ref{}, err
+			}
+		}
+	}
+	return constructor, prototype.Ref(), nil
+}
+
+func (realm *Realm) eventConstructor(context *browserruntime.TaskContext, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+	return realm.initializeConstructedEvent(context, this, arguments, false)
+}
+
+func (realm *Realm) customEventConstructor(context *browserruntime.TaskContext, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+	return realm.initializeConstructedEvent(context, this, arguments, true)
+}
+
+func (realm *Realm) initializeConstructedEvent(
+	context *browserruntime.TaskContext,
+	this memory.Value,
+	arguments []memory.Value,
+	custom bool,
+) (memory.Value, error) {
+	if !this.IsRef() || len(arguments) == 0 {
+		return memory.Value{}, fmt.Errorf("%w: Event constructor requires new and a type", browserruntime.ErrOperandType)
+	}
+	eventType, err := stringArgument(context, arguments, 0)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	bubbles, cancelable, composed, detail, err := eventInit(context, argument(arguments, 1))
+	if err != nil {
+		return memory.Value{}, err
+	}
+	typeValue, err := newString(context, eventType)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	properties := []struct {
+		name  string
+		value memory.Value
+	}{
+		{"type", typeValue},
+		{"target", memory.NullValue()},
+		{"currentTarget", memory.NullValue()},
+		{"eventPhase", memory.NumberValue(eventPhaseNone)},
+		{"bubbles", memory.BoolValue(bubbles)},
+		{"cancelable", memory.BoolValue(cancelable)},
+		{"composed", memory.BoolValue(composed)},
+		{"defaultPrevented", memory.BoolValue(false)},
+		{"isTrusted", memory.BoolValue(false)},
+		{"timeStamp", memory.NumberValue(0)},
+	}
+	if custom {
+		properties = append(properties, struct {
+			name  string
+			value memory.Value
+		}{"detail", detail})
+	}
+	for _, property := range properties {
+		if err := defineData(context, this.Ref(), property.name, property.value, true, true, true); err != nil {
+			return memory.Value{}, err
+		}
+	}
+	if err := defineData(context, this.Ref(), eventBrandProperty, memory.BoolValue(true), false, false, false); err != nil {
+		return memory.Value{}, err
+	}
+	return memory.UndefinedValue(), nil
+}
+
+func eventInit(context *browserruntime.TaskContext, value memory.Value) (bool, bool, bool, memory.Value, error) {
+	detail := memory.NullValue()
+	if !value.IsRef() {
+		return false, false, false, detail, nil
+	}
+	kind, err := context.HeapKind(value.Ref())
+	if err != nil {
+		return false, false, false, memory.Value{}, err
+	}
+	if kind != memory.HeapObject {
+		return false, false, false, detail, nil
+	}
+	var bubbles, cancelable, composed bool
+	for _, option := range []struct {
+		name        string
+		destination *bool
+	}{
+		{"bubbles", &bubbles},
+		{"cancelable", &cancelable},
+		{"composed", &composed},
+	} {
+		nameRef, err := context.NewString(option.name)
+		if err != nil {
+			return false, false, false, memory.Value{}, err
+		}
+		property, found, err := context.GetOwnProperty(value.Ref(), nameRef)
+		if err != nil {
+			return false, false, false, memory.Value{}, err
+		}
+		if found {
+			*option.destination = truthy(property)
+		}
+	}
+	detailName, err := context.NewString("detail")
+	if err != nil {
+		return false, false, false, memory.Value{}, err
+	}
+	if property, found, err := context.GetOwnProperty(value.Ref(), detailName); err != nil {
+		return false, false, false, memory.Value{}, err
+	} else if found {
+		detail = property
+	}
+	return bubbles, cancelable, composed, detail, nil
 }
 
 func (realm *Realm) eventTargetAdd(context *browserruntime.TaskContext, this memory.Value, arguments []memory.Value) (memory.Value, error) {
@@ -169,68 +323,153 @@ func (realm *Realm) eventTargetRemove(context *browserruntime.TaskContext, this 
 }
 
 func (realm *Realm) eventPreventDefault(context *browserruntime.TaskContext, this memory.Value, _ []memory.Value) (memory.Value, error) {
-	state, err := realm.currentEvent(this)
+	event, err := realm.requireEventObject(context, this)
 	if err != nil {
 		return memory.Value{}, err
 	}
-	if state.cancelable && !state.passive {
-		state.defaultPrevented = true
-		if err := setDataValue(context, state.object, "defaultPrevented", memory.BoolValue(true)); err != nil {
+	state := realm.activeEvent
+	if state != nil && state.object == event {
+		if state.cancelable && !state.passive {
+			state.defaultPrevented = true
+			if err := setDataValue(context, event, "defaultPrevented", memory.BoolValue(true)); err != nil {
+				return memory.Value{}, err
+			}
+		}
+		return memory.UndefinedValue(), nil
+	}
+	cancelable, err := eventBool(context, event, "cancelable")
+	if err != nil {
+		return memory.Value{}, err
+	}
+	if cancelable {
+		if err := setDataValue(context, event, "defaultPrevented", memory.BoolValue(true)); err != nil {
 			return memory.Value{}, err
 		}
 	}
 	return memory.UndefinedValue(), nil
 }
 
-func (realm *Realm) eventStopPropagation(_ *browserruntime.TaskContext, this memory.Value, _ []memory.Value) (memory.Value, error) {
-	state, err := realm.currentEvent(this)
+func (realm *Realm) eventStopPropagation(context *browserruntime.TaskContext, this memory.Value, _ []memory.Value) (memory.Value, error) {
+	event, err := realm.requireEventObject(context, this)
 	if err != nil {
 		return memory.Value{}, err
 	}
-	state.propagationStopped = true
+	if state := realm.activeEvent; state != nil && state.object == event {
+		state.propagationStopped = true
+	}
 	return memory.UndefinedValue(), nil
 }
 
-func (realm *Realm) eventStopImmediatePropagation(_ *browserruntime.TaskContext, this memory.Value, _ []memory.Value) (memory.Value, error) {
-	state, err := realm.currentEvent(this)
+func (realm *Realm) eventStopImmediatePropagation(context *browserruntime.TaskContext, this memory.Value, _ []memory.Value) (memory.Value, error) {
+	event, err := realm.requireEventObject(context, this)
 	if err != nil {
 		return memory.Value{}, err
 	}
-	state.propagationStopped = true
-	state.immediateStopped = true
+	if state := realm.activeEvent; state != nil && state.object == event {
+		state.propagationStopped = true
+		state.immediateStopped = true
+	}
 	return memory.UndefinedValue(), nil
 }
 
-func (realm *Realm) currentEvent(this memory.Value) (*eventState, error) {
-	if realm.activeEvent == nil || !this.IsRef() || this.Ref() != realm.activeEvent.object {
-		return nil, fmt.Errorf("%w: Event method called with an invalid receiver", browserruntime.ErrOperandType)
+func (realm *Realm) requireEventObject(context *browserruntime.TaskContext, value memory.Value) (memory.Ref, error) {
+	if !value.IsRef() {
+		return memory.Ref{}, fmt.Errorf("%w: Event method called with an invalid receiver", browserruntime.ErrOperandType)
 	}
-	return realm.activeEvent, nil
+	brand, found, err := ownProperty(context, value.Ref(), eventBrandProperty)
+	if err != nil || !found || brand.Kind() != memory.ValueBool || !brand.Bool() {
+		return memory.Ref{}, fmt.Errorf("%w: Event method called with an invalid receiver", browserruntime.ErrOperandType)
+	}
+	return value.Ref(), nil
 }
 
 func (realm *Realm) dispatchEventLocked(context *browserruntime.TaskContext, input browser.InputEvent) (browser.EventDispatchResult, error) {
 	if input.Type.String() == "" || input.Target.Document == 0 {
 		return browser.EventDispatchResult{}, fmt.Errorf("nativeengine: invalid input event")
 	}
-	var path []eventTargetID
-	if input.Target.Node == dom.InvalidNodeID {
-		path = []eventTargetID{windowEventTarget(input.Target.Document)}
-	} else {
-		var err error
-		path, err = realm.eventPath(context, input.Target)
-		if err != nil {
-			return browser.EventDispatchResult{}, err
-		}
-	}
 	event, err := realm.newInputEvent(context, input)
 	if err != nil {
 		return browser.EventDispatchResult{}, err
 	}
-	state := &eventState{object: event, cancelable: inputEventCancelable(input.Type)}
-	realm.activeEvent = state
-	defer func() { realm.activeEvent = nil }()
+	target := nodeEventTarget(input.Target)
+	if input.Target.Node == dom.InvalidNodeID {
+		target = windowEventTarget(input.Target.Document)
+	}
+	prevented, err := realm.dispatchEventObjectLocked(
+		context, target, event, input.Type.String(), inputEventBubbles(input.Type), inputEventCancelable(input.Type),
+	)
+	return browser.EventDispatchResult{DefaultPrevented: prevented}, err
+}
 
-	eventType := input.Type.String()
+func (realm *Realm) eventTargetDispatch(context *browserruntime.TaskContext, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+	target, err := realm.eventTarget(context, this)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	event, err := realm.requireEventObject(context, argument(arguments, 0))
+	if err != nil {
+		return memory.Value{}, err
+	}
+	if realm.activeEvent != nil && realm.activeEvent.object == event {
+		return memory.Value{}, fmt.Errorf("%w: Event is already being dispatched", browserruntime.ErrOperandType)
+	}
+	typeValue, found, err := ownProperty(context, event, "type")
+	if err != nil || !found || !typeValue.IsRef() {
+		return memory.Value{}, fmt.Errorf("%w: Event has no type", browserruntime.ErrOperandType)
+	}
+	eventType, err := context.DerefString(typeValue.Ref())
+	if err != nil {
+		return memory.Value{}, err
+	}
+	bubbles, err := eventBool(context, event, "bubbles")
+	if err != nil {
+		return memory.Value{}, err
+	}
+	cancelable, err := eventBool(context, event, "cancelable")
+	if err != nil {
+		return memory.Value{}, err
+	}
+	prevented, err := realm.dispatchEventObjectLocked(context, target, event, eventType, bubbles, cancelable)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	return memory.BoolValue(!prevented), nil
+}
+
+func (realm *Realm) dispatchEventObjectLocked(
+	context *browserruntime.TaskContext,
+	target eventTargetID,
+	event memory.Ref,
+	eventType string,
+	bubbles bool,
+	cancelable bool,
+) (bool, error) {
+	var path []eventTargetID
+	if target.Window {
+		path = []eventTargetID{target}
+	} else {
+		var err error
+		path, err = realm.eventPath(context, target.nodeHandle())
+		if err != nil {
+			return false, err
+		}
+	}
+	targetValue, err := realm.eventTargetValue(context, target)
+	if err != nil {
+		return false, err
+	}
+	if err := setDataValue(context, event, "target", targetValue); err != nil {
+		return false, err
+	}
+	defaultPrevented, err := eventBool(context, event, "defaultPrevented")
+	if err != nil {
+		return false, err
+	}
+	state := &eventState{object: event, cancelable: cancelable, defaultPrevented: defaultPrevented}
+	previous := realm.activeEvent
+	realm.activeEvent = state
+	defer func() { realm.activeEvent = previous }()
+
 	var dispatchErr error
 	reachedTarget := true
 	for index := len(path) - 1; index >= 1; index-- {
@@ -245,7 +484,7 @@ func (realm *Realm) dispatchEventLocked(context *browserruntime.TaskContext, inp
 		if !state.immediateStopped {
 			dispatchErr = errors.Join(dispatchErr, realm.invokeEventTargetLocked(context, path[0], eventType, event, eventPhaseTarget, false))
 		}
-		if inputEventBubbles(input.Type) && !state.propagationStopped {
+		if bubbles && !state.propagationStopped {
 			for index := 1; index < len(path); index++ {
 				dispatchErr = errors.Join(dispatchErr, realm.invokeEventTargetLocked(context, path[index], eventType, event, eventPhaseBubbling, false))
 				if state.propagationStopped {
@@ -261,7 +500,23 @@ func (realm *Realm) dispatchEventLocked(context *browserruntime.TaskContext, inp
 	if err := setDataValue(context, event, "eventPhase", memory.NumberValue(eventPhaseNone)); err != nil {
 		dispatchErr = errors.Join(dispatchErr, err)
 	}
-	return browser.EventDispatchResult{DefaultPrevented: state.defaultPrevented}, dispatchErr
+	return state.defaultPrevented, dispatchErr
+}
+
+func ownProperty(context *browserruntime.TaskContext, object memory.Ref, name string) (memory.Value, bool, error) {
+	nameRef, err := context.NewString(name)
+	if err != nil {
+		return memory.Value{}, false, err
+	}
+	return context.GetOwnProperty(object, nameRef)
+}
+
+func eventBool(context *browserruntime.TaskContext, event memory.Ref, name string) (bool, error) {
+	value, found, err := ownProperty(context, event, name)
+	if err != nil {
+		return false, err
+	}
+	return found && truthy(value), nil
 }
 
 func (realm *Realm) eventPath(context *browserruntime.TaskContext, target browser.NodeHandle) ([]eventTargetID, error) {
@@ -533,6 +788,9 @@ func (realm *Realm) newInputEvent(context *browserruntime.TaskContext, input bro
 		if err := defineData(context, event, property.name, property.value, true, true, true); err != nil {
 			return memory.Ref{}, err
 		}
+	}
+	if err := defineData(context, event, eventBrandProperty, memory.BoolValue(true), false, false, false); err != nil {
+		return memory.Ref{}, err
 	}
 	return event, nil
 }

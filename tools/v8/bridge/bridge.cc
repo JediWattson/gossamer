@@ -123,6 +123,7 @@ struct ListenerRecord {
 
 enum class EventInterface : uint8_t {
   Event,
+  CustomEvent,
   MouseEvent,
   PointerEvent,
   KeyboardEvent,
@@ -435,6 +436,7 @@ struct gossamer_v8_realm {
   v8::Global<v8::FunctionTemplate> history_template;
   v8::Global<v8::FunctionTemplate> location_template;
   v8::Global<v8::FunctionTemplate> event_template;
+  v8::Global<v8::FunctionTemplate> custom_event_template;
   v8::Global<v8::FunctionTemplate> mouse_event_template;
   v8::Global<v8::FunctionTemplate> pointer_event_template;
   v8::Global<v8::FunctionTemplate> keyboard_event_template;
@@ -6133,6 +6135,26 @@ void EventConstructor(const v8::FunctionCallbackInfo<v8::Value> &info) {
                                            : v8::Undefined(isolate),
                          state.get()))
     return;
+  if (state->interface == EventInterface::CustomEvent) {
+    v8::Local<v8::Context> context = isolate->GetCurrentContext();
+    v8::Local<v8::Value> detail = v8::Null(isolate);
+    if (info.Length() > 1 && info[1]->IsObject()) {
+      v8::Local<v8::Object> options = info[1].As<v8::Object>();
+      if (!options
+               ->Get(context,
+                     v8::String::NewFromUtf8Literal(isolate, "detail"))
+               .ToLocal(&detail))
+        return;
+    }
+    if (!info.This()
+             ->DefineOwnProperty(
+                 context,
+                 v8::String::NewFromUtf8Literal(isolate, "detail"), detail,
+                 static_cast<v8::PropertyAttribute>(
+                     v8::ReadOnly | v8::DontEnum | v8::DontDelete))
+             .FromMaybe(false))
+      return;
+  }
   gossamer_v8_realm *realm = CurrentRealm(isolate);
   TrackEventObject(realm, info.This(), state.release());
   info.GetReturnValue().Set(info.This());
@@ -8539,6 +8561,8 @@ v8::Local<v8::FunctionTemplate>
 EventTemplateForInterface(gossamer_v8_realm *realm,
                           EventInterface interface) {
   switch (interface) {
+  case EventInterface::CustomEvent:
+    return realm->custom_event_template.Get(realm->isolate);
   case EventInterface::MouseEvent:
     return realm->mouse_event_template.Get(realm->isolate);
   case EventInterface::PointerEvent:
@@ -10569,6 +10593,8 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
       };
   v8::Local<v8::FunctionTemplate> event_template =
       new_event_template(EventInterface::Event);
+  v8::Local<v8::FunctionTemplate> custom_event_template =
+      new_event_template(EventInterface::CustomEvent);
   v8::Local<v8::FunctionTemplate> mouse_event_template =
       new_event_template(EventInterface::MouseEvent);
   v8::Local<v8::FunctionTemplate> pointer_event_template =
@@ -10699,6 +10725,8 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
       static_cast<v8::PropertyAttribute>(v8::ReadOnly | v8::DontEnum));
   event_template->SetClassName(
       v8::String::NewFromUtf8Literal(isolate, "Event"));
+  custom_event_template->SetClassName(
+      v8::String::NewFromUtf8Literal(isolate, "CustomEvent"));
   mouse_event_template->SetClassName(
       v8::String::NewFromUtf8Literal(isolate, "MouseEvent"));
   pointer_event_template->SetClassName(
@@ -10725,6 +10753,7 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   document_template->Inherit(node_template);
   document_fragment_template->Inherit(node_template);
   mouse_event_template->Inherit(event_template);
+  custom_event_template->Inherit(event_template);
   pointer_event_template->Inherit(mouse_event_template);
   keyboard_event_template->Inherit(event_template);
   input_event_template->Inherit(event_template);
@@ -10749,7 +10778,7 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   style_template->InstanceTemplate()->SetInternalFieldCount(
       kStyleInternalFieldCount);
   for (v8::Local<v8::FunctionTemplate> interface_template :
-       {event_template, mouse_event_template, pointer_event_template,
+       {event_template, custom_event_template, mouse_event_template, pointer_event_template,
         keyboard_event_template, input_event_template,
         composition_event_template, focus_event_template}) {
     interface_template->InstanceTemplate()->SetInternalFieldCount(1);
@@ -11175,7 +11204,7 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   composition_event_template->PrototypeTemplate()->SetNativeDataProperty(
       v8::String::NewFromUtf8Literal(isolate, "data"), EventPropertyGetter);
   for (v8::Local<v8::FunctionTemplate> interface_template :
-       {event_template, mouse_event_template, pointer_event_template,
+       {event_template, custom_event_template, mouse_event_template, pointer_event_template,
         keyboard_event_template, input_event_template,
         composition_event_template, focus_event_template}) {
     install_event_surface(interface_template->InstanceTemplate());
@@ -11866,6 +11895,7 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   realm->history_template.Reset(isolate, history_template);
   realm->location_template.Reset(isolate, location_template);
   realm->event_template.Reset(isolate, event_template);
+  realm->custom_event_template.Reset(isolate, custom_event_template);
   realm->mouse_event_template.Reset(isolate, mouse_event_template);
   realm->pointer_event_template.Reset(isolate, pointer_event_template);
   realm->keyboard_event_template.Reset(isolate, keyboard_event_template);
@@ -12110,6 +12140,7 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   return expose_interface("DOMException", dom_exception_template) &&
          expose_interface("EventTarget", event_target_template) &&
          expose_interface("Event", event_template) &&
+         expose_interface("CustomEvent", custom_event_template) &&
          expose_interface("MouseEvent", mouse_event_template) &&
          expose_interface("PointerEvent", pointer_event_template) &&
          expose_interface("KeyboardEvent", keyboard_event_template) &&
@@ -12517,6 +12548,7 @@ void ClearRealmHandles(gossamer_v8_realm *realm) {
   realm->module_resolutions.clear();
   realm->event_target_template.Reset();
   realm->event_template.Reset();
+  realm->custom_event_template.Reset();
   realm->mouse_event_template.Reset();
   realm->pointer_event_template.Reset();
   realm->keyboard_event_template.Reset();

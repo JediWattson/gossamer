@@ -347,6 +347,9 @@ func (realm *Realm) installBrowserNatives() error {
 		{nativeMutationObserverTakeRecords, realm.mutationObserverTakeRecords},
 		{nativeEventTargetAdd, realm.eventTargetAdd},
 		{nativeEventTargetRemove, realm.eventTargetRemove},
+		{nativeEventTargetDispatch, realm.eventTargetDispatch},
+		{nativeEventConstructor, realm.eventConstructor},
+		{nativeCustomEventConstructor, realm.customEventConstructor},
 		{nativeEventPreventDefault, realm.eventPreventDefault},
 		{nativeEventStopPropagation, realm.eventStopPropagation},
 		{nativeEventStopImmediatePropagation, realm.eventStopImmediatePropagation},
@@ -431,7 +434,6 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		&bindings.templatePrototype,
 		&bindings.textPrototype,
 		&bindings.fragmentPrototype,
-		&bindings.eventPrototype,
 		&bindings.classListPrototype,
 		&bindings.datasetPrototype,
 		&bindings.stylePrototype,
@@ -442,6 +444,15 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		if err != nil {
 			return err
 		}
+	}
+	eventConstructor, eventPrototype, err := realm.newEventConstructor(context, "Event", nativeEventConstructor, memory.Ref{})
+	if err != nil {
+		return err
+	}
+	bindings.eventPrototype = eventPrototype
+	customEventConstructor, _, err := realm.newEventConstructor(context, "CustomEvent", nativeCustomEventConstructor, eventPrototype)
+	if err != nil {
+		return err
 	}
 	if err := context.SetPrototype(bindings.documentPrototype, memory.RefValue(bindings.nodePrototype)); err != nil {
 		return err
@@ -553,6 +564,8 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{"cancelAnimationFrame", memory.RefValue(cancelAnimationFrame)},
 		{"performance", memory.RefValue(bindings.performance)},
 		{"MutationObserver", memory.RefValue(bindings.mutationObserverConstructor)},
+		{"Event", memory.RefValue(eventConstructor)},
+		{"CustomEvent", memory.RefValue(customEventConstructor)},
 		{"getComputedStyle", memory.RefValue(getComputedStyle)},
 		{"HTMLIFrameElement", memory.RefValue(htmlIFrameElement)},
 	} {
@@ -592,6 +605,8 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{bindingDocument, bindings.document, false},
 		{bindingPerformance, bindings.performance, false},
 		{bindingMutationObserver, bindings.mutationObserverConstructor, false},
+		{"Event", eventConstructor, true},
+		{"CustomEvent", customEventConstructor, true},
 		{"setTimeout", setTimeout, true},
 		{"clearTimeout", clearTimeout, true},
 		{"requestAnimationFrame", requestAnimationFrame, true},
@@ -667,8 +682,10 @@ func (realm *Realm) installDOMPrototypeProperties(context *browserruntime.TaskCo
 		{realm.bindings.mutationObserverPrototype, "takeRecords", 0, nativeMutationObserverTakeRecords},
 		{realm.bindings.nodePrototype, "addEventListener", 2, nativeEventTargetAdd},
 		{realm.bindings.nodePrototype, "removeEventListener", 2, nativeEventTargetRemove},
+		{realm.bindings.nodePrototype, "dispatchEvent", 1, nativeEventTargetDispatch},
 		{realm.bindings.windowPrototype, "addEventListener", 2, nativeEventTargetAdd},
 		{realm.bindings.windowPrototype, "removeEventListener", 2, nativeEventTargetRemove},
+		{realm.bindings.windowPrototype, "dispatchEvent", 1, nativeEventTargetDispatch},
 		{realm.bindings.eventPrototype, "preventDefault", 0, nativeEventPreventDefault},
 		{realm.bindings.eventPrototype, "stopPropagation", 0, nativeEventStopPropagation},
 		{realm.bindings.eventPrototype, "stopImmediatePropagation", 0, nativeEventStopImmediatePropagation},

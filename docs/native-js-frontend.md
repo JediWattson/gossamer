@@ -114,9 +114,9 @@ This is not yet an ECMAScript-compatible engine. In particular:
   Promise combinators/finally, and browser-level unhandled-rejection reporting
   are absent;
 - the native browser facade is intentionally smaller than the stock V8 facade:
-  it does not yet provide constructible DOM interfaces, synchronous
-  `dispatchEvent()`, live collection objects, or geometry facades. It does
-  provide static tag-name lookup for generated module-preload helpers.
+  `Event` and `CustomEvent` are constructible and dispatch synchronously, but
+  most other DOM interfaces remain illegal constructors and tag-name lookup is
+  a snapshot rather than a live collection.
 
 ## N11 browser Realm adapter
 
@@ -186,6 +186,13 @@ controls. Listener registration also uses the browser's independent event
 target lifetime claim, so a detached target cannot disappear while it still
 has a listener.
 
+Script-created `Event` and `CustomEvent` values use that same dispatch path.
+They retain type, initialization flags, cancellation state, target identity,
+and `CustomEvent.detail` in the RegionStore graph, so an event stored on the
+Realm global can cross a task checkpoint and still dispatch synchronously.
+`dispatchEvent()` returns false exactly when a cancelable listener prevented
+the default action; constructed events remain untrusted.
+
 At deterministic checkpoints the adapter evacuates canonical wrapper identity,
 MutationObserver callbacks, and non-window event-listener roots before native
 collection. It restores only entries whose owning wrapper survived and asks
@@ -233,4 +240,6 @@ an async resource fetcher, literal dynamic imports, a generator-backed filter,
 Suspense fallback release, duplicate entry tags, and Go-dispatched filter
 interaction. Strand precompiles every emitted chunk, evaluates each canonical
 module at most once, and matches the same rendered and teardown result as stock
-V8. Its lazy details chunk remains the next DOM-facade expansion point.
+V8. Its lazy details interaction also traverses Vite's emitted preload helper,
+including `Promise.all()`, static tag-name lookup, `String.endsWith()`, canonical
+`import.meta.resolve()`, and the final dynamic module import.
