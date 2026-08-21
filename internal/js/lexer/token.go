@@ -45,6 +45,8 @@ const (
 	Delete
 	Instanceof
 	Void
+	Import
+	Export
 
 	LeftParen
 	RightParen
@@ -138,6 +140,8 @@ var kindNames = [...]string{
 	Delete:                   "delete",
 	Instanceof:               "instanceof",
 	Void:                     "void",
+	Import:                   "import",
+	Export:                   "export",
 	LeftParen:                "(",
 	RightParen:               ")",
 	LeftBrace:                "{",
@@ -250,4 +254,6 @@ var keywords = map[string]Kind{
 	"delete":     Delete,
 	"instanceof": Instanceof,
 	"void":       Void,
+	"import":     Import,
+	"export":     Export,
 }

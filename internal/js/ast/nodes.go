@@ -29,6 +29,65 @@ type Script struct {
 	Body []Statement
 }
 
+type ImportSpecifierKind uint8
+
+const (
+	ImportDefault ImportSpecifierKind = iota + 1
+	ImportNamed
+	ImportNamespace
+)
+
+type ImportSpecifier struct {
+	Base
+	Kind     ImportSpecifierKind
+	Imported string
+	Local    *Identifier
+}
+
+type ImportDeclaration struct {
+	Base
+	Specifiers []*ImportSpecifier
+	Source     string
+}
+
+func (*ImportDeclaration) statementNode() {}
+
+type ExportSpecifier struct {
+	Base
+	Local    string
+	Exported string
+}
+
+// ExportNamedDeclaration represents either an exported declaration, a local
+// export list, or a re-export list when Source is non-empty.
+type ExportNamedDeclaration struct {
+	Base
+	Declaration Statement
+	Specifiers  []*ExportSpecifier
+	Source      string
+}
+
+func (*ExportNamedDeclaration) statementNode() {}
+
+// ExportDefaultDeclaration contains exactly one of Declaration or Expression.
+type ExportDefaultDeclaration struct {
+	Base
+	Declaration Statement
+	Expression  Expression
+}
+
+func (*ExportDefaultDeclaration) statementNode() {}
+
+// ExportAllDeclaration represents export * from and export * as namespace
+// from. Exported is empty for the former.
+type ExportAllDeclaration struct {
+	Base
+	Exported string
+	Source   string
+}
+
+func (*ExportAllDeclaration) statementNode() {}
+
 type EmptyStatement struct{ Base }
 
 func (*EmptyStatement) statementNode() {}

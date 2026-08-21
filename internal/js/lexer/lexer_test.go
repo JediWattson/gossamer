@@ -94,6 +94,28 @@ func TestLexRecognizesReactFrontendTokens(t *testing.T) {
 	}
 }
 
+func TestLexRecognizesStaticModuleKeywords(t *testing.T) {
+	t.Parallel()
+
+	tokens, err := lexer.Lex(`import value from "./value.js"; export {value as default};`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []lexer.Kind{
+		lexer.Import, lexer.Identifier, lexer.Identifier, lexer.String, lexer.Semicolon,
+		lexer.Export, lexer.LeftBrace, lexer.Identifier, lexer.Identifier, lexer.Default,
+		lexer.RightBrace, lexer.Semicolon, lexer.EOF,
+	}
+	if len(tokens) != len(want) {
+		t.Fatalf("token count = %d, want %d: %#v", len(tokens), len(want), tokens)
+	}
+	for index, kind := range want {
+		if tokens[index].Kind != kind {
+			t.Fatalf("token %d = %s, want %s", index, tokens[index].Kind, kind)
+		}
+	}
+}
+
 func TestLexRecognizesTemplateSubstitutionsAndNestedBraces(t *testing.T) {
 	t.Parallel()
 

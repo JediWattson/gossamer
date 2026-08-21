@@ -255,6 +255,86 @@ func TestParseRetainsSpreadArgumentsAndObjectAccessors(t *testing.T) {
 	}
 }
 
+func TestParseStaticModuleDeclarations(t *testing.T) {
+	t.Parallel()
+
+	source := `
+import "./setup.js";
+import primary, {value, other as renamed, default as fallback} from "./dep.js";
+import * as namespace from "./namespace.js";
+export const answer = value;
+export function read() { return renamed; }
+export {answer, read as reader};
+export {remote as forwarded} from "./remote.js";
+export * from "./star.js";
+export * as tools from "./tools.js";
+export default function named() { return fallback; }
+`
+	script, err := parser.Parse(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(script.Body) != 10 {
+		t.Fatalf("module item count = %d", len(script.Body))
+	}
+	setup := script.Body[0].(*ast.ImportDeclaration)
+	if setup.Source != "./setup.js" || len(setup.Specifiers) != 0 {
+		t.Fatalf("side-effect import = %#v", setup)
+	}
+	dependency := script.Body[1].(*ast.ImportDeclaration)
+	if dependency.Source != "./dep.js" || len(dependency.Specifiers) != 4 ||
+		dependency.Specifiers[0].Kind != ast.ImportDefault || dependency.Specifiers[0].Local.Name != "primary" ||
+		dependency.Specifiers[2].Imported != "other" || dependency.Specifiers[2].Local.Name != "renamed" ||
+		dependency.Specifiers[3].Imported != "default" || dependency.Specifiers[3].Local.Name != "fallback" {
+		t.Fatalf("mixed import = %#v", dependency)
+	}
+	namespace := script.Body[2].(*ast.ImportDeclaration)
+	if namespace.Specifiers[0].Kind != ast.ImportNamespace || namespace.Specifiers[0].Local.Name != "namespace" {
+		t.Fatalf("namespace import = %#v", namespace)
+	}
+	declaration := script.Body[3].(*ast.ExportNamedDeclaration)
+	if _, ok := declaration.Declaration.(*ast.VariableDeclaration); !ok {
+		t.Fatalf("exported declaration = %#v", declaration)
+	}
+	local := script.Body[5].(*ast.ExportNamedDeclaration)
+	if local.Source != "" || len(local.Specifiers) != 2 || local.Specifiers[1].Local != "read" || local.Specifiers[1].Exported != "reader" {
+		t.Fatalf("local export = %#v", local)
+	}
+	forwarded := script.Body[6].(*ast.ExportNamedDeclaration)
+	if forwarded.Source != "./remote.js" || forwarded.Specifiers[0].Local != "remote" || forwarded.Specifiers[0].Exported != "forwarded" {
+		t.Fatalf("forwarded export = %#v", forwarded)
+	}
+	star := script.Body[7].(*ast.ExportAllDeclaration)
+	if star.Source != "./star.js" || star.Exported != "" {
+		t.Fatalf("star export = %#v", star)
+	}
+	starNamespace := script.Body[8].(*ast.ExportAllDeclaration)
+	if starNamespace.Source != "./tools.js" || starNamespace.Exported != "tools" {
+		t.Fatalf("namespace export = %#v", starNamespace)
+	}
+	defaultExport := script.Body[9].(*ast.ExportDefaultDeclaration)
+	function, ok := defaultExport.Expression.(*ast.FunctionExpression)
+	if !ok || function.Name == nil || function.Name.Name != "named" {
+		t.Fatalf("default export = %#v", defaultExport)
+	}
+}
+
+func TestParseRejectsNestedAndMalformedModuleDeclarations(t *testing.T) {
+	t.Parallel()
+
+	for _, source := range []string{
+		`{ import value from "./dep.js"; }`,
+		`if (true) export {value};`,
+		`import {value as} from "./dep.js";`,
+		`export * "./dep.js";`,
+		`export default;`,
+	} {
+		if _, err := parser.Parse(source); !errors.Is(err, parser.ErrInvalidSyntax) {
+			t.Fatalf("Parse(%q) error = %v", source, err)
+		}
+	}
+}
+
 func TestParseFunctionExpressionsCallsConstructionAndUpdates(t *testing.T) {
 	t.Parallel()
 

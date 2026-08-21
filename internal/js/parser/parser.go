@@ -46,7 +46,7 @@ func ParseTokens(tokens []lexer.Token) (*ast.Script, error) {
 	input := &parser{tokens: tokens}
 	body := make([]ast.Statement, 0)
 	for !input.check(lexer.EOF) {
-		statement, err := input.parseStatement()
+		statement, err := input.parseModuleItem()
 		if err != nil {
 			return nil, err
 		}
@@ -55,6 +55,17 @@ func ParseTokens(tokens []lexer.Token) (*ast.Script, error) {
 	start := tokens[0].Span.Start
 	end := tokens[len(tokens)-1].Span.End
 	return &ast.Script{Base: ast.Base{Range: lexer.Span{Start: start, End: end}}, Body: body}, nil
+}
+
+func (input *parser) parseModuleItem() (ast.Statement, error) {
+	switch input.current().Kind {
+	case lexer.Import:
+		return input.parseImportDeclaration()
+	case lexer.Export:
+		return input.parseExportDeclaration()
+	default:
+		return input.parseStatement()
+	}
 }
 
 func (input *parser) parseStatement() (ast.Statement, error) {
@@ -94,6 +105,203 @@ func (input *parser) parseStatement() (ast.Statement, error) {
 		}
 		return input.parseExpressionStatement()
 	}
+}
+
+func (input *parser) parseImportDeclaration() (ast.Statement, error) {
+	start := input.advance()
+	declaration := &ast.ImportDeclaration{}
+	if input.check(lexer.String) {
+		source := input.advance()
+		declaration.Source = source.Text
+		end, err := input.finishStatement()
+		if err != nil {
+			return nil, err
+		}
+		declaration.Base = ast.Base{Range: join(start.Span, end)}
+		return declaration, nil
+	}
+
+	if input.check(lexer.Identifier) {
+		local := input.advance()
+		declaration.Specifiers = append(declaration.Specifiers, &ast.ImportSpecifier{
+			Base: ast.Base{Range: local.Span}, Kind: ast.ImportDefault, Imported: "default", Local: identifier(local),
+		})
+		if !input.match(lexer.Comma) {
+			if !input.matchContextual("from") {
+				return nil, input.errorAt(input.current(), "expected 'from' after default import")
+			}
+			return input.finishImportDeclaration(start, declaration)
+		}
+	}
+
+	if input.match(lexer.Star) {
+		star := input.previous()
+		if !input.matchContextual("as") {
+			return nil, input.errorAt(input.current(), "expected 'as' after namespace import")
+		}
+		local, err := input.consume(lexer.Identifier, "expected namespace import binding")
+		if err != nil {
+			return nil, err
+		}
+		declaration.Specifiers = append(declaration.Specifiers, &ast.ImportSpecifier{
+			Base: ast.Base{Range: join(star.Span, local.Span)}, Kind: ast.ImportNamespace, Imported: "*", Local: identifier(local),
+		})
+	} else if input.match(lexer.LeftBrace) {
+		for !input.check(lexer.RightBrace) {
+			imported, err := input.consumeModuleName("expected imported name")
+			if err != nil {
+				return nil, err
+			}
+			local := imported
+			if input.matchContextual("as") {
+				local, err = input.consume(lexer.Identifier, "expected local import binding after 'as'")
+				if err != nil {
+					return nil, err
+				}
+			}
+			declaration.Specifiers = append(declaration.Specifiers, &ast.ImportSpecifier{
+				Base: ast.Base{Range: join(imported.Span, local.Span)}, Kind: ast.ImportNamed, Imported: imported.Text, Local: identifier(local),
+			})
+			if !input.match(lexer.Comma) {
+				break
+			}
+			if input.check(lexer.RightBrace) {
+				break
+			}
+		}
+		if _, err := input.consume(lexer.RightBrace, "expected '}' after named imports"); err != nil {
+			return nil, err
+		}
+	} else if len(declaration.Specifiers) == 0 {
+		return nil, input.errorAt(input.current(), "expected import clause or source String")
+	} else {
+		return nil, input.errorAt(input.current(), "expected namespace or named imports after ','")
+	}
+	if !input.matchContextual("from") {
+		return nil, input.errorAt(input.current(), "expected 'from' after import clause")
+	}
+	return input.finishImportDeclaration(start, declaration)
+}
+
+func (input *parser) finishImportDeclaration(start lexer.Token, declaration *ast.ImportDeclaration) (ast.Statement, error) {
+	source, err := input.consume(lexer.String, "expected module source String")
+	if err != nil {
+		return nil, err
+	}
+	declaration.Source = source.Text
+	end, err := input.finishStatement()
+	if err != nil {
+		return nil, err
+	}
+	declaration.Base = ast.Base{Range: join(start.Span, end)}
+	return declaration, nil
+}
+
+func (input *parser) parseExportDeclaration() (ast.Statement, error) {
+	start := input.advance()
+	if input.match(lexer.Default) {
+		var expression ast.Expression
+		var err error
+		if input.check(lexer.Function) {
+			expression, err = input.parseFunctionExpression(input.advance())
+		} else {
+			expression, err = input.parseAssignment()
+		}
+		if err != nil {
+			return nil, err
+		}
+		end, err := input.finishStatement()
+		if err != nil {
+			return nil, err
+		}
+		return &ast.ExportDefaultDeclaration{
+			Base: ast.Base{Range: join(start.Span, end)}, Expression: expression,
+		}, nil
+	}
+	if input.check(lexer.Let) || input.check(lexer.Const) || input.check(lexer.Var) || input.check(lexer.Function) {
+		declaration, err := input.parseStatement()
+		if err != nil {
+			return nil, err
+		}
+		return &ast.ExportNamedDeclaration{
+			Base: ast.Base{Range: join(start.Span, declaration.Span())}, Declaration: declaration,
+		}, nil
+	}
+	if input.match(lexer.Star) {
+		exported := ""
+		if input.matchContextual("as") {
+			name, err := input.consumeModuleName("expected namespace export name")
+			if err != nil {
+				return nil, err
+			}
+			exported = name.Text
+		}
+		if !input.matchContextual("from") {
+			return nil, input.errorAt(input.current(), "expected 'from' after star export")
+		}
+		source, err := input.consume(lexer.String, "expected module source String")
+		if err != nil {
+			return nil, err
+		}
+		end, err := input.finishStatement()
+		if err != nil {
+			return nil, err
+		}
+		return &ast.ExportAllDeclaration{
+			Base: ast.Base{Range: join(start.Span, end)}, Exported: exported, Source: source.Text,
+		}, nil
+	}
+	if !input.match(lexer.LeftBrace) {
+		return nil, input.errorAt(input.current(), "expected export declaration or clause")
+	}
+	specifiers := make([]*ast.ExportSpecifier, 0)
+	for !input.check(lexer.RightBrace) {
+		local, err := input.consumeModuleName("expected local export name")
+		if err != nil {
+			return nil, err
+		}
+		exported := local
+		if input.matchContextual("as") {
+			exported, err = input.consumeModuleName("expected exported name after 'as'")
+			if err != nil {
+				return nil, err
+			}
+		}
+		specifiers = append(specifiers, &ast.ExportSpecifier{
+			Base: ast.Base{Range: join(local.Span, exported.Span)}, Local: local.Text, Exported: exported.Text,
+		})
+		if !input.match(lexer.Comma) {
+			break
+		}
+		if input.check(lexer.RightBrace) {
+			break
+		}
+	}
+	if _, err := input.consume(lexer.RightBrace, "expected '}' after export clause"); err != nil {
+		return nil, err
+	}
+	source := ""
+	if input.matchContextual("from") {
+		token, err := input.consume(lexer.String, "expected module source String")
+		if err != nil {
+			return nil, err
+		}
+		source = token.Text
+	}
+	end, err := input.finishStatement()
+	if err != nil {
+		return nil, err
+	}
+	return &ast.ExportNamedDeclaration{
+		Base: ast.Base{Range: join(start.Span, end)}, Specifiers: specifiers, Source: source,
+	}, nil
+}
+
+func (input *parser) consumeModuleName(message string) (lexer.Token, error) {
+	if input.check(lexer.Identifier) || input.check(lexer.Default) {
+		return input.advance(), nil
+	}
+	return lexer.Token{}, input.errorAt(input.current(), message)
 }
 
 func (input *parser) parseBlock() (*ast.BlockStatement, error) {
@@ -1203,7 +1411,7 @@ func (input *parser) parseObjectLiteral(open lexer.Token) (ast.Expression, error
 }
 
 func isPropertyName(kind lexer.Kind) bool {
-	return kind == lexer.Identifier || kind >= lexer.Let && kind <= lexer.Void
+	return kind == lexer.Identifier || kind >= lexer.Let && kind <= lexer.Export
 }
 
 func (input *parser) parseFunctionExpression(start lexer.Token) (ast.Expression, error) {
