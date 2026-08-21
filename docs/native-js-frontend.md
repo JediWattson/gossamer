@@ -54,6 +54,10 @@ and ordinary task release invalidates every unpromoted loaded Ref.
   finally blocks;
 - native ReferenceError, TypeError, and RangeError values for classified
   language failures, routed through the same `catch`/`finally` machinery.
+- static ES modules with default, named, namespace, and side-effect imports;
+  local, indirect, namespace, and star exports; cyclic graph linking; immutable
+  live import bindings; canonical namespace objects; and per-Realm evaluation
+  and failure caching.
 
 Every compiled Function invocation and ordinary block enters a fresh native
 Context whose parent is its captured or enclosing Context. Catch bindings enter
@@ -77,9 +81,10 @@ This is not yet an ECMAScript-compatible engine. In particular:
 - primitive coercion includes Boolean, Number, String, null, and undefined;
   Object coercion uses explicit or inherited `valueOf`/`toString` hooks;
 - full BigInt/Symbol and UTF-16 edge semantics, regex,
-  `for...of`, well-known `Symbol.iterator`, general module graphs, generators, async
-  Functions, `await`, thenable assimilation, Promise combinators/finally, and
-  browser-level unhandled-rejection reporting are absent;
+  `for...of`, well-known `Symbol.iterator`, dynamic import, import attributes,
+  generators, async Functions, top-level `await`, thenable assimilation,
+  Promise combinators/finally, and browser-level unhandled-rejection reporting
+  are absent;
 - the native browser facade is intentionally smaller than the stock V8 facade:
   it does not yet provide constructible DOM interfaces, synchronous
   `dispatchEvent()`, live collection objects, or geometry facades.
@@ -162,18 +167,19 @@ counts to return to zero.
 
 ## Production module navigation boundary
 
-Strand implements `browser.JSModuleRealm` for a deliberately bounded first
-module rung. The browser pipeline fetches, MIME-checks, scans, URL-resolves, and
-caches the complete graph in Go. Strand accepts only a graph containing one
-self-contained root and no static import resolutions, then evaluates that root
-once per canonical URL in each Realm. A dependency source, import edge, empty
-root, or mismatched source URL fails with `ErrModuleGraphUnsupported`.
+Strand implements `browser.JSModuleRealm` over browser-resolved static module
+graphs. The browser pipeline fetches, MIME-checks, scans, URL-resolves, and
+caches the complete pointer-free graph in Go. Strand compiles portable module
+records, creates one RegionStore Context per canonical URL, links imports to
+immutable indirect bindings, constructs namespace objects over live getters,
+and evaluates the dependency graph once per Realm. Cycles link before
+evaluation; cached link or evaluation failures are replayed without executing
+the module again.
 
-This is sufficient for Vite's self-contained production Solid output to boot
-through ordinary document navigation as a deferred `<script type="module">`.
-The shared parity gate runs the same checked-in module under Strand and stock
-V8 and verifies fetch caching, one-time module evaluation, ready-state and
-lifecycle ordering, Go-dispatched interaction, explicit disposal, collection,
-and zero surviving ownership after Page teardown. Module environments,
-bindings, instantiation, cyclic dependency graphs, dynamic import, and
-top-level await remain out of scope.
+The production gate is a normal split Vite Solid build: its application entry
+imports a separately emitted Solid runtime chunk. The shared gate runs the same
+graph under Strand and stock V8 and verifies per-resource fetch caching,
+one-time module evaluation, ready-state and lifecycle ordering, Go-dispatched
+interaction, reactive disposal, forced collection, and zero surviving
+ownership after Page teardown. Dynamic import, import attributes, top-level
+`await`, and network loading from inside the engine remain out of scope.
