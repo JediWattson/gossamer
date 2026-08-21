@@ -62,6 +62,18 @@ globalThis.__nativeModuleRuns = (globalThis.__nativeModuleRuns || 0) + 1;
 globalThis.__nativeModuleSnapshot = [primary, counter, namespace.counter, forwarded, depNamespace.counter, readA()].join(":");
 bump();
 globalThis.__nativeModuleLive = [counter, namespace.counter, depNamespace.counter].join(":");
+let namespaceSetRejected = false;
+let namespacePrototypeRejected = false;
+try { namespace.extra = 1; } catch (error) { namespaceSetRejected = error instanceof TypeError; }
+try { Object.setPrototypeOf(namespace, {}); } catch (error) { namespacePrototypeRejected = error instanceof TypeError; }
+globalThis.__nativeModuleNamespace = [
+  namespace === depNamespace,
+  Object.getPrototypeOf(namespace) === null,
+  Object.keys(namespace).join(","),
+  namespaceSetRejected,
+  namespacePrototypeRejected,
+  typeof namespace.extra
+].join(":");
 `,
 		"https://modules.gossamer.test/dependency.js": `
 export let counter = 1;
@@ -113,6 +125,9 @@ if (__nativeModuleSnapshot !== "dependency:1:1:1:1:aba") {
   throw new Error("module link snapshot: " + __nativeModuleSnapshot);
 }
 if (__nativeModuleLive !== "2:2:2") throw new Error("live module bindings: " + __nativeModuleLive);
+if (__nativeModuleNamespace !== "true:true:bump,counter,default:true:true:undefined") {
+  throw new Error("module namespace surface: " + __nativeModuleNamespace);
+}
 `}); err != nil {
 		t.Fatal(err)
 	}

@@ -464,6 +464,9 @@ func (realm *Realm) moduleNamespaceLocked(context *browserruntime.TaskContext, u
 	if err != nil {
 		return memory.Ref{}, err
 	}
+	if err := context.SetPrototype(namespace, memory.NullValue()); err != nil {
+		return memory.Ref{}, err
+	}
 	if err := context.MapSet(realm.bindings.moduleCache, key, memory.RefValue(namespace)); err != nil {
 		return memory.Ref{}, err
 	}
@@ -504,6 +507,9 @@ func (realm *Realm) moduleNamespaceLocked(context *browserruntime.TaskContext, u
 		if err := context.DefineProperty(namespace, propertyName, memory.AccessorProperty(memory.RefValue(getter), memory.UndefinedValue(), true, false)); err != nil {
 			return memory.Ref{}, err
 		}
+	}
+	if err := context.SetObjectIntegrity(namespace, true, true); err != nil {
+		return memory.Ref{}, err
 	}
 	return namespace, nil
 }

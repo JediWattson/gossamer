@@ -1611,7 +1611,7 @@ func (store *Store) copyObjectHeaderLocked(to ownership.OwnerID, copyRef Ref, so
 			return err
 		}
 	}
-	return nil
+	return store.setObjectIntegrityLocked(to, copyRef, source.NonExtensible, source.ImmutablePrototype, true)
 }
 
 func remapValue(value Value, mapping map[Ref]Ref) Value {

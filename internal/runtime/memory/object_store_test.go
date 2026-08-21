@@ -83,6 +83,60 @@ func TestNativeObjectPropertiesAndPrototypeMaintainEdges(t *testing.T) {
 	}
 }
 
+func TestNativeObjectIntegrityFlagsSurviveCopy(t *testing.T) {
+	t.Parallel()
+
+	store := memory.NewStore(nil)
+	defer store.Close()
+	owner := realmOwner(28)
+	reader := realmOwner(29)
+	region := mustRegion(t, store, owner)
+	object, _ := store.AllocObject(owner, region)
+	existing, _ := store.AllocString(owner, region, "existing")
+	extra, _ := store.AllocString(owner, region, "extra")
+	prototype, _ := store.AllocObject(owner, region)
+	if err := store.DefineProperty(owner, object, existing, memory.DataProperty(memory.NumberValue(1), true, true, false)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetPrototype(owner, object, memory.NullValue()); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetObjectIntegrity(owner, object, true, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetPrototype(owner, object, memory.NullValue()); err != nil {
+		t.Fatalf("setting the existing immutable prototype: %v", err)
+	}
+	if err := store.SetPrototype(owner, object, memory.RefValue(prototype)); !errors.Is(err, memory.ErrReadOnlyProperty) {
+		t.Fatalf("changing immutable prototype error = %v", err)
+	}
+	if err := store.SetProperty(owner, object, extra, memory.NumberValue(2)); !errors.Is(err, memory.ErrReadOnlyProperty) {
+		t.Fatalf("extending locked Object error = %v", err)
+	}
+	if err := store.SetProperty(owner, object, existing, memory.NumberValue(3)); err != nil {
+		t.Fatalf("updating existing writable property: %v", err)
+	}
+
+	copied, err := store.Copy(owner, reader, object)
+	if err != nil {
+		t.Fatal(err)
+	}
+	copyHeader, err := store.DerefObjectHeader(reader, copied[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !copyHeader.NonExtensible || !copyHeader.ImmutablePrototype || copyHeader.Prototype.Kind() != memory.ValueNull {
+		t.Fatalf("copied Object integrity = %#v", copyHeader)
+	}
+	copyExtra, _ := store.AllocString(reader, copied[0].Region, "copy-extra")
+	if err := store.SetProperty(reader, copied[0], copyExtra, memory.NumberValue(4)); !errors.Is(err, memory.ErrReadOnlyProperty) {
+		t.Fatalf("extending copied locked Object error = %v", err)
+	}
+	if err := store.CheckInvariants(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestNativeObjectSymbolPropertiesUseSemanticIdentity(t *testing.T) {
 	t.Parallel()
 

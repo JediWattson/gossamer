@@ -120,6 +120,13 @@ func (context *TaskContext) SetPrototype(object memory.Ref, prototype memory.Val
 	return context.Realm.store.SetPrototype(context.Owner, object, prototype)
 }
 
+func (context *TaskContext) SetObjectIntegrity(object memory.Ref, nonExtensible, immutablePrototype bool) error {
+	if context == nil || context.Realm == nil {
+		return fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.SetObjectIntegrity(context.Owner, object, nonExtensible, immutablePrototype)
+}
+
 func (context *TaskContext) SetProperty(object, name memory.Ref, value memory.Value) error {
 	if context == nil || context.Realm == nil {
 		return fmt.Errorf("runtime: nil task context")

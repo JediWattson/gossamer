@@ -34,14 +34,18 @@ func AccessorProperty(getter, setter Value, enumerable, configurable bool) Prope
 // property-bearing heap payload. Prototype is null or another object-like Ref;
 // prototype traversal itself remains a language operation.
 type ObjectHeader struct {
-	Prototype  Value
-	Properties []Property
+	Prototype          Value
+	Properties         []Property
+	NonExtensible      bool
+	ImmutablePrototype bool
 }
 
 func cloneObjectHeader(header ObjectHeader) ObjectHeader {
 	return ObjectHeader{
-		Prototype:  header.Prototype,
-		Properties: append([]Property(nil), header.Properties...),
+		Prototype:          header.Prototype,
+		Properties:         append([]Property(nil), header.Properties...),
+		NonExtensible:      header.NonExtensible,
+		ImmutablePrototype: header.ImmutablePrototype,
 	}
 }
 

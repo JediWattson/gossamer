@@ -77,6 +77,12 @@ func (store *Store) setPrototypeLocked(owner ownership.OwnerID, object Ref, prot
 	if !ok {
 		return objectHeaderTypeError(object, slot.Kind)
 	}
+	if header.ImmutablePrototype && !internal {
+		if prototype == header.Prototype {
+			return nil
+		}
+		return fmt.Errorf("%w: immutable Object prototype", ErrReadOnlyProperty)
+	}
 	if prototype.Kind() != ValueNull {
 		if !prototype.IsRef() {
 			return fmt.Errorf("%w: Object prototype must be null or an Object Ref", ErrTypeMismatch)
@@ -97,6 +103,31 @@ func (store *Store) setPrototypeLocked(owner ownership.OwnerID, object Ref, prot
 		return err
 	}
 	header.Prototype = prototype
+	return nil
+}
+
+// SetObjectIntegrity applies the storage flags needed by exotic immutable
+// objects after their initial properties and prototype have been installed.
+func (store *Store) SetObjectIntegrity(owner ownership.OwnerID, object Ref, nonExtensible, immutablePrototype bool) error {
+	if store == nil {
+		return fmt.Errorf("memory: nil store")
+	}
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+	return store.setObjectIntegrityLocked(owner, object, nonExtensible, immutablePrototype, false)
+}
+
+func (store *Store) setObjectIntegrityLocked(owner ownership.OwnerID, object Ref, nonExtensible, immutablePrototype, internal bool) error {
+	_, slot, err := store.writeSlotLocked(owner, object, internal)
+	if err != nil {
+		return err
+	}
+	header, ok := objectHeaderForSlot(slot)
+	if !ok {
+		return objectHeaderTypeError(object, slot.Kind)
+	}
+	header.NonExtensible = nonExtensible
+	header.ImmutablePrototype = immutablePrototype
 	return nil
 }
 
@@ -197,6 +228,9 @@ func (store *Store) definePropertyLocked(owner ownership.OwnerID, object, name R
 		prepared.Name = previous.Name
 		header.Properties[index] = prepared
 		return nil
+	}
+	if header.NonExtensible && !internal {
+		return fmt.Errorf("%w: Object is not extensible", ErrReadOnlyProperty)
 	}
 	preparedName, err := store.replaceValueLocked(owner, region, slot, Value{}, RefValue(name), internal)
 	if err != nil {

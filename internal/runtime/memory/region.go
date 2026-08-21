@@ -234,7 +234,7 @@ func slotStorageEmpty(slot *Slot) bool {
 }
 
 func objectHeaderStorageEmpty(header ObjectHeader) bool {
-	return header.Prototype == (Value{}) && len(header.Properties) == 0
+	return header.Prototype == (Value{}) && len(header.Properties) == 0 && !header.NonExtensible && !header.ImmutablePrototype
 }
 
 func clearSlotPayload(slot *Slot) {
