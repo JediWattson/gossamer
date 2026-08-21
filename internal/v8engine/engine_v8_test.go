@@ -307,7 +307,9 @@ func TestStockV8DOMWrapperClickMutatesThroughQueuedCallbackAndPaint(t *testing.T
 	if err != nil {
 		t.Fatalf("Profile after dispatch: %v", err)
 	}
-	if afterDispatch.EventsDispatched != 3 || afterDispatch.CallbacksCreated != 0 ||
+	// Navigation dispatches DOMContentLoaded, load, and pageshow before the
+	// queued click reaches the same Realm profile.
+	if afterDispatch.EventsDispatched != 4 || afterDispatch.CallbacksCreated != 0 ||
 		afterDispatch.CallbacksInvoked != 0 || afterDispatch.LiveCallbacks != 0 {
 		t.Fatalf("synchronous event dispatch profile = %#v", afterDispatch)
 	}
@@ -2094,7 +2096,9 @@ func TestStockV8EventPropagationFamiliesAndReactStyleRootDelegation(t *testing.T
 	if err != nil {
 		t.Fatalf("Profile after events: %v", err)
 	}
-	if profile.EventsDispatched != 14 || profile.CallbacksCreated != 0 ||
+	// Three navigation lifecycle events, six synthetic dispatches, one click,
+	// and five explicit input-family events all share this profile.
+	if profile.EventsDispatched != 15 || profile.CallbacksCreated != 0 ||
 		profile.CallbacksInvoked != 0 || profile.LiveCallbacks != 0 ||
 		profile.EventListeners != 13 {
 		t.Fatalf("event dispatch profile = %#v", profile)
@@ -2296,13 +2300,15 @@ func TestStockV8NodeMutationChurnPreservesOwnershipBoundaries(t *testing.T) {
 		t.Fatalf("native facade records after GC = %#v, baseline=%#v", native, baselineNative)
 	}
 
+	profileBeforeClose := engine.Profile()
 	if err := page.Close(); err != nil {
 		t.Fatalf("Close churn page: %v", err)
 	}
 	closedProfile := engine.Profile()
-	if closedProfile.RealmsCreated != 2 || closedProfile.RealmsClosed != 2 ||
-		closedProfile.ClosedRealms.WrappersCreated < createdWrappers ||
-		closedProfile.ClosedRealms.LiveWrappers != 1 {
+	if closedProfile.RealmsCreated != profileBeforeClose.RealmsCreated ||
+		closedProfile.RealmsClosed != profileBeforeClose.RealmsClosed+1 ||
+		closedProfile.ClosedRealms.WrappersCreated-profileBeforeClose.ClosedRealms.WrappersCreated < createdWrappers ||
+		closedProfile.ClosedRealms.LiveWrappers-profileBeforeClose.ClosedRealms.LiveWrappers != baselineProfile.LiveWrappers {
 		t.Fatalf("churn teardown profile = %#v", closedProfile)
 	}
 	if finalLedger := browserRuntime.Ledger().Stats(); finalLedger.LiveObjects != 0 || finalLedger.PersistentObjects != 0 {
