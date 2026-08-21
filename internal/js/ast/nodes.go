@@ -318,6 +318,12 @@ type ThisExpression struct{ Base }
 
 func (*ThisExpression) expressionNode() {}
 
+// ImportMetaExpression is the module-scoped import.meta meta-property. The
+// canonical object and URL are supplied by the module host during linking.
+type ImportMetaExpression struct{ Base }
+
+func (*ImportMetaExpression) expressionNode() {}
+
 type ArrayLiteral struct {
 	Base
 	// A nil element is an array hole.

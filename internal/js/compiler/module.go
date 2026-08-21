@@ -9,7 +9,10 @@ import (
 	"github.com/JediWattson/gossamer/internal/js/program"
 )
 
-const defaultExportBinding = "*default*"
+const (
+	defaultExportBinding = "*default*"
+	importMetaBinding    = "\x00gossamer.import.meta"
+)
 
 type pendingModuleExport struct {
 	entry program.ModuleExport
@@ -148,6 +151,7 @@ func CompileModuleASTWithOptions(script *ast.Script, options Options) (program.M
 	function := newFunctionCompiler(owner, nil, false)
 	function.moduleRoot = true
 	function.moduleFunctions = make(map[string]uint32)
+	function.scopes[0][importMetaBinding] = binding{mutable: false, span: script.Span(), kind: bindingLexical}
 	for name, imported := range importBindings {
 		function.scopes[0][name] = imported
 	}
@@ -167,6 +171,10 @@ func CompileModuleASTWithOptions(script *ast.Script, options Options) (program.M
 	bindings, localNames, err := moduleLocalBindings(body)
 	if err != nil {
 		return program.Module{}, err
+	}
+	if function.moduleUsesImportMeta {
+		bindings = append(bindings, program.ModuleBinding{Name: importMetaBinding, InitializeImportMeta: true})
+		localNames[importMetaBinding] = struct{}{}
 	}
 	for index := range bindings {
 		functionIndex, found := function.moduleFunctions[bindings[index].Name]

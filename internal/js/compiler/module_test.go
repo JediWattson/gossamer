@@ -155,3 +155,31 @@ export {named};
 		t.Fatalf("anonymous default Function metadata: bindings=%#v exports=%#v", bindings, anonymous.Exports())
 	}
 }
+
+func TestCompileModuleCarriesImportMetaAsHostInitializedBinding(t *testing.T) {
+	t.Parallel()
+
+	module, err := compiler.CompileModule(`
+export const url = import.meta.url;
+export function sameMeta() { return import.meta === import.meta; }
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bindings := module.Bindings()
+	var importMeta int
+	for _, binding := range bindings {
+		if binding.InitializeImportMeta {
+			importMeta++
+			if binding.Mutable || binding.InitializeUndefined || binding.HasFunction {
+				t.Fatalf("import.meta binding = %#v", binding)
+			}
+		}
+	}
+	if importMeta != 1 {
+		t.Fatalf("import.meta binding count = %d in %#v", importMeta, bindings)
+	}
+	if _, err := compiler.Compile(`import.meta.url;`); !errors.Is(err, compiler.ErrCompile) {
+		t.Fatalf("script import.meta error = %v", err)
+	}
+}

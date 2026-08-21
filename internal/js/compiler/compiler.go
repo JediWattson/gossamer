@@ -141,19 +141,20 @@ type loopTarget struct {
 }
 
 type functionCompiler struct {
-	owner            *imageCompiler
-	parent           *functionCompiler
-	builder          *browserruntime.BytecodeBuilder
-	constants        []program.Constant
-	constant         map[constantKey]uint32
-	scopes           []map[string]binding
-	loops            []loopTarget
-	inFunction       bool
-	environmentDepth int
-	handlerDepth     int
-	nextTemporary    uint64
-	moduleRoot       bool
-	moduleFunctions  map[string]uint32
+	owner                *imageCompiler
+	parent               *functionCompiler
+	builder              *browserruntime.BytecodeBuilder
+	constants            []program.Constant
+	constant             map[constantKey]uint32
+	scopes               []map[string]binding
+	loops                []loopTarget
+	inFunction           bool
+	environmentDepth     int
+	handlerDepth         int
+	nextTemporary        uint64
+	moduleRoot           bool
+	moduleFunctions      map[string]uint32
+	moduleUsesImportMeta bool
 }
 
 type constantKey struct {

@@ -60,6 +60,9 @@ func ParseTokens(tokens []lexer.Token) (*ast.Script, error) {
 func (input *parser) parseModuleItem() (ast.Statement, error) {
 	switch input.current().Kind {
 	case lexer.Import:
+		if input.peek(1).Kind == lexer.Dot {
+			return input.parseExpressionStatement()
+		}
 		return input.parseImportDeclaration()
 	case lexer.Export:
 		return input.parseExportDeclaration()
@@ -1241,6 +1244,19 @@ func (input *parser) parsePrimary() (ast.Expression, error) {
 		return &ast.RegExpLiteral{Base: ast.Base{Range: token.Span}, Pattern: token.Text, Flags: token.Flags}, nil
 	case lexer.This:
 		return &ast.ThisExpression{Base: ast.Base{Range: token.Span}}, nil
+	case lexer.Import:
+		dot, err := input.consume(lexer.Dot, "expected '.' after import in expression")
+		if err != nil {
+			return nil, err
+		}
+		meta, err := input.consume(lexer.Identifier, "expected meta after import.")
+		if err != nil {
+			return nil, err
+		}
+		if meta.Text != "meta" {
+			return nil, input.errorAt(meta, "expected meta after import.")
+		}
+		return &ast.ImportMetaExpression{Base: ast.Base{Range: join(token.Span, join(dot.Span, meta.Span))}}, nil
 	case lexer.LeftParen:
 		expression, err := input.parseExpression()
 		if err != nil {

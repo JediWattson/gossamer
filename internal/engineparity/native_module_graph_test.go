@@ -60,6 +60,20 @@ func TestStrandInstantiatesCyclicModuleBindingsBeforeEvaluation(t *testing.T) {
 	}
 }
 
+func TestStrandProvidesStrictCanonicalImportMeta(t *testing.T) {
+	engine := nativeengine.New(nativeengine.Config{})
+	runModuleImportMetaParity(t, engine, func(page *browser.Page) error {
+		realm, ok := engine.LatestRealm()
+		if !ok {
+			return nativeengine.ErrRealmClosed
+		}
+		return realm.CollectGarbage(page)
+	})
+	if profile := engine.Profile(); profile.ModuleCompilations != 2 {
+		t.Fatalf("native import.meta compilations = %d, want two canonical sources", profile.ModuleCompilations)
+	}
+}
+
 func runLiveModuleGraphParity(t *testing.T, engine browser.Engine, collect func(*browser.Page) error) {
 	t.Helper()
 	client := &moduleGraphMemoryLoader{sources: map[string]string{
@@ -279,6 +293,7 @@ globalThis.__moduleAnonymousDefault = [anonymousDefault.name, anonymousDefault()
 if (__moduleInstantiationRuns !== 1) {
   throw new Error("instantiated module evaluated more than once: " + __moduleInstantiationRuns);
 }
+
 if (__moduleInstantiationResult !== "function:undefined:7") {
   throw new Error("module instantiation result: " + __moduleInstantiationResult);
 }
@@ -319,6 +334,78 @@ if (__moduleAnonymousDefault !== "default:anonymous") {
 	stats := browserRuntime.Ledger().Stats()
 	if stats.LiveObjects != 0 || stats.PersistentObjects != 0 {
 		t.Fatalf("module instantiation ownership survived Page close: %#v", stats)
+	}
+	if err := browserRuntime.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func runModuleImportMetaParity(t *testing.T, engine browser.Engine, collect func(*browser.Page) error) {
+	t.Helper()
+	client := &moduleGraphMemoryLoader{sources: map[string]string{
+		"https://modules.gossamer.test/root.js": `
+import {dependencyMeta, dependencyURL, sameDependencyMeta} from "./dependency.js";
+const rootMeta = import.meta;
+const descriptor = Object.getOwnPropertyDescriptor(rootMeta, "url");
+rootMeta.extra = "mutable";
+function strictThis() { return this === undefined; }
+let assignmentRejected = false;
+try { undeclaredModuleAssignment = 1; } catch (error) {
+  assignmentRejected = error instanceof ReferenceError;
+}
+globalThis.__moduleMeta = [
+  this === undefined,
+  strictThis(),
+  rootMeta === import.meta,
+  rootMeta.url,
+  Object.getPrototypeOf(rootMeta) === null,
+  Object.keys(rootMeta).join(","),
+  descriptor.writable,
+  descriptor.enumerable,
+  descriptor.configurable,
+  rootMeta.extra,
+  dependencyURL,
+  dependencyMeta !== rootMeta,
+  sameDependencyMeta(),
+  assignmentRejected
+].join("|");
+`,
+		"https://modules.gossamer.test/dependency.js": `
+export const dependencyMeta = import.meta;
+export const dependencyURL = import.meta.url;
+export function sameDependencyMeta() { return dependencyMeta === import.meta; }
+`,
+	}}
+	browserRuntime, err := browser.NewWithEngine(engine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := browserRuntime.LoadPage(context.Background(), nativeModuleGraphPageURL, client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := page.Navigation()
+	if snapshot.State != browser.NavigationComplete || snapshot.ScriptsTotal != 2 || snapshot.ScriptsFailed != 0 {
+		t.Fatalf("import.meta navigation = %#v", snapshot)
+	}
+	if _, err := page.QueueScript(browser.ScriptSource{URL: nativeModuleGraphPageURL + "assert-import-meta.js", Source: `
+const expected = "true|true|true|https://modules.gossamer.test/root.js|true|url,extra|true|true|true|mutable|https://modules.gossamer.test/dependency.js|true|true|true";
+if (__moduleMeta !== expected) throw new Error("module metadata: " + __moduleMeta);
+`}); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := collect(page); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.Close(); err != nil {
+		t.Fatal(err)
+	}
+	stats := browserRuntime.Ledger().Stats()
+	if stats.LiveObjects != 0 || stats.PersistentObjects != 0 {
+		t.Fatalf("import.meta ownership survived Page close: %#v", stats)
 	}
 	if err := browserRuntime.Close(); err != nil {
 		t.Fatal(err)

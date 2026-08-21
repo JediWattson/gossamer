@@ -5,12 +5,13 @@ package program
 // bindings receive undefined, and Function bindings receive a closure over the
 // module environment before any dependency begins evaluating.
 type ModuleBinding struct {
-	Name                string
-	Mutable             bool
-	InitializeUndefined bool
-	FunctionIndex       uint32
-	HasFunction         bool
-	FunctionName        string
+	Name                 string
+	Mutable              bool
+	InitializeUndefined  bool
+	FunctionIndex        uint32
+	HasFunction          bool
+	FunctionName         string
+	InitializeImportMeta bool
 }
 
 type ModuleImport struct {

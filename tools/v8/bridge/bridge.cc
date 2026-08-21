@@ -12477,6 +12477,18 @@ void ClearRealmHandles(gossamer_v8_realm *realm) {
   realm->scroll_restoration = "auto";
 }
 
+void InitializeImportMetaObject(v8::Local<v8::Context> context,
+                                v8::Local<v8::Module> module,
+                                v8::Local<v8::Object> meta) {
+  v8::Isolate *isolate = v8::Isolate::GetCurrent();
+  v8::Local<v8::Value> resource_name = module->GetResourceName();
+  if (resource_name.IsEmpty())
+    resource_name = v8::String::Empty(isolate);
+  meta->CreateDataProperty(
+      context, v8::String::NewFromUtf8Literal(isolate, "url"), resource_name)
+      .FromMaybe(false);
+}
+
 } // namespace
 extern "C" int gossamer_v8_initialize(const char *icu_data_path,
                                       char **error_out) {
@@ -12522,6 +12534,8 @@ extern "C" gossamer_v8_realm *gossamer_v8_realm_new(uint64_t sampling_interval,
     v8::HandleScope handle_scope(realm->isolate);
     realm->isolate->SetData(0, realm.get());
     realm->isolate->SetMicrotasksPolicy(v8::MicrotasksPolicy::kExplicit);
+    realm->isolate->SetHostInitializeImportMetaObjectCallback(
+        InitializeImportMetaObject);
     v8::Local<v8::Context> context = v8::Context::New(realm->isolate);
     if (!context.IsEmpty()) {
       v8::Context::Scope context_scope(context);

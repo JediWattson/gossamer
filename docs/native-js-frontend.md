@@ -59,8 +59,9 @@ and ordinary task release invalidates every unpromoted loaded Ref.
   language failures, routed through the same `catch`/`finally` machinery.
 - static ES modules with default, named, namespace, and side-effect imports;
   local, indirect, namespace, and star exports; cyclic graph linking; immutable
-  live import bindings; canonical namespace objects; and per-Realm evaluation
-  and failure caching.
+  live import bindings; canonical namespace objects; strict top-level and
+  Function `this`; canonical null-prototype `import.meta` objects with host
+  initialized URLs; and per-Realm evaluation and failure caching.
 
 Every compiled Function invocation and ordinary block enters a fresh native
 Context whose parent is its captured or enclosing Context. Catch bindings enter
@@ -184,7 +185,12 @@ recompiling or executing the module again. Graphs rooted at another URL reuse
 already compiled dependency records by canonical source identity. Each
 canonical module namespace is a sorted,
 null-prototype, non-extensible object whose immutable prototype and live export
-properties survive RegionStore copying and reject script mutation.
+properties survive RegionStore copying and reject script mutation. Module code
+runs with undefined top-level and ordinary-Function `this`, rejects writes to
+undeclared bindings, and receives one mutable, null-prototype `import.meta`
+object per canonical module. Its enumerable `url` property is initialized from
+the browser-resolved module URL and repeated `import.meta` expressions in that
+module return the same object.
 
 The production gate is a normal split Vite Solid build: its application entry
 imports a separately emitted Solid runtime chunk. The shared gate runs the same

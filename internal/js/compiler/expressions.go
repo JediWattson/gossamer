@@ -53,6 +53,8 @@ func (compiler *functionCompiler) compileExpression(expression ast.Expression) e
 		return compiler.emit(browserruntime.Instruction{Op: browserruntime.OpConstant, A: index}, expression.Span())
 	case *ast.ThisExpression:
 		return compiler.emit(browserruntime.Instruction{Op: browserruntime.OpLoadThis}, expression.Span())
+	case *ast.ImportMetaExpression:
+		return compiler.compileImportMeta(expression)
 	case *ast.ArrayLiteral:
 		return compiler.compileArray(expression)
 	case *ast.ObjectLiteral:
@@ -92,6 +94,22 @@ func (compiler *functionCompiler) compileExpression(expression ast.Expression) e
 	default:
 		return compiler.problem(expression.Span(), fmt.Sprintf("unsupported expression %T", expression))
 	}
+}
+
+func (compiler *functionCompiler) compileImportMeta(expression *ast.ImportMetaExpression) error {
+	root := compiler
+	for root.parent != nil {
+		root = root.parent
+	}
+	if !root.moduleRoot {
+		return compiler.problem(expression.Span(), "import.meta is only valid in a module")
+	}
+	root.moduleUsesImportMeta = true
+	name, err := compiler.stringConstant(importMetaBinding)
+	if err != nil {
+		return err
+	}
+	return compiler.emit(browserruntime.Instruction{Op: browserruntime.OpLoadBinding, A: name}, expression.Span())
 }
 
 func (compiler *functionCompiler) compileTemplateLiteral(expression *ast.TemplateLiteral) error {

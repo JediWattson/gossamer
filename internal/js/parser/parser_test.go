@@ -319,6 +319,33 @@ export default function named() { return fallback; }
 	}
 }
 
+func TestParseImportMetaAsModuleExpression(t *testing.T) {
+	t.Parallel()
+
+	script, err := parser.Parse(`
+const first = import.meta;
+const url = import.meta.url;
+import.meta.extra = 1;
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := script.Body[0].(*ast.VariableDeclaration).Declarations[0].Init
+	if _, ok := first.(*ast.ImportMetaExpression); !ok {
+		t.Fatalf("import.meta expression = %#v", first)
+	}
+	url := script.Body[1].(*ast.VariableDeclaration).Declarations[0].Init.(*ast.MemberExpression)
+	if _, ok := url.Object.(*ast.ImportMetaExpression); !ok || url.Computed {
+		t.Fatalf("import.meta.url expression = %#v", url)
+	}
+	assignment := script.Body[2].(*ast.ExpressionStatement).Expression.(*ast.AssignmentExpression)
+	if member, ok := assignment.Left.(*ast.MemberExpression); !ok {
+		t.Fatalf("import.meta assignment = %#v", assignment.Left)
+	} else if _, ok := member.Object.(*ast.ImportMetaExpression); !ok {
+		t.Fatalf("import.meta assignment base = %#v", member.Object)
+	}
+}
+
 func TestParseRejectsNestedAndMalformedModuleDeclarations(t *testing.T) {
 	t.Parallel()
 

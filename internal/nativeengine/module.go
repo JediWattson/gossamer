@@ -324,6 +324,28 @@ func (realm *Realm) instantiateModuleLocalsLocked(context *browserruntime.TaskCo
 	for _, binding := range bindings {
 		name := names[binding.Name]
 		switch {
+		case binding.InitializeImportMeta:
+			meta, err := context.NewHeapObject()
+			if err != nil {
+				return err
+			}
+			if err := context.SetPrototype(meta, memory.NullValue()); err != nil {
+				return err
+			}
+			urlName, err := context.NewString("url")
+			if err != nil {
+				return err
+			}
+			urlValue, err := context.NewString(module.source.URL)
+			if err != nil {
+				return err
+			}
+			if err := context.DefineProperty(meta, urlName, memory.DataProperty(memory.RefValue(urlValue), true, true, true)); err != nil {
+				return err
+			}
+			if err := context.InitializeBinding(environment, name, memory.RefValue(meta)); err != nil {
+				return err
+			}
 		case binding.InitializeUndefined:
 			if err := context.InitializeBinding(environment, name, memory.UndefinedValue()); err != nil {
 				return err
