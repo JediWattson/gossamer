@@ -1,0 +1,1 @@
+var e=[{id:`region-store`,title:`Own native memory`,done:!0},{id:`module-graph`,title:`Link module graphs`,done:!0},{id:`solid-app`,title:`Boot a real Solid app`,done:!1}];function*t(t){for(let n of e)(t===`all`||t===`open`&&!n.done||t===`done`&&n.done)&&(yield n)}function n(e){return[...t(e)]}export{n as tasksFor};

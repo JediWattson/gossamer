@@ -225,3 +225,10 @@ pointer-free graph by Go and evaluated lazily by the engine with canonical
 namespace identity. Computed dynamic imports that were not prefetched, import
 attributes, top-level `await`, and network loading from inside the engine remain
 out of scope.
+
+A second independently built Solid taskboard gate adds a four-chunk graph with
+an async resource fetcher, literal dynamic imports, a generator-backed filter,
+Suspense fallback release, duplicate entry tags, and Go-dispatched filter
+interaction. Strand precompiles every emitted chunk, evaluates each canonical
+module at most once, and matches the same rendered and teardown result as stock
+V8. Its lazy details chunk remains the next DOM-facade expansion point.

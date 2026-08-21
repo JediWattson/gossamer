@@ -5,7 +5,8 @@
   "scripts": {
     "build": "vite build",
     "build:module": "vite build --config vite.module.config.js",
-    "build:all": "npm run build && npm run build:module"
+    "build:taskboard": "vite build --config vite.taskboard.config.js",
+    "build:all": "npm run build && npm run build:module && npm run build:taskboard"
   },
   "dependencies": {
     "solid-js": "1.9.14"

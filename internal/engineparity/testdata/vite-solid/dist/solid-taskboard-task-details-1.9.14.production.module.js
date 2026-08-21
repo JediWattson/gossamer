@@ -1,0 +1,1 @@
+import{a as e,i as t,n,u as r}from"./solid-taskboard-runtime-1.9.14.production.module.js";var i=e(`<aside id=task-details><strong></strong><span>`);function a(e){return(()=>{var a=i(),o=a.firstChild,s=o.nextSibling;return n(o,()=>e.task.title),n(s,()=>e.task.done?`Complete`:`In progress`),r(()=>t(a,`data-task`,e.task.id)),a})()}export{a as default};
