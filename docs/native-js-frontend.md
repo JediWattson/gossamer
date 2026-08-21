@@ -76,14 +76,13 @@ This is not yet an ECMAScript-compatible engine. In particular:
   intentionally incomplete;
 - primitive coercion includes Boolean, Number, String, null, and undefined;
   Object coercion uses explicit or inherited `valueOf`/`toString` hooks;
-- full BigInt/Symbol and UTF-16 edge semantics, regex and template literals,
-  `for...of`, well-known `Symbol.iterator`, modules, generators, async
+- full BigInt/Symbol and UTF-16 edge semantics, regex,
+  `for...of`, well-known `Symbol.iterator`, general module graphs, generators, async
   Functions, `await`, thenable assimilation, Promise combinators/finally, and
   browser-level unhandled-rejection reporting are absent;
 - the native browser facade is intentionally smaller than the stock V8 facade:
   it does not yet provide constructible DOM interfaces, synchronous
-  `dispatchEvent()`, live collection objects, style/form/geometry facades,
-  observers, animation frames, or weak wrapper collection.
+  `dispatchEvent()`, live collection objects, or geometry facades.
 
 ## N11 browser Realm adapter
 
@@ -153,9 +152,28 @@ controls. Listener registration also uses the browser's independent event
 target lifetime claim, so a detached target cannot disappear while it still
 has a listener.
 
-The wrapper cache is deliberately strong for this rung and is released in bulk
-with the Realm. Weak wrapper collection, script-created Event constructors and
-`dispatchEvent()`, and the broader stock-V8 DOM facade remain later native
-adapter work. Browser close tests require the complete wrapper, callback,
-listener, timer, and intrinsic graph to return both physical heap and semantic
-ownership counts to zero.
+At deterministic checkpoints the adapter evacuates canonical wrapper identity,
+MutationObserver callbacks, and non-window event-listener roots before native
+collection. It restores only entries whose owning wrapper survived and asks
+the Page to release dead Go DOM and event-target lifetime claims. Realm close
+still releases the complete wrapper, callback, listener, timer, observer, and
+intrinsic graph in bulk; tests require physical heap and semantic ownership
+counts to return to zero.
+
+## Production module navigation boundary
+
+Strand implements `browser.JSModuleRealm` for a deliberately bounded first
+module rung. The browser pipeline fetches, MIME-checks, scans, URL-resolves, and
+caches the complete graph in Go. Strand accepts only a graph containing one
+self-contained root and no static import resolutions, then evaluates that root
+once per canonical URL in each Realm. A dependency source, import edge, empty
+root, or mismatched source URL fails with `ErrModuleGraphUnsupported`.
+
+This is sufficient for Vite's self-contained production Solid output to boot
+through ordinary document navigation as a deferred `<script type="module">`.
+The shared parity gate runs the same checked-in module under Strand and stock
+V8 and verifies fetch caching, one-time module evaluation, ready-state and
+lifecycle ordering, Go-dispatched interaction, explicit disposal, collection,
+and zero surviving ownership after Page teardown. Module environments,
+bindings, instantiation, cyclic dependency graphs, dynamic import, and
+top-level await remain out of scope.

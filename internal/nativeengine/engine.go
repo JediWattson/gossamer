@@ -16,12 +16,13 @@ import (
 )
 
 var (
-	ErrEngineClosed       = errors.New("nativeengine: engine is closed")
-	ErrRealmClosed        = errors.New("nativeengine: realm is closed")
-	ErrNativeTaskHost     = errors.New("nativeengine: host does not expose a runtime task")
-	ErrRuntimeRealmChange = errors.New("nativeengine: runtime Realm changed")
-	ErrCheckpointRequired = errors.New("nativeengine: previous task has not reached its microtask checkpoint")
-	ErrUnknownValueHandle = errors.New("nativeengine: unknown value handle")
+	ErrEngineClosed           = errors.New("nativeengine: engine is closed")
+	ErrRealmClosed            = errors.New("nativeengine: realm is closed")
+	ErrNativeTaskHost         = errors.New("nativeengine: host does not expose a runtime task")
+	ErrRuntimeRealmChange     = errors.New("nativeengine: runtime Realm changed")
+	ErrCheckpointRequired     = errors.New("nativeengine: previous task has not reached its microtask checkpoint")
+	ErrUnknownValueHandle     = errors.New("nativeengine: unknown value handle")
+	ErrModuleGraphUnsupported = errors.New("nativeengine: only self-contained module roots are supported")
 )
 
 type Config struct {
@@ -84,6 +85,7 @@ type Realm struct {
 	listeners                 map[eventListenerKey][]eventListener
 	listenerTargets           map[eventTargetID]uint64
 	activeEvent               *eventState
+	modules                   map[string]struct{}
 
 	evaluations uint64
 	checkpoints uint64
@@ -112,6 +114,7 @@ func (engine *Engine) NewRealm() (browser.JSRealm, error) {
 		mutationObservers:  make(map[uint64]*mutationObserverState),
 		listeners:          make(map[eventListenerKey][]eventListener),
 		listenerTargets:    make(map[eventTargetID]uint64),
+		modules:            make(map[string]struct{}),
 	}
 	if err := realm.installBrowserNatives(); err != nil {
 		return nil, err
@@ -204,6 +207,37 @@ func (realm *Realm) Evaluate(host browser.Host, source browser.ScriptSource) err
 	}
 	realm.host = host
 	defer func() { realm.host = nil }()
+	return realm.evaluateLocked(host, source)
+}
+
+// EvaluateModule executes a browser-resolved, self-contained module root once
+// per Realm. Import graphs remain explicitly unsupported until Strand has
+// native module binding and instantiation semantics.
+func (realm *Realm) EvaluateModule(host browser.Host, graph browser.ModuleGraph) error {
+	if realm == nil {
+		return ErrRealmClosed
+	}
+	realm.mutex.Lock()
+	defer realm.mutex.Unlock()
+	if realm.closed {
+		return ErrRealmClosed
+	}
+	if graph.RootURL == "" || len(graph.Sources) != 1 || len(graph.Resolutions) != 0 || graph.Sources[0].URL != graph.RootURL {
+		return ErrModuleGraphUnsupported
+	}
+	if _, evaluated := realm.modules[graph.RootURL]; evaluated {
+		return nil
+	}
+	realm.host = host
+	defer func() { realm.host = nil }()
+	if err := realm.evaluateLocked(host, graph.Sources[0]); err != nil {
+		return err
+	}
+	realm.modules[graph.RootURL] = struct{}{}
+	return nil
+}
+
+func (realm *Realm) evaluateLocked(host browser.Host, source browser.ScriptSource) error {
 	realm.evaluations++
 	realm.sourceBytes += uint64(len(source.Source))
 
@@ -414,6 +448,7 @@ func (realm *Realm) Close() error {
 	realm.listeners = nil
 	realm.listenerTargets = nil
 	realm.activeEvent = nil
+	realm.modules = nil
 	realm.clearActiveLocked()
 	realm.mutex.Unlock()
 
@@ -585,3 +620,4 @@ func evaluationError(url string, err error) error {
 
 var _ browser.Engine = (*Engine)(nil)
 var _ browser.JSRealm = (*Realm)(nil)
+var _ browser.JSModuleRealm = (*Realm)(nil)

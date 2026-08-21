@@ -1,6 +1,11 @@
 import { createEffect, createSignal, For, onCleanup, Show } from "solid-js";
 import { render } from "solid-js/web";
 
+globalThis.__solidModuleRuns = (globalThis.__solidModuleRuns || 0) + 1;
+if (globalThis.__solidBootOrder) {
+  globalThis.__solidBootOrder.push(`module:${document.readyState}`);
+}
+globalThis.__solidReady = false;
 globalThis.__solidCleanupCount = 0;
 globalThis.__solidRowCleanups = 0;
 globalThis.__solidBranchCleanups = 0;

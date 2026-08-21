@@ -105,6 +105,44 @@ counter;
 	}
 }
 
+func TestNativeModuleRealmRejectsNonSelfContainedGraphs(t *testing.T) {
+	t.Parallel()
+
+	engine := nativeengine.New(nativeengine.Config{})
+	defer engine.Close()
+	realm, err := engine.NewRealm()
+	if err != nil {
+		t.Fatal(err)
+	}
+	moduleRealm, ok := realm.(browser.JSModuleRealm)
+	if !ok {
+		t.Fatal("native Realm does not expose the module boundary")
+	}
+	graphs := []browser.ModuleGraph{
+		{},
+		{RootURL: "https://gossamer.test/root.js", Sources: []browser.ScriptSource{{URL: "https://gossamer.test/other.js"}}},
+		{
+			RootURL: "https://gossamer.test/root.js",
+			Sources: []browser.ScriptSource{
+				{URL: "https://gossamer.test/root.js"},
+				{URL: "https://gossamer.test/dependency.js"},
+			},
+		},
+		{
+			RootURL: "https://gossamer.test/root.js",
+			Sources: []browser.ScriptSource{{URL: "https://gossamer.test/root.js"}},
+			Resolutions: []browser.ModuleResolution{{
+				Referrer: "https://gossamer.test/root.js", Specifier: "./dependency.js", URL: "https://gossamer.test/dependency.js",
+			}},
+		},
+	}
+	for index, graph := range graphs {
+		if err := moduleRealm.EvaluateModule(nil, graph); !errors.Is(err, nativeengine.ErrModuleGraphUnsupported) {
+			t.Fatalf("graph %d error = %v, want ErrModuleGraphUnsupported", index, err)
+		}
+	}
+}
+
 func TestSymbolRegistryAndKeysSurviveRealmCheckpoints(t *testing.T) {
 	t.Parallel()
 

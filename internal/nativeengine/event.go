@@ -209,12 +209,18 @@ func (realm *Realm) currentEvent(this memory.Value) (*eventState, error) {
 }
 
 func (realm *Realm) dispatchEventLocked(context *browserruntime.TaskContext, input browser.InputEvent) (browser.EventDispatchResult, error) {
-	if input.Type.String() == "" || input.Target.Node == dom.InvalidNodeID {
+	if input.Type.String() == "" || input.Target.Document == 0 {
 		return browser.EventDispatchResult{}, fmt.Errorf("nativeengine: invalid input event")
 	}
-	path, err := realm.eventPath(context, input.Target)
-	if err != nil {
-		return browser.EventDispatchResult{}, err
+	var path []eventTargetID
+	if input.Target.Node == dom.InvalidNodeID {
+		path = []eventTargetID{windowEventTarget(input.Target.Document)}
+	} else {
+		var err error
+		path, err = realm.eventPath(context, input.Target)
+		if err != nil {
+			return browser.EventDispatchResult{}, err
+		}
 	}
 	event, err := realm.newInputEvent(context, input)
 	if err != nil {
@@ -454,9 +460,12 @@ func (realm *Realm) newInputEvent(context *browserruntime.TaskContext, input bro
 	if err := context.SetPrototype(event, memory.RefValue(realm.bindings.eventPrototype)); err != nil {
 		return memory.Ref{}, err
 	}
-	target, err := realm.wrappedNodeValue(context, input.Target)
-	if err != nil {
-		return memory.Ref{}, err
+	target := memory.RefValue(realm.bindings.window)
+	if input.Target.Node != dom.InvalidNodeID {
+		target, err = realm.wrappedNodeValue(context, input.Target)
+		if err != nil {
+			return memory.Ref{}, err
+		}
 	}
 	related := memory.NullValue()
 	if input.RelatedTarget.Node != dom.InvalidNodeID {
