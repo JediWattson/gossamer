@@ -186,6 +186,8 @@ const (
 	hostClassStyle
 	hostClassComputedStyle
 	hostClassMutationObserver
+	hostClassFormElements
+	hostClassSelectOptions
 )
 
 const (
@@ -201,6 +203,7 @@ const (
 	bindingHTMLOptionElementPrototype   = "\x00gossamer.html-option-element.prototype"
 	bindingHTMLButtonElementPrototype   = "\x00gossamer.html-button-element.prototype"
 	bindingHTMLIFrameElementPrototype   = "\x00gossamer.html-iframe-element.prototype"
+	bindingHTMLCollectionPrototype      = "\x00gossamer.html-collection.prototype"
 	bindingTemplatePrototype            = "\x00gossamer.template.prototype"
 	bindingTextPrototype                = "\x00gossamer.text.prototype"
 	bindingFragmentPrototype            = "\x00gossamer.fragment.prototype"
@@ -243,6 +246,7 @@ type browserBindings struct {
 	htmlOptionElementPrototype   memory.Ref
 	htmlButtonElementPrototype   memory.Ref
 	htmlIFrameElementPrototype   memory.Ref
+	htmlCollectionPrototype      memory.Ref
 	templatePrototype            memory.Ref
 	textPrototype                memory.Ref
 	fragmentPrototype            memory.Ref
@@ -466,6 +470,18 @@ func (realm *Realm) installBrowserNatives() error {
 		{nativeNodeAfter, realm.nodeConvenienceMutation(dom.MutationAfter)},
 		{nativeNodeReplaceWith, realm.nodeConvenienceMutation(dom.MutationReplaceWith)},
 		{nativeNodeReplaceChildren, realm.nodeConvenienceMutation(dom.MutationReplaceChildren)},
+		{nativeElementFormOwner, realm.elementFormOwner},
+		{nativeElementFormElements, realm.elementFormCollection(dom.FormElementCollection)},
+		{nativeElementSelectOptions, realm.elementFormCollection(dom.SelectOptionCollection)},
+		{nativeHTMLCollectionItem, realm.htmlCollectionItem},
+		{nativeHTMLCollectionNamedItem, realm.htmlCollectionNamedItem},
+		{nativeHTMLFormElementReset, realm.htmlFormReset},
+		{nativeElementDefaultCheckedGet, realm.elementReflectedBoolean("checked", false)},
+		{nativeElementDefaultCheckedSet, realm.elementReflectedBoolean("checked", true)},
+		{nativeElementDefaultSelectedGet, realm.elementReflectedBoolean("selected", false)},
+		{nativeElementDefaultSelectedSet, realm.elementReflectedBoolean("selected", true)},
+		{nativeElementFormIndeterminateGet, realm.elementFormIndeterminateGet},
+		{nativeElementFormIndeterminateSet, realm.elementFormIndeterminateSet},
 	}
 	for _, registration := range registrations {
 		if err := realm.interpreter.RegisterNative(registration.id, registration.callback); err != nil {
@@ -502,6 +518,7 @@ func (realm *Realm) prepareBrowserBindingsLocked(context *browserruntime.TaskCon
 			{bindingHTMLOptionElementPrototype, &bindings.htmlOptionElementPrototype},
 			{bindingHTMLButtonElementPrototype, &bindings.htmlButtonElementPrototype},
 			{bindingHTMLIFrameElementPrototype, &bindings.htmlIFrameElementPrototype},
+			{bindingHTMLCollectionPrototype, &bindings.htmlCollectionPrototype},
 			{bindingTemplatePrototype, &bindings.templatePrototype},
 			{bindingTextPrototype, &bindings.textPrototype},
 			{bindingFragmentPrototype, &bindings.fragmentPrototype},
@@ -731,6 +748,7 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{bindingHTMLOptionElementPrototype, bindings.htmlOptionElementPrototype, false},
 		{bindingHTMLButtonElementPrototype, bindings.htmlButtonElementPrototype, false},
 		{bindingHTMLIFrameElementPrototype, bindings.htmlIFrameElementPrototype, false},
+		{bindingHTMLCollectionPrototype, bindings.htmlCollectionPrototype, false},
 		{bindingTemplatePrototype, bindings.templatePrototype, false},
 		{bindingTextPrototype, bindings.textPrototype, false},
 		{bindingFragmentPrototype, bindings.fragmentPrototype, false},
@@ -846,6 +864,9 @@ func (realm *Realm) installDOMPrototypeProperties(context *browserruntime.TaskCo
 		{realm.bindings.htmlInputElementPrototype, "select", 0, nativeElementSelect},
 		{realm.bindings.htmlTextAreaElementPrototype, "setSelectionRange", 2, nativeElementSetSelectionRange},
 		{realm.bindings.htmlTextAreaElementPrototype, "select", 0, nativeElementSelect},
+		{realm.bindings.htmlFormElementPrototype, "reset", 0, nativeHTMLFormElementReset},
+		{realm.bindings.htmlCollectionPrototype, "item", 1, nativeHTMLCollectionItem},
+		{realm.bindings.htmlCollectionPrototype, "namedItem", 1, nativeHTMLCollectionNamedItem},
 		{realm.bindings.elementPrototype, "getBoundingClientRect", 0, nativeElementGetBoundingClientRect},
 		{realm.bindings.elementPrototype, "getClientRects", 0, nativeElementGetClientRects},
 		{realm.bindings.classListPrototype, "add", 1, nativeClassListAdd},
@@ -914,6 +935,9 @@ func (realm *Realm) installDOMPrototypeProperties(context *browserruntime.TaskCo
 			return err
 		}
 	}
+	if err := realm.installHTMLCollectionIteration(context); err != nil {
+		return err
+	}
 	accessors := []struct {
 		target memory.Ref
 		name   string
@@ -970,8 +994,17 @@ func (realm *Realm) installDOMPrototypeProperties(context *browserruntime.TaskCo
 		{realm.bindings.htmlOptionElementPrototype, "value", nativeElementFormValueGet, nativeElementFormValueSet},
 		{realm.bindings.htmlButtonElementPrototype, "value", nativeElementFormValueGet, nativeElementFormValueSet},
 		{realm.bindings.htmlInputElementPrototype, "checked", nativeElementFormCheckedGet, nativeElementFormCheckedSet},
+		{realm.bindings.htmlInputElementPrototype, "indeterminate", nativeElementFormIndeterminateGet, nativeElementFormIndeterminateSet},
+		{realm.bindings.htmlInputElementPrototype, "defaultChecked", nativeElementDefaultCheckedGet, nativeElementDefaultCheckedSet},
 		{realm.bindings.htmlOptionElementPrototype, "selected", nativeElementFormSelectedGet, nativeElementFormSelectedSet},
+		{realm.bindings.htmlOptionElementPrototype, "defaultSelected", nativeElementDefaultSelectedGet, nativeElementDefaultSelectedSet},
 		{realm.bindings.htmlSelectElementPrototype, "selectedIndex", nativeElementFormSelectedIndexGet, nativeElementFormSelectedIndexSet},
+		{realm.bindings.htmlFormElementPrototype, "elements", nativeElementFormElements, 0},
+		{realm.bindings.htmlSelectElementPrototype, "options", nativeElementSelectOptions, 0},
+		{realm.bindings.htmlInputElementPrototype, "form", nativeElementFormOwner, 0},
+		{realm.bindings.htmlTextAreaElementPrototype, "form", nativeElementFormOwner, 0},
+		{realm.bindings.htmlSelectElementPrototype, "form", nativeElementFormOwner, 0},
+		{realm.bindings.htmlButtonElementPrototype, "form", nativeElementFormOwner, 0},
 		{realm.bindings.htmlInputElementPrototype, "selectionStart", nativeElementSelectionStartGet, nativeElementSelectionStartSet},
 		{realm.bindings.htmlInputElementPrototype, "selectionEnd", nativeElementSelectionEndGet, nativeElementSelectionEndSet},
 		{realm.bindings.htmlInputElementPrototype, "selectionDirection", nativeElementSelectionDirectionGet, nativeElementSelectionDirectionSet},
@@ -1030,6 +1063,34 @@ func (realm *Realm) installDOMPrototypeProperties(context *browserruntime.TaskCo
 		}
 	}
 	return nil
+}
+
+func (realm *Realm) installHTMLCollectionIteration(context *browserruntime.TaskContext) error {
+	var values memory.Value
+	for _, name := range []string{"keys", "values", "entries"} {
+		nameRef, err := context.NewString(name)
+		if err != nil {
+			return err
+		}
+		method, found, err := context.GetOwnProperty(realm.active.ArrayPrototype, nameRef)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return fmt.Errorf("nativeengine: Array.prototype.%s is unavailable", name)
+		}
+		if err := defineData(context, realm.bindings.htmlCollectionPrototype, name, method, true, false, true); err != nil {
+			return err
+		}
+		if name == "values" {
+			values = method
+		}
+	}
+	return context.DefineProperty(
+		realm.bindings.htmlCollectionPrototype,
+		realm.active.SymbolIterator,
+		memory.DataProperty(values, true, false, true),
+	)
 }
 
 func (realm *Realm) newAccessorFunction(context *browserruntime.TaskContext, name string, id uint64, arity uint32) (memory.Ref, error) {
@@ -1675,7 +1736,10 @@ func (realm *Realm) elementSetAttribute(context *browserruntime.TaskContext, thi
 	if err != nil {
 		return memory.Value{}, err
 	}
-	return memory.UndefinedValue(), realm.host.SetAttribute(handle, name, value)
+	if err := realm.host.SetAttribute(handle, name, value); err != nil {
+		return memory.Value{}, err
+	}
+	return memory.UndefinedValue(), realm.refreshFormCollections(context)
 }
 
 func (realm *Realm) elementRemoveAttribute(context *browserruntime.TaskContext, this memory.Value, arguments []memory.Value) (memory.Value, error) {
@@ -1683,7 +1747,10 @@ func (realm *Realm) elementRemoveAttribute(context *browserruntime.TaskContext, 
 	if err != nil {
 		return memory.Value{}, err
 	}
-	return memory.UndefinedValue(), realm.host.RemoveAttribute(handle, name)
+	if err := realm.host.RemoveAttribute(handle, name); err != nil {
+		return memory.Value{}, err
+	}
+	return memory.UndefinedValue(), realm.refreshFormCollections(context)
 }
 
 func (realm *Realm) elementHasAttribute(context *browserruntime.TaskContext, this memory.Value, arguments []memory.Value) (memory.Value, error) {
@@ -1721,7 +1788,10 @@ func (realm *Realm) elementIDSet(context *browserruntime.TaskContext, this memor
 	if err != nil {
 		return memory.Value{}, err
 	}
-	return memory.UndefinedValue(), realm.host.SetAttribute(handle, "id", value)
+	if err := realm.host.SetAttribute(handle, "id", value); err != nil {
+		return memory.Value{}, err
+	}
+	return memory.UndefinedValue(), realm.refreshFormCollections(context)
 }
 
 func (realm *Realm) elementQuerySelector(all bool) browserruntime.NativeFunction {

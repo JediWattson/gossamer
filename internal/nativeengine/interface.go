@@ -16,7 +16,7 @@ type domInterfaceBinding struct {
 }
 
 func (realm *Realm) newDOMInterfaces(context *browserruntime.TaskContext, bindings *browserBindings) ([]domInterfaceBinding, error) {
-	interfaces := make([]domInterfaceBinding, 0, 14)
+	interfaces := make([]domInterfaceBinding, 0, 15)
 	add := func(name string, parent memory.Ref, destination *memory.Ref) error {
 		constructor, err := realm.newDOMInterfaceConstructor(context, name, parent)
 		if err != nil {
@@ -68,6 +68,9 @@ func (realm *Realm) newDOMInterfaces(context *browserruntime.TaskContext, bindin
 		if err := add(definition.name, bindings.nodePrototype, definition.destination); err != nil {
 			return nil, err
 		}
+	}
+	if err := add("HTMLCollection", realm.active.ObjectPrototype, &bindings.htmlCollectionPrototype); err != nil {
+		return nil, err
 	}
 	return interfaces, nil
 }

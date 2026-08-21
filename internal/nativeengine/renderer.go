@@ -117,7 +117,7 @@ func (realm *Realm) facadeRecord(context *browserruntime.TaskContext, object mem
 		return memory.HostObject{}, false, err
 	}
 	switch record.Class {
-	case hostClassClassList, hostClassDataset, hostClassStyle, hostClassComputedStyle:
+	case hostClassClassList, hostClassDataset, hostClassStyle, hostClassComputedStyle, hostClassFormElements, hostClassSelectOptions:
 		return record, true, nil
 	default:
 		return memory.HostObject{}, false, nil
@@ -131,6 +131,9 @@ func (realm *Realm) facadePropertyGet(context *browserruntime.TaskContext, objec
 	}
 	handle := browser.NodeHandle{Document: browser.DocumentGeneration(record.Scope), Node: dom.NodeID(record.Identity)}
 	switch record.Class {
+	case hostClassFormElements, hostClassSelectOptions:
+		value, found, err := realm.formCollectionNamedProperty(context, object, name)
+		return value, found, true, err
 	case hostClassDataset:
 		value, found, err := realm.host.GetAttribute(handle, datasetAttribute(name))
 		if err != nil || !found {
@@ -193,6 +196,9 @@ func (realm *Realm) facadePropertySet(context *browserruntime.TaskContext, objec
 		return facade, err
 	}
 	handle := browser.NodeHandle{Document: browser.DocumentGeneration(record.Scope), Node: dom.NodeID(record.Identity)}
+	if record.Class == hostClassFormElements || record.Class == hostClassSelectOptions {
+		return true, memory.ErrReadOnlyProperty
+	}
 	text, err := valueString(context, value)
 	if err != nil {
 		return true, err
@@ -220,6 +226,8 @@ func (realm *Realm) facadePropertyDelete(context *browserruntime.TaskContext, ob
 	}
 	handle := browser.NodeHandle{Document: browser.DocumentGeneration(record.Scope), Node: dom.NodeID(record.Identity)}
 	switch record.Class {
+	case hostClassFormElements, hostClassSelectOptions:
+		return false, true, nil
 	case hostClassDataset:
 		return true, true, realm.host.RemoveAttribute(handle, datasetAttribute(name))
 	case hostClassStyle:
@@ -740,6 +748,44 @@ func (realm *Realm) refreshCollections(context *browserruntime.TaskContext, hand
 			if err := realm.replaceNodeArrayContents(context, cached.Ref(), children); err != nil {
 				return err
 			}
+		}
+	}
+	return realm.refreshFormCollections(context)
+}
+
+func (realm *Realm) refreshFormCollections(context *browserruntime.TaskContext) error {
+	if realm.bindings == nil || realm.bindings.collectionCache == (memory.Ref{}) {
+		return nil
+	}
+	cache, err := context.DerefMap(realm.bindings.collectionCache)
+	if err != nil {
+		return err
+	}
+	host, err := realm.elementHost()
+	if err != nil {
+		return err
+	}
+	for _, entry := range cache.Entries {
+		if !entry.Value.IsRef() {
+			continue
+		}
+		record, found, err := realm.formCollectionRecord(context, entry.Value.Ref())
+		if err != nil {
+			return err
+		}
+		if !found {
+			continue
+		}
+		handle, kind, err := formCollectionIdentity(record)
+		if err != nil {
+			return err
+		}
+		handles, err := host.FormControlNodes(handle, kind)
+		if err != nil {
+			return err
+		}
+		if err := realm.replaceNodeArrayContents(context, entry.Value.Ref(), handles); err != nil {
+			return err
 		}
 	}
 	return nil
