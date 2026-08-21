@@ -63,6 +63,73 @@ func TestLoadDocument(t *testing.T) {
 	}
 }
 
+func TestDoSharesCookiesAcrossRequests(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/login":
+			http.SetCookie(writer, &http.Cookie{Name: "session", Value: "strand", Path: "/"})
+			writer.WriteHeader(http.StatusNoContent)
+		case "/me":
+			cookie, err := request.Cookie("session")
+			if err != nil {
+				http.Error(writer, "missing session", http.StatusUnauthorized)
+				return
+			}
+			_, _ = io.WriteString(writer, cookie.Value)
+		}
+	}))
+	defer server.Close()
+
+	client := server.Client()
+	loader := New(client)
+	login, err := loader.Do(context.Background(), Request{URL: server.URL + "/login", Method: http.MethodPost})
+	if err != nil {
+		t.Fatalf("login Do() error = %v", err)
+	}
+	login.Body.Close()
+	me, err := loader.Do(context.Background(), Request{URL: server.URL + "/me"})
+	if err != nil {
+		t.Fatalf("me Do() error = %v", err)
+	}
+	defer me.Body.Close()
+	body, err := io.ReadAll(me.Body)
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	if string(body) != "strand" {
+		t.Fatalf("session body = %q, want strand", body)
+	}
+	if client.Jar != nil {
+		t.Fatal("New mutated the caller's HTTP client")
+	}
+}
+
+func TestDoPreservesMethodHeadersAndBody(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		body, _ := io.ReadAll(request.Body)
+		writer.Header().Set("X-Echo", request.Header.Get("X-Test"))
+		writer.WriteHeader(http.StatusAccepted)
+		_, _ = writer.Write([]byte(request.Method + ":" + string(body)))
+	}))
+	defer server.Close()
+
+	response, err := New(server.Client()).Do(context.Background(), Request{
+		URL: server.URL, Method: "post", Header: http.Header{"X-Test": {"yes"}}, Body: []byte("payload"),
+	})
+	if err != nil {
+		t.Fatalf("Do() error = %v", err)
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(response.Body)
+	if response.StatusCode != http.StatusAccepted || response.Header.Get("X-Echo") != "yes" || string(body) != "POST:payload" {
+		t.Fatalf("response = status %d, header %q, body %q", response.StatusCode, response.Header.Get("X-Echo"), body)
+	}
+}
+
 func TestLoadReturnsHTTPErrorDocument(t *testing.T) {
 	t.Parallel()
 

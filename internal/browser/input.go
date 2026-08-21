@@ -5,7 +5,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"math"
+	"net/http"
+	"net/url"
 	"slices"
 	"strings"
 	"time"
@@ -13,6 +16,7 @@ import (
 	"github.com/JediWattson/gossamer/internal/css"
 	"github.com/JediWattson/gossamer/internal/dom"
 	htmlparser "github.com/JediWattson/gossamer/internal/html"
+	"github.com/JediWattson/gossamer/internal/loader"
 	"github.com/JediWattson/gossamer/internal/render"
 	browserruntime "github.com/JediWattson/gossamer/internal/runtime"
 	"github.com/JediWattson/gossamer/internal/runtime/memory"
@@ -405,6 +409,67 @@ var _ DOMGeometryHost = (*taskHost)(nil)
 var _ AnimationFrameHost = (*taskHost)(nil)
 var _ SessionHistoryHost = (*taskHost)(nil)
 var _ NativeTaskHost = (*taskHost)(nil)
+var _ FetchHost = (*taskHost)(nil)
+
+const maxFetchResponseBytes int64 = 16 << 20
+
+// Fetch resolves a script request against the active document and executes it
+// through the document's navigation loader. That gives navigation and fetch a
+// single redirect policy, transport, and cookie jar for the full document
+// lifetime.
+func (host *taskHost) Fetch(input FetchRequest) (FetchResponse, error) {
+	host.page.mutex.RLock()
+	if host.page.closed {
+		host.page.mutex.RUnlock()
+		return FetchResponse{}, ErrPageClosed
+	}
+	if host.page.documentGeneration != host.generation {
+		host.page.mutex.RUnlock()
+		return FetchResponse{}, ErrStaleNodeHandle
+	}
+	base := cloneURL(host.page.location)
+	requester, ok := host.page.navigationLoader.(loader.Requester)
+	ctx := host.page.documentContext
+	host.page.mutex.RUnlock()
+	if !ok || requester == nil {
+		return FetchResponse{}, fmt.Errorf("browser: fetch is unavailable for this document loader")
+	}
+	if ctx == nil {
+		return FetchResponse{}, fmt.Errorf("browser: fetch has no active document context")
+	}
+	reference, err := url.Parse(input.URL)
+	if err != nil {
+		return FetchResponse{}, fmt.Errorf("browser: invalid fetch URL %q: %w", input.URL, err)
+	}
+	if !reference.IsAbs() {
+		if base == nil {
+			return FetchResponse{}, fmt.Errorf("browser: relative fetch URL %q has no document base", input.URL)
+		}
+		reference = base.ResolveReference(reference)
+	}
+	response, err := requester.Do(ctx, loader.Request{
+		URL: reference.String(), Method: input.Method, Header: input.Header.Clone(), Body: append([]byte(nil), input.Body...),
+	})
+	if err != nil {
+		return FetchResponse{}, err
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxFetchResponseBytes+1))
+	if err != nil {
+		return FetchResponse{}, fmt.Errorf("browser: read fetch response: %w", err)
+	}
+	if int64(len(body)) > maxFetchResponseBytes {
+		return FetchResponse{}, fmt.Errorf("browser: fetch response exceeds %d bytes", maxFetchResponseBytes)
+	}
+	responseURL := reference.String()
+	if response.URL != nil {
+		responseURL = response.URL.String()
+	}
+	return FetchResponse{
+		URL: responseURL, Status: response.StatusCode, StatusText: http.StatusText(response.StatusCode),
+		Header: response.Header.Clone(), Body: body,
+	}, nil
+}
 
 func (host *taskHost) GetElementByID(value string) (NodeHandle, bool, error) {
 	host.page.mutex.RLock()

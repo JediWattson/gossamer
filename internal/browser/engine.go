@@ -1,6 +1,7 @@
 package browser
 
 import (
+	"net/http"
 	"time"
 
 	"github.com/JediWattson/gossamer/internal/dom"
@@ -211,6 +212,34 @@ type JSModuleRealm interface {
 
 type EventDispatchResult struct {
 	DefaultPrevented bool
+}
+
+// FetchRequest is the pointer-free request payload shared by every script
+// engine. URL is resolved by the browser host, not by the engine.
+type FetchRequest struct {
+	URL    string
+	Method string
+	Header http.Header
+	Body   []byte
+}
+
+// FetchResponse is a fully buffered browser response. Keeping the body in Go
+// memory makes engine bindings deterministic and prevents an engine from
+// retaining an HTTP response or Go pointer beyond one host entry.
+type FetchResponse struct {
+	URL        string
+	Status     int
+	StatusText string
+	Header     http.Header
+	Body       []byte
+}
+
+// FetchHost is the optional browser-owned HTTP seam used by script engines.
+// The initial implementation performs I/O synchronously beneath the
+// JavaScript Promise API; async transport can be added without changing this
+// value contract.
+type FetchHost interface {
+	Fetch(FetchRequest) (FetchResponse, error)
 }
 
 // Host is the execution-scoped browser API visible to an engine. Methods that

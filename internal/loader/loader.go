@@ -2,11 +2,13 @@
 package loader
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/url"
 	"strings"
 	"time"
@@ -47,6 +49,22 @@ type Response struct {
 	Body       io.ReadCloser
 }
 
+// Request is an engine-neutral HTTP request. Body is copied into the outgoing
+// request, so callers may reuse or release the source bytes after Do returns.
+type Request struct {
+	URL    string
+	Method string
+	Header http.Header
+	Body   []byte
+}
+
+// Requester is the document-lifetime HTTP boundary used by browser APIs such
+// as fetch. Loader implements it while navigation tests may provide a small
+// in-memory implementation.
+type Requester interface {
+	Do(context.Context, Request) (*Response, error)
+}
+
 // Loader retrieves web resources over HTTP.
 type Loader struct {
 	httpClient *http.Client
@@ -58,8 +76,12 @@ func New(httpClient *http.Client) *Loader {
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: defaultTimeout}
 	}
+	client := *httpClient
+	if client.Jar == nil {
+		client.Jar, _ = cookiejar.New(nil)
+	}
 
-	return &Loader{httpClient: httpClient}
+	return &Loader{httpClient: &client}
 }
 
 // Load performs a document GET request. HTTP error statuses are returned as
@@ -71,17 +93,41 @@ func (loader *Loader) Load(ctx context.Context, rawURL string) (*Response, error
 // LoadResource performs a GET for a document subresource. HTTP error statuses
 // are returned as responses so the caller can decide whether they are usable.
 func (loader *Loader) LoadResource(ctx context.Context, rawURL string, destination Destination) (*Response, error) {
+	header := make(http.Header)
+	header.Set("Accept", destination.accept())
+	return loader.Do(ctx, Request{URL: rawURL, Method: http.MethodGet, Header: header})
+}
+
+// Do performs a general HTTP request through the same client and cookie jar as
+// document navigation. HTTP error statuses remain ordinary responses.
+func (loader *Loader) Do(ctx context.Context, input Request) (*Response, error) {
+	if loader == nil || loader.httpClient == nil {
+		return nil, fmt.Errorf("loader: nil HTTP client")
+	}
+	rawURL := input.URL
 	parsedURL, err := ParseHTTPURL(rawURL)
 	if err != nil {
 		return nil, err
 	}
+	method := strings.ToUpper(strings.TrimSpace(input.Method))
+	if method == "" {
+		method = http.MethodGet
+	}
 
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, parsedURL.String(), nil)
+	request, err := http.NewRequestWithContext(ctx, method, parsedURL.String(), bytes.NewReader(input.Body))
 	if err != nil {
 		return nil, fmt.Errorf("create request for %q: %w", rawURL, err)
 	}
-	request.Header.Set("Accept", destination.accept())
-	request.Header.Set("User-Agent", UserAgent)
+	request.Header = input.Header.Clone()
+	if request.Header == nil {
+		request.Header = make(http.Header)
+	}
+	if request.Header.Get("Accept") == "" {
+		request.Header.Set("Accept", "*/*")
+	}
+	if request.Header.Get("User-Agent") == "" {
+		request.Header.Set("User-Agent", UserAgent)
+	}
 
 	httpResponse, err := loader.httpClient.Do(request)
 	if err != nil {

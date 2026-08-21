@@ -9240,6 +9240,42 @@ void SetTimeoutCallback(const v8::FunctionCallbackInfo<v8::Value> &info) {
       v8::Number::New(isolate, static_cast<double>(timer)));
 }
 
+void FetchHostCallback(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  std::string error;
+  if (!RequireHost(realm, &error) || realm->active_host->fetch == nullptr) {
+    ThrowError(isolate, error.empty() ? "fetch is unavailable" : error);
+    return;
+  }
+  v8::Local<v8::String> request_value;
+  if (info.Length() < 1 ||
+      !info[0]->ToString(isolate->GetCurrentContext()).ToLocal(&request_value))
+    return;
+  std::string request = UTF8Value(isolate, request_value);
+  char *response = nullptr;
+  size_t response_length = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->fetch(
+          realm->active_host->execution_id, request.data(), request.size(),
+          &response, &response_length, &host_error) == 0) {
+    error = TakeCString(host_error);
+    std::free(response);
+    ThrowError(isolate, error.empty() ? "fetch failed" : error);
+    return;
+  }
+  std::free(host_error);
+  v8::Local<v8::String> result;
+  if (!v8::String::NewFromUtf8(isolate, response, v8::NewStringType::kNormal,
+                               static_cast<int>(response_length))
+           .ToLocal(&result)) {
+    std::free(response);
+    return;
+  }
+  std::free(response);
+  info.GetReturnValue().Set(result);
+}
+
 bool TimerIDFromValue(v8::Local<v8::Context> context,
                       v8::Local<v8::Value> value, uint64_t *timer) {
   if (value->IsBigInt()) {
@@ -10899,6 +10935,105 @@ bool InstallURLSearchParams(v8::Local<v8::Context> context) {
   Image.prototype = global.HTMLImageElement.prototype;
   global.Image = Image;
 
+  const hostFetch = global.__gossamerHostFetch;
+  delete global.__gossamerHostFetch;
+  const headerState = new WeakMap();
+  const normalizeHeaderName = name => {
+    name = String(name).trim().toLowerCase();
+    if (!name || /[()<>@,;:\\"\/\[\]?={} \t\r\n]/.test(name)) throw new TypeError("Invalid HTTP header name");
+    return name;
+  };
+  class Headers {
+    constructor(initial) {
+      const values = new Map();
+      headerState.set(this, values);
+      if (initial instanceof Headers) for (const [name, value] of initial) this.append(name, value);
+      else if (initial != null && Symbol.iterator in Object(initial) && typeof initial !== "string") {
+        for (const pair of initial) {
+          if (!pair || pair.length !== 2) throw new TypeError("Header pair must contain two values");
+          this.append(pair[0], pair[1]);
+        }
+      } else if (initial != null) for (const name of Object.keys(Object(initial))) {
+        const value = initial[name];
+        if (Array.isArray(value)) for (const item of value) this.append(name, item);
+        else this.append(name, value);
+      }
+    }
+    append(name, value) { name = normalizeHeaderName(name); value = String(value).trim(); const list = headerState.get(this); if (!list) throw new TypeError("Illegal invocation"); list.set(name, list.has(name) ? list.get(name) + ", " + value : value); }
+    delete(name) { const list = headerState.get(this); if (!list) throw new TypeError("Illegal invocation"); list.delete(normalizeHeaderName(name)); }
+    get(name) { const list = headerState.get(this); if (!list) throw new TypeError("Illegal invocation"); name = normalizeHeaderName(name); return list.has(name) ? list.get(name) : null; }
+    has(name) { const list = headerState.get(this); if (!list) throw new TypeError("Illegal invocation"); return list.has(normalizeHeaderName(name)); }
+    set(name, value) { const list = headerState.get(this); if (!list) throw new TypeError("Illegal invocation"); list.set(normalizeHeaderName(name), String(value).trim()); }
+    *entries() { const list = headerState.get(this); if (!list) throw new TypeError("Illegal invocation"); yield* list.entries(); }
+    *keys() { for (const pair of this) yield pair[0]; }
+    *values() { for (const pair of this) yield pair[1]; }
+    forEach(callback, thisArg) { for (const [name, value] of this) callback.call(thisArg, value, name, this); }
+    [Symbol.iterator]() { return this.entries(); }
+  }
+  Object.defineProperty(Headers.prototype, Symbol.toStringTag, {value: "Headers", configurable: true});
+  const requestState = new WeakMap();
+  const bodyBytes = body => {
+    if (body == null) return [];
+    if (typeof body === "string") return Array.from(new TextEncoder().encode(body));
+    if (body instanceof ArrayBuffer) return Array.from(new Uint8Array(body));
+    if (ArrayBuffer.isView(body)) return Array.from(new Uint8Array(body.buffer, body.byteOffset, body.byteLength));
+    return Array.from(new TextEncoder().encode(String(body)));
+  };
+  const wireHeaders = headers => {
+    const result = {};
+    for (const [name, value] of headers) result[name] = [value];
+    return result;
+  };
+  class Request {
+    constructor(input, init = {}) {
+      const inherited = input instanceof Request ? requestState.get(input) : null;
+      const url = inherited ? inherited.url : String(input);
+      const method = String(init.method === undefined ? (inherited ? inherited.method : "GET") : init.method).toUpperCase();
+      const headers = new Headers(init.headers === undefined ? (inherited ? inherited.headers : undefined) : init.headers);
+      const body = init.body === undefined ? (inherited ? inherited.body.slice() : []) : bodyBytes(init.body);
+      if ((method === "GET" || method === "HEAD") && body.length) throw new TypeError(method + " request cannot have a body");
+      requestState.set(this, {url, method, headers, body});
+      Object.defineProperties(this, {url: {value: url, enumerable: true}, method: {value: method, enumerable: true}, headers: {value: headers, enumerable: true}});
+    }
+    clone() { return new Request(this); }
+  }
+  Object.defineProperty(Request.prototype, Symbol.toStringTag, {value: "Request", configurable: true});
+  const responseState = new WeakMap();
+  class Response {
+    constructor(body = null, init = {}) {
+      const status = init.status === undefined ? 200 : Number(init.status);
+      const statusText = init.statusText === undefined ? "" : String(init.statusText);
+      const headers = new Headers(init.headers);
+      responseState.set(this, {body: Uint8Array.from(bodyBytes(body)), used: false});
+      Object.defineProperties(this, {
+        status: {value: status, enumerable: true}, statusText: {value: statusText, enumerable: true},
+        headers: {value: headers, enumerable: true}, ok: {value: status >= 200 && status <= 299, enumerable: true},
+        url: {value: String(init.url || ""), enumerable: true}, redirected: {value: false, enumerable: true},
+        type: {value: "basic", enumerable: true}
+      });
+    }
+    get bodyUsed() { const state = responseState.get(this); if (!state) throw new TypeError("Illegal invocation"); return state.used; }
+    _consume() { const state = responseState.get(this); if (!state) throw new TypeError("Illegal invocation"); if (state.used) throw new TypeError("Response body is already used"); state.used = true; return state.body; }
+    text() { try { return Promise.resolve(new TextDecoder().decode(this._consume())); } catch (error) { return Promise.reject(error); } }
+    json() { return this.text().then(JSON.parse); }
+    arrayBuffer() { try { const bytes = this._consume(); return Promise.resolve(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)); } catch (error) { return Promise.reject(error); } }
+    clone() { const state = responseState.get(this); if (!state || state.used) throw new TypeError("Response body is already used"); return new Response(state.body, {status: this.status, statusText: this.statusText, headers: this.headers, url: this.url}); }
+  }
+  Object.defineProperty(Response.prototype, Symbol.toStringTag, {value: "Response", configurable: true});
+  global.Headers = Headers;
+  global.Request = Request;
+  global.Response = Response;
+  global.fetch = (input, init) => {
+    try {
+      const request = input instanceof Request && init === undefined ? input : new Request(input, init);
+      const state = requestState.get(request);
+      const response = JSON.parse(hostFetch(JSON.stringify({url: state.url, method: state.method, headers: wireHeaders(state.headers), body: state.body})));
+      return Promise.resolve(new Response(Uint8Array.from(response.body), response));
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  };
+
   let nextInterval = 1;
   const intervals = new Map();
   global.setInterval = (callback, delay = 0, ...arguments) => {
@@ -12457,6 +12592,7 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   v8::Local<v8::Function> clear_timeout;
   v8::Local<v8::Function> request_animation_frame;
   v8::Local<v8::Function> cancel_animation_frame;
+  v8::Local<v8::Function> fetch_host;
   v8::Local<v8::Function> get_computed_style;
   v8::Local<v8::Function> get_selection;
   v8::Local<v8::Function> window_scroll;
@@ -12470,6 +12606,7 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
            .ToLocal(&request_animation_frame) ||
       !v8::Function::New(context, CancelAnimationFrameCallback)
            .ToLocal(&cancel_animation_frame) ||
+      !v8::Function::New(context, FetchHostCallback).ToLocal(&fetch_host) ||
       !v8::Function::New(context, GetComputedStyle)
            .ToLocal(&get_computed_style) ||
       !v8::Function::New(context, GetSelection).ToLocal(&get_selection)) {
@@ -12525,8 +12662,14 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
            .FromMaybe(false) ||
       !global
            ->Set(context,
-                 v8::String::NewFromUtf8Literal(isolate, "dispatchEvent"),
-                 window_dispatch_event)
+                   v8::String::NewFromUtf8Literal(isolate, "dispatchEvent"),
+                   window_dispatch_event)
+           .FromMaybe(false) ||
+      !global
+           ->Set(context,
+                 v8::String::NewFromUtf8Literal(isolate,
+                                                "__gossamerHostFetch"),
+                 fetch_host)
            .FromMaybe(false)) {
     return false;
   }

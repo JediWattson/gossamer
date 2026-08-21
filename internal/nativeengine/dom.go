@@ -234,6 +234,12 @@ const (
 	bindingRangePrototype               = "\x00gossamer.range.prototype"
 	bindingSelectionPrototype           = "\x00gossamer.selection.prototype"
 	bindingSelection                    = "\x00gossamer.selection"
+	bindingHeadersPrototype             = "\x00gossamer.headers.prototype"
+	bindingHeadersConstructor           = "\x00gossamer.headers.constructor"
+	bindingRequestPrototype             = "\x00gossamer.request.prototype"
+	bindingRequestConstructor           = "\x00gossamer.request.constructor"
+	bindingResponsePrototype            = "\x00gossamer.response.prototype"
+	bindingResponseConstructor          = "\x00gossamer.response.constructor"
 	hostRecordProperty                  = "\x00gossamer.host.record"
 )
 
@@ -278,6 +284,12 @@ type browserBindings struct {
 	textDecoderConstructor       memory.Ref
 	uint8ArrayPrototype          memory.Ref
 	uint8ArrayConstructor        memory.Ref
+	headersPrototype             memory.Ref
+	headersConstructor           memory.Ref
+	requestPrototype             memory.Ref
+	requestConstructor           memory.Ref
+	responsePrototype            memory.Ref
+	responseConstructor          memory.Ref
 	rangePrototype               memory.Ref
 	selectionPrototype           memory.Ref
 	selection                    memory.Ref
@@ -543,6 +555,20 @@ func (realm *Realm) installBrowserNatives() error {
 		{nativeMediaQueryNoop, realm.mediaQueryNoop},
 		{nativeMediaQueryDispatch, realm.mediaQueryDispatch},
 		{nativeImageConstructor, realm.imageConstructor},
+		{nativeGlobalFetch, realm.globalFetch},
+		{nativeHeadersConstructor, realm.headersConstructor},
+		{nativeHeadersAppend, realm.headersAppend},
+		{nativeHeadersDelete, realm.headersDelete},
+		{nativeHeadersGet, realm.headersGet},
+		{nativeHeadersHas, realm.headersHas},
+		{nativeHeadersSet, realm.headersSet},
+		{nativeHeadersForEach, realm.headersForEach},
+		{nativeRequestConstructor, realm.requestConstructor},
+		{nativeResponseConstructor, realm.responseConstructor},
+		{nativeResponseText, realm.responseText},
+		{nativeResponseJSON, realm.responseJSON},
+		{nativeResponseArrayBuffer, realm.responseArrayBuffer},
+		{nativeResponseClone, realm.responseClone},
 		{nativeNodeAppend, realm.nodeConvenienceMutation(dom.MutationAppend)},
 		{nativeNodePrepend, realm.nodeConvenienceMutation(dom.MutationPrepend)},
 		{nativeNodeBefore, realm.nodeConvenienceMutation(dom.MutationBefore)},
@@ -625,6 +651,12 @@ func (realm *Realm) prepareBrowserBindingsLocked(context *browserruntime.TaskCon
 			{bindingTextDecoderConstructor, &bindings.textDecoderConstructor},
 			{bindingUint8ArrayPrototype, &bindings.uint8ArrayPrototype},
 			{bindingUint8ArrayConstructor, &bindings.uint8ArrayConstructor},
+			{bindingHeadersPrototype, &bindings.headersPrototype},
+			{bindingHeadersConstructor, &bindings.headersConstructor},
+			{bindingRequestPrototype, &bindings.requestPrototype},
+			{bindingRequestConstructor, &bindings.requestConstructor},
+			{bindingResponsePrototype, &bindings.responsePrototype},
+			{bindingResponseConstructor, &bindings.responseConstructor},
 			{bindingRangePrototype, &bindings.rangePrototype},
 			{bindingSelectionPrototype, &bindings.selectionPrototype},
 			{bindingSelection, &bindings.selection},
@@ -735,6 +767,12 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 	if err != nil {
 		return err
 	}
+	bindings.headersConstructor, bindings.headersPrototype,
+		bindings.requestConstructor, bindings.requestPrototype,
+		bindings.responseConstructor, bindings.responsePrototype, err = realm.newFetchConstructors(context)
+	if err != nil {
+		return err
+	}
 	rangeConstructor, err := realm.newDOMInterfaceConstructor(context, "Range", realm.active.ObjectPrototype)
 	if err != nil {
 		return err
@@ -827,6 +865,10 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 	if err != nil {
 		return err
 	}
+	fetch, err := realm.newNativeFunction(context, "fetch", 1, nativeGlobalFetch)
+	if err != nil {
+		return err
+	}
 	windowProperties := []struct {
 		name  string
 		value memory.Value
@@ -846,6 +888,10 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{"navigator", memory.RefValue(navigator)},
 		{"matchMedia", memory.RefValue(matchMedia)},
 		{"Image", memory.RefValue(imageConstructor)},
+		{"fetch", memory.RefValue(fetch)},
+		{"Headers", memory.RefValue(bindings.headersConstructor)},
+		{"Request", memory.RefValue(bindings.requestConstructor)},
+		{"Response", memory.RefValue(bindings.responseConstructor)},
 		{"MutationObserver", memory.RefValue(bindings.mutationObserverConstructor)},
 		{bindingDOMException, memory.RefValue(bindings.domExceptionConstructor)},
 		{"URLSearchParams", memory.RefValue(bindings.urlSearchParamsConstructor)},
@@ -916,6 +962,12 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{bindingTextDecoderConstructor, bindings.textDecoderConstructor, false},
 		{bindingUint8ArrayPrototype, bindings.uint8ArrayPrototype, false},
 		{bindingUint8ArrayConstructor, bindings.uint8ArrayConstructor, false},
+		{bindingHeadersPrototype, bindings.headersPrototype, false},
+		{bindingHeadersConstructor, bindings.headersConstructor, false},
+		{bindingRequestPrototype, bindings.requestPrototype, false},
+		{bindingRequestConstructor, bindings.requestConstructor, false},
+		{bindingResponsePrototype, bindings.responsePrototype, false},
+		{bindingResponseConstructor, bindings.responseConstructor, false},
 		{bindingRangePrototype, bindings.rangePrototype, false},
 		{bindingSelectionPrototype, bindings.selectionPrototype, false},
 		{bindingSelection, bindings.selection, false},
@@ -933,6 +985,7 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{"navigator", navigator, false},
 		{"matchMedia", matchMedia, true},
 		{"Image", imageConstructor, true},
+		{"fetch", fetch, true},
 		{bindingMutationObserver, bindings.mutationObserverConstructor, false},
 		{bindingDOMException, bindings.domExceptionConstructor, true},
 		{"URLSearchParams", bindings.urlSearchParamsConstructor, true},
@@ -940,6 +993,9 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{"TextEncoder", bindings.textEncoderConstructor, true},
 		{"TextDecoder", bindings.textDecoderConstructor, true},
 		{"Uint8Array", bindings.uint8ArrayConstructor, true},
+		{"Headers", bindings.headersConstructor, true},
+		{"Request", bindings.requestConstructor, true},
+		{"Response", bindings.responseConstructor, true},
 		{"Event", eventConstructor, true},
 		{"CustomEvent", customEventConstructor, true},
 		{"setTimeout", setTimeout, true},

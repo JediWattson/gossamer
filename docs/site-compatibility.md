@@ -56,3 +56,18 @@ Strand language-parity backlog rather than a shared browser-kernel or module
 scanner failure. Native parity tests cover the browser utility surface added at
 this rung: URL/URLSearchParams, UTF-8 codecs, Uint8Array, navigator,
 matchMedia, interval timers, Image, and specialized HTML element identities.
+
+## Fetch and session rung
+
+Document navigation and script-visible `fetch()` now share one Go-owned HTTP
+client, redirect policy, and cookie jar for the document lifetime. The engine
+boundary carries only copied request and response values; neither Strand nor V8
+owns a socket, HTTP response, or Go pointer. Both engines expose the first
+`Headers`, `Request`, and `Response` surface, including relative URLs, methods,
+headers and bodies, resolved or rejected Promises, `text()`, `json()`,
+`arrayBuffer()`, `clone()`, and `bodyUsed`.
+
+The shared gate posts a body and headers through a relative URL, checks response
+metadata and JSON cloning, then makes a second session request. Loader coverage
+also proves that a real `Set-Cookie` response is carried into the next request
+without mutating a caller-provided `http.Client`.

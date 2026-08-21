@@ -11,6 +11,7 @@ import "C"
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -108,6 +109,71 @@ func writeHostString(value string, valueOut **C.char, valueLengthOut *C.size_t) 
 		*valueLengthOut = C.size_t(len(value))
 	}
 	return nil
+}
+
+type v8FetchRequest struct {
+	URL     string              `json:"url"`
+	Method  string              `json:"method"`
+	Headers map[string][]string `json:"headers"`
+	Body    []int               `json:"body"`
+}
+
+type v8FetchResponse struct {
+	URL        string              `json:"url"`
+	Status     int                 `json:"status"`
+	StatusText string              `json:"statusText"`
+	Headers    map[string][]string `json:"headers"`
+	Body       []int               `json:"body"`
+}
+
+//export goGossamerV8HostFetch
+func goGossamerV8HostFetch(
+	executionID C.uint64_t,
+	requestJSON *C.char,
+	requestJSONLength C.size_t,
+	responseJSONOut **C.char,
+	responseJSONLengthOut *C.size_t,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		fetchHost, ok := host.(browser.FetchHost)
+		if !ok {
+			return fmt.Errorf("V8 host does not support fetch")
+		}
+		var wire v8FetchRequest
+		if err := json.Unmarshal([]byte(goString(requestJSON, requestJSONLength)), &wire); err != nil {
+			return fmt.Errorf("decode V8 fetch request: %w", err)
+		}
+		body := make([]byte, len(wire.Body))
+		for index, value := range wire.Body {
+			if value < 0 || value > 255 {
+				return fmt.Errorf("decode V8 fetch body byte %d: %d", index, value)
+			}
+			body[index] = byte(value)
+		}
+		headers := make(map[string][]string, len(wire.Headers))
+		for name, values := range wire.Headers {
+			headers[http.CanonicalHeaderKey(name)] = append([]string(nil), values...)
+		}
+		response, err := fetchHost.Fetch(browser.FetchRequest{
+			URL: wire.URL, Method: wire.Method, Header: headers, Body: body,
+		})
+		if err != nil {
+			return err
+		}
+		responseBody := make([]int, len(response.Body))
+		for index, value := range response.Body {
+			responseBody[index] = int(value)
+		}
+		encoded, err := json.Marshal(v8FetchResponse{
+			URL: response.URL, Status: response.Status, StatusText: response.StatusText,
+			Headers: response.Header, Body: responseBody,
+		})
+		if err != nil {
+			return fmt.Errorf("encode V8 fetch response: %w", err)
+		}
+		return writeHostString(string(encoded), responseJSONOut, responseJSONLengthOut)
+	}, executionID)
 }
 
 func domElementHost(host browser.Host) (browser.DOMElementHost, error) {
