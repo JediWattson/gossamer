@@ -134,6 +134,7 @@ const (
 	nativeTemplateContent
 	nativeElementHiddenGet
 	nativeElementHiddenSet
+	nativeModuleDynamicImport
 )
 
 const (
@@ -346,6 +347,7 @@ func (realm *Realm) installBrowserNatives() error {
 		{nativeEventPreventDefault, realm.eventPreventDefault},
 		{nativeEventStopPropagation, realm.eventStopPropagation},
 		{nativeEventStopImmediatePropagation, realm.eventStopImmediatePropagation},
+		{nativeModuleDynamicImport, realm.moduleDynamicImport},
 	}
 	for _, registration := range registrations {
 		if err := realm.interpreter.RegisterNative(registration.id, registration.callback); err != nil {

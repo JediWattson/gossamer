@@ -324,6 +324,17 @@ type ImportMetaExpression struct{ Base }
 
 func (*ImportMetaExpression) expressionNode() {}
 
+// DynamicImportExpression is the Promise-returning import(specifier) form.
+// Browser graph loading currently prefetches literal specifiers outside the
+// engine; the expression remains general so runtime lookup rejects any source
+// that was not present in that graph.
+type DynamicImportExpression struct {
+	Base
+	Source Expression
+}
+
+func (*DynamicImportExpression) expressionNode() {}
+
 type ArrayLiteral struct {
 	Base
 	// A nil element is an array hole.

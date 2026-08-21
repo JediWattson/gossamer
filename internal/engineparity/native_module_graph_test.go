@@ -74,6 +74,20 @@ func TestStrandProvidesStrictCanonicalImportMeta(t *testing.T) {
 	}
 }
 
+func TestStrandLoadsLiteralDynamicModuleGraphs(t *testing.T) {
+	engine := nativeengine.New(nativeengine.Config{})
+	runDynamicModuleGraphParity(t, engine, func(page *browser.Page) error {
+		realm, ok := engine.LatestRealm()
+		if !ok {
+			return nativeengine.ErrRealmClosed
+		}
+		return realm.CollectGarbage(page)
+	})
+	if profile := engine.Profile(); profile.ModuleCompilations != 3 {
+		t.Fatalf("native dynamic module compilations = %d, want root, lazy module, and leaf", profile.ModuleCompilations)
+	}
+}
+
 func runLiveModuleGraphParity(t *testing.T, engine browser.Engine, collect func(*browser.Page) error) {
 	t.Helper()
 	client := &moduleGraphMemoryLoader{sources: map[string]string{
@@ -353,6 +367,7 @@ let assignmentRejected = false;
 try { undeclaredModuleAssignment = 1; } catch (error) {
   assignmentRejected = error instanceof ReferenceError;
 }
+
 globalThis.__moduleMeta = [
   this === undefined,
   strictThis(),
@@ -406,6 +421,87 @@ if (__moduleMeta !== expected) throw new Error("module metadata: " + __moduleMet
 	stats := browserRuntime.Ledger().Stats()
 	if stats.LiveObjects != 0 || stats.PersistentObjects != 0 {
 		t.Fatalf("import.meta ownership survived Page close: %#v", stats)
+	}
+	if err := browserRuntime.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func runDynamicModuleGraphParity(t *testing.T, engine browser.Engine, collect func(*browser.Page) error) {
+	t.Helper()
+	client := &moduleGraphMemoryLoader{sources: map[string]string{
+		"https://modules.gossamer.test/root.js": `
+globalThis.__dynamicOrder = ["sync"];
+globalThis.__dynamicRuns = 0;
+let firstNamespace;
+import("./lazy.js").then(namespace => {
+  firstNamespace = namespace;
+  globalThis.__dynamicOrder.push(namespace.value);
+  namespace.bump();
+  return import(` + "`./lazy.js`" + `);
+}).then(namespace => {
+  globalThis.__dynamicSnapshot = [
+    namespace === firstNamespace,
+    namespace.value,
+    namespace.leaf,
+    globalThis.__dynamicRuns,
+    globalThis.__dynamicOrder.join(":")
+  ].join("|");
+});
+const missing = "./not-prefetched.js";
+import(missing).catch(error => {
+  globalThis.__dynamicRejected = error instanceof Error;
+});
+`,
+		"https://modules.gossamer.test/lazy.js": `
+import {leaf} from "./leaf.js";
+globalThis.__dynamicRuns += 1;
+export {leaf};
+export let value = "lazy";
+export function bump() { value = "updated"; }
+`,
+		"https://modules.gossamer.test/leaf.js": `export const leaf = "leaf";`,
+	}}
+	browserRuntime, err := browser.NewWithEngine(engine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := browserRuntime.LoadPage(context.Background(), nativeModuleGraphPageURL, client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := page.Navigation()
+	if snapshot.State != browser.NavigationComplete || snapshot.ScriptsTotal != 2 || snapshot.ScriptsFailed != 0 {
+		t.Fatalf("dynamic module navigation = %#v", snapshot)
+	}
+	wantLoads := []string{
+		"https://modules.gossamer.test/lazy.js",
+		"https://modules.gossamer.test/leaf.js",
+		"https://modules.gossamer.test/root.js",
+	}
+	if got := client.loadedOnce(); fmt.Sprint(got) != fmt.Sprint(wantLoads) {
+		t.Fatalf("dynamic module fetches = %#v, want %#v", got, wantLoads)
+	}
+	if _, err := page.QueueScript(browser.ScriptSource{URL: nativeModuleGraphPageURL + "assert-dynamic.js", Source: `
+if (__dynamicSnapshot !== "true|updated|leaf|1|sync:lazy") {
+  throw new Error("dynamic module snapshot: " + __dynamicSnapshot);
+}
+if (__dynamicRejected !== true) throw new Error("unresolved dynamic import did not reject");
+`}); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := collect(page); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.Close(); err != nil {
+		t.Fatal(err)
+	}
+	stats := browserRuntime.Ledger().Stats()
+	if stats.LiveObjects != 0 || stats.PersistentObjects != 0 {
+		t.Fatalf("dynamic module ownership survived Page close: %#v", stats)
 	}
 	if err := browserRuntime.Close(); err != nil {
 		t.Fatal(err)

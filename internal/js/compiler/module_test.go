@@ -183,3 +183,30 @@ export function sameMeta() { return import.meta === import.meta; }
 		t.Fatalf("script import.meta error = %v", err)
 	}
 }
+
+func TestCompileModuleCarriesDynamicImportHostBinding(t *testing.T) {
+	t.Parallel()
+
+	module, err := compiler.CompileModule(`
+export function load(specifier) { return import(specifier); }
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bindings := module.Bindings()
+	var dynamicImport int
+	for _, binding := range bindings {
+		if binding.InitializeDynamicImport {
+			dynamicImport++
+			if binding.Mutable || binding.InitializeUndefined || binding.InitializeImportMeta || binding.HasFunction {
+				t.Fatalf("dynamic import binding = %#v", binding)
+			}
+		}
+	}
+	if dynamicImport != 1 {
+		t.Fatalf("dynamic import binding count = %d in %#v", dynamicImport, bindings)
+	}
+	if _, err := compiler.Compile(`import("./script.js");`); !errors.Is(err, compiler.ErrCompile) {
+		t.Fatalf("script dynamic import error = %v", err)
+	}
+}

@@ -182,8 +182,10 @@ func compileNativeModuleGraph(graph browser.ModuleGraph, cached map[string]*nati
 			return
 		}
 		reachable[url] = struct{}{}
-		for _, request := range compiled[url].image.Requests() {
-			visit(resolutions[moduleResolutionKey{referrer: url, specifier: request}])
+		for key, target := range resolutions {
+			if key.referrer == url {
+				visit(target)
+			}
 		}
 	}
 	visit(graph.RootURL)
@@ -346,6 +348,31 @@ func (realm *Realm) instantiateModuleLocalsLocked(context *browserruntime.TaskCo
 			if err := context.InitializeBinding(environment, name, memory.RefValue(meta)); err != nil {
 				return err
 			}
+		case binding.InitializeDynamicImport:
+			importer, err := context.NewHeapObject()
+			if err != nil {
+				return err
+			}
+			if err := context.SetPrototype(importer, memory.NullValue()); err != nil {
+				return err
+			}
+			referrer, err := context.NewString(module.source.URL)
+			if err != nil {
+				return err
+			}
+			if err := defineData(context, importer, "referrer", memory.RefValue(referrer), false, false, false); err != nil {
+				return err
+			}
+			importFunction, err := realm.newNativeFunction(context, "import", 1, nativeModuleDynamicImport)
+			if err != nil {
+				return err
+			}
+			if err := defineData(context, importer, "import", memory.RefValue(importFunction), false, false, false); err != nil {
+				return err
+			}
+			if err := context.InitializeBinding(environment, name, memory.RefValue(importer)); err != nil {
+				return err
+			}
 		case binding.InitializeUndefined:
 			if err := context.InitializeBinding(environment, name, memory.UndefinedValue()); err != nil {
 				return err
@@ -382,6 +409,68 @@ func (realm *Realm) instantiateModuleLocalsLocked(context *browserruntime.TaskCo
 		}
 	}
 	return nil
+}
+
+func (realm *Realm) moduleDynamicImport(context *browserruntime.TaskContext, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+	promise, err := context.NewPromise()
+	if err != nil {
+		return memory.Value{}, err
+	}
+	reject := func(cause error) (memory.Value, error) {
+		reason, thrown := browserruntime.ThrownValue(cause)
+		if !thrown {
+			message, messageErr := context.NewString(cause.Error())
+			if messageErr != nil {
+				return memory.Value{}, messageErr
+			}
+			errorRef, errorErr := context.NewError(memory.ErrorType, memory.RefValue(message))
+			if errorErr != nil {
+				return memory.Value{}, errorErr
+			}
+			reason = memory.RefValue(errorRef)
+		}
+		if rejectErr := context.RejectPromise(promise, reason); rejectErr != nil {
+			return memory.Value{}, rejectErr
+		}
+		return memory.RefValue(promise), nil
+	}
+	if !this.IsRef() {
+		return reject(fmt.Errorf("%w: dynamic import has no module referrer", ErrModuleLink))
+	}
+	referrerName, err := context.NewString("referrer")
+	if err != nil {
+		return memory.Value{}, err
+	}
+	referrerValue, found, err := context.GetOwnProperty(this.Ref(), referrerName)
+	if err != nil || !found || !referrerValue.IsRef() {
+		return reject(fmt.Errorf("%w: dynamic import has no module referrer", ErrModuleLink))
+	}
+	referrer, err := context.DerefString(referrerValue.Ref())
+	if err != nil {
+		return memory.Value{}, err
+	}
+	specifier, err := stringArgument(context, arguments, 0)
+	if err != nil {
+		return reject(err)
+	}
+	target, err := realm.resolveModuleRequest(referrer, specifier)
+	if err != nil {
+		return reject(err)
+	}
+	if err := realm.linkModuleLocked(context, target); err != nil {
+		return reject(err)
+	}
+	if err := realm.evaluateModuleLocked(context, target); err != nil {
+		return reject(err)
+	}
+	namespace, err := realm.moduleNamespaceLocked(context, target)
+	if err != nil {
+		return reject(err)
+	}
+	if err := context.ResolvePromise(promise, memory.RefValue(namespace)); err != nil {
+		return memory.Value{}, err
+	}
+	return memory.RefValue(promise), nil
 }
 
 func (realm *Realm) evaluateModuleLocked(context *browserruntime.TaskContext, url string) (result error) {

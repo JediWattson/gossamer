@@ -27,7 +27,7 @@ func loadModuleGraph(ctx context.Context, pipeline *resource.Pipeline, root Scri
 		}
 		visited[source.URL] = true
 		graph.Sources = append(graph.Sources, source)
-		specifiers, err := staticModuleSpecifiers(source.Source)
+		specifiers, err := moduleSpecifiers(source.Source)
 		if err != nil {
 			return fmt.Errorf("browser: scan module %q: %w", source.URL, err)
 		}
@@ -112,7 +112,7 @@ type moduleLexeme struct {
 	text string
 }
 
-func staticModuleSpecifiers(source string) ([]string, error) {
+func moduleSpecifiers(source string) ([]string, error) {
 	tokens, err := lexModuleSurface(source)
 	if err != nil {
 		return nil, err
@@ -139,8 +139,20 @@ func staticModuleSpecifiers(source string) ([]string, error) {
 			}
 			continue
 		}
-		if token.kind != moduleIdentifier || braceDepth != 0 || parenDepth != 0 ||
-			(token.text != "import" && token.text != "export") {
+		if token.kind != moduleIdentifier || (token.text != "import" && token.text != "export") {
+			continue
+		}
+		if token.text == "import" && index+1 < len(tokens) {
+			next := tokens[index+1]
+			if next.kind == modulePunctuator && next.text == "(" {
+				if index+3 < len(tokens) && tokens[index+2].kind == moduleString &&
+					tokens[index+3].kind == modulePunctuator && tokens[index+3].text == ")" {
+					result = append(result, tokens[index+2].text)
+				}
+				continue
+			}
+		}
+		if braceDepth != 0 || parenDepth != 0 {
 			continue
 		}
 		if token.text == "import" && index+1 < len(tokens) {
@@ -150,7 +162,7 @@ func staticModuleSpecifiers(source string) ([]string, error) {
 				index++
 				continue
 			}
-			if next.kind == modulePunctuator && (next.text == "(" || next.text == ".") {
+			if next.kind == modulePunctuator && next.text == "." {
 				continue
 			}
 		}
@@ -205,9 +217,12 @@ func lexModuleSurface(source string) ([]moduleLexeme, error) {
 			continue
 		}
 		if r == '`' {
-			next, err := skipModuleTemplate(source, offset)
+			value, next, literal, err := scanModuleTemplate(source, offset)
 			if err != nil {
 				return nil, err
+			}
+			if literal {
+				tokens = append(tokens, moduleLexeme{kind: moduleString, text: value})
 			}
 			offset = next
 			continue
@@ -266,15 +281,32 @@ func scanModuleString(source string, start int, quote byte) (string, int, error)
 	return "", 0, fmt.Errorf("unterminated module string at byte %d", start)
 }
 
-func skipModuleTemplate(source string, start int) (int, error) {
+func scanModuleTemplate(source string, start int) (string, int, bool, error) {
+	var value strings.Builder
 	for offset := start + 1; offset < len(source); offset++ {
 		if source[offset] == '\\' {
 			offset++
+			if offset < len(source) {
+				value.WriteByte(source[offset])
+			}
 			continue
 		}
-		if source[offset] == '`' {
-			return offset + 1, nil
+		if source[offset] == '$' && offset+1 < len(source) && source[offset+1] == '{' {
+			for offset++; offset < len(source); offset++ {
+				if source[offset] == '\\' {
+					offset++
+					continue
+				}
+				if source[offset] == '`' {
+					return "", offset + 1, false, nil
+				}
+			}
+			break
 		}
+		if source[offset] == '`' {
+			return value.String(), offset + 1, true, nil
+		}
+		value.WriteByte(source[offset])
 	}
-	return 0, fmt.Errorf("unterminated template literal at byte %d", start)
+	return "", 0, false, fmt.Errorf("unterminated template literal at byte %d", start)
 }

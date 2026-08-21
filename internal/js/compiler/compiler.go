@@ -155,6 +155,7 @@ type functionCompiler struct {
 	moduleRoot           bool
 	moduleFunctions      map[string]uint32
 	moduleUsesImportMeta bool
+	moduleUsesImport     bool
 }
 
 type constantKey struct {

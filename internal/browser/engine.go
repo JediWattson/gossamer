@@ -159,9 +159,9 @@ type ScriptSource struct {
 	Source string
 }
 
-// ModuleResolution is one browser-resolved static import edge. Engines receive
-// canonical URLs and never perform network access or URL resolution while an
-// isolate is entered.
+// ModuleResolution is one browser-resolved static or literal-dynamic import
+// edge. Engines receive canonical URLs and never perform network access or URL
+// resolution while an isolate is entered.
 type ModuleResolution struct {
 	Referrer  string
 	Specifier string
@@ -201,9 +201,10 @@ type JSBackForwardCacheRealm interface {
 	BFCacheEligible() bool
 }
 
-// JSModuleRealm is the optional stock-engine extension for browser-fetched ES
-// module graphs. Fetching and resolution stay in Go outside the Realm; compile,
-// instantiate, and evaluation stay inside the engine entry.
+// JSModuleRealm is the optional engine extension for browser-fetched ES module
+// graphs. Fetching and resolution stay in Go outside the Realm; compile,
+// instantiate, and evaluation stay inside the engine entry. Literal dynamic
+// dependencies may be supplied in the graph before their lazy evaluation.
 type JSModuleRealm interface {
 	EvaluateModule(Host, ModuleGraph) error
 }

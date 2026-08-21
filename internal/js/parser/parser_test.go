@@ -346,6 +346,27 @@ import.meta.extra = 1;
 	}
 }
 
+func TestParseDynamicImportInModules(t *testing.T) {
+	t.Parallel()
+
+	script, err := parser.Parse(`
+const literal = import("./literal.js");
+export function load(name) { return import(name); }
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := script.Body[0].(*ast.VariableDeclaration).Declarations[0].Init.(*ast.DynamicImportExpression)
+	if source, ok := first.Source.(*ast.StringLiteral); !ok || source.Value != "./literal.js" {
+		t.Fatalf("literal dynamic import = %#v", first.Source)
+	}
+	function := script.Body[1].(*ast.ExportNamedDeclaration).Declaration.(*ast.FunctionDeclaration)
+	second := function.Body.Body[0].(*ast.ReturnStatement).Argument.(*ast.DynamicImportExpression)
+	if source, ok := second.Source.(*ast.Identifier); !ok || source.Name != "name" {
+		t.Fatalf("computed dynamic import = %#v", second.Source)
+	}
+}
+
 func TestParseRejectsNestedAndMalformedModuleDeclarations(t *testing.T) {
 	t.Parallel()
 

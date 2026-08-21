@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestStaticModuleSpecifiersIgnoresDynamicImportsAndNestedText(t *testing.T) {
+func TestModuleSpecifiersIncludesLiteralDynamicImportsAndIgnoresNestedText(t *testing.T) {
 	t.Parallel()
 	source := `
 		import React, {useState} from "./vendor.js";
@@ -13,15 +13,17 @@ func TestStaticModuleSpecifiersIgnoresDynamicImportsAndNestedText(t *testing.T) 
 		export {helper} from '../shared/helper.js';
 		export * from "/assets/runtime.js";
 		const nested = () => import("./lazy.js");
+		const templateImport = () => import(` + "`./template-lazy.js`" + `);
+		const computedImport = name => import(` + "`./${name}.js`" + `);
 		const text = "import './not-a-module.js'";
 		const template = ` + "`import './also-not.js'`" + `;
 		function body() { const importName = "ignored"; }
 	`
-	got, err := staticModuleSpecifiers(source)
+	got, err := moduleSpecifiers(source)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"./vendor.js", "./side-effect.js", "../shared/helper.js", "/assets/runtime.js"}
+	want := []string{"./vendor.js", "./side-effect.js", "../shared/helper.js", "/assets/runtime.js", "./lazy.js", "./template-lazy.js"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("module specifiers = %#v, want %#v", got, want)
 	}

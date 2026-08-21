@@ -61,7 +61,8 @@ and ordinary task release invalidates every unpromoted loaded Ref.
   local, indirect, namespace, and star exports; cyclic graph linking; immutable
   live import bindings; canonical namespace objects; strict top-level and
   Function `this`; canonical null-prototype `import.meta` objects with host
-  initialized URLs; and per-Realm evaluation and failure caching.
+  initialized URLs; literal dynamic imports with Promise results; and per-Realm
+  evaluation and failure caching.
 
 Every compiled Function invocation and ordinary block enters a fresh native
 Context whose parent is its captured or enclosing Context. Catch bindings enter
@@ -85,7 +86,7 @@ This is not yet an ECMAScript-compatible engine. In particular:
 - primitive coercion includes Boolean, Number, String, null, and undefined;
   Object coercion uses explicit or inherited `valueOf`/`toString` hooks;
 - full BigInt/Symbol and UTF-16 edge semantics, regex,
-  dynamic import, import attributes,
+  computed or script-level dynamic import, import attributes,
   generators, async Functions, top-level `await`, thenable assimilation,
   Promise combinators/finally, and browser-level unhandled-rejection reporting
   are absent;
@@ -197,5 +198,8 @@ imports a separately emitted Solid runtime chunk. The shared gate runs the same
 graph under Strand and stock V8 and verifies per-resource fetch caching,
 one-time module evaluation, ready-state and lifecycle ordering, Go-dispatched
 interaction, reactive disposal, forced collection, and zero surviving
-ownership after Page teardown. Dynamic import, import attributes, top-level
-`await`, and network loading from inside the engine remain out of scope.
+ownership after Page teardown. Literal dynamic imports are prefetched into the
+pointer-free graph by Go and evaluated lazily by the engine with canonical
+namespace identity. Computed dynamic imports that were not prefetched, import
+attributes, top-level `await`, and network loading from inside the engine remain
+out of scope.

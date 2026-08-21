@@ -60,7 +60,7 @@ func ParseTokens(tokens []lexer.Token) (*ast.Script, error) {
 func (input *parser) parseModuleItem() (ast.Statement, error) {
 	switch input.current().Kind {
 	case lexer.Import:
-		if input.peek(1).Kind == lexer.Dot {
+		if input.peek(1).Kind == lexer.Dot || input.peek(1).Kind == lexer.LeftParen {
 			return input.parseExpressionStatement()
 		}
 		return input.parseImportDeclaration()
@@ -1245,18 +1245,28 @@ func (input *parser) parsePrimary() (ast.Expression, error) {
 	case lexer.This:
 		return &ast.ThisExpression{Base: ast.Base{Range: token.Span}}, nil
 	case lexer.Import:
-		dot, err := input.consume(lexer.Dot, "expected '.' after import in expression")
-		if err != nil {
-			return nil, err
+		if input.match(lexer.Dot) {
+			meta, err := input.consume(lexer.Identifier, "expected meta after import.")
+			if err != nil {
+				return nil, err
+			}
+			if meta.Text != "meta" {
+				return nil, input.errorAt(meta, "expected meta after import.")
+			}
+			return &ast.ImportMetaExpression{Base: ast.Base{Range: join(token.Span, meta.Span)}}, nil
 		}
-		meta, err := input.consume(lexer.Identifier, "expected meta after import.")
-		if err != nil {
-			return nil, err
+		if input.match(lexer.LeftParen) {
+			source, err := input.parseAssignment()
+			if err != nil {
+				return nil, err
+			}
+			close, err := input.consume(lexer.RightParen, "expected ')' after dynamic import specifier")
+			if err != nil {
+				return nil, err
+			}
+			return &ast.DynamicImportExpression{Base: ast.Base{Range: join(token.Span, close.Span)}, Source: source}, nil
 		}
-		if meta.Text != "meta" {
-			return nil, input.errorAt(meta, "expected meta after import.")
-		}
-		return &ast.ImportMetaExpression{Base: ast.Base{Range: join(token.Span, join(dot.Span, meta.Span))}}, nil
+		return nil, input.errorAt(input.current(), "expected '.' or '(' after import in expression")
 	case lexer.LeftParen:
 		expression, err := input.parseExpression()
 		if err != nil {

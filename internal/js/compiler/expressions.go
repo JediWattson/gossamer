@@ -55,6 +55,8 @@ func (compiler *functionCompiler) compileExpression(expression ast.Expression) e
 		return compiler.emit(browserruntime.Instruction{Op: browserruntime.OpLoadThis}, expression.Span())
 	case *ast.ImportMetaExpression:
 		return compiler.compileImportMeta(expression)
+	case *ast.DynamicImportExpression:
+		return compiler.compileDynamicImport(expression)
 	case *ast.ArrayLiteral:
 		return compiler.compileArray(expression)
 	case *ast.ObjectLiteral:
@@ -94,6 +96,35 @@ func (compiler *functionCompiler) compileExpression(expression ast.Expression) e
 	default:
 		return compiler.problem(expression.Span(), fmt.Sprintf("unsupported expression %T", expression))
 	}
+}
+
+func (compiler *functionCompiler) compileDynamicImport(expression *ast.DynamicImportExpression) error {
+	root := compiler
+	for root.parent != nil {
+		root = root.parent
+	}
+	if !root.moduleRoot {
+		return compiler.problem(expression.Span(), "dynamic import is currently only supported in modules")
+	}
+	root.moduleUsesImport = true
+	bindingName, err := compiler.stringConstant(dynamicImportBinding)
+	if err != nil {
+		return err
+	}
+	methodName, err := compiler.stringConstant("import")
+	if err != nil {
+		return err
+	}
+	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpLoadBinding, A: bindingName}, expression.Span()); err != nil {
+		return err
+	}
+	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpConstant, A: methodName}, expression.Span()); err != nil {
+		return err
+	}
+	if err := compiler.compileExpression(expression.Source); err != nil {
+		return err
+	}
+	return compiler.emit(browserruntime.Instruction{Op: browserruntime.OpCallMethod, A: 1}, expression.Span())
 }
 
 func (compiler *functionCompiler) compileImportMeta(expression *ast.ImportMetaExpression) error {

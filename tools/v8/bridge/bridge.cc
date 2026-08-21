@@ -793,6 +793,62 @@ ResolveModule(v8::Local<v8::Context> context,
   return module->second.Get(isolate);
 }
 
+v8::MaybeLocal<v8::Promise> ImportModuleDynamically(
+    v8::Local<v8::Context> context, v8::Local<v8::Data>,
+    v8::Local<v8::Value> resource_name, v8::Local<v8::String> specifier,
+    v8::ModuleImportPhase phase, v8::Local<v8::FixedArray>) {
+  v8::Isolate *isolate = v8::Isolate::GetCurrent();
+  v8::Local<v8::Promise::Resolver> resolver;
+  if (!v8::Promise::Resolver::New(context).ToLocal(&resolver))
+    return {};
+  auto reject = [&](v8::Local<v8::Value> reason) {
+    resolver->Reject(context, reason).FromMaybe(false);
+    return resolver->GetPromise();
+  };
+  if (phase != v8::ModuleImportPhase::kEvaluation) {
+    return reject(v8::Exception::TypeError(v8::String::NewFromUtf8Literal(
+        isolate, "source-phase dynamic import is unsupported")));
+  }
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  std::string referrer = UTF8Value(isolate, resource_name);
+  std::string requested = UTF8Value(isolate, specifier);
+  auto resolution = realm->module_resolutions.find(
+      ModuleResolutionKey(referrer, requested));
+  if (resolution == realm->module_resolutions.end()) {
+    return reject(v8::Exception::TypeError(v8::String::NewFromUtf8Literal(
+        isolate, "unresolved dynamic module specifier")));
+  }
+  auto target = realm->modules.find(resolution->second);
+  if (target == realm->modules.end()) {
+    return reject(v8::Exception::TypeError(v8::String::NewFromUtf8Literal(
+        isolate, "dynamic module source was not compiled")));
+  }
+  v8::TryCatch caught(isolate);
+  v8::Local<v8::Module> module = target->second.Get(isolate);
+  bool ok = true;
+  if (module->GetStatus() == v8::Module::kUninstantiated)
+    ok = module->InstantiateModule(context, ResolveModule).FromMaybe(false);
+  if (ok && module->GetStatus() == v8::Module::kInstantiated) {
+    v8::Local<v8::Value> result;
+    ok = module->Evaluate(context).ToLocal(&result);
+  }
+  if (ok && module->GetStatus() == v8::Module::kErrored) {
+    return reject(module->GetException());
+  }
+  if (!ok) {
+    v8::Local<v8::Value> reason = caught.HasCaught()
+                                      ? caught.Exception()
+                                      : v8::Exception::Error(
+                                            v8::String::NewFromUtf8Literal(
+                                                isolate,
+                                                "dynamic module evaluation failed"));
+    caught.Reset();
+    return reject(reason);
+  }
+  resolver->Resolve(context, module->GetModuleNamespace()).FromMaybe(false);
+  return resolver->GetPromise();
+}
+
 void ThrowTypeError(v8::Isolate *isolate, const std::string &message) {
   v8::Local<v8::String> rendered;
   if (!v8::String::NewFromUtf8(
@@ -12536,6 +12592,8 @@ extern "C" gossamer_v8_realm *gossamer_v8_realm_new(uint64_t sampling_interval,
     realm->isolate->SetMicrotasksPolicy(v8::MicrotasksPolicy::kExplicit);
     realm->isolate->SetHostInitializeImportMetaObjectCallback(
         InitializeImportMetaObject);
+    realm->isolate->SetHostImportModuleWithPhaseDynamicallyCallback(
+        ImportModuleDynamically);
     v8::Local<v8::Context> context = v8::Context::New(realm->isolate);
     if (!context.IsEmpty()) {
       v8::Context::Scope context_scope(context);

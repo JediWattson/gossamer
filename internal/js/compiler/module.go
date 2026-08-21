@@ -12,6 +12,7 @@ import (
 const (
 	defaultExportBinding = "*default*"
 	importMetaBinding    = "\x00gossamer.import.meta"
+	dynamicImportBinding = "\x00gossamer.dynamic.import"
 )
 
 type pendingModuleExport struct {
@@ -152,6 +153,7 @@ func CompileModuleASTWithOptions(script *ast.Script, options Options) (program.M
 	function.moduleRoot = true
 	function.moduleFunctions = make(map[string]uint32)
 	function.scopes[0][importMetaBinding] = binding{mutable: false, span: script.Span(), kind: bindingLexical}
+	function.scopes[0][dynamicImportBinding] = binding{mutable: false, span: script.Span(), kind: bindingLexical}
 	for name, imported := range importBindings {
 		function.scopes[0][name] = imported
 	}
@@ -175,6 +177,10 @@ func CompileModuleASTWithOptions(script *ast.Script, options Options) (program.M
 	if function.moduleUsesImportMeta {
 		bindings = append(bindings, program.ModuleBinding{Name: importMetaBinding, InitializeImportMeta: true})
 		localNames[importMetaBinding] = struct{}{}
+	}
+	if function.moduleUsesImport {
+		bindings = append(bindings, program.ModuleBinding{Name: dynamicImportBinding, InitializeDynamicImport: true})
+		localNames[dynamicImportBinding] = struct{}{}
 	}
 	for index := range bindings {
 		functionIndex, found := function.moduleFunctions[bindings[index].Name]
