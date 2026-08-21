@@ -71,6 +71,24 @@ func TestLexRecognizesLongestOperatorsAndEscapes(t *testing.T) {
 	}
 }
 
+func TestLexRecognizesOptionalChainBeforeQuestionAndDot(t *testing.T) {
+	t.Parallel()
+
+	tokens, err := lexer.Lex("value?.field ?? callable?.()")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []lexer.Kind{
+		lexer.Identifier, lexer.OptionalChain, lexer.Identifier, lexer.Nullish,
+		lexer.Identifier, lexer.OptionalChain, lexer.LeftParen, lexer.RightParen, lexer.EOF,
+	}
+	for index, kind := range want {
+		if tokens[index].Kind != kind {
+			t.Fatalf("token %d = %s, want %s", index, tokens[index].Kind, kind)
+		}
+	}
+}
+
 func TestLexRecognizesReactFrontendTokens(t *testing.T) {
 	t.Parallel()
 

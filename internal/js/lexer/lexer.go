@@ -612,7 +612,7 @@ func (input *scanner) scanPunctuator(start Position) (Token, error) {
 		{"%=", PercentAssign}, {"&=", AmpersandAssign}, {"|=", PipeAssign}, {"^=", CaretAssign},
 		{"++", PlusPlus}, {"--", MinusMinus}, {"==", EqualEqual}, {"!=", BangEqual},
 		{"<=", LessEqual}, {">=", GreaterEqual}, {"<<", ShiftLeft}, {">>", ShiftRight},
-		{"&&", AndAnd}, {"||", OrOr}, {"??", Nullish}, {"=>", Arrow},
+		{"&&", AndAnd}, {"||", OrOr}, {"??", Nullish}, {"?.", OptionalChain}, {"=>", Arrow},
 		{"(", LeftParen}, {")", RightParen}, {"{", LeftBrace}, {"}", RightBrace},
 		{"[", LeftBracket}, {"]", RightBracket}, {";", Semicolon}, {",", Comma},
 		{".", Dot}, {":", Colon}, {"?", Question}, {"=", Assign}, {"+", Plus},

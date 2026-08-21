@@ -609,6 +609,35 @@ let missing;
 	}
 }
 
+func TestCompileExecutesOptionalChainsOnceAndPreservesReceivers(t *testing.T) {
+	t.Parallel()
+
+	image, err := compiler.Compile(`
+let reads = 0;
+let argumentsRead = 0;
+function source(value) { reads++; return value; }
+let object = {value: 4, add: function(value) { return this.value + value; }};
+let absent = null;
+let callable = function(value) { return value + 1; };
+let missing;
+let first = source(object)?.value;
+let second = source(absent)?.child.value;
+let third = object?.add(argumentsRead++);
+let fourth = absent?.add(argumentsRead++);
+let fifth = callable?.(4);
+let sixth = missing?.(4);
+(first === 4 && typeof second === "undefined" && third === 4 && typeof fourth === "undefined" &&
+ fifth === 5 && typeof sixth === "undefined" && reads === 2 && argumentsRead === 1) ? 1 : 0;
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := execute(t, 824, image)
+	if result.Kind() != memory.ValueNumber || result.Number() != 1 {
+		t.Fatalf("optional chains = %#v, want 1", result)
+	}
+}
+
 func TestCompileLowersLazyForOfGenerator(t *testing.T) {
 	t.Parallel()
 

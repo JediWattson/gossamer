@@ -88,8 +88,14 @@ func (compiler *functionCompiler) compileExpression(expression ast.Expression) e
 		}
 		return nil
 	case *ast.MemberExpression:
+		if containsOptionalChain(expression) {
+			return compiler.compileOptionalChain(expression)
+		}
 		return compiler.compileMember(expression)
 	case *ast.CallExpression:
+		if containsOptionalChain(expression) {
+			return compiler.compileOptionalChain(expression)
+		}
 		return compiler.compileCall(expression)
 	case *ast.NewExpression:
 		return compiler.compileNew(expression)

@@ -217,6 +217,28 @@ func TestParseLowersArrowDefaultParametersInSourceOrder(t *testing.T) {
 	}
 }
 
+func TestParseOptionalMemberMethodAndCallChains(t *testing.T) {
+	t.Parallel()
+
+	script, err := parser.Parse("value?.field; value?.[key]; value?.method(); callable?.(); value?.child.name;")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := script.Body[0].(*ast.ExpressionStatement).Expression.(*ast.MemberExpression)
+	computed := script.Body[1].(*ast.ExpressionStatement).Expression.(*ast.MemberExpression)
+	method := script.Body[2].(*ast.ExpressionStatement).Expression.(*ast.CallExpression)
+	direct := script.Body[3].(*ast.ExpressionStatement).Expression.(*ast.CallExpression)
+	chain := script.Body[4].(*ast.ExpressionStatement).Expression.(*ast.MemberExpression)
+	if !first.Optional || !computed.Optional || !computed.Computed || method.Optional ||
+		!method.Callee.(*ast.MemberExpression).Optional || !direct.Optional ||
+		chain.Optional || !chain.Object.(*ast.MemberExpression).Optional {
+		t.Fatalf("optional AST = %#v %#v %#v %#v %#v", first, computed, method, direct, chain)
+	}
+	if _, err := parser.Parse("value?.field = 1;"); err == nil {
+		t.Fatal("optional member assignment parsed without an error")
+	}
+}
+
 func TestParseLowersDestructuredArrowParameter(t *testing.T) {
 	t.Parallel()
 

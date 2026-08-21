@@ -445,6 +445,7 @@ type MemberExpression struct {
 	Object   Expression
 	Property Expression
 	Computed bool
+	Optional bool
 }
 
 func (*MemberExpression) expressionNode() {}
@@ -453,6 +454,7 @@ type CallExpression struct {
 	Base
 	Callee    Expression
 	Arguments []Expression
+	Optional  bool
 }
 
 func (*CallExpression) expressionNode() {}
@@ -487,9 +489,36 @@ type ArrowFunctionExpression struct {
 func (*ArrowFunctionExpression) expressionNode() {}
 
 func IsAssignmentTarget(expression Expression) bool {
-	switch expression.(type) {
-	case *Identifier, *MemberExpression:
+	switch expression := expression.(type) {
+	case *Identifier:
 		return true
+	case *MemberExpression:
+		return !memberContainsOptionalChain(expression)
+	default:
+		return false
+	}
+}
+
+func memberContainsOptionalChain(member *MemberExpression) bool {
+	if member.Optional {
+		return true
+	}
+	switch object := member.Object.(type) {
+	case *MemberExpression:
+		return memberContainsOptionalChain(object)
+	case *CallExpression:
+		return object.Optional || expressionContainsOptionalChain(object.Callee)
+	default:
+		return false
+	}
+}
+
+func expressionContainsOptionalChain(expression Expression) bool {
+	switch expression := expression.(type) {
+	case *MemberExpression:
+		return memberContainsOptionalChain(expression)
+	case *CallExpression:
+		return expression.Optional || expressionContainsOptionalChain(expression.Callee)
 	default:
 		return false
 	}

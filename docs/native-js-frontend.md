@@ -54,6 +54,8 @@ and ordinary task release invalidates every unpromoted loaded Ref.
   return statement, including multiple nested `await` expressions lowered to
   Promise reactions backed by ordinary RegionStore closures;
 - assignment, deletion, and prefix/postfix identifier or property updates;
+- optional property/computed access, optional receiver-preserving method calls,
+  direct optional calls, and contiguous chain short-circuiting;
 - numeric, bitwise, strict comparison, logical, nullish, and conditional
   expressions, plus coercive arithmetic, relational comparison, unary `+`,
   and loose equality;
@@ -95,6 +97,8 @@ This is not yet an ECMAScript-compatible engine. In particular:
   intentionally incomplete;
 - primitive coercion includes Boolean, Number, String, null, and undefined;
   Object coercion uses explicit or inherited `valueOf`/`toString` hooks;
+- optional calls on an already-resolved method (`object.method?.()`) remain
+  outside the current optional-chain subset;
 - full BigInt/Symbol and UTF-16 edge semantics, regex,
   computed or script-level dynamic import, import attributes, general generator
   control flow, `yield*`, generator `next(value)`/`throw()` resumption, async

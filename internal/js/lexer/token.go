@@ -87,6 +87,7 @@ const (
 	AndAnd
 	OrOr
 	Nullish
+	OptionalChain
 	Arrow
 	Tilde
 	PlusAssign
@@ -180,6 +181,7 @@ var kindNames = [...]string{
 	AndAnd:                   "&&",
 	OrOr:                     "||",
 	Nullish:                  "??",
+	OptionalChain:            "?.",
 	Arrow:                    "=>",
 	Tilde:                    "~",
 	PlusAssign:               "+=",

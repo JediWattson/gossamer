@@ -1076,17 +1076,26 @@ func (input *parser) parsePostfix() (ast.Expression, error) {
 		if err != nil {
 			return nil, err
 		}
-		if input.match(lexer.LeftParen) {
+		optional := false
+		if input.check(lexer.OptionalChain) && input.peek(1).Kind == lexer.LeftParen {
+			input.advance()
+			input.advance()
+			optional = true
+		} else if input.match(lexer.LeftParen) {
+			// ordinary call
+		} else {
+			break
+		}
+		{
 			arguments, end, err := input.parseArgumentsAfterOpen()
 			if err != nil {
 				return nil, err
 			}
 			expression = &ast.CallExpression{
-				Base: ast.Base{Range: join(expression.Span(), end)}, Callee: expression, Arguments: arguments,
+				Base: ast.Base{Range: join(expression.Span(), end)}, Callee: expression, Arguments: arguments, Optional: optional,
 			}
 			continue
 		}
-		break
 	}
 	if input.check(lexer.PlusPlus) || input.check(lexer.MinusMinus) {
 		operator := input.current()
@@ -1105,7 +1114,25 @@ func (input *parser) parsePostfix() (ast.Expression, error) {
 
 func (input *parser) parseMembers(expression ast.Expression) (ast.Expression, error) {
 	for {
-		if input.match(lexer.Dot) {
+		optional := input.check(lexer.OptionalChain) && input.peek(1).Kind != lexer.LeftParen
+		if optional {
+			input.advance()
+		}
+		if optional || input.match(lexer.Dot) {
+			if optional && input.match(lexer.LeftBracket) {
+				property, err := input.parseExpression()
+				if err != nil {
+					return nil, err
+				}
+				close, err := input.consume(lexer.RightBracket, "expected ']' after computed optional property")
+				if err != nil {
+					return nil, err
+				}
+				expression = &ast.MemberExpression{
+					Base: ast.Base{Range: join(expression.Span(), close.Span)}, Object: expression, Property: property, Computed: true, Optional: true,
+				}
+				continue
+			}
 			property := input.current()
 			if !isPropertyName(property.Kind) {
 				return nil, input.errorAt(property, "expected property name after '.'")
@@ -1113,7 +1140,7 @@ func (input *parser) parseMembers(expression ast.Expression) (ast.Expression, er
 			input.advance()
 			propertyExpression := identifier(property)
 			expression = &ast.MemberExpression{
-				Base: ast.Base{Range: join(expression.Span(), property.Span)}, Object: expression, Property: propertyExpression,
+				Base: ast.Base{Range: join(expression.Span(), property.Span)}, Object: expression, Property: propertyExpression, Optional: optional,
 			}
 			continue
 		}
