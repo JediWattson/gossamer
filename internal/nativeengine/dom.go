@@ -189,69 +189,85 @@ const (
 )
 
 const (
-	bindingWindowPrototype             = "\x00gossamer.window.prototype"
-	bindingDocumentPrototype           = "\x00gossamer.document.prototype"
-	bindingNodePrototype               = "\x00gossamer.node.prototype"
-	bindingElementPrototype            = "\x00gossamer.element.prototype"
-	bindingTemplatePrototype           = "\x00gossamer.template.prototype"
-	bindingTextPrototype               = "\x00gossamer.text.prototype"
-	bindingFragmentPrototype           = "\x00gossamer.fragment.prototype"
-	bindingEventPrototype              = "\x00gossamer.event.prototype"
-	bindingClassListPrototype          = "\x00gossamer.class-list.prototype"
-	bindingDatasetPrototype            = "\x00gossamer.dataset.prototype"
-	bindingStylePrototype              = "\x00gossamer.style.prototype"
-	bindingComputedStylePrototype      = "\x00gossamer.computed-style.prototype"
-	bindingDOMRectPrototype            = "\x00gossamer.dom-rect.prototype"
-	bindingMutationObserverPrototype   = "\x00gossamer.mutation-observer.prototype"
-	bindingMutationObserverConstructor = "\x00gossamer.mutation-observer.constructor"
-	bindingDOMException                = "DOMException"
-	bindingWrapperCache                = "\x00gossamer.wrapper.cache"
-	bindingCallbackCache               = "\x00gossamer.callback.cache"
-	bindingFacadeCache                 = "\x00gossamer.facade.cache"
-	bindingCollectionCache             = "\x00gossamer.collection.cache"
-	bindingObserverCache               = "\x00gossamer.observer.cache"
-	bindingModuleCache                 = "\x00gossamer.module.cache"
-	bindingWindow                      = "window"
-	bindingSelf                        = "self"
-	bindingDocument                    = "document"
-	bindingPerformance                 = "performance"
-	bindingMutationObserver            = "MutationObserver"
-	bindingRangePrototype              = "\x00gossamer.range.prototype"
-	bindingSelectionPrototype          = "\x00gossamer.selection.prototype"
-	bindingSelection                   = "\x00gossamer.selection"
-	hostRecordProperty                 = "\x00gossamer.host.record"
+	bindingWindowPrototype              = "\x00gossamer.window.prototype"
+	bindingDocumentPrototype            = "\x00gossamer.document.prototype"
+	bindingNodePrototype                = "\x00gossamer.node.prototype"
+	bindingElementPrototype             = "\x00gossamer.element.prototype"
+	bindingHTMLElementPrototype         = "\x00gossamer.html-element.prototype"
+	bindingHTMLFormElementPrototype     = "\x00gossamer.html-form-element.prototype"
+	bindingHTMLInputElementPrototype    = "\x00gossamer.html-input-element.prototype"
+	bindingHTMLTextAreaElementPrototype = "\x00gossamer.html-text-area-element.prototype"
+	bindingHTMLSelectElementPrototype   = "\x00gossamer.html-select-element.prototype"
+	bindingHTMLOptionElementPrototype   = "\x00gossamer.html-option-element.prototype"
+	bindingHTMLButtonElementPrototype   = "\x00gossamer.html-button-element.prototype"
+	bindingHTMLIFrameElementPrototype   = "\x00gossamer.html-iframe-element.prototype"
+	bindingTemplatePrototype            = "\x00gossamer.template.prototype"
+	bindingTextPrototype                = "\x00gossamer.text.prototype"
+	bindingFragmentPrototype            = "\x00gossamer.fragment.prototype"
+	bindingEventPrototype               = "\x00gossamer.event.prototype"
+	bindingClassListPrototype           = "\x00gossamer.class-list.prototype"
+	bindingDatasetPrototype             = "\x00gossamer.dataset.prototype"
+	bindingStylePrototype               = "\x00gossamer.style.prototype"
+	bindingComputedStylePrototype       = "\x00gossamer.computed-style.prototype"
+	bindingDOMRectPrototype             = "\x00gossamer.dom-rect.prototype"
+	bindingMutationObserverPrototype    = "\x00gossamer.mutation-observer.prototype"
+	bindingMutationObserverConstructor  = "\x00gossamer.mutation-observer.constructor"
+	bindingDOMException                 = "DOMException"
+	bindingWrapperCache                 = "\x00gossamer.wrapper.cache"
+	bindingCallbackCache                = "\x00gossamer.callback.cache"
+	bindingFacadeCache                  = "\x00gossamer.facade.cache"
+	bindingCollectionCache              = "\x00gossamer.collection.cache"
+	bindingObserverCache                = "\x00gossamer.observer.cache"
+	bindingModuleCache                  = "\x00gossamer.module.cache"
+	bindingWindow                       = "window"
+	bindingSelf                         = "self"
+	bindingDocument                     = "document"
+	bindingPerformance                  = "performance"
+	bindingMutationObserver             = "MutationObserver"
+	bindingRangePrototype               = "\x00gossamer.range.prototype"
+	bindingSelectionPrototype           = "\x00gossamer.selection.prototype"
+	bindingSelection                    = "\x00gossamer.selection"
+	hostRecordProperty                  = "\x00gossamer.host.record"
 )
 
 type browserBindings struct {
-	windowPrototype             memory.Ref
-	documentPrototype           memory.Ref
-	nodePrototype               memory.Ref
-	elementPrototype            memory.Ref
-	templatePrototype           memory.Ref
-	textPrototype               memory.Ref
-	fragmentPrototype           memory.Ref
-	eventPrototype              memory.Ref
-	classListPrototype          memory.Ref
-	datasetPrototype            memory.Ref
-	stylePrototype              memory.Ref
-	computedStylePrototype      memory.Ref
-	domRectPrototype            memory.Ref
-	mutationObserverPrototype   memory.Ref
-	mutationObserverConstructor memory.Ref
-	domExceptionPrototype       memory.Ref
-	domExceptionConstructor     memory.Ref
-	rangePrototype              memory.Ref
-	selectionPrototype          memory.Ref
-	selection                   memory.Ref
-	wrapperCache                memory.Ref
-	callbackCache               memory.Ref
-	facadeCache                 memory.Ref
-	collectionCache             memory.Ref
-	observerCache               memory.Ref
-	moduleCache                 memory.Ref
-	window                      memory.Ref
-	document                    memory.Ref
-	performance                 memory.Ref
+	windowPrototype              memory.Ref
+	documentPrototype            memory.Ref
+	nodePrototype                memory.Ref
+	elementPrototype             memory.Ref
+	htmlElementPrototype         memory.Ref
+	htmlFormElementPrototype     memory.Ref
+	htmlInputElementPrototype    memory.Ref
+	htmlTextAreaElementPrototype memory.Ref
+	htmlSelectElementPrototype   memory.Ref
+	htmlOptionElementPrototype   memory.Ref
+	htmlButtonElementPrototype   memory.Ref
+	htmlIFrameElementPrototype   memory.Ref
+	templatePrototype            memory.Ref
+	textPrototype                memory.Ref
+	fragmentPrototype            memory.Ref
+	eventPrototype               memory.Ref
+	classListPrototype           memory.Ref
+	datasetPrototype             memory.Ref
+	stylePrototype               memory.Ref
+	computedStylePrototype       memory.Ref
+	domRectPrototype             memory.Ref
+	mutationObserverPrototype    memory.Ref
+	mutationObserverConstructor  memory.Ref
+	domExceptionPrototype        memory.Ref
+	domExceptionConstructor      memory.Ref
+	rangePrototype               memory.Ref
+	selectionPrototype           memory.Ref
+	selection                    memory.Ref
+	wrapperCache                 memory.Ref
+	callbackCache                memory.Ref
+	facadeCache                  memory.Ref
+	collectionCache              memory.Ref
+	observerCache                memory.Ref
+	moduleCache                  memory.Ref
+	window                       memory.Ref
+	document                     memory.Ref
+	performance                  memory.Ref
 }
 
 type nativeRegistration struct {
@@ -478,6 +494,14 @@ func (realm *Realm) prepareBrowserBindingsLocked(context *browserruntime.TaskCon
 			{bindingDocumentPrototype, &bindings.documentPrototype},
 			{bindingNodePrototype, &bindings.nodePrototype},
 			{bindingElementPrototype, &bindings.elementPrototype},
+			{bindingHTMLElementPrototype, &bindings.htmlElementPrototype},
+			{bindingHTMLFormElementPrototype, &bindings.htmlFormElementPrototype},
+			{bindingHTMLInputElementPrototype, &bindings.htmlInputElementPrototype},
+			{bindingHTMLTextAreaElementPrototype, &bindings.htmlTextAreaElementPrototype},
+			{bindingHTMLSelectElementPrototype, &bindings.htmlSelectElementPrototype},
+			{bindingHTMLOptionElementPrototype, &bindings.htmlOptionElementPrototype},
+			{bindingHTMLButtonElementPrototype, &bindings.htmlButtonElementPrototype},
+			{bindingHTMLIFrameElementPrototype, &bindings.htmlIFrameElementPrototype},
 			{bindingTemplatePrototype, &bindings.templatePrototype},
 			{bindingTextPrototype, &bindings.textPrototype},
 			{bindingFragmentPrototype, &bindings.fragmentPrototype},
@@ -528,12 +552,6 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 	bindings := &browserBindings{}
 	for _, destination := range []*memory.Ref{
 		&bindings.windowPrototype,
-		&bindings.nodePrototype,
-		&bindings.documentPrototype,
-		&bindings.elementPrototype,
-		&bindings.templatePrototype,
-		&bindings.textPrototype,
-		&bindings.fragmentPrototype,
 		&bindings.classListPrototype,
 		&bindings.datasetPrototype,
 		&bindings.stylePrototype,
@@ -545,6 +563,10 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 			return err
 		}
 	}
+	domInterfaces, err := realm.newDOMInterfaces(context, bindings)
+	if err != nil {
+		return err
+	}
 	eventConstructor, eventPrototype, err := realm.newEventConstructor(context, "Event", nativeEventConstructor, memory.Ref{})
 	if err != nil {
 		return err
@@ -552,21 +574,6 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 	bindings.eventPrototype = eventPrototype
 	customEventConstructor, _, err := realm.newEventConstructor(context, "CustomEvent", nativeCustomEventConstructor, eventPrototype)
 	if err != nil {
-		return err
-	}
-	if err := context.SetPrototype(bindings.documentPrototype, memory.RefValue(bindings.nodePrototype)); err != nil {
-		return err
-	}
-	if err := context.SetPrototype(bindings.elementPrototype, memory.RefValue(bindings.nodePrototype)); err != nil {
-		return err
-	}
-	if err := context.SetPrototype(bindings.templatePrototype, memory.RefValue(bindings.elementPrototype)); err != nil {
-		return err
-	}
-	if err := context.SetPrototype(bindings.textPrototype, memory.RefValue(bindings.nodePrototype)); err != nil {
-		return err
-	}
-	if err := context.SetPrototype(bindings.fragmentPrototype, memory.RefValue(bindings.nodePrototype)); err != nil {
 		return err
 	}
 	bindings.wrapperCache, err = context.NewMap()
@@ -673,11 +680,7 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 	if err != nil {
 		return err
 	}
-	htmlIFrameElement, err := realm.newDOMInterfaceConstructor(context, "HTMLIFrameElement", bindings.elementPrototype)
-	if err != nil {
-		return err
-	}
-	for _, property := range []struct {
+	windowProperties := []struct {
 		name  string
 		value memory.Value
 	}{
@@ -697,15 +700,21 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{"CustomEvent", memory.RefValue(customEventConstructor)},
 		{"getComputedStyle", memory.RefValue(getComputedStyle)},
 		{"getSelection", memory.RefValue(getSelection)},
-		{"HTMLIFrameElement", memory.RefValue(htmlIFrameElement)},
 		{"Range", memory.RefValue(rangeConstructor)},
 		{"Selection", memory.RefValue(selectionConstructor)},
-	} {
+	}
+	for _, domInterface := range domInterfaces {
+		windowProperties = append(windowProperties, struct {
+			name  string
+			value memory.Value
+		}{domInterface.name, memory.RefValue(domInterface.constructor)})
+	}
+	for _, property := range windowProperties {
 		if err := defineData(context, bindings.window, property.name, property.value, true, false, true); err != nil {
 			return err
 		}
 	}
-	for _, binding := range []struct {
+	globalBindings := []struct {
 		name    string
 		value   memory.Ref
 		mutable bool
@@ -714,6 +723,14 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{bindingDocumentPrototype, bindings.documentPrototype, false},
 		{bindingNodePrototype, bindings.nodePrototype, false},
 		{bindingElementPrototype, bindings.elementPrototype, false},
+		{bindingHTMLElementPrototype, bindings.htmlElementPrototype, false},
+		{bindingHTMLFormElementPrototype, bindings.htmlFormElementPrototype, false},
+		{bindingHTMLInputElementPrototype, bindings.htmlInputElementPrototype, false},
+		{bindingHTMLTextAreaElementPrototype, bindings.htmlTextAreaElementPrototype, false},
+		{bindingHTMLSelectElementPrototype, bindings.htmlSelectElementPrototype, false},
+		{bindingHTMLOptionElementPrototype, bindings.htmlOptionElementPrototype, false},
+		{bindingHTMLButtonElementPrototype, bindings.htmlButtonElementPrototype, false},
+		{bindingHTMLIFrameElementPrototype, bindings.htmlIFrameElementPrototype, false},
 		{bindingTemplatePrototype, bindings.templatePrototype, false},
 		{bindingTextPrototype, bindings.textPrototype, false},
 		{bindingFragmentPrototype, bindings.fragmentPrototype, false},
@@ -751,10 +768,17 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{"cancelAnimationFrame", cancelAnimationFrame, true},
 		{"getComputedStyle", getComputedStyle, true},
 		{"getSelection", getSelection, true},
-		{"HTMLIFrameElement", htmlIFrameElement, true},
 		{"Range", rangeConstructor, true},
 		{"Selection", selectionConstructor, true},
-	} {
+	}
+	for _, domInterface := range domInterfaces {
+		globalBindings = append(globalBindings, struct {
+			name    string
+			value   memory.Ref
+			mutable bool
+		}{domInterface.name, domInterface.constructor, true})
+	}
+	for _, binding := range globalBindings {
 		if err := declareGlobal(context, realm.active.Global, binding.name, memory.RefValue(binding.value), binding.mutable); err != nil {
 			return err
 		}
@@ -816,10 +840,12 @@ func (realm *Realm) installDOMPrototypeProperties(context *browserruntime.TaskCo
 		{realm.bindings.elementPrototype, "closest", 1, nativeElementClosest},
 		{realm.bindings.elementPrototype, "getAttributeNames", 0, nativeElementGetAttributeNames},
 		{realm.bindings.elementPrototype, "insertAdjacentHTML", 2, nativeElementInsertAdjacentHTML},
-		{realm.bindings.elementPrototype, "setSelectionRange", 2, nativeElementSetSelectionRange},
-		{realm.bindings.elementPrototype, "select", 0, nativeElementSelect},
-		{realm.bindings.elementPrototype, "focus", 0, nativeElementFocus},
-		{realm.bindings.elementPrototype, "blur", 0, nativeElementBlur},
+		{realm.bindings.htmlElementPrototype, "focus", 0, nativeElementFocus},
+		{realm.bindings.htmlElementPrototype, "blur", 0, nativeElementBlur},
+		{realm.bindings.htmlInputElementPrototype, "setSelectionRange", 2, nativeElementSetSelectionRange},
+		{realm.bindings.htmlInputElementPrototype, "select", 0, nativeElementSelect},
+		{realm.bindings.htmlTextAreaElementPrototype, "setSelectionRange", 2, nativeElementSetSelectionRange},
+		{realm.bindings.htmlTextAreaElementPrototype, "select", 0, nativeElementSelect},
 		{realm.bindings.elementPrototype, "getBoundingClientRect", 0, nativeElementGetBoundingClientRect},
 		{realm.bindings.elementPrototype, "getClientRects", 0, nativeElementGetClientRects},
 		{realm.bindings.classListPrototype, "add", 1, nativeClassListAdd},
@@ -937,14 +963,21 @@ func (realm *Realm) installDOMPrototypeProperties(context *browserruntime.TaskCo
 		{realm.bindings.elementPrototype, "dataset", nativeElementDataset, 0},
 		{realm.bindings.elementPrototype, "innerHTML", nativeElementInnerHTMLGet, nativeElementInnerHTMLSet},
 		{realm.bindings.elementPrototype, "style", nativeElementStyle, 0},
-		{realm.bindings.elementPrototype, "value", nativeElementFormValueGet, nativeElementFormValueSet},
-		{realm.bindings.elementPrototype, "checked", nativeElementFormCheckedGet, nativeElementFormCheckedSet},
-		{realm.bindings.elementPrototype, "selected", nativeElementFormSelectedGet, nativeElementFormSelectedSet},
-		{realm.bindings.elementPrototype, "selectedIndex", nativeElementFormSelectedIndexGet, nativeElementFormSelectedIndexSet},
-		{realm.bindings.elementPrototype, "selectionStart", nativeElementSelectionStartGet, nativeElementSelectionStartSet},
-		{realm.bindings.elementPrototype, "selectionEnd", nativeElementSelectionEndGet, nativeElementSelectionEndSet},
-		{realm.bindings.elementPrototype, "selectionDirection", nativeElementSelectionDirectionGet, nativeElementSelectionDirectionSet},
-		{realm.bindings.elementPrototype, "hidden", nativeElementHiddenGet, nativeElementHiddenSet},
+		{realm.bindings.htmlElementPrototype, "hidden", nativeElementHiddenGet, nativeElementHiddenSet},
+		{realm.bindings.htmlInputElementPrototype, "value", nativeElementFormValueGet, nativeElementFormValueSet},
+		{realm.bindings.htmlTextAreaElementPrototype, "value", nativeElementFormValueGet, nativeElementFormValueSet},
+		{realm.bindings.htmlSelectElementPrototype, "value", nativeElementFormValueGet, nativeElementFormValueSet},
+		{realm.bindings.htmlOptionElementPrototype, "value", nativeElementFormValueGet, nativeElementFormValueSet},
+		{realm.bindings.htmlButtonElementPrototype, "value", nativeElementFormValueGet, nativeElementFormValueSet},
+		{realm.bindings.htmlInputElementPrototype, "checked", nativeElementFormCheckedGet, nativeElementFormCheckedSet},
+		{realm.bindings.htmlOptionElementPrototype, "selected", nativeElementFormSelectedGet, nativeElementFormSelectedSet},
+		{realm.bindings.htmlSelectElementPrototype, "selectedIndex", nativeElementFormSelectedIndexGet, nativeElementFormSelectedIndexSet},
+		{realm.bindings.htmlInputElementPrototype, "selectionStart", nativeElementSelectionStartGet, nativeElementSelectionStartSet},
+		{realm.bindings.htmlInputElementPrototype, "selectionEnd", nativeElementSelectionEndGet, nativeElementSelectionEndSet},
+		{realm.bindings.htmlInputElementPrototype, "selectionDirection", nativeElementSelectionDirectionGet, nativeElementSelectionDirectionSet},
+		{realm.bindings.htmlTextAreaElementPrototype, "selectionStart", nativeElementSelectionStartGet, nativeElementSelectionStartSet},
+		{realm.bindings.htmlTextAreaElementPrototype, "selectionEnd", nativeElementSelectionEndGet, nativeElementSelectionEndSet},
+		{realm.bindings.htmlTextAreaElementPrototype, "selectionDirection", nativeElementSelectionDirectionGet, nativeElementSelectionDirectionSet},
 		{realm.bindings.elementPrototype, "clientWidth", nativeElementClientWidth, 0},
 		{realm.bindings.elementPrototype, "clientHeight", nativeElementClientHeight, 0},
 		{realm.bindings.elementPrototype, "offsetWidth", nativeElementOffsetWidth, 0},
@@ -1077,19 +1110,9 @@ func (realm *Realm) wrapNodeLocked(context *browserruntime.TaskContext, handle b
 	if err != nil {
 		return memory.Ref{}, err
 	}
-	prototype := realm.bindings.nodePrototype
-	switch metadata.Type {
-	case browser.DOMDocumentNode:
-		prototype = realm.bindings.documentPrototype
-	case browser.DOMElementNode:
-		prototype = realm.bindings.elementPrototype
-		if metadata.NamespaceURI == dom.HTMLNamespace && metadata.LocalName == "template" {
-			prototype = realm.bindings.templatePrototype
-		}
-	case browser.DOMTextNode:
-		prototype = realm.bindings.textPrototype
-	case browser.DOMDocumentFragmentNode:
-		prototype = realm.bindings.fragmentPrototype
+	prototype, err := realm.bindings.prototypeForNode(metadata)
+	if err != nil {
+		return memory.Ref{}, err
 	}
 	wrapper, err := realm.newHostWrapperLocked(context, memory.HostObject{
 		Class: hostClassNode, Scope: uint64(handle.Document), Identity: uint64(handle.Node),
