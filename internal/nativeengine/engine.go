@@ -22,7 +22,9 @@ var (
 	ErrRuntimeRealmChange     = errors.New("nativeengine: runtime Realm changed")
 	ErrCheckpointRequired     = errors.New("nativeengine: previous task has not reached its microtask checkpoint")
 	ErrUnknownValueHandle     = errors.New("nativeengine: unknown value handle")
-	ErrModuleGraphUnsupported = errors.New("nativeengine: only self-contained module roots are supported")
+	ErrModuleGraphUnsupported = errors.New("nativeengine: unsupported module graph")
+	ErrModuleGraphInvalid     = errors.New("nativeengine: invalid module graph")
+	ErrModuleLink             = errors.New("nativeengine: module link failed")
 )
 
 type Config struct {
@@ -71,6 +73,7 @@ type Realm struct {
 	persistentCollectionCache memory.Ref
 	persistentCallbackCache   memory.Ref
 	persistentObserverCache   memory.Ref
+	persistentModuleCache     memory.Ref
 	active                    *browserruntime.Intrinsics
 	activeRegion              memory.RegionID
 	activeTask                browserruntime.TaskID
@@ -85,7 +88,8 @@ type Realm struct {
 	listeners                 map[eventListenerKey][]eventListener
 	listenerTargets           map[eventTargetID]uint64
 	activeEvent               *eventState
-	modules                   map[string]struct{}
+	modules                   map[string]*nativeModule
+	moduleResolutions         map[moduleResolutionKey]string
 
 	evaluations uint64
 	checkpoints uint64
@@ -114,7 +118,8 @@ func (engine *Engine) NewRealm() (browser.JSRealm, error) {
 		mutationObservers:  make(map[uint64]*mutationObserverState),
 		listeners:          make(map[eventListenerKey][]eventListener),
 		listenerTargets:    make(map[eventTargetID]uint64),
-		modules:            make(map[string]struct{}),
+		modules:            make(map[string]*nativeModule),
+		moduleResolutions:  make(map[moduleResolutionKey]string),
 	}
 	if err := realm.installBrowserNatives(); err != nil {
 		return nil, err
@@ -208,33 +213,6 @@ func (realm *Realm) Evaluate(host browser.Host, source browser.ScriptSource) err
 	realm.host = host
 	defer func() { realm.host = nil }()
 	return realm.evaluateLocked(host, source)
-}
-
-// EvaluateModule executes a browser-resolved, self-contained module root once
-// per Realm. Import graphs remain explicitly unsupported until Strand has
-// native module binding and instantiation semantics.
-func (realm *Realm) EvaluateModule(host browser.Host, graph browser.ModuleGraph) error {
-	if realm == nil {
-		return ErrRealmClosed
-	}
-	realm.mutex.Lock()
-	defer realm.mutex.Unlock()
-	if realm.closed {
-		return ErrRealmClosed
-	}
-	if graph.RootURL == "" || len(graph.Sources) != 1 || len(graph.Resolutions) != 0 || graph.Sources[0].URL != graph.RootURL {
-		return ErrModuleGraphUnsupported
-	}
-	if _, evaluated := realm.modules[graph.RootURL]; evaluated {
-		return nil
-	}
-	realm.host = host
-	defer func() { realm.host = nil }()
-	if err := realm.evaluateLocked(host, graph.Sources[0]); err != nil {
-		return err
-	}
-	realm.modules[graph.RootURL] = struct{}{}
-	return nil
 }
 
 func (realm *Realm) evaluateLocked(host browser.Host, source browser.ScriptSource) error {
@@ -441,6 +419,7 @@ func (realm *Realm) Close() error {
 	realm.persistentCollectionCache = memory.Ref{}
 	realm.persistentCallbackCache = memory.Ref{}
 	realm.persistentObserverCache = memory.Ref{}
+	realm.persistentModuleCache = memory.Ref{}
 	realm.timerCallbacks = nil
 	realm.animationCallbacks = nil
 	realm.mutationObservers = nil
@@ -449,6 +428,7 @@ func (realm *Realm) Close() error {
 	realm.listenerTargets = nil
 	realm.activeEvent = nil
 	realm.modules = nil
+	realm.moduleResolutions = nil
 	realm.clearActiveLocked()
 	realm.mutex.Unlock()
 
@@ -558,6 +538,11 @@ func (realm *Realm) persistLocked(task *browserruntime.TaskContext) (result erro
 		_ = task.Realm.Store().DestroyRegion(realm.runtime.Owner(), newRegion)
 		return err
 	}
+	newModuleCache, err := persistentBindingRef(task.Realm.Store(), realm.runtime.Owner(), newRegion, newIntrinsics.Global, bindingModuleCache)
+	if err != nil {
+		_ = task.Realm.Store().DestroyRegion(realm.runtime.Owner(), newRegion)
+		return err
+	}
 	if realm.persistentRegion != 0 {
 		if err := task.Realm.Store().DestroyRegion(realm.runtime.Owner(), realm.persistentRegion); err != nil {
 			_ = task.Realm.Store().DestroyRegion(realm.runtime.Owner(), newRegion)
@@ -571,6 +556,7 @@ func (realm *Realm) persistLocked(task *browserruntime.TaskContext) (result erro
 	realm.persistentCollectionCache = newCollectionCache
 	realm.persistentCallbackCache = newCallbackCache
 	realm.persistentObserverCache = newObserverCache
+	realm.persistentModuleCache = newModuleCache
 	return task.Realm.Store().CheckInvariants()
 }
 

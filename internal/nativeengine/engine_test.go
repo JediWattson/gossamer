@@ -105,7 +105,7 @@ counter;
 	}
 }
 
-func TestNativeModuleRealmRejectsNonSelfContainedGraphs(t *testing.T) {
+func TestNativeModuleRealmRejectsInvalidGraphs(t *testing.T) {
 	t.Parallel()
 
 	engine := nativeengine.New(nativeengine.Config{})
@@ -137,8 +137,8 @@ func TestNativeModuleRealmRejectsNonSelfContainedGraphs(t *testing.T) {
 		},
 	}
 	for index, graph := range graphs {
-		if err := moduleRealm.EvaluateModule(nil, graph); !errors.Is(err, nativeengine.ErrModuleGraphUnsupported) {
-			t.Fatalf("graph %d error = %v, want ErrModuleGraphUnsupported", index, err)
+		if err := moduleRealm.EvaluateModule(nil, graph); !errors.Is(err, nativeengine.ErrModuleGraphInvalid) {
+			t.Fatalf("graph %d error = %v, want ErrModuleGraphInvalid", index, err)
 		}
 	}
 }

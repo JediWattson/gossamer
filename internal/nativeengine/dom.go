@@ -167,6 +167,7 @@ const (
 	bindingFacadeCache                 = "\x00gossamer.facade.cache"
 	bindingCollectionCache             = "\x00gossamer.collection.cache"
 	bindingObserverCache               = "\x00gossamer.observer.cache"
+	bindingModuleCache                 = "\x00gossamer.module.cache"
 	bindingWindow                      = "window"
 	bindingSelf                        = "self"
 	bindingDocument                    = "document"
@@ -196,6 +197,7 @@ type browserBindings struct {
 	facadeCache                 memory.Ref
 	collectionCache             memory.Ref
 	observerCache               memory.Ref
+	moduleCache                 memory.Ref
 	window                      memory.Ref
 	document                    memory.Ref
 	performance                 memory.Ref
@@ -388,6 +390,7 @@ func (realm *Realm) prepareBrowserBindingsLocked(context *browserruntime.TaskCon
 			{bindingFacadeCache, &bindings.facadeCache},
 			{bindingCollectionCache, &bindings.collectionCache},
 			{bindingObserverCache, &bindings.observerCache},
+			{bindingModuleCache, &bindings.moduleCache},
 		} {
 			ref, exists, lookupErr := globalRef(context, realm.active.Global, item.name)
 			if lookupErr != nil {
@@ -466,6 +469,10 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		return err
 	}
 	bindings.observerCache, err = context.NewMap()
+	if err != nil {
+		return err
+	}
+	bindings.moduleCache, err = context.NewMap()
 	if err != nil {
 		return err
 	}
@@ -572,6 +579,7 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{bindingFacadeCache, bindings.facadeCache, false},
 		{bindingCollectionCache, bindings.collectionCache, false},
 		{bindingObserverCache, bindings.observerCache, false},
+		{bindingModuleCache, bindings.moduleCache, false},
 		{bindingWindow, bindings.window, false},
 		{bindingSelf, bindings.window, false},
 		{"globalThis", bindings.window, false},
