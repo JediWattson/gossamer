@@ -126,6 +126,20 @@ type v8FetchResponse struct {
 	Body       []int               `json:"body"`
 }
 
+type v8StorageRequest struct {
+	Operation string              `json:"operation"`
+	Area      browser.StorageArea `json:"area"`
+	Key       string              `json:"key"`
+	Value     string              `json:"value"`
+	Index     int                 `json:"index"`
+}
+
+type v8StorageResponse struct {
+	Value  string `json:"value,omitempty"`
+	Found  bool   `json:"found,omitempty"`
+	Length int    `json:"length,omitempty"`
+}
+
 //export goGossamerV8HostFetch
 func goGossamerV8HostFetch(
 	executionID C.uint64_t,
@@ -171,6 +185,58 @@ func goGossamerV8HostFetch(
 		})
 		if err != nil {
 			return fmt.Errorf("encode V8 fetch response: %w", err)
+		}
+		return writeHostString(string(encoded), responseJSONOut, responseJSONLengthOut)
+	}, executionID)
+}
+
+//export goGossamerV8HostStorage
+func goGossamerV8HostStorage(
+	executionID C.uint64_t,
+	requestJSON *C.char,
+	requestJSONLength C.size_t,
+	responseJSONOut **C.char,
+	responseJSONLengthOut *C.size_t,
+	errorOut **C.char,
+) C.int {
+	return runHostCall(errorOut, func(host browser.Host) error {
+		storageHost, ok := host.(browser.StorageHost)
+		if !ok {
+			return fmt.Errorf("V8 host does not support storage")
+		}
+		var request v8StorageRequest
+		if err := json.Unmarshal([]byte(goString(requestJSON, requestJSONLength)), &request); err != nil {
+			return fmt.Errorf("decode V8 storage request: %w", err)
+		}
+		response := v8StorageResponse{}
+		var err error
+		switch request.Operation {
+		case "length":
+			response.Length, err = storageHost.StorageLength(request.Area)
+		case "key":
+			response.Value, response.Found, err = storageHost.StorageKey(request.Area, request.Index)
+		case "get":
+			response.Value, response.Found, err = storageHost.StorageGet(request.Area, request.Key)
+		case "set":
+			err = storageHost.StorageSet(request.Area, request.Key, request.Value)
+		case "remove":
+			err = storageHost.StorageRemove(request.Area, request.Key)
+		case "clear":
+			err = storageHost.StorageClear(request.Area)
+		case "cookie-get":
+			response.Value, err = storageHost.DocumentCookie()
+			response.Found = true
+		case "cookie-set":
+			err = storageHost.SetDocumentCookie(request.Value)
+		default:
+			err = fmt.Errorf("unknown V8 storage operation %q", request.Operation)
+		}
+		if err != nil {
+			return err
+		}
+		encoded, err := json.Marshal(response)
+		if err != nil {
+			return err
 		}
 		return writeHostString(string(encoded), responseJSONOut, responseJSONLengthOut)
 	}, executionID)

@@ -50,6 +50,60 @@ func TestStockV8FetchUsesBrowserSessionHost(t *testing.T) {
 	}
 }
 
+func TestStockV8StorageAndCookiesSurviveDocumentNavigation(t *testing.T) {
+	engine := newTestEngine(t)
+	runtime, err := browser.NewWithEngine(engine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	client := &v8StorageLoader{Loader: loader.New(nil)}
+	page, err := runtime.LoadPage(context.Background(), "https://strand.test/storage", client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	navigation, err := page.Reload(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := page.WaitNavigation(context.Background(), navigation); err != nil {
+		t.Fatal(err)
+	}
+	result, ok := page.Document().ElementByID("result")
+	if !ok {
+		t.Fatal("missing result element")
+	}
+	text, err := page.Document().TextContent(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text != "local:session:true:true" {
+		t.Fatalf("storage result = %q", text)
+	}
+}
+
+type v8StorageLoader struct {
+	*loader.Loader
+	mutex sync.Mutex
+	loads int
+}
+
+func (client *v8StorageLoader) Load(_ context.Context, rawURL string) (*loader.Response, error) {
+	client.mutex.Lock()
+	client.loads++
+	load := client.loads
+	client.mutex.Unlock()
+	location, _ := url.Parse(rawURL)
+	script := `localStorage.setItem("local", "local"); sessionStorage.setItem("session", "session"); document.cookie = "identity=strand; Path=/";`
+	if load > 1 {
+		script = `const firstKey = localStorage.key(0); document.getElementById("result").textContent = localStorage.getItem("local") + ":" + sessionStorage.getItem("session") + ":" + String(document.cookie.indexOf("identity=strand") >= 0) + ":" + String(localStorage.length === 1 && firstKey === "local");`
+	}
+	return &loader.Response{
+		URL: location, StatusCode: http.StatusOK, Header: make(http.Header),
+		Body: io.NopCloser(strings.NewReader(`<!doctype html><html><body><div id="result"></div><script>` + script + `</script></body></html>`)),
+	}, nil
+}
+
 type v8FetchLoader struct {
 	mutex    sync.Mutex
 	requests []loader.Request

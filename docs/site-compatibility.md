@@ -71,3 +71,13 @@ The shared gate posts a body and headers through a relative URL, checks response
 metadata and JSON cloning, then makes a second session request. Loader coverage
 also proves that a real `Set-Cookie` response is carried into the next request
 without mutating a caller-provided `http.Client`.
+
+## Storage and identity rung
+
+`localStorage` is now Browser-owned and partitioned by origin;
+`sessionStorage` is Page-owned and partitioned by origin. Both survive document
+and Realm replacement with a deterministic 5 MiB string quota, while separate
+pages do not share session values. `document.cookie` reads and writes the
+navigation loader's cookie jar, so cookies set by script, navigation, or fetch
+all describe the same session. Strand and V8 share these host contracts and run
+the same reload-persistence gate.

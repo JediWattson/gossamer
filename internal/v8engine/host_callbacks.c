@@ -331,6 +331,10 @@ extern int goGossamerV8HostFetch(
     uint64_t execution_id, const char *request_json,
     size_t request_json_length, char **response_json_out,
     size_t *response_json_length_out, char **error_out);
+extern int goGossamerV8HostStorage(
+    uint64_t execution_id, const char *request_json,
+    size_t request_json_length, char **response_json_out,
+    size_t *response_json_length_out, char **error_out);
 extern int goGossamerV8HostElementGeometry(
     uint64_t execution_id, uint64_t document, uint32_t node,
     gossamer_v8_element_geometry *geometry_out, char **error_out);
@@ -462,6 +466,7 @@ static gossamer_v8_host gossamer_v8_go_host(uint64_t execution_id) {
       .mark_form_user_validity_for_submission =
           goGossamerV8HostMarkFormUserValidityForSubmission,
       .fetch = goGossamerV8HostFetch,
+      .storage = goGossamerV8HostStorage,
   };
   return host;
 }

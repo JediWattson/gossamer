@@ -393,6 +393,9 @@ typedef struct gossamer_v8_host {
   int (*fetch)(uint64_t execution_id, const char *request_json,
                size_t request_json_length, char **response_json_out,
                size_t *response_json_length_out, char **error_out);
+  int (*storage)(uint64_t execution_id, const char *request_json,
+                 size_t request_json_length, char **response_json_out,
+                 size_t *response_json_length_out, char **error_out);
 } gossamer_v8_host;
 
 typedef struct gossamer_v8_node_handle {

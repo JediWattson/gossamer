@@ -39,6 +39,7 @@ type Page struct {
 	readyState          string
 	formLoader          DocumentLoader
 	navigationLoader    DocumentLoader
+	sessionStorage      map[string]map[string]string
 	history             []HistoryEntry
 	historyIndex        int
 	historyDocument     uint64
@@ -139,6 +140,7 @@ func newPage(
 		dirty:              true,
 		historyIndex:       -1,
 		backForwardCache:   make(map[uint64]*cachedDocumentState),
+		sessionStorage:     make(map[string]map[string]string),
 	}
 	if location != nil {
 		page.nextHistoryDocument = 1

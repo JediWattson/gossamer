@@ -9276,6 +9276,42 @@ void FetchHostCallback(const v8::FunctionCallbackInfo<v8::Value> &info) {
   info.GetReturnValue().Set(result);
 }
 
+void StorageHostCallback(const v8::FunctionCallbackInfo<v8::Value> &info) {
+  v8::Isolate *isolate = info.GetIsolate();
+  gossamer_v8_realm *realm = CurrentRealm(isolate);
+  std::string error;
+  if (!RequireHost(realm, &error) || realm->active_host->storage == nullptr) {
+    ThrowError(isolate, error.empty() ? "storage is unavailable" : error);
+    return;
+  }
+  v8::Local<v8::String> request_value;
+  if (info.Length() < 1 ||
+      !info[0]->ToString(isolate->GetCurrentContext()).ToLocal(&request_value))
+    return;
+  std::string request = UTF8Value(isolate, request_value);
+  char *response = nullptr;
+  size_t response_length = 0;
+  char *host_error = nullptr;
+  if (realm->active_host->storage(
+          realm->active_host->execution_id, request.data(), request.size(),
+          &response, &response_length, &host_error) == 0) {
+    error = TakeCString(host_error);
+    std::free(response);
+    ThrowError(isolate, error.empty() ? "storage operation failed" : error);
+    return;
+  }
+  std::free(host_error);
+  v8::Local<v8::String> result;
+  if (!v8::String::NewFromUtf8(isolate, response, v8::NewStringType::kNormal,
+                               static_cast<int>(response_length))
+           .ToLocal(&result)) {
+    std::free(response);
+    return;
+  }
+  std::free(response);
+  info.GetReturnValue().Set(result);
+}
+
 bool TimerIDFromValue(v8::Local<v8::Context> context,
                       v8::Local<v8::Value> value, uint64_t *timer) {
   if (value->IsBigInt()) {
@@ -10937,6 +10973,27 @@ bool InstallURLSearchParams(v8::Local<v8::Context> context) {
 
   const hostFetch = global.__gossamerHostFetch;
   delete global.__gossamerHostFetch;
+  const hostStorage = global.__gossamerHostStorage;
+  delete global.__gossamerHostStorage;
+  const storageCall = request => JSON.parse(hostStorage(JSON.stringify(request)));
+  class Storage {
+    constructor(area) { if (area !== 1 && area !== 2) throw new TypeError("Illegal constructor"); Object.defineProperty(this, "_area", {value: area}); }
+    get length() { return storageCall({operation: "length", area: this._area}).length; }
+    key(index) { const response = storageCall({operation: "key", area: this._area, index: Number(index)}); return response.found ? response.value : null; }
+    getItem(key) { const response = storageCall({operation: "get", area: this._area, key: String(key)}); return response.found ? response.value : null; }
+    setItem(key, value) { storageCall({operation: "set", area: this._area, key: String(key), value: String(value)}); }
+    removeItem(key) { storageCall({operation: "remove", area: this._area, key: String(key)}); }
+    clear() { storageCall({operation: "clear", area: this._area}); }
+  }
+  Object.defineProperty(Storage.prototype, Symbol.toStringTag, {value: "Storage", configurable: true});
+  global.Storage = Storage;
+  Object.defineProperty(global, "localStorage", {value: new Storage(1), enumerable: true, configurable: true});
+  Object.defineProperty(global, "sessionStorage", {value: new Storage(2), enumerable: true, configurable: true});
+  Object.defineProperty(global.Document.prototype, "cookie", {
+    get() { return storageCall({operation: "cookie-get"}).value || ""; },
+    set(value) { storageCall({operation: "cookie-set", value: String(value)}); },
+    enumerable: true, configurable: true
+  });
   const headerState = new WeakMap();
   const normalizeHeaderName = name => {
     name = String(name).trim().toLowerCase();
@@ -12593,6 +12650,7 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   v8::Local<v8::Function> request_animation_frame;
   v8::Local<v8::Function> cancel_animation_frame;
   v8::Local<v8::Function> fetch_host;
+  v8::Local<v8::Function> storage_host;
   v8::Local<v8::Function> get_computed_style;
   v8::Local<v8::Function> get_selection;
   v8::Local<v8::Function> window_scroll;
@@ -12607,6 +12665,7 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
       !v8::Function::New(context, CancelAnimationFrameCallback)
            .ToLocal(&cancel_animation_frame) ||
       !v8::Function::New(context, FetchHostCallback).ToLocal(&fetch_host) ||
+      !v8::Function::New(context, StorageHostCallback).ToLocal(&storage_host) ||
       !v8::Function::New(context, GetComputedStyle)
            .ToLocal(&get_computed_style) ||
       !v8::Function::New(context, GetSelection).ToLocal(&get_selection)) {
@@ -12670,6 +12729,12 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
                  v8::String::NewFromUtf8Literal(isolate,
                                                 "__gossamerHostFetch"),
                  fetch_host)
+           .FromMaybe(false) ||
+      !global
+           ->Set(context,
+                 v8::String::NewFromUtf8Literal(isolate,
+                                                "__gossamerHostStorage"),
+                 storage_host)
            .FromMaybe(false)) {
     return false;
   }

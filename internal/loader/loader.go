@@ -65,6 +65,14 @@ type Requester interface {
 	Do(context.Context, Request) (*Response, error)
 }
 
+// CookieStore exposes the Loader's session jar without exposing its HTTP
+// client. Browser document.cookie bindings use this alongside navigation and
+// fetch, which keeps all three surfaces in one session.
+type CookieStore interface {
+	Cookies(*url.URL) []*http.Cookie
+	SetCookies(*url.URL, []*http.Cookie)
+}
+
 // Loader retrieves web resources over HTTP.
 type Loader struct {
 	httpClient *http.Client
@@ -140,6 +148,20 @@ func (loader *Loader) Do(ctx context.Context, input Request) (*Response, error) 
 		Header:     httpResponse.Header,
 		Body:       httpResponse.Body,
 	}, nil
+}
+
+func (loader *Loader) Cookies(location *url.URL) []*http.Cookie {
+	if loader == nil || loader.httpClient == nil || loader.httpClient.Jar == nil || location == nil {
+		return nil
+	}
+	return loader.httpClient.Jar.Cookies(location)
+}
+
+func (loader *Loader) SetCookies(location *url.URL, cookies []*http.Cookie) {
+	if loader == nil || loader.httpClient == nil || loader.httpClient.Jar == nil || location == nil {
+		return
+	}
+	loader.httpClient.Jar.SetCookies(location, cookies)
 }
 
 func (destination Destination) accept() string {

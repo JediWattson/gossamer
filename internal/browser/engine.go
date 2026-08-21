@@ -242,6 +242,26 @@ type FetchHost interface {
 	Fetch(FetchRequest) (FetchResponse, error)
 }
 
+type StorageArea uint8
+
+const (
+	LocalStorage StorageArea = iota + 1
+	SessionStorage
+)
+
+// StorageHost is the browser-owned origin/session identity seam. Engines hold
+// only the JavaScript facade; the Browser and Page own all persisted strings.
+type StorageHost interface {
+	StorageLength(StorageArea) (int, error)
+	StorageKey(StorageArea, int) (string, bool, error)
+	StorageGet(StorageArea, string) (string, bool, error)
+	StorageSet(StorageArea, string, string) error
+	StorageRemove(StorageArea, string) error
+	StorageClear(StorageArea) error
+	DocumentCookie() (string, error)
+	SetDocumentCookie(string) error
+}
+
 // Host is the execution-scoped browser API visible to an engine. Methods that
 // schedule work preserve the current task as the publication boundary.
 type Host interface {

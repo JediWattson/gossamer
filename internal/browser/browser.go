@@ -34,6 +34,7 @@ type Browser struct {
 	nextDocument DocumentGeneration
 	pages        map[PageID]*Page
 	documents    map[DocumentGeneration]*Page
+	localStorage map[string]map[string]string
 	closed       bool
 }
 
@@ -49,10 +50,11 @@ func NewWithEngine(engine Engine) (*Browser, error) {
 		return nil, err
 	}
 	return &Browser{
-		scheduler: scheduler,
-		engine:    engine,
-		pages:     make(map[PageID]*Page),
-		documents: make(map[DocumentGeneration]*Page),
+		scheduler:    scheduler,
+		engine:       engine,
+		pages:        make(map[PageID]*Page),
+		documents:    make(map[DocumentGeneration]*Page),
+		localStorage: make(map[string]map[string]string),
 	}, nil
 }
 

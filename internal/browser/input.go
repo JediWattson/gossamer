@@ -410,6 +410,7 @@ var _ AnimationFrameHost = (*taskHost)(nil)
 var _ SessionHistoryHost = (*taskHost)(nil)
 var _ NativeTaskHost = (*taskHost)(nil)
 var _ FetchHost = (*taskHost)(nil)
+var _ StorageHost = (*taskHost)(nil)
 
 const maxFetchResponseBytes int64 = 16 << 20
 
