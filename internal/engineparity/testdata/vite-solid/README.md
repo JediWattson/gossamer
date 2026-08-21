@@ -19,7 +19,7 @@ implement Vite's module loader first. Its SHA-256, including the repository's
 trailing newline, is:
 
 ```text
-97c45b64e6c4aef35f54f2d634d192160f4ce62c9d7e6150c2259512b7ccb81c
+e944bd261b2745bcd408b54fb3ee51ad0ca26a9932f7739619e3a7074d15d4ae
 ```
 
 `solid-LICENSE` is the upstream Solid MIT license shipped with the pinned npm

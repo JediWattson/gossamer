@@ -31,6 +31,10 @@ function SolidParityApp() {
     { id: "c", label: "Gamma" }
   ]);
   const [visible, setVisible] = createSignal(true);
+  const [name, setName] = createSignal("seed");
+  const [enabled, setEnabled] = createSignal(false);
+  const [choice, setChoice] = createSignal("alpha");
+  const [pick, setPick] = createSignal("one");
   onCleanup(() => {
     globalThis.__solidCleanupCount += 1;
   });
@@ -58,6 +62,62 @@ function SolidParityApp() {
       <Show when={visible()} fallback={<p id="solid-hidden">Hidden branch</p>}>
         <VisibleBranch />
       </Show>
+
+      <label>
+        Name
+        <input
+          id="solid-text"
+          value={name()}
+          onInput={event => setName(event.currentTarget.value)}
+        />
+      </label>
+      <output id="solid-name">{name()}</output>
+
+      <label>
+        Enabled
+        <input
+          id="solid-check"
+          type="checkbox"
+          checked={enabled()}
+          onChange={event => setEnabled(event.currentTarget.checked)}
+        />
+      </label>
+
+      <label>
+        Alpha
+        <input
+          id="solid-radio-alpha"
+          type="radio"
+          name="solid-choice"
+          value="alpha"
+          checked={choice() === "alpha"}
+          onChange={event => event.currentTarget.checked && setChoice("alpha")}
+        />
+      </label>
+      <label>
+        Beta
+        <input
+          id="solid-radio-beta"
+          type="radio"
+          name="solid-choice"
+          value="beta"
+          checked={choice() === "beta"}
+          onChange={event => event.currentTarget.checked && setChoice("beta")}
+        />
+      </label>
+
+      <select
+        id="solid-select"
+        value={pick()}
+        onChange={event => setPick(event.currentTarget.value)}
+      >
+        <option value="one">One</option>
+        <option value="two">Two</option>
+      </select>
+
+      <output id="solid-form-state">
+        {name()}:{enabled() ? "enabled" : "disabled"}:{choice()}:{pick()}
+      </output>
     </section>
   );
 }

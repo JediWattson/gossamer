@@ -12,11 +12,11 @@ import (
 	"github.com/JediWattson/gossamer/internal/nativeengine"
 )
 
-func TestStrandRunsProductionSolidKeyedForAndShow(t *testing.T) {
-	runProductionSolidKeyedForAndShow(t, nativeengine.New(nativeengine.Config{}))
+func TestStrandRunsProductionSolidParitySequence(t *testing.T) {
+	runProductionSolidParitySequence(t, nativeengine.New(nativeengine.Config{}))
 }
 
-func runProductionSolidKeyedForAndShow(t *testing.T, engine browser.Engine) {
+func runProductionSolidParitySequence(t *testing.T, engine browser.Engine) {
 	t.Helper()
 	source, err := os.ReadFile("testdata/vite-solid/dist/solid-counter-1.9.14.production.js")
 	if err != nil {
@@ -70,6 +70,13 @@ func runProductionSolidKeyedForAndShow(t *testing.T, engine browser.Engine) {
 		}
 		runQueued("click " + id)
 	}
+	queueInput := func(label string, event browser.InputEvent) {
+		t.Helper()
+		if _, queueErr := page.QueueInputEvent(event); queueErr != nil {
+			t.Fatalf("queue %s: %v", label, queueErr)
+		}
+		runQueued(label)
+	}
 
 	queueScript("solid-for", string(source))
 	queueScript("remember-keyed-nodes", `
@@ -109,6 +116,31 @@ if (document.getElementById("solid-visible") !== null ||
 if (document.getElementById("solid-visible") === null ||
     document.getElementById("solid-hidden") !== null || __solidBranchCleanups !== 1) {
   throw new Error("Solid Show did not restore the visible branch");
+}
+`)
+	queueScript("position-text-selection", `
+var solidText = document.getElementById("solid-text");
+solidText.setSelectionRange(solidText.value.length, solidText.value.length);
+solidText = undefined;
+`)
+	queueInput("text beforeinput", browser.InputEvent{
+		Type: browser.InputBeforeInput, Target: handle("solid-text"), Data: "X", InputType: "insertText",
+	})
+	click("solid-check")
+	queueInput("checkbox change", browser.InputEvent{Type: browser.InputChange, Target: handle("solid-check")})
+	click("solid-radio-beta")
+	queueInput("radio change", browser.InputEvent{Type: browser.InputChange, Target: handle("solid-radio-beta")})
+	queueScript("select-two", `document.getElementById("solid-select").value = "two";`)
+	queueInput("select change", browser.InputEvent{Type: browser.InputChange, Target: handle("solid-select")})
+	queueScript("assert-controlled-forms", `
+if (document.getElementById("solid-text").value !== "seedX" ||
+    document.getElementById("solid-name").textContent !== "seedX" ||
+    document.getElementById("solid-check").checked !== true ||
+    document.getElementById("solid-radio-alpha").checked !== false ||
+    document.getElementById("solid-radio-beta").checked !== true ||
+    document.getElementById("solid-select").value !== "two" ||
+    document.getElementById("solid-form-state").textContent !== "seedX:enabled:beta:two") {
+  throw new Error("Solid controlled form state diverged from Go input/change events");
 }
 `)
 	queueScript("dispose-keyed-list", `
