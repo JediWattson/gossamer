@@ -42,6 +42,8 @@ and ordinary task release invalidates every unpromoted loaded Ref.
 - `for...of` through the well-known `Symbol.iterator` protocol, including
   one-time `next` capture, custom and overridden iterables, and `IteratorClose`
   for abrupt consumer exits;
+- array spread through that same iterator protocol, including custom iterable
+  ordering and iterator-result failure behavior shared with stock V8;
 - Promise construction, `resolve`, `reject`, `then`, and `catch`, including
   chained fulfillment/rejection and Promise adoption, plus FIFO
   `queueMicrotask` callbacks drained at the native execution checkpoint;

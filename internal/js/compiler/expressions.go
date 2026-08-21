@@ -270,17 +270,6 @@ func (compiler *functionCompiler) compileFunctionExpression(expression *ast.Func
 }
 
 func (compiler *functionCompiler) compileArray(array *ast.ArrayLiteral) error {
-	if len(array.Elements) == 1 {
-		if spread, ok := array.Elements[0].(*ast.SpreadElement); ok {
-			property := &ast.Identifier{Base: ast.Base{Range: spread.Span()}, Name: "slice"}
-			return compiler.compileCall(&ast.CallExpression{
-				Base: ast.Base{Range: array.Span()},
-				Callee: &ast.MemberExpression{
-					Base: ast.Base{Range: spread.Span()}, Object: spread.Argument, Property: property,
-				},
-			})
-		}
-	}
 	if !hasSpread(array.Elements) {
 		return compiler.compileFixedArray(array.Elements, array.Span())
 	}
@@ -288,13 +277,6 @@ func (compiler *functionCompiler) compileArray(array *ast.ArrayLiteral) error {
 		return err
 	}
 	for _, element := range array.Elements {
-		property, err := compiler.stringConstant("concat")
-		if err != nil {
-			return err
-		}
-		if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpConstant, A: property}, array.Span()); err != nil {
-			return err
-		}
 		if spread, ok := element.(*ast.SpreadElement); ok {
 			if err := compiler.compileExpression(spread.Argument); err != nil {
 				return err
@@ -302,7 +284,7 @@ func (compiler *functionCompiler) compileArray(array *ast.ArrayLiteral) error {
 		} else if err := compiler.compileFixedArray([]ast.Expression{element}, array.Span()); err != nil {
 			return err
 		}
-		if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpCallMethod, A: 1}, array.Span()); err != nil {
+		if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpAppendSpread}, array.Span()); err != nil {
 			return err
 		}
 	}

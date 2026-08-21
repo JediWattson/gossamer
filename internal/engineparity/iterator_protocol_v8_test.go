@@ -15,3 +15,11 @@ func TestStockV8IteratorProtocolParity(t *testing.T) {
 	}
 	runIteratorProtocolParity(t, engine)
 }
+
+func TestStockV8ArraySpreadUsesIteratorProtocol(t *testing.T) {
+	engine, err := v8engine.New(v8engine.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runArraySpreadParity(t, engine)
+}

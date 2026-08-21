@@ -131,3 +131,60 @@ func (execution *execution) closeIterator(iterator memory.Value) error {
 	}
 	return nil
 }
+
+func (execution *execution) appendIterableToArray(array memory.Ref, iterable memory.Value) error {
+	if _, err := execution.context.DerefArray(array); err != nil {
+		return err
+	}
+	iterator, next, err := execution.getIteratorRecord(iterable)
+	if err != nil {
+		return err
+	}
+	abrupt := func(cause error) error {
+		// An existing abrupt completion wins over a failure from IteratorClose.
+		_ = execution.closeIterator(iterator)
+		return cause
+	}
+	doneName, err := execution.context.NewString("done")
+	if err != nil {
+		return abrupt(err)
+	}
+	valueName, err := execution.context.NewString("value")
+	if err != nil {
+		return abrupt(err)
+	}
+	for {
+		result, err := execution.iteratorNext(iterator, next)
+		if err != nil {
+			return err
+		}
+		done, found, err := execution.getProperty(result, memory.RefValue(doneName))
+		if err != nil {
+			return err
+		}
+		if !found {
+			done = memory.UndefinedValue()
+		}
+		finished, err := valueTruthy(execution.context, done)
+		if err != nil {
+			return err
+		}
+		if finished {
+			return nil
+		}
+		value, found, err := execution.getProperty(result, memory.RefValue(valueName))
+		if err != nil {
+			return err
+		}
+		if !found {
+			value = memory.UndefinedValue()
+		}
+		snapshot, err := execution.context.DerefArray(array)
+		if err != nil {
+			return abrupt(err)
+		}
+		if err := execution.context.SetArrayElement(array, snapshot.Length, value); err != nil {
+			return abrupt(err)
+		}
+	}
+}

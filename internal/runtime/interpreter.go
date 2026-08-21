@@ -582,6 +582,27 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 					return memory.Value{}, terminal
 				}
 			}
+		case OpAppendSpread:
+			iterable, err := frame.pop()
+			if err != nil {
+				return memory.Value{}, err
+			}
+			arrayValue, err := frame.pop()
+			if err != nil {
+				return memory.Value{}, err
+			}
+			array, err := requireRef(arrayValue, "Array spread target")
+			if err == nil {
+				err = execution.appendIterableToArray(array, iterable)
+			}
+			if err != nil {
+				if handled, terminal := execution.routeFrameError(frame, err); handled {
+					continue
+				} else {
+					return memory.Value{}, terminal
+				}
+			}
+			frame.push(arrayValue)
 		case OpSetLength:
 			lengthValue, err := frame.pop()
 			if err != nil {

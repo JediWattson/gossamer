@@ -93,6 +93,7 @@ const (
 	OpGetIterator
 	OpIteratorNext
 	OpIteratorClose
+	OpAppendSpread
 )
 
 func (opcode Opcode) String() string {
@@ -269,11 +270,13 @@ func (opcode Opcode) String() string {
 		return "IteratorNext"
 	case OpIteratorClose:
 		return "IteratorClose"
+	case OpAppendSpread:
+		return "AppendSpread"
 	default:
 		return fmt.Sprintf("Opcode(%d)", opcode)
 	}
 }
 
 func (opcode Opcode) valid() bool {
-	return opcode >= OpConstant && opcode <= OpIteratorClose
+	return opcode >= OpConstant && opcode <= OpAppendSpread
 }

@@ -14,6 +14,85 @@ func TestStrandIteratorProtocolParity(t *testing.T) {
 	runIteratorProtocolParity(t, nativeengine.New(nativeengine.Config{}))
 }
 
+func TestStrandArraySpreadUsesIteratorProtocol(t *testing.T) {
+	runArraySpreadParity(t, nativeengine.New(nativeengine.Config{}))
+}
+
+func runArraySpreadParity(t *testing.T, engine browser.Engine) {
+	t.Helper()
+	browserRuntime, err := browser.NewWithEngine(engine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	location, _ := url.Parse("https://parity.gossamer.test/array-spread.html")
+	page, err := browserRuntime.NewPage(dom.NewDocument(), location)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := page.QueueScript(browser.ScriptSource{URL: location.String(), Source: `
+let iteratorCalls = 0;
+let nextReads = 0;
+let closes = 0;
+function values() {
+  let index = 0;
+  let iterable = {};
+  iterable[Symbol.iterator] = function() {
+    iteratorCalls++;
+    let iterator = {return: function() { closes++; return {done: true}; }};
+    Object.defineProperty(iterator, "next", {
+      get: function() {
+        nextReads++;
+        return function() {
+          if (index === 2) return {done: true};
+          return {value: index++ === 0 ? "a" : "b", done: false};
+        };
+      }
+    });
+    return iterator;
+  };
+  return iterable;
+}
+let spread = [0, ...values(), 3];
+let overridden = [1, 2];
+overridden[Symbol.iterator] = function() { return values()[Symbol.iterator](); };
+let overriddenSpread = [...overridden];
+let abruptCloses = 0;
+let abrupt = {};
+abrupt[Symbol.iterator] = function() {
+  let result = {};
+  Object.defineProperty(result, "done", {get: function() { return false; }});
+  Object.defineProperty(result, "value", {get: function() { throw new Error("value failure"); }});
+  return {
+    next: function() { return result; },
+    return: function() { abruptCloses++; return {done: true}; }
+  };
+};
+let failed = false;
+try { let ignored = [...abrupt]; } catch (error) { failed = error.message === "value failure"; }
+if (spread.join(":") !== "0:a:b:3" || overriddenSpread.join(":") !== "a:b" ||
+    iteratorCalls !== 2 || nextReads !== 2 || closes !== 0 || !failed || abruptCloses !== 0) {
+  throw new Error("array spread iterator parity failed: " +
+    [spread.join(":"), overriddenSpread.join(":"), iteratorCalls, nextReads, closes, failed, abruptCloses].join("|"));
+}
+`}); err != nil {
+		t.Fatal(err)
+	}
+	for page.Realm.Tasks.Len() != 0 {
+		if err := page.Realm.RunOne(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := page.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if stats := browserRuntime.Ledger().Stats(); stats.LiveObjects != 0 || stats.PersistentObjects != 0 {
+		t.Fatalf("array spread teardown ownership = %#v", stats)
+	}
+	if err := browserRuntime.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func runIteratorProtocolParity(t *testing.T, engine browser.Engine) {
 	t.Helper()
 	browserRuntime, err := browser.NewWithEngine(engine)
