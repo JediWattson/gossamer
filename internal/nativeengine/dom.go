@@ -137,6 +137,45 @@ const (
 	nativeModuleDynamicImport
 	nativeDocumentGetElementsByTagName
 	nativeModuleImportMetaResolve
+	nativeDocumentCreateRange
+	nativeDocumentGetSelection
+	nativeRangeStartContainer
+	nativeRangeStartOffset
+	nativeRangeEndContainer
+	nativeRangeEndOffset
+	nativeRangeCollapsed
+	nativeRangeCommonAncestor
+	nativeRangeSetStart
+	nativeRangeSetEnd
+	nativeRangeSelectNode
+	nativeRangeSelectNodeContents
+	nativeRangeCollapse
+	nativeRangeCloneRange
+	nativeRangeCloneContents
+	nativeRangeExtractContents
+	nativeRangeDeleteContents
+	nativeRangeInsertNode
+	nativeRangeDetach
+	nativeSelectionAnchorNode
+	nativeSelectionAnchorOffset
+	nativeSelectionFocusNode
+	nativeSelectionFocusOffset
+	nativeSelectionIsCollapsed
+	nativeSelectionRangeCount
+	nativeSelectionType
+	nativeSelectionGetRangeAt
+	nativeSelectionAddRange
+	nativeSelectionRemoveAllRanges
+	nativeSelectionCollapse
+	nativeSelectionCollapseToStart
+	nativeSelectionCollapseToEnd
+	nativeSelectionSelectAllChildren
+	nativeSelectionDeleteFromDocument
+	nativeSelectionToString
+	nativeNodeFirstElementChild
+	nativeNodeLastElementChild
+	nativeNodePreviousElementSibling
+	nativeNodeNextElementSibling
 )
 
 const (
@@ -176,6 +215,9 @@ const (
 	bindingDocument                    = "document"
 	bindingPerformance                 = "performance"
 	bindingMutationObserver            = "MutationObserver"
+	bindingRangePrototype              = "\x00gossamer.range.prototype"
+	bindingSelectionPrototype          = "\x00gossamer.selection.prototype"
+	bindingSelection                   = "\x00gossamer.selection"
 	hostRecordProperty                 = "\x00gossamer.host.record"
 )
 
@@ -195,6 +237,9 @@ type browserBindings struct {
 	domRectPrototype            memory.Ref
 	mutationObserverPrototype   memory.Ref
 	mutationObserverConstructor memory.Ref
+	rangePrototype              memory.Ref
+	selectionPrototype          memory.Ref
+	selection                   memory.Ref
 	wrapperCache                memory.Ref
 	callbackCache               memory.Ref
 	facadeCache                 memory.Ref
@@ -355,6 +400,45 @@ func (realm *Realm) installBrowserNatives() error {
 		{nativeEventStopImmediatePropagation, realm.eventStopImmediatePropagation},
 		{nativeModuleDynamicImport, realm.moduleDynamicImport},
 		{nativeModuleImportMetaResolve, realm.moduleImportMetaResolve},
+		{nativeDocumentCreateRange, realm.documentCreateRange},
+		{nativeDocumentGetSelection, realm.documentGetSelection},
+		{nativeRangeStartContainer, realm.rangeStartContainer},
+		{nativeRangeStartOffset, realm.rangeStartOffset},
+		{nativeRangeEndContainer, realm.rangeEndContainer},
+		{nativeRangeEndOffset, realm.rangeEndOffset},
+		{nativeRangeCollapsed, realm.rangeCollapsed},
+		{nativeRangeCommonAncestor, realm.rangeCommonAncestor},
+		{nativeRangeSetStart, realm.rangeSetStart},
+		{nativeRangeSetEnd, realm.rangeSetEnd},
+		{nativeRangeSelectNode, realm.rangeSelectNode},
+		{nativeRangeSelectNodeContents, realm.rangeSelectNodeContents},
+		{nativeRangeCollapse, realm.rangeCollapse},
+		{nativeRangeCloneRange, realm.rangeCloneRange},
+		{nativeRangeCloneContents, realm.rangeCloneContents},
+		{nativeRangeExtractContents, realm.rangeExtractContents},
+		{nativeRangeDeleteContents, realm.rangeDeleteContents},
+		{nativeRangeInsertNode, realm.rangeInsertNode},
+		{nativeRangeDetach, realm.rangeDetach},
+		{nativeSelectionAnchorNode, realm.selectionAnchorNode},
+		{nativeSelectionAnchorOffset, realm.selectionAnchorOffset},
+		{nativeSelectionFocusNode, realm.selectionFocusNode},
+		{nativeSelectionFocusOffset, realm.selectionFocusOffset},
+		{nativeSelectionIsCollapsed, realm.selectionIsCollapsed},
+		{nativeSelectionRangeCount, realm.selectionRangeCount},
+		{nativeSelectionType, realm.selectionType},
+		{nativeSelectionGetRangeAt, realm.selectionGetRangeAt},
+		{nativeSelectionAddRange, realm.selectionAddRange},
+		{nativeSelectionRemoveAllRanges, realm.selectionRemoveAllRanges},
+		{nativeSelectionCollapse, realm.selectionCollapse},
+		{nativeSelectionCollapseToStart, realm.selectionCollapseToStart},
+		{nativeSelectionCollapseToEnd, realm.selectionCollapseToEnd},
+		{nativeSelectionSelectAllChildren, realm.selectionSelectAllChildren},
+		{nativeSelectionDeleteFromDocument, realm.selectionDeleteFromDocument},
+		{nativeSelectionToString, realm.selectionToString},
+		{nativeNodeFirstElementChild, realm.nodeRelation(browser.RelationFirstElementChild)},
+		{nativeNodeLastElementChild, realm.nodeRelation(browser.RelationLastElementChild)},
+		{nativeNodePreviousElementSibling, realm.nodeRelation(browser.RelationPreviousElementSibling)},
+		{nativeNodeNextElementSibling, realm.nodeRelation(browser.RelationNextElementSibling)},
 	}
 	for _, registration := range registrations {
 		if err := realm.interpreter.RegisterNative(registration.id, registration.callback); err != nil {
@@ -394,6 +478,9 @@ func (realm *Realm) prepareBrowserBindingsLocked(context *browserruntime.TaskCon
 			{bindingDOMRectPrototype, &bindings.domRectPrototype},
 			{bindingMutationObserverPrototype, &bindings.mutationObserverPrototype},
 			{bindingMutationObserverConstructor, &bindings.mutationObserverConstructor},
+			{bindingRangePrototype, &bindings.rangePrototype},
+			{bindingSelectionPrototype, &bindings.selectionPrototype},
+			{bindingSelection, &bindings.selection},
 			{bindingWrapperCache, &bindings.wrapperCache},
 			{bindingCallbackCache, &bindings.callbackCache},
 			{bindingFacadeCache, &bindings.facadeCache},
@@ -497,6 +584,22 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 	if err != nil {
 		return err
 	}
+	rangeConstructor, err := realm.newDOMInterfaceConstructor(context, "Range", realm.active.ObjectPrototype)
+	if err != nil {
+		return err
+	}
+	bindings.rangePrototype, err = constructorPrototype(context, rangeConstructor, "Range")
+	if err != nil {
+		return err
+	}
+	selectionConstructor, err := realm.newDOMInterfaceConstructor(context, "Selection", realm.active.ObjectPrototype)
+	if err != nil {
+		return err
+	}
+	bindings.selectionPrototype, err = constructorPrototype(context, selectionConstructor, "Selection")
+	if err != nil {
+		return err
+	}
 	realm.bindings = bindings
 	if err := realm.installDOMPrototypeProperties(context); err != nil {
 		return err
@@ -511,6 +614,10 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		memory.HostObject{Class: hostClassWindow, Scope: uint64(metadata.Root.Document), Identity: 1},
 		bindings.windowPrototype,
 	)
+	if err != nil {
+		return err
+	}
+	bindings.selection, err = realm.newSelectionLocked(context)
 	if err != nil {
 		return err
 	}
@@ -545,6 +652,10 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 	if err != nil {
 		return err
 	}
+	getSelection, err := realm.newNativeFunction(context, "getSelection", 0, nativeDocumentGetSelection)
+	if err != nil {
+		return err
+	}
 	htmlIFrameElement, err := realm.newDOMInterfaceConstructor(context, "HTMLIFrameElement", bindings.elementPrototype)
 	if err != nil {
 		return err
@@ -567,7 +678,10 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{"Event", memory.RefValue(eventConstructor)},
 		{"CustomEvent", memory.RefValue(customEventConstructor)},
 		{"getComputedStyle", memory.RefValue(getComputedStyle)},
+		{"getSelection", memory.RefValue(getSelection)},
 		{"HTMLIFrameElement", memory.RefValue(htmlIFrameElement)},
+		{"Range", memory.RefValue(rangeConstructor)},
+		{"Selection", memory.RefValue(selectionConstructor)},
 	} {
 		if err := defineData(context, bindings.window, property.name, property.value, true, false, true); err != nil {
 			return err
@@ -593,6 +707,9 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{bindingDOMRectPrototype, bindings.domRectPrototype, false},
 		{bindingMutationObserverPrototype, bindings.mutationObserverPrototype, false},
 		{bindingMutationObserverConstructor, bindings.mutationObserverConstructor, false},
+		{bindingRangePrototype, bindings.rangePrototype, false},
+		{bindingSelectionPrototype, bindings.selectionPrototype, false},
+		{bindingSelection, bindings.selection, false},
 		{bindingWrapperCache, bindings.wrapperCache, false},
 		{bindingCallbackCache, bindings.callbackCache, false},
 		{bindingFacadeCache, bindings.facadeCache, false},
@@ -612,7 +729,10 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{"requestAnimationFrame", requestAnimationFrame, true},
 		{"cancelAnimationFrame", cancelAnimationFrame, true},
 		{"getComputedStyle", getComputedStyle, true},
+		{"getSelection", getSelection, true},
 		{"HTMLIFrameElement", htmlIFrameElement, true},
+		{"Range", rangeConstructor, true},
+		{"Selection", selectionConstructor, true},
 	} {
 		if err := declareGlobal(context, realm.active.Global, binding.name, memory.RefValue(binding.value), binding.mutable); err != nil {
 			return err
@@ -637,6 +757,10 @@ func (realm *Realm) installDOMPrototypeProperties(context *browserruntime.TaskCo
 		{realm.bindings.documentPrototype, "importNode", 2, nativeDocumentImportNode},
 		{realm.bindings.documentPrototype, "querySelector", 1, nativeElementQuerySelector},
 		{realm.bindings.documentPrototype, "querySelectorAll", 1, nativeElementQuerySelectorAll},
+		{realm.bindings.fragmentPrototype, "querySelector", 1, nativeElementQuerySelector},
+		{realm.bindings.fragmentPrototype, "querySelectorAll", 1, nativeElementQuerySelectorAll},
+		{realm.bindings.documentPrototype, "createRange", 0, nativeDocumentCreateRange},
+		{realm.bindings.documentPrototype, "getSelection", 0, nativeDocumentGetSelection},
 		{realm.bindings.nodePrototype, "appendChild", 1, nativeNodeAppendChild},
 		{realm.bindings.nodePrototype, "insertBefore", 2, nativeNodeInsertBefore},
 		{realm.bindings.nodePrototype, "removeChild", 1, nativeNodeRemoveChild},
@@ -689,6 +813,29 @@ func (realm *Realm) installDOMPrototypeProperties(context *browserruntime.TaskCo
 		{realm.bindings.eventPrototype, "preventDefault", 0, nativeEventPreventDefault},
 		{realm.bindings.eventPrototype, "stopPropagation", 0, nativeEventStopPropagation},
 		{realm.bindings.eventPrototype, "stopImmediatePropagation", 0, nativeEventStopImmediatePropagation},
+		{realm.bindings.windowPrototype, "getSelection", 0, nativeDocumentGetSelection},
+		{realm.bindings.rangePrototype, "setStart", 2, nativeRangeSetStart},
+		{realm.bindings.rangePrototype, "setEnd", 2, nativeRangeSetEnd},
+		{realm.bindings.rangePrototype, "selectNode", 1, nativeRangeSelectNode},
+		{realm.bindings.rangePrototype, "selectNodeContents", 1, nativeRangeSelectNodeContents},
+		{realm.bindings.rangePrototype, "collapse", 1, nativeRangeCollapse},
+		{realm.bindings.rangePrototype, "cloneRange", 0, nativeRangeCloneRange},
+		{realm.bindings.rangePrototype, "cloneContents", 0, nativeRangeCloneContents},
+		{realm.bindings.rangePrototype, "extractContents", 0, nativeRangeExtractContents},
+		{realm.bindings.rangePrototype, "deleteContents", 0, nativeRangeDeleteContents},
+		{realm.bindings.rangePrototype, "insertNode", 1, nativeRangeInsertNode},
+		{realm.bindings.rangePrototype, "detach", 0, nativeRangeDetach},
+		{realm.bindings.selectionPrototype, "getRangeAt", 1, nativeSelectionGetRangeAt},
+		{realm.bindings.selectionPrototype, "addRange", 1, nativeSelectionAddRange},
+		{realm.bindings.selectionPrototype, "removeAllRanges", 0, nativeSelectionRemoveAllRanges},
+		{realm.bindings.selectionPrototype, "empty", 0, nativeSelectionRemoveAllRanges},
+		{realm.bindings.selectionPrototype, "collapse", 2, nativeSelectionCollapse},
+		{realm.bindings.selectionPrototype, "setPosition", 2, nativeSelectionCollapse},
+		{realm.bindings.selectionPrototype, "collapseToStart", 0, nativeSelectionCollapseToStart},
+		{realm.bindings.selectionPrototype, "collapseToEnd", 0, nativeSelectionCollapseToEnd},
+		{realm.bindings.selectionPrototype, "selectAllChildren", 1, nativeSelectionSelectAllChildren},
+		{realm.bindings.selectionPrototype, "deleteFromDocument", 0, nativeSelectionDeleteFromDocument},
+		{realm.bindings.selectionPrototype, "toString", 0, nativeSelectionToString},
 	}
 	for _, method := range methods {
 		name, err := newString(context, method.name)
@@ -734,10 +881,20 @@ func (realm *Realm) installDOMPrototypeProperties(context *browserruntime.TaskCo
 		{realm.bindings.nodePrototype, "nextSibling", nativeNodeNextSibling, 0},
 		{realm.bindings.nodePrototype, "textContent", nativeNodeTextContentGet, nativeNodeTextContentSet},
 		{realm.bindings.nodePrototype, "childNodes", nativeNodeChildNodes, 0},
+		{realm.bindings.documentPrototype, "children", nativeElementChildren, 0},
+		{realm.bindings.fragmentPrototype, "children", nativeElementChildren, 0},
 		{realm.bindings.templatePrototype, "content", nativeTemplateContent, 0},
 		{realm.bindings.textPrototype, "data", nativeNodeValueGet, nativeNodeValueSet},
 		{realm.bindings.elementPrototype, "localName", nativeElementLocalName, 0},
 		{realm.bindings.elementPrototype, "children", nativeElementChildren, 0},
+		{realm.bindings.elementPrototype, "firstElementChild", nativeNodeFirstElementChild, 0},
+		{realm.bindings.elementPrototype, "lastElementChild", nativeNodeLastElementChild, 0},
+		{realm.bindings.elementPrototype, "previousElementSibling", nativeNodePreviousElementSibling, 0},
+		{realm.bindings.elementPrototype, "nextElementSibling", nativeNodeNextElementSibling, 0},
+		{realm.bindings.documentPrototype, "firstElementChild", nativeNodeFirstElementChild, 0},
+		{realm.bindings.documentPrototype, "lastElementChild", nativeNodeLastElementChild, 0},
+		{realm.bindings.fragmentPrototype, "firstElementChild", nativeNodeFirstElementChild, 0},
+		{realm.bindings.fragmentPrototype, "lastElementChild", nativeNodeLastElementChild, 0},
 		{realm.bindings.elementPrototype, "id", nativeElementIDGet, nativeElementIDSet},
 		{realm.bindings.elementPrototype, "className", nativeElementClassNameGet, nativeElementClassNameSet},
 		{realm.bindings.elementPrototype, "classList", nativeElementClassList, 0},
@@ -772,6 +929,19 @@ func (realm *Realm) installDOMPrototypeProperties(context *browserruntime.TaskCo
 		{realm.bindings.windowPrototype, "scrollY", nativeWindowScrollY, 0},
 		{realm.bindings.windowPrototype, "pageXOffset", nativeWindowScrollX, 0},
 		{realm.bindings.windowPrototype, "pageYOffset", nativeWindowScrollY, 0},
+		{realm.bindings.rangePrototype, "startContainer", nativeRangeStartContainer, 0},
+		{realm.bindings.rangePrototype, "startOffset", nativeRangeStartOffset, 0},
+		{realm.bindings.rangePrototype, "endContainer", nativeRangeEndContainer, 0},
+		{realm.bindings.rangePrototype, "endOffset", nativeRangeEndOffset, 0},
+		{realm.bindings.rangePrototype, "collapsed", nativeRangeCollapsed, 0},
+		{realm.bindings.rangePrototype, "commonAncestorContainer", nativeRangeCommonAncestor, 0},
+		{realm.bindings.selectionPrototype, "anchorNode", nativeSelectionAnchorNode, 0},
+		{realm.bindings.selectionPrototype, "anchorOffset", nativeSelectionAnchorOffset, 0},
+		{realm.bindings.selectionPrototype, "focusNode", nativeSelectionFocusNode, 0},
+		{realm.bindings.selectionPrototype, "focusOffset", nativeSelectionFocusOffset, 0},
+		{realm.bindings.selectionPrototype, "isCollapsed", nativeSelectionIsCollapsed, 0},
+		{realm.bindings.selectionPrototype, "rangeCount", nativeSelectionRangeCount, 0},
+		{realm.bindings.selectionPrototype, "type", nativeSelectionType, 0},
 	}
 	for _, accessor := range accessors {
 		getter, err := realm.newAccessorFunction(context, "get "+accessor.name, accessor.getter, 0)
