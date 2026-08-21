@@ -44,6 +44,9 @@ and ordinary task release invalidates every unpromoted loaded Ref.
   for abrupt consumer exits;
 - array spread through that same iterator protocol, including custom iterable
   ordering and iterator-result failure behavior shared with stock V8;
+- lazy generator Functions for the production `for...of` shape with direct or
+  conditional yields, self-iterable iterator objects, and `return()` forwarding
+  to the source iterator;
 - Promise construction, `resolve`, `reject`, `then`, and `catch`, including
   chained fulfillment/rejection and Promise adoption, plus FIFO
   `queueMicrotask` callbacks drained at the native execution checkpoint;
@@ -91,7 +94,8 @@ This is not yet an ECMAScript-compatible engine. In particular:
 - primitive coercion includes Boolean, Number, String, null, and undefined;
   Object coercion uses explicit or inherited `valueOf`/`toString` hooks;
 - full BigInt/Symbol and UTF-16 edge semantics, regex,
-  computed or script-level dynamic import, import attributes,
+  computed or script-level dynamic import, import attributes, general generator
+  control flow, `yield*`, generator `next(value)`/`throw()` resumption, async
   generators, multi-statement async Function bodies, async arrows, top-level
   `await`, thenable assimilation,
   Promise combinators/finally, and browser-level unhandled-rejection reporting

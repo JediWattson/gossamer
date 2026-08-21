@@ -151,6 +151,7 @@ type FunctionDeclaration struct {
 	Parameters []*Identifier
 	Body       *BlockStatement
 	Async      bool
+	Generator  bool
 }
 
 func (*FunctionDeclaration) statementNode() {}
@@ -343,6 +344,13 @@ type AwaitExpression struct {
 
 func (*AwaitExpression) expressionNode() {}
 
+type YieldExpression struct {
+	Base
+	Argument Expression
+}
+
+func (*YieldExpression) expressionNode() {}
+
 type ArrayLiteral struct {
 	Base
 	// A nil element is an array hole.
@@ -463,6 +471,7 @@ type FunctionExpression struct {
 	Parameters []*Identifier
 	Body       *BlockStatement
 	Async      bool
+	Generator  bool
 }
 
 func (*FunctionExpression) expressionNode() {}

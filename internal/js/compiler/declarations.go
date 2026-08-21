@@ -85,6 +85,7 @@ func (compiler *functionCompiler) instantiateFunctionScope(statements []ast.Stat
 				action.declaration.function.Body,
 				action.declaration.function.Span(),
 				action.declaration.function.Async,
+				action.declaration.function.Generator,
 			)
 			if err != nil {
 				return err

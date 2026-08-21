@@ -591,6 +591,22 @@ compute(2).then(value => value);
 	}
 }
 
+func TestCompileLowersLazyForOfGenerator(t *testing.T) {
+	t.Parallel()
+
+	if _, err := compiler.Compile(`
+function* matching(values, minimum) {
+  for (let value of values) value > minimum && (yield value);
+}
+[...matching([1, 2, 3], 1)].join(":");
+`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := compiler.Compile(`function* unsupported() { yield 1; }`); !errors.Is(err, compiler.ErrCompile) {
+		t.Fatalf("unsupported generator error = %v", err)
+	}
+}
+
 func execute(t *testing.T, realmID browserruntime.RealmID, image program.Program) memory.Value {
 	t.Helper()
 	realm, err := browserruntime.NewRealm(realmID, nil)

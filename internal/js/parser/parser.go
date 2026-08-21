@@ -27,9 +27,10 @@ func (problem *Error) Error() string {
 func (problem *Error) Unwrap() error { return ErrInvalidSyntax }
 
 type parser struct {
-	tokens []lexer.Token
-	index  int
-	async  int
+	tokens    []lexer.Token
+	index     int
+	async     int
+	generator int
 }
 
 func Parse(source string) (*ast.Script, error) {
@@ -440,24 +441,29 @@ func (input *parser) parseAsyncFunctionDeclaration() (ast.Statement, error) {
 }
 
 func (input *parser) parseFunctionDeclarationAfterStart(start lexer.Token, async bool) (ast.Statement, error) {
+	generator := input.match(lexer.Star)
 	nameToken, err := input.consume(lexer.Identifier, "function declaration requires a name")
 	if err != nil {
 		return nil, err
 	}
-	parameters, body, end, err := input.parseFunctionTailAsync(async)
+	parameters, body, end, err := input.parseFunctionTailMode(async, generator)
 	if err != nil {
 		return nil, err
 	}
 	return &ast.FunctionDeclaration{
-		Base: ast.Base{Range: join(start.Span, end)}, Name: identifier(nameToken), Parameters: parameters, Body: body, Async: async,
+		Base: ast.Base{Range: join(start.Span, end)}, Name: identifier(nameToken), Parameters: parameters, Body: body, Async: async, Generator: generator,
 	}, nil
 }
 
 func (input *parser) parseFunctionTail() ([]*ast.Identifier, *ast.BlockStatement, lexer.Span, error) {
-	return input.parseFunctionTailAsync(false)
+	return input.parseFunctionTailMode(false, false)
 }
 
 func (input *parser) parseFunctionTailAsync(async bool) ([]*ast.Identifier, *ast.BlockStatement, lexer.Span, error) {
+	return input.parseFunctionTailMode(async, false)
+}
+
+func (input *parser) parseFunctionTailMode(async, generator bool) ([]*ast.Identifier, *ast.BlockStatement, lexer.Span, error) {
 	if _, err := input.consume(lexer.LeftParen, "expected '(' before parameters"); err != nil {
 		return nil, nil, lexer.Span{}, err
 	}
@@ -487,12 +493,21 @@ func (input *parser) parseFunctionTailAsync(async bool) ([]*ast.Identifier, *ast
 		return nil, nil, lexer.Span{}, err
 	}
 	previousAsync := input.async
+	previousGenerator := input.generator
 	if async {
 		input.async = 1
 	} else {
 		input.async = 0
 	}
-	defer func() { input.async = previousAsync }()
+	if generator {
+		input.generator = 1
+	} else {
+		input.generator = 0
+	}
+	defer func() {
+		input.async = previousAsync
+		input.generator = previousGenerator
+	}()
 	body, err := input.parseBlock()
 	if err != nil {
 		return nil, nil, lexer.Span{}, err
@@ -983,6 +998,17 @@ func (input *parser) parseBinary(next func() (ast.Expression, error), operators 
 }
 
 func (input *parser) parseUnary() (ast.Expression, error) {
+	if input.generator > 0 && input.checkContextual("yield") {
+		start := input.advance()
+		if input.current().Span.Start.Line > start.Span.End.Line || input.check(lexer.Semicolon) || input.check(lexer.RightBrace) || input.check(lexer.EOF) {
+			return &ast.YieldExpression{Base: ast.Base{Range: start.Span}}, nil
+		}
+		argument, err := input.parseAssignment()
+		if err != nil {
+			return nil, err
+		}
+		return &ast.YieldExpression{Base: ast.Base{Range: join(start.Span, argument.Span())}, Argument: argument}, nil
+	}
 	if input.async > 0 && input.checkContextual("await") {
 		start := input.advance()
 		argument, err := input.parseUnary()
@@ -1485,16 +1511,17 @@ func (input *parser) parseFunctionExpression(start lexer.Token) (ast.Expression,
 }
 
 func (input *parser) parseFunctionExpressionAsync(start lexer.Token, async bool) (ast.Expression, error) {
+	generator := input.match(lexer.Star)
 	var name *ast.Identifier
 	if input.check(lexer.Identifier) {
 		name = identifier(input.advance())
 	}
-	parameters, body, end, err := input.parseFunctionTailAsync(async)
+	parameters, body, end, err := input.parseFunctionTailMode(async, generator)
 	if err != nil {
 		return nil, err
 	}
 	return &ast.FunctionExpression{
-		Base: ast.Base{Range: join(start.Span, end)}, Name: name, Parameters: parameters, Body: body, Async: async,
+		Base: ast.Base{Range: join(start.Span, end)}, Name: name, Parameters: parameters, Body: body, Async: async, Generator: generator,
 	}, nil
 }
 

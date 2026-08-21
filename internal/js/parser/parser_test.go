@@ -394,6 +394,33 @@ const expression = async function named() { return await load(2); };
 	}
 }
 
+func TestParseGeneratorFunctionYieldExpressions(t *testing.T) {
+	t.Parallel()
+
+	script, err := parser.Parse(`
+function* matching(values) {
+  for (let value of values) value > 1 && (yield value);
+}
+const expression = function* () { for (let value of [1]) yield value; };
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	declaration := script.Body[0].(*ast.FunctionDeclaration)
+	if !declaration.Generator || declaration.Async {
+		t.Fatalf("generator declaration flags = async:%t generator:%t", declaration.Async, declaration.Generator)
+	}
+	loop := declaration.Body.Body[0].(*ast.ForInStatement)
+	conditional := loop.Body.(*ast.ExpressionStatement).Expression.(*ast.BinaryExpression)
+	if _, ok := conditional.Right.(*ast.YieldExpression); !ok {
+		t.Fatalf("conditional yield = %#v", conditional.Right)
+	}
+	expression := script.Body[1].(*ast.VariableDeclaration).Declarations[0].Init.(*ast.FunctionExpression)
+	if !expression.Generator {
+		t.Fatal("generator Function expression lost its flag")
+	}
+}
+
 func TestParseRejectsNestedAndMalformedModuleDeclarations(t *testing.T) {
 	t.Parallel()
 
