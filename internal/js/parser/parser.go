@@ -512,33 +512,33 @@ func (input *parser) parseFunctionTailMode(async, generator bool) ([]*ast.Identi
 	if err != nil {
 		return nil, nil, lexer.Span{}, err
 	}
-	if len(defaults) != 0 {
-		prologue := make([]ast.Statement, 0, len(defaults))
-		for index, defaultValue := range defaults {
-			if defaultValue == nil {
-				continue
-			}
-			parameter := parameters[index]
-			undefined := &ast.Identifier{Base: ast.Base{Range: parameter.Span()}, Name: "undefined"}
-			test := &ast.BinaryExpression{
-				Base:     ast.Base{Range: join(parameter.Span(), defaultValue.Span())},
-				Operator: lexer.StrictEqual, Left: parameter, Right: undefined,
-			}
-			assignment := &ast.AssignmentExpression{
-				Base:     ast.Base{Range: join(parameter.Span(), defaultValue.Span())},
-				Operator: lexer.Assign, Left: parameter, Right: defaultValue,
-			}
-			consequent := &ast.ExpressionStatement{
-				Base: ast.Base{Range: assignment.Span()}, Expression: assignment,
-			}
-			prologue = append(prologue, &ast.IfStatement{
-				Base: ast.Base{Range: join(parameter.Span(), defaultValue.Span())},
-				Test: test, Consequent: consequent,
-			})
-		}
-		body.Body = append(prologue, body.Body...)
-	}
+	body.Body = append(parameterDefaultPrologue(parameters, defaults), body.Body...)
 	return parameters, body, body.Span(), nil
+}
+
+func parameterDefaultPrologue(parameters []*ast.Identifier, defaults []ast.Expression) []ast.Statement {
+	prologue := make([]ast.Statement, 0, len(defaults))
+	for index, defaultValue := range defaults {
+		if defaultValue == nil {
+			continue
+		}
+		parameter := parameters[index]
+		test := &ast.BinaryExpression{
+			Base:     ast.Base{Range: join(parameter.Span(), defaultValue.Span())},
+			Operator: lexer.StrictEqual,
+			Left:     &ast.UnaryExpression{Base: ast.Base{Range: parameter.Span()}, Operator: lexer.Typeof, Argument: parameter},
+			Right:    &ast.StringLiteral{Base: ast.Base{Range: parameter.Span()}, Value: "undefined"},
+		}
+		assignment := &ast.AssignmentExpression{
+			Base:     ast.Base{Range: join(parameter.Span(), defaultValue.Span())},
+			Operator: lexer.Assign, Left: parameter, Right: defaultValue,
+		}
+		consequent := &ast.ExpressionStatement{Base: ast.Base{Range: assignment.Span()}, Expression: assignment}
+		prologue = append(prologue, &ast.IfStatement{
+			Base: ast.Base{Range: join(parameter.Span(), defaultValue.Span())}, Test: test, Consequent: consequent,
+		})
+	}
+	return prologue
 }
 
 func (input *parser) parseReturnStatement() (ast.Statement, error) {
@@ -1142,38 +1142,17 @@ func (input *parser) isArrowFunctionStart() bool {
 	if !input.check(lexer.LeftParen) {
 		return false
 	}
-	index := input.index + 1
-	if index < len(input.tokens) && input.tokens[index].Kind == lexer.LeftBracket {
-		index++
-		for index < len(input.tokens) && input.tokens[index].Kind != lexer.RightBracket {
-			if input.tokens[index].Kind != lexer.Identifier && input.tokens[index].Kind != lexer.Comma {
-				return false
+	depth := 0
+	for index := input.index; index < len(input.tokens); index++ {
+		switch input.tokens[index].Kind {
+		case lexer.LeftParen:
+			depth++
+		case lexer.RightParen:
+			depth--
+			if depth == 0 {
+				return index+1 < len(input.tokens) && input.tokens[index+1].Kind == lexer.Arrow
 			}
-			index++
 		}
-		if index >= len(input.tokens) || input.tokens[index].Kind != lexer.RightBracket {
-			return false
-		}
-		index++
-		return index+1 < len(input.tokens) && input.tokens[index].Kind == lexer.RightParen && input.tokens[index+1].Kind == lexer.Arrow
-	}
-	if index < len(input.tokens) && input.tokens[index].Kind == lexer.RightParen {
-		index++
-		return index < len(input.tokens) && input.tokens[index].Kind == lexer.Arrow
-	}
-	for index < len(input.tokens) {
-		if input.tokens[index].Kind != lexer.Identifier {
-			return false
-		}
-		index++
-		if index < len(input.tokens) && input.tokens[index].Kind == lexer.RightParen {
-			index++
-			return index < len(input.tokens) && input.tokens[index].Kind == lexer.Arrow
-		}
-		if index >= len(input.tokens) || input.tokens[index].Kind != lexer.Comma {
-			return false
-		}
-		index++
 	}
 	return false
 }
@@ -1181,6 +1160,7 @@ func (input *parser) isArrowFunctionStart() bool {
 func (input *parser) parseArrowFunction() (ast.Expression, error) {
 	start := input.current().Span
 	parameters := make([]*ast.Identifier, 0)
+	defaults := make([]ast.Expression, 0)
 	var patternDeclaration *ast.VariableDeclaration
 	if input.match(lexer.LeftParen) {
 		if input.check(lexer.LeftBracket) {
@@ -1192,6 +1172,7 @@ func (input *parser) parseArrowFunction() (ast.Expression, error) {
 				Base: ast.Base{Range: patternSpan}, Name: fmt.Sprintf("\x00gossamer.arrow.pattern.%d", patternSpan.Start.Offset),
 			}
 			parameters = append(parameters, temporary)
+			defaults = append(defaults, nil)
 			patternDeclaration = &ast.VariableDeclaration{
 				Base: ast.Base{Range: patternSpan}, Kind: ast.VariableConst,
 				Declarations: []*ast.VariableDeclarator{{
@@ -1205,6 +1186,14 @@ func (input *parser) parseArrowFunction() (ast.Expression, error) {
 					return nil, err
 				}
 				parameters = append(parameters, identifier(parameter))
+				var defaultValue ast.Expression
+				if input.match(lexer.Assign) {
+					defaultValue, err = input.parseAssignment()
+					if err != nil {
+						return nil, err
+					}
+				}
+				defaults = append(defaults, defaultValue)
 				if !input.match(lexer.Comma) {
 					break
 				}
@@ -1219,6 +1208,7 @@ func (input *parser) parseArrowFunction() (ast.Expression, error) {
 			return nil, err
 		}
 		parameters = append(parameters, identifier(parameter))
+		defaults = append(defaults, nil)
 	}
 	if _, err := input.consume(lexer.Arrow, "expected '=>' after arrow parameters"); err != nil {
 		return nil, err
@@ -1228,9 +1218,11 @@ func (input *parser) parseArrowFunction() (ast.Expression, error) {
 		if err != nil {
 			return nil, err
 		}
+		prologue := parameterDefaultPrologue(parameters, defaults)
 		if patternDeclaration != nil {
-			body.Body = append([]ast.Statement{patternDeclaration}, body.Body...)
+			prologue = append(prologue, patternDeclaration)
 		}
+		body.Body = append(prologue, body.Body...)
 		return &ast.ArrowFunctionExpression{Base: ast.Base{Range: join(start, body.Span())}, Parameters: parameters, Body: body}, nil
 	}
 	expression, err := input.parseAssignment()
@@ -1240,14 +1232,15 @@ func (input *parser) parseArrowFunction() (ast.Expression, error) {
 	arrow := &ast.ArrowFunctionExpression{
 		Base: ast.Base{Range: join(start, expression.Span())}, Parameters: parameters, Expression: expression,
 	}
+	prologue := parameterDefaultPrologue(parameters, defaults)
 	if patternDeclaration != nil {
+		prologue = append(prologue, patternDeclaration)
+	}
+	if len(prologue) != 0 {
 		arrow.Expression = nil
 		arrow.Body = &ast.BlockStatement{
 			Base: ast.Base{Range: join(start, expression.Span())},
-			Body: []ast.Statement{
-				patternDeclaration,
-				&ast.ReturnStatement{Base: ast.Base{Range: expression.Span()}, Argument: expression},
-			},
+			Body: append(prologue, &ast.ReturnStatement{Base: ast.Base{Range: expression.Span()}, Argument: expression}),
 		}
 	}
 	return arrow, nil

@@ -197,6 +197,26 @@ func TestParseLowersDefaultParametersInSourceOrder(t *testing.T) {
 	}
 }
 
+func TestParseLowersArrowDefaultParametersInSourceOrder(t *testing.T) {
+	t.Parallel()
+
+	script, err := parser.Parse("const build = (first, second = first + 1, third = (second * 2)) => third;")
+	if err != nil {
+		t.Fatal(err)
+	}
+	arrow := script.Body[0].(*ast.VariableDeclaration).Declarations[0].Init.(*ast.ArrowFunctionExpression)
+	if len(arrow.Parameters) != 3 || arrow.Expression != nil || arrow.Body == nil || len(arrow.Body.Body) != 3 {
+		t.Fatalf("ArrowFunctionExpression = %#v", arrow)
+	}
+	firstDefault := arrow.Body.Body[0].(*ast.IfStatement)
+	firstAssignment := firstDefault.Consequent.(*ast.ExpressionStatement).Expression.(*ast.AssignmentExpression)
+	secondDefault := arrow.Body.Body[1].(*ast.IfStatement)
+	secondAssignment := secondDefault.Consequent.(*ast.ExpressionStatement).Expression.(*ast.AssignmentExpression)
+	if firstAssignment.Left.(*ast.Identifier).Name != "second" || secondAssignment.Left.(*ast.Identifier).Name != "third" {
+		t.Fatalf("arrow default assignments = %#v, %#v", firstAssignment, secondAssignment)
+	}
+}
+
 func TestParseLowersDestructuredArrowParameter(t *testing.T) {
 	t.Parallel()
 

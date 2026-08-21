@@ -591,6 +591,24 @@ compute(2).then(value => value);
 	}
 }
 
+func TestCompileLowersArrowDefaultParameters(t *testing.T) {
+	t.Parallel()
+
+	image, err := compiler.Compile(`
+const apply = (input, mapper = value => value * 2, state = (mapper.tag || (mapper.tag = 3))) =>
+  mapper(input) + state;
+let missing;
+(apply(2) === 7 && apply(3, missing, 4) === 10) ? 1 : 0;
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := execute(t, 823, image)
+	if result.Kind() != memory.ValueNumber || result.Number() != 1 {
+		t.Fatalf("arrow defaults = %#v, want 1", result)
+	}
+}
+
 func TestCompileLowersLazyForOfGenerator(t *testing.T) {
 	t.Parallel()
 

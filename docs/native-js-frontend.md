@@ -60,6 +60,8 @@ and ordinary task release invalidates every unpromoted loaded Ref.
 - `if`, `while`, `break`, and `continue`;
 - Function declarations and expressions, lexical capture, calls, recursion,
   construction, and explicit `this` for constructors and method receivers;
+- default values on ordinary and parenthesized arrow Function parameters,
+  evaluated in source order with access to earlier parameters;
 - `return`, `throw`, `try`, `catch`, and `finally`, with general abrupt
   completions routing return, throw, break, and continue through nested
   finally blocks;
