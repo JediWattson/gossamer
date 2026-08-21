@@ -168,6 +168,7 @@ type Intrinsics struct {
 	SymbolConstructor         memory.Ref
 	SymbolRegistry            memory.Ref
 	SymbolIterator            memory.Ref
+	SymbolToStringTag         memory.Ref
 	DateConstructor           memory.Ref
 	IsNaN                     memory.Ref
 	NumberConstructor         memory.Ref
@@ -176,7 +177,7 @@ type Intrinsics struct {
 	WeakSetConstructor        memory.Ref
 }
 
-const intrinsicRootCount = 41
+const intrinsicRootCount = 42
 
 // Roots returns every Ref needed to carry one intrinsic environment across an
 // explicit ownership boundary. The ordering is private to this package and is
@@ -227,6 +228,7 @@ func (intrinsics *Intrinsics) Roots() []memory.Ref {
 		intrinsics.WeakSetPrototype,
 		intrinsics.WeakMapConstructor,
 		intrinsics.WeakSetConstructor,
+		intrinsics.SymbolToStringTag,
 	}
 }
 
@@ -283,6 +285,7 @@ func RestoreIntrinsics(roots []memory.Ref) (*Intrinsics, error) {
 		WeakSetPrototype:          roots[38],
 		WeakMapConstructor:        roots[39],
 		WeakSetConstructor:        roots[40],
+		SymbolToStringTag:         roots[41],
 	}, nil
 }
 
@@ -1153,6 +1156,24 @@ func builtinObjectPrototypeToString(execution *execution, _ memory.Ref, _ memory
 			tag = "Set"
 		case memory.HeapPromise:
 			tag = "Promise"
+		}
+		if intrinsics := execution.context.intrinsics; intrinsics != nil && intrinsics.SymbolToStringTag != (memory.Ref{}) {
+			custom, found, err := execution.getProperty(this, memory.RefValue(intrinsics.SymbolToStringTag))
+			if err != nil {
+				return memory.Value{}, err
+			}
+			if found && custom.IsRef() {
+				customKind, err := execution.context.HeapKind(custom.Ref())
+				if err != nil {
+					return memory.Value{}, err
+				}
+				if customKind == memory.HeapString {
+					tag, err = execution.context.DerefString(custom.Ref())
+					if err != nil {
+						return memory.Value{}, err
+					}
+				}
+			}
 		}
 	}
 	ref, err := execution.context.NewString("[object " + tag + "]")

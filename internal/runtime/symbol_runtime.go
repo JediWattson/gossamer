@@ -43,6 +43,16 @@ func (intrinsics *Intrinsics) installSymbolBuiltins(context *TaskContext) error 
 	}
 	intrinsics.SymbolIterator = iterator
 
+	toStringTagDescription, err := newStringValue(context, "Symbol.toStringTag")
+	if err != nil {
+		return err
+	}
+	toStringTag, err := context.NewSymbol(toStringTagDescription)
+	if err != nil {
+		return err
+	}
+	intrinsics.SymbolToStringTag = toStringTag
+
 	forMethod, err := intrinsics.newBuiltinMethod(context, "for", 1, nativeSymbolFor)
 	if err != nil {
 		return err
@@ -51,6 +61,9 @@ func (intrinsics *Intrinsics) installSymbolBuiltins(context *TaskContext) error 
 		return err
 	}
 	if err := defineData(context, constructor, "iterator", memory.RefValue(iterator), false, false, false); err != nil {
+		return err
+	}
+	if err := defineData(context, constructor, "toStringTag", memory.RefValue(toStringTag), false, false, false); err != nil {
 		return err
 	}
 	if err := installMethods(intrinsics, context, intrinsics.SymbolPrototype, []builtinMethod{

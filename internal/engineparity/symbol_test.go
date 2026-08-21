@@ -45,6 +45,8 @@ let firstSymbol = Symbol("token");
 let secondSymbol = Symbol("token");
 let registrySymbol = Symbol.for("gossamer.parity");
 let symbolTarget = {};
+let taggedTarget = {};
+taggedTarget[Symbol.toStringTag] = "ParityTarget";
 symbolTarget[firstSymbol] = 1;
 symbolTarget[secondSymbol] = 2;
 symbolTarget[registrySymbol] = 3;
@@ -59,6 +61,8 @@ if (typeof Symbol !== "function" || typeof firstSymbol !== "symbol" ||
     symbolTarget[firstSymbol] !== 1 || symbolTarget[secondSymbol] !== 2 ||
     symbolTarget[Symbol.for("gossamer.parity")] !== 3 || Object.keys(symbolTarget).length !== 0 ||
     Symbol.iterator !== Symbol.iterator ||
+    typeof Symbol.toStringTag !== "symbol" ||
+    Object.prototype.toString.call(taggedTarget) !== "[object ParityTarget]" ||
     Array.prototype[Symbol.iterator] !== Array.prototype.values ||
     "go"[Symbol.iterator]().next().value !== "g" || !rejectedSymbolConstructor) {
   throw new Error("Symbol parity failed");

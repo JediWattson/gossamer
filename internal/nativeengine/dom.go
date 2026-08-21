@@ -204,6 +204,7 @@ const (
 	bindingDOMRectPrototype            = "\x00gossamer.dom-rect.prototype"
 	bindingMutationObserverPrototype   = "\x00gossamer.mutation-observer.prototype"
 	bindingMutationObserverConstructor = "\x00gossamer.mutation-observer.constructor"
+	bindingDOMException                = "DOMException"
 	bindingWrapperCache                = "\x00gossamer.wrapper.cache"
 	bindingCallbackCache               = "\x00gossamer.callback.cache"
 	bindingFacadeCache                 = "\x00gossamer.facade.cache"
@@ -237,6 +238,8 @@ type browserBindings struct {
 	domRectPrototype            memory.Ref
 	mutationObserverPrototype   memory.Ref
 	mutationObserverConstructor memory.Ref
+	domExceptionPrototype       memory.Ref
+	domExceptionConstructor     memory.Ref
 	rangePrototype              memory.Ref
 	selectionPrototype          memory.Ref
 	selection                   memory.Ref
@@ -439,6 +442,14 @@ func (realm *Realm) installBrowserNatives() error {
 		{nativeNodeLastElementChild, realm.nodeRelation(browser.RelationLastElementChild)},
 		{nativeNodePreviousElementSibling, realm.nodeRelation(browser.RelationPreviousElementSibling)},
 		{nativeNodeNextElementSibling, realm.nodeRelation(browser.RelationNextElementSibling)},
+		{nativeDOMExceptionConstructor, realm.domExceptionConstructor},
+		{nativeDOMExceptionToString, realm.domExceptionToString},
+		{nativeNodeAppend, realm.nodeConvenienceMutation(dom.MutationAppend)},
+		{nativeNodePrepend, realm.nodeConvenienceMutation(dom.MutationPrepend)},
+		{nativeNodeBefore, realm.nodeConvenienceMutation(dom.MutationBefore)},
+		{nativeNodeAfter, realm.nodeConvenienceMutation(dom.MutationAfter)},
+		{nativeNodeReplaceWith, realm.nodeConvenienceMutation(dom.MutationReplaceWith)},
+		{nativeNodeReplaceChildren, realm.nodeConvenienceMutation(dom.MutationReplaceChildren)},
 	}
 	for _, registration := range registrations {
 		if err := realm.interpreter.RegisterNative(registration.id, registration.callback); err != nil {
@@ -478,6 +489,8 @@ func (realm *Realm) prepareBrowserBindingsLocked(context *browserruntime.TaskCon
 			{bindingDOMRectPrototype, &bindings.domRectPrototype},
 			{bindingMutationObserverPrototype, &bindings.mutationObserverPrototype},
 			{bindingMutationObserverConstructor, &bindings.mutationObserverConstructor},
+			{bindingDOMExceptionPrototype, &bindings.domExceptionPrototype},
+			{bindingDOMExceptionConstructor, &bindings.domExceptionConstructor},
 			{bindingRangePrototype, &bindings.rangePrototype},
 			{bindingSelectionPrototype, &bindings.selectionPrototype},
 			{bindingSelection, &bindings.selection},
@@ -584,6 +597,10 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 	if err != nil {
 		return err
 	}
+	bindings.domExceptionConstructor, bindings.domExceptionPrototype, err = realm.newDOMExceptionConstructor(context)
+	if err != nil {
+		return err
+	}
 	rangeConstructor, err := realm.newDOMInterfaceConstructor(context, "Range", realm.active.ObjectPrototype)
 	if err != nil {
 		return err
@@ -675,6 +692,7 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{"cancelAnimationFrame", memory.RefValue(cancelAnimationFrame)},
 		{"performance", memory.RefValue(bindings.performance)},
 		{"MutationObserver", memory.RefValue(bindings.mutationObserverConstructor)},
+		{bindingDOMException, memory.RefValue(bindings.domExceptionConstructor)},
 		{"Event", memory.RefValue(eventConstructor)},
 		{"CustomEvent", memory.RefValue(customEventConstructor)},
 		{"getComputedStyle", memory.RefValue(getComputedStyle)},
@@ -707,6 +725,8 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{bindingDOMRectPrototype, bindings.domRectPrototype, false},
 		{bindingMutationObserverPrototype, bindings.mutationObserverPrototype, false},
 		{bindingMutationObserverConstructor, bindings.mutationObserverConstructor, false},
+		{bindingDOMExceptionPrototype, bindings.domExceptionPrototype, false},
+		{bindingDOMExceptionConstructor, bindings.domExceptionConstructor, false},
 		{bindingRangePrototype, bindings.rangePrototype, false},
 		{bindingSelectionPrototype, bindings.selectionPrototype, false},
 		{bindingSelection, bindings.selection, false},
@@ -722,6 +742,7 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{bindingDocument, bindings.document, false},
 		{bindingPerformance, bindings.performance, false},
 		{bindingMutationObserver, bindings.mutationObserverConstructor, false},
+		{bindingDOMException, bindings.domExceptionConstructor, true},
 		{"Event", eventConstructor, true},
 		{"CustomEvent", customEventConstructor, true},
 		{"setTimeout", setTimeout, true},
@@ -769,6 +790,21 @@ func (realm *Realm) installDOMPrototypeProperties(context *browserruntime.TaskCo
 		{realm.bindings.nodePrototype, "replaceChild", 2, nativeNodeReplaceChild},
 		{realm.bindings.nodePrototype, "normalize", 0, nativeNodeNormalize},
 		{realm.bindings.nodePrototype, "remove", 0, nativeNodeRemove},
+		{realm.bindings.elementPrototype, "append", 0, nativeNodeAppend},
+		{realm.bindings.documentPrototype, "append", 0, nativeNodeAppend},
+		{realm.bindings.fragmentPrototype, "append", 0, nativeNodeAppend},
+		{realm.bindings.elementPrototype, "prepend", 0, nativeNodePrepend},
+		{realm.bindings.documentPrototype, "prepend", 0, nativeNodePrepend},
+		{realm.bindings.fragmentPrototype, "prepend", 0, nativeNodePrepend},
+		{realm.bindings.elementPrototype, "replaceChildren", 0, nativeNodeReplaceChildren},
+		{realm.bindings.documentPrototype, "replaceChildren", 0, nativeNodeReplaceChildren},
+		{realm.bindings.fragmentPrototype, "replaceChildren", 0, nativeNodeReplaceChildren},
+		{realm.bindings.elementPrototype, "before", 0, nativeNodeBefore},
+		{realm.bindings.textPrototype, "before", 0, nativeNodeBefore},
+		{realm.bindings.elementPrototype, "after", 0, nativeNodeAfter},
+		{realm.bindings.textPrototype, "after", 0, nativeNodeAfter},
+		{realm.bindings.elementPrototype, "replaceWith", 0, nativeNodeReplaceWith},
+		{realm.bindings.textPrototype, "replaceWith", 0, nativeNodeReplaceWith},
 		{realm.bindings.textPrototype, "splitText", 1, nativeTextSplitText},
 		{realm.bindings.elementPrototype, "getAttribute", 1, nativeElementGetAttribute},
 		{realm.bindings.elementPrototype, "setAttribute", 2, nativeElementSetAttribute},
@@ -1116,7 +1152,7 @@ func (realm *Realm) documentCreateElement(context *browserruntime.TaskContext, _
 	}
 	handle, err := realm.host.CreateElement(name)
 	if err != nil {
-		return memory.Value{}, err
+		return memory.Value{}, realm.throwDOMException(context, err)
 	}
 	return realm.wrappedNodeValue(context, handle)
 }
@@ -1148,7 +1184,7 @@ func (realm *Realm) documentCreateElementNS(context *browserruntime.TaskContext,
 	}
 	handle, err := host.CreateElementNS(namespace, name)
 	if err != nil {
-		return memory.Value{}, err
+		return memory.Value{}, realm.throwDOMException(context, err)
 	}
 	return realm.wrappedNodeValue(context, handle)
 }
@@ -1406,7 +1442,7 @@ func (realm *Realm) nodeAppendChild(context *browserruntime.TaskContext, this me
 	}
 	oldParent := realm.parentHandle(child)
 	if err := realm.host.AppendChild(parent, child); err != nil {
-		return memory.Value{}, err
+		return memory.Value{}, realm.throwDOMException(context, err)
 	}
 	return childValue, realm.refreshCollections(context, parent, oldParent, child)
 }
@@ -1430,7 +1466,7 @@ func (realm *Realm) nodeInsertBefore(context *browserruntime.TaskContext, this m
 	}
 	oldParent := realm.parentHandle(child)
 	if err := realm.host.InsertBefore(parent, child, reference); err != nil {
-		return memory.Value{}, err
+		return memory.Value{}, realm.throwDOMException(context, err)
 	}
 	return childValue, realm.refreshCollections(context, parent, oldParent, child)
 }
@@ -1446,7 +1482,7 @@ func (realm *Realm) nodeRemoveChild(context *browserruntime.TaskContext, this me
 		return memory.Value{}, err
 	}
 	if err := realm.host.RemoveChild(parent, child); err != nil {
-		return memory.Value{}, err
+		return memory.Value{}, realm.throwDOMException(context, err)
 	}
 	return childValue, realm.refreshCollections(context, parent)
 }
@@ -1465,7 +1501,7 @@ func (realm *Realm) nodeRemove(context *browserruntime.TaskContext, this memory.
 		return memory.UndefinedValue(), err
 	}
 	if err := realm.host.RemoveChild(parent, handle); err != nil {
-		return memory.Value{}, err
+		return memory.Value{}, realm.throwDOMException(context, err)
 	}
 	return memory.UndefinedValue(), realm.refreshCollections(context, parent)
 }
@@ -1539,7 +1575,7 @@ func (realm *Realm) nodeReplaceChild(context *browserruntime.TaskContext, this m
 	}
 	oldParent := realm.parentHandle(child)
 	if err := host.ReplaceChild(parent, child, replaced); err != nil {
-		return memory.Value{}, err
+		return memory.Value{}, realm.throwDOMException(context, err)
 	}
 	return replacedValue, realm.refreshCollections(context, parent, oldParent, child)
 }
@@ -1681,7 +1717,7 @@ func (realm *Realm) elementQuerySelector(all bool) browserruntime.NativeFunction
 		}
 		handles, err := host.QuerySelector(handle, selector, all)
 		if err != nil {
-			return memory.Value{}, err
+			return memory.Value{}, realm.throwDOMException(context, err)
 		}
 		if all {
 			return realm.nodeArray(context, handles)
