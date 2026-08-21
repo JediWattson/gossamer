@@ -7,10 +7,17 @@ export default defineConfig({
     target: "es2020",
     minify: true,
     emptyOutDir: false,
-    lib: {
-      entry: "src/main.jsx",
-      formats: ["es"],
-      fileName: () => "solid-parity-1.9.14.production.module.js"
+    rollupOptions: {
+      input: "src/main.jsx",
+      output: {
+        entryFileNames: "solid-parity-1.9.14.production.module.js",
+        chunkFileNames: "solid-runtime-1.9.14.production.module.js",
+        manualChunks(id) {
+          if (id.includes("node_modules/solid-js/")) {
+            return "solid-runtime";
+          }
+        }
+      }
     }
   }
 });

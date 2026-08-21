@@ -20,11 +20,15 @@ module loader. Its SHA-256, including the repository's trailing newline, is:
 4d0e91f8d320fa0f26f16860957d895da1a94bd85adcefa3dd5bb5787735e624
 ```
 
-The checked-in ES module is a self-contained production root used by the full
-navigation pipeline. Its SHA-256 is:
+The checked-in ES module build is a normal split production graph used by the
+full navigation pipeline. The entry imports the pinned Solid runtime chunk, so
+the shared Strand/stock-V8 gate exercises browser fetching, module linking,
+live bindings, one-time evaluation, interaction, disposal, and teardown. Their
+SHA-256 values are:
 
 ```text
-ea8b8c9f902b9efef8cc2516f8c8c57a715b5f8fd6338159516b64554b036759
+20ca971a3b769bd7edb4a85a18ca4897467176b49e85df5db922af375b47cd1b  solid-parity-1.9.14.production.module.js
+54d300c453e950707a3c2ed4af412b0b6e35dcda3f306be2e44dfdfb0c6d2b94  solid-runtime-1.9.14.production.module.js
 ```
 
 `solid-LICENSE` is the upstream Solid MIT license shipped with the pinned npm

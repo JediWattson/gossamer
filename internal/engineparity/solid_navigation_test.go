@@ -17,8 +17,9 @@ import (
 )
 
 const (
-	solidNavigationURL = "https://solid.gossamer.test/"
-	solidModuleURL     = "https://solid.gossamer.test/assets/solid-parity.js"
+	solidNavigationURL    = "https://solid.gossamer.test/"
+	solidModuleURL        = "https://solid.gossamer.test/assets/solid-parity.js"
+	solidRuntimeModuleURL = "https://solid.gossamer.test/assets/solid-runtime-1.9.14.production.module.js"
 )
 
 func TestStrandBootsProductionSolidModuleThroughNavigation(t *testing.T) {
@@ -38,7 +39,14 @@ func runProductionSolidNavigationParity(t *testing.T, engine browser.Engine, col
 	if err != nil {
 		t.Fatal(err)
 	}
-	client := &solidMemoryLoader{module: module}
+	runtimeModule, err := os.ReadFile("testdata/vite-solid/dist/solid-runtime-1.9.14.production.module.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &solidMemoryLoader{modules: map[string][]byte{
+		solidModuleURL:        module,
+		solidRuntimeModuleURL: runtimeModule,
+	}}
 	browserRuntime, err := browser.NewWithEngine(engine)
 	if err != nil {
 		t.Fatal(err)
@@ -52,8 +60,10 @@ func runProductionSolidNavigationParity(t *testing.T, engine browser.Engine, col
 		snapshot.ScriptsPending != 0 || snapshot.ScriptsFailed != 0 {
 		t.Fatalf("Solid module navigation = %#v", snapshot)
 	}
-	if got := client.moduleLoadCount(); got != 1 {
-		t.Fatalf("module resource loads = %d, want one cached fetch", got)
+	for _, moduleURL := range []string{solidModuleURL, solidRuntimeModuleURL} {
+		if got := client.moduleLoadCount(moduleURL); got != 1 {
+			t.Fatalf("module resource loads for %q = %d, want one cached fetch", moduleURL, got)
+		}
 	}
 
 	runScript := func(label, source string) {
@@ -116,8 +126,8 @@ if (document.getElementById("solid-root").firstChild !== null) {
 
 type solidMemoryLoader struct {
 	mutex       sync.Mutex
-	module      []byte
-	moduleLoads int
+	modules     map[string][]byte
+	moduleLoads map[string]int
 }
 
 func (client *solidMemoryLoader) Load(_ context.Context, rawURL string) (*loader.Response, error) {
@@ -152,22 +162,26 @@ window.addEventListener("pageshow", function () {
 }
 
 func (client *solidMemoryLoader) LoadResource(_ context.Context, rawURL string, destination loader.Destination) (*loader.Response, error) {
-	if rawURL != solidModuleURL || destination != loader.ScriptDestination {
+	module, found := client.modules[rawURL]
+	if !found || destination != loader.ScriptDestination {
 		return nil, fmt.Errorf("unexpected resource %q destination %d", rawURL, destination)
 	}
 	client.mutex.Lock()
-	client.moduleLoads++
+	if client.moduleLoads == nil {
+		client.moduleLoads = make(map[string]int)
+	}
+	client.moduleLoads[rawURL]++
 	client.mutex.Unlock()
 	location, _ := url.Parse(rawURL)
 	return &loader.Response{
 		URL: location, StatusCode: http.StatusOK,
 		Header: http.Header{"Content-Type": []string{"application/javascript"}},
-		Body:   io.NopCloser(bytes.NewReader(client.module)),
+		Body:   io.NopCloser(bytes.NewReader(module)),
 	}, nil
 }
 
-func (client *solidMemoryLoader) moduleLoadCount() int {
+func (client *solidMemoryLoader) moduleLoadCount(moduleURL string) int {
 	client.mutex.Lock()
 	defer client.mutex.Unlock()
-	return client.moduleLoads
+	return client.moduleLoads[moduleURL]
 }
