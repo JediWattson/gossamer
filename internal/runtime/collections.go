@@ -48,6 +48,7 @@ func (intrinsics *Intrinsics) installCollectionBuiltins(context *TaskContext) er
 	if err := installMethods(intrinsics, context, intrinsics.StringPrototype, []builtinMethod{
 		{"toString", 0, nativeStringToString}, {"valueOf", 0, nativeStringValueOf},
 		{"charAt", 1, nativeStringCharAt}, {"includes", 1, nativeStringIncludes},
+		{"endsWith", 1, nativeStringEndsWith},
 		{"indexOf", 1, nativeStringIndexOf}, {"slice", 2, nativeStringSlice},
 		{"toUpperCase", 0, nativeStringToUpperCase}, {"toLowerCase", 0, nativeStringToLowerCase},
 		{"trim", 0, nativeStringTrim}, {"split", 2, nativeStringSplit}, {"values", 0, nativeStringValues},
@@ -205,6 +206,39 @@ func builtinStringIncludes(execution *execution, _ memory.Ref, _ memory.Function
 		return memory.BoolValue(false), nil
 	}
 	return memory.BoolValue(strings.Contains(string(runes[start:]), needle)), nil
+}
+
+func builtinStringEndsWith(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+	text, err := requireString(execution.context, this)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	search := argument(arguments, 0)
+	if search.IsRef() {
+		kind, kindErr := execution.context.HeapKind(search.Ref())
+		if kindErr != nil {
+			return memory.Value{}, kindErr
+		}
+		if kind == memory.HeapRegExp {
+			return memory.Value{}, fmt.Errorf("%w: String.prototype.endsWith search value cannot be a RegExp", ErrOperandType)
+		}
+	}
+	needle, err := execution.toString(search)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	runes := []rune(text)
+	end, err := integerArgument(execution, arguments, 1, int64(len(runes)))
+	if err != nil {
+		return memory.Value{}, err
+	}
+	if end < 0 {
+		end = 0
+	}
+	if end > int64(len(runes)) {
+		end = int64(len(runes))
+	}
+	return memory.BoolValue(strings.HasSuffix(string(runes[:end]), needle)), nil
 }
 
 func builtinStringIndexOf(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, arguments []memory.Value) (memory.Value, error) {

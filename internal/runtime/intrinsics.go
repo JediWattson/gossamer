@@ -124,6 +124,7 @@ const (
 	nativeObjectDefineProperties
 	nativePromiseAll
 	nativePromiseAllFulfill
+	nativeStringEndsWith
 )
 
 // Intrinsics is one task-local instantiation of the native ECMAScript
@@ -493,6 +494,7 @@ func (interpreter *Interpreter) registerBuiltinCallbacks() error {
 		nativeStringValueOf:                  builtinStringToString,
 		nativeStringCharAt:                   builtinStringCharAt,
 		nativeStringIncludes:                 builtinStringIncludes,
+		nativeStringEndsWith:                 builtinStringEndsWith,
 		nativeStringIndexOf:                  builtinStringIndexOf,
 		nativeStringSlice:                    builtinStringSlice,
 		nativeStringToUpperCase:              builtinStringToUpperCase,
