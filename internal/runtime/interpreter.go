@@ -532,6 +532,56 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 				}
 			}
 			frame.push(keys)
+		case OpGetIterator:
+			iterable, err := frame.pop()
+			if err != nil {
+				return memory.Value{}, err
+			}
+			iterator, next, err := execution.getIteratorRecord(iterable)
+			if err != nil {
+				if handled, terminal := execution.routeFrameError(frame, err); handled {
+					continue
+				} else {
+					return memory.Value{}, terminal
+				}
+			}
+			frame.push(iterator)
+			frame.push(next)
+		case OpIteratorNext:
+			next, err := frame.pop()
+			if err != nil {
+				return memory.Value{}, err
+			}
+			iterator, err := frame.pop()
+			if err != nil {
+				return memory.Value{}, err
+			}
+			result, err := execution.iteratorNext(iterator, next)
+			if err != nil {
+				if handled, terminal := execution.routeFrameError(frame, err); handled {
+					continue
+				} else {
+					return memory.Value{}, terminal
+				}
+			}
+			frame.push(result)
+		case OpIteratorClose:
+			iterator, err := frame.pop()
+			if err != nil {
+				return memory.Value{}, err
+			}
+			if err := execution.closeIterator(iterator); err != nil {
+				// IteratorClose preserves an already-thrown completion. For
+				// break and return, a close failure replaces the completion.
+				if frame.completion != nil && frame.completion.kind == completionThrow {
+					continue
+				}
+				if handled, terminal := execution.routeFrameError(frame, err); handled {
+					continue
+				} else {
+					return memory.Value{}, terminal
+				}
+			}
 		case OpSetLength:
 			lengthValue, err := frame.pop()
 			if err != nil {

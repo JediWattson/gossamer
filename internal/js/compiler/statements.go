@@ -41,13 +41,13 @@ func (compiler *functionCompiler) compileStatement(statement ast.Statement) erro
 		if !found {
 			return compiler.problem(statement.Span(), "break has no matching target")
 		}
-		return compiler.emitCompletion(browserruntime.OpBreak, target.breakLabel, target.breakEnvironmentDepth, target.handlerDepth, statement.Span())
+		return compiler.emitCompletion(browserruntime.OpBreak, target.breakLabel, target.breakEnvironmentDepth, target.breakHandlerDepth, statement.Span())
 	case *ast.ContinueStatement:
 		target, found := compiler.resolveControlTarget(statement.Label, true)
 		if !found {
 			return compiler.problem(statement.Span(), "continue has no matching loop target")
 		}
-		return compiler.emitCompletion(browserruntime.OpContinue, target.continueLabel, target.continueEnvironmentDepth, target.handlerDepth, statement.Span())
+		return compiler.emitCompletion(browserruntime.OpContinue, target.continueLabel, target.continueEnvironmentDepth, target.continueHandlerDepth, statement.Span())
 	case *ast.FunctionDeclaration:
 		// Function declarations are instantiated in the containing Function
 		// scope before any statement executes.
@@ -244,7 +244,7 @@ func (compiler *functionCompiler) compileWhileLabeled(statement *ast.WhileStatem
 	compiler.loops = append(compiler.loops, loopTarget{
 		name: name, breakLabel: end, continueLabel: start,
 		breakEnvironmentDepth: compiler.environmentDepth, continueEnvironmentDepth: compiler.environmentDepth,
-		handlerDepth: compiler.handlerDepth,
+		breakHandlerDepth: compiler.handlerDepth, continueHandlerDepth: compiler.handlerDepth,
 	})
 	err := compiler.compileStatement(statement.Body)
 	compiler.loops = compiler.loops[:len(compiler.loops)-1]
@@ -270,7 +270,7 @@ func (compiler *functionCompiler) compileDoWhile(statement *ast.DoWhileStatement
 	compiler.loops = append(compiler.loops, loopTarget{
 		name: name, breakLabel: end, continueLabel: condition,
 		breakEnvironmentDepth: compiler.environmentDepth, continueEnvironmentDepth: compiler.environmentDepth,
-		handlerDepth: compiler.handlerDepth,
+		breakHandlerDepth: compiler.handlerDepth, continueHandlerDepth: compiler.handlerDepth,
 	})
 	err := compiler.compileStatement(statement.Body)
 	compiler.loops = compiler.loops[:len(compiler.loops)-1]
@@ -348,7 +348,7 @@ func (compiler *functionCompiler) compileFor(statement *ast.ForStatement, name s
 	compiler.loops = append(compiler.loops, loopTarget{
 		name: name, breakLabel: end, continueLabel: update,
 		breakEnvironmentDepth: outerDepth, continueEnvironmentDepth: compiler.environmentDepth,
-		handlerDepth: compiler.handlerDepth,
+		breakHandlerDepth: compiler.handlerDepth, continueHandlerDepth: compiler.handlerDepth,
 	})
 	err := compiler.compileStatement(statement.Body)
 	compiler.loops = compiler.loops[:len(compiler.loops)-1]
@@ -380,6 +380,9 @@ func (compiler *functionCompiler) compileFor(statement *ast.ForStatement, name s
 }
 
 func (compiler *functionCompiler) compileForIn(statement *ast.ForInStatement, label string) error {
+	if statement.Of {
+		return compiler.compileForOf(statement, label)
+	}
 	outerDepth := compiler.environmentDepth
 	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpEnterScope}, statement.Span()); err != nil {
 		return err
@@ -390,10 +393,8 @@ func (compiler *functionCompiler) compileForIn(statement *ast.ForInStatement, la
 	if err := compiler.compileExpression(statement.Right); err != nil {
 		return err
 	}
-	if !statement.Of {
-		if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpOwnKeys}, statement.Right.Span()); err != nil {
-			return err
-		}
+	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpOwnKeys}, statement.Right.Span()); err != nil {
+		return err
 	}
 	if err := compiler.initializeTemporary(iterableName, statement.Span()); err != nil {
 		return err
@@ -462,7 +463,7 @@ func (compiler *functionCompiler) compileForIn(statement *ast.ForInStatement, la
 	compiler.loops = append(compiler.loops, loopTarget{
 		name: label, breakLabel: end, continueLabel: advance,
 		breakEnvironmentDepth: outerDepth, continueEnvironmentDepth: outerDepth + 1,
-		handlerDepth: compiler.handlerDepth,
+		breakHandlerDepth: compiler.handlerDepth, continueHandlerDepth: compiler.handlerDepth,
 	})
 	err = compiler.compileStatement(statement.Body)
 	compiler.loops = compiler.loops[:len(compiler.loops)-1]
@@ -512,6 +513,182 @@ func (compiler *functionCompiler) compileForIn(statement *ast.ForInStatement, la
 		return err
 	}
 	compiler.environmentDepth--
+	return compiler.mark(end)
+}
+
+func (compiler *functionCompiler) compileForOf(statement *ast.ForInStatement, label string) error {
+	outerDepth := compiler.environmentDepth
+	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpEnterScope}, statement.Span()); err != nil {
+		return err
+	}
+	compiler.environmentDepth++
+	if err := compiler.compileExpression(statement.Right); err != nil {
+		return err
+	}
+	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpGetIterator}, statement.Right.Span()); err != nil {
+		return err
+	}
+	iteratorName := compiler.temporaryName("for.iterator")
+	nextName := compiler.temporaryName("for.next")
+	// GetIterator leaves iterator then next on the stack, so initialize the
+	// next-method binding first and retain the iterator beneath it.
+	if err := compiler.initializeTemporary(nextName, statement.Span()); err != nil {
+		return err
+	}
+	if err := compiler.initializeTemporary(iteratorName, statement.Span()); err != nil {
+		return err
+	}
+	iterationValueName := compiler.temporaryName("for.value")
+	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpUndefined}, statement.Span()); err != nil {
+		return err
+	}
+	if err := compiler.initializeTemporary(iterationValueName, statement.Span()); err != nil {
+		return err
+	}
+
+	baseHandlerDepth := compiler.handlerDepth
+	closeIterator := compiler.builder.NewLabel()
+
+	condition := compiler.builder.NewLabel()
+	advance := compiler.builder.NewLabel()
+	exhausted := compiler.builder.NewLabel()
+	cleanup := compiler.builder.NewLabel()
+	end := compiler.builder.NewLabel()
+	if err := compiler.mark(condition); err != nil {
+		return err
+	}
+	if err := compiler.loadTemporary(iteratorName, statement.Span()); err != nil {
+		return err
+	}
+	if err := compiler.loadTemporary(nextName, statement.Span()); err != nil {
+		return err
+	}
+	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpIteratorNext}, statement.Span()); err != nil {
+		return err
+	}
+	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpDup}, statement.Span()); err != nil {
+		return err
+	}
+	done, err := compiler.stringConstant("done")
+	if err != nil {
+		return err
+	}
+	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpConstant, A: done}, statement.Span()); err != nil {
+		return err
+	}
+	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpGetProperty}, statement.Span()); err != nil {
+		return err
+	}
+	if err := compiler.emitJump(browserruntime.OpJumpIfTrue, exhausted, statement.Span()); err != nil {
+		return err
+	}
+	value, err := compiler.stringConstant("value")
+	if err != nil {
+		return err
+	}
+	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpConstant, A: value}, statement.Span()); err != nil {
+		return err
+	}
+	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpGetProperty}, statement.Span()); err != nil {
+		return err
+	}
+	iterationValue, err := compiler.stringConstant(iterationValueName)
+	if err != nil {
+		return err
+	}
+	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpStoreBinding, A: iterationValue}, statement.Span()); err != nil {
+		return err
+	}
+	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpPop}, statement.Span()); err != nil {
+		return err
+	}
+
+	// Errors produced by advancing the iterator or reading its result do not
+	// close it. Once the value is ready for assignment, abrupt binding or body
+	// completion must run IteratorClose.
+	if err := compiler.emitHandler(browserruntime.HandlerFinally, closeIterator, statement.Span()); err != nil {
+		return err
+	}
+	compiler.handlerDepth++
+
+	iterationScope := statement.LeftDeclaration != nil && statement.LeftDeclaration.Kind != ast.VariableVar
+	if iterationScope {
+		if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpEnterScope}, statement.Span()); err != nil {
+			return err
+		}
+		compiler.environmentDepth++
+		compiler.pushScope()
+	}
+	if err := compiler.loadTemporary(iterationValueName, statement.Span()); err != nil {
+		return err
+	}
+	if err := compiler.initializeForBinding(statement); err != nil {
+		return err
+	}
+	compiler.loops = append(compiler.loops, loopTarget{
+		name: label, breakLabel: end, continueLabel: advance,
+		breakEnvironmentDepth: outerDepth, continueEnvironmentDepth: outerDepth + 1,
+		breakHandlerDepth: baseHandlerDepth, continueHandlerDepth: compiler.handlerDepth,
+	})
+	err = compiler.compileStatement(statement.Body)
+	compiler.loops = compiler.loops[:len(compiler.loops)-1]
+	if err != nil {
+		return err
+	}
+	if iterationScope {
+		compiler.popScope()
+		if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpLeaveScope}, statement.Span()); err != nil {
+			return err
+		}
+		compiler.environmentDepth--
+	}
+	if err := compiler.mark(advance); err != nil {
+		return err
+	}
+	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpLeaveTry}, statement.Span()); err != nil {
+		return err
+	}
+	compiler.handlerDepth--
+	if err := compiler.emitJump(browserruntime.OpJump, condition, statement.Span()); err != nil {
+		return err
+	}
+
+	if err := compiler.mark(exhausted); err != nil {
+		return err
+	}
+	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpPop}, statement.Span()); err != nil {
+		return err
+	}
+	if err := compiler.emitJump(browserruntime.OpJump, cleanup, statement.Span()); err != nil {
+		return err
+	}
+
+	if err := compiler.mark(closeIterator); err != nil {
+		return err
+	}
+	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpEnterFinally}, statement.Span()); err != nil {
+		return err
+	}
+	if err := compiler.loadTemporary(iteratorName, statement.Span()); err != nil {
+		return err
+	}
+	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpIteratorClose}, statement.Span()); err != nil {
+		return err
+	}
+	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpEndFinally}, statement.Span()); err != nil {
+		return err
+	}
+
+	if err := compiler.mark(cleanup); err != nil {
+		return err
+	}
+	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpLeaveScope}, statement.Span()); err != nil {
+		return err
+	}
+	compiler.environmentDepth--
+	if compiler.handlerDepth != baseHandlerDepth {
+		return compiler.problem(statement.Span(), "internal for-of handler-depth imbalance")
+	}
 	return compiler.mark(end)
 }
 
@@ -605,7 +782,8 @@ func (compiler *functionCompiler) compileSwitch(statement *ast.SwitchStatement, 
 	}
 	compiler.loops = append(compiler.loops, loopTarget{
 		name: name, breakLabel: end, breakEnvironmentDepth: outerDepth,
-		continueEnvironmentDepth: compiler.environmentDepth, handlerDepth: compiler.handlerDepth,
+		continueEnvironmentDepth: compiler.environmentDepth,
+		breakHandlerDepth:        compiler.handlerDepth, continueHandlerDepth: compiler.handlerDepth,
 	})
 	for index, item := range statement.Cases {
 		if err := compiler.mark(labels[index]); err != nil {
@@ -645,7 +823,8 @@ func (compiler *functionCompiler) compileLabeled(statement *ast.LabeledStatement
 		end := compiler.builder.NewLabel()
 		compiler.loops = append(compiler.loops, loopTarget{
 			name: name, breakLabel: end, breakEnvironmentDepth: compiler.environmentDepth,
-			continueEnvironmentDepth: compiler.environmentDepth, handlerDepth: compiler.handlerDepth,
+			continueEnvironmentDepth: compiler.environmentDepth,
+			breakHandlerDepth:        compiler.handlerDepth, continueHandlerDepth: compiler.handlerDepth,
 		})
 		err := compiler.compileStatement(body)
 		compiler.loops = compiler.loops[:len(compiler.loops)-1]

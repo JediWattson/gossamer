@@ -3,6 +3,7 @@ package compiler_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -146,6 +147,36 @@ add(4) === 5 && "a" in object && typeof /x/g === "object";
 	result := execute(t, 829, image)
 	if result.Kind() != memory.ValueBool || !result.Bool() {
 		t.Fatalf("React control-flow result = %#v, want true", result)
+	}
+}
+
+func TestCompileLowersForOfThroughIteratorProtocol(t *testing.T) {
+	t.Parallel()
+
+	image, err := compiler.Compile(`
+let total = 0;
+for (let value of [1, 2, 3]) {
+  total = total + value;
+  if (total === 3) break;
+}
+total;
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, _ := image.Function(image.Entry())
+	disassembly, err := browserruntime.Disassemble(entry.Code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, opcode := range []string{"GetIterator", "IteratorNext", "IteratorClose", "EnterTry", "EndFinally"} {
+		if !strings.Contains(disassembly, opcode) {
+			t.Fatalf("for-of disassembly does not contain %s:\n%s", opcode, disassembly)
+		}
+	}
+	result := execute(t, 830, image)
+	if result.Kind() != memory.ValueNumber || result.Number() != 3 {
+		t.Fatalf("for-of result = %#v, want 3", result)
 	}
 }
 
@@ -563,6 +594,13 @@ func execute(t *testing.T, realmID browserruntime.RealmID, image program.Program
 		}
 		result, err = interpreter.Execute(task, loaded.Entry)
 		if err != nil {
+			if thrown, ok := browserruntime.ThrownValue(err); ok && thrown.IsRef() {
+				if object, derefErr := task.DerefError(thrown.Ref()); derefErr == nil {
+					if message, messageErr := task.DerefString(object.Message.Ref()); messageErr == nil {
+						return fmt.Errorf("%w (%s: %s)", err, object.Kind.Name(), message)
+					}
+				}
+			}
 			return err
 		}
 		return task.Realm.Store().CheckInvariants()

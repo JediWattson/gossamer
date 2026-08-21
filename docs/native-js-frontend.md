@@ -39,6 +39,9 @@ and ordinary task release invalidates every unpromoted loaded Ref.
   and callback methods;
 - explicit Array, String, Map, and Set iterator objects whose `next()` method
   returns ordinary `{value, done}` Objects in deterministic native order;
+- `for...of` through the well-known `Symbol.iterator` protocol, including
+  one-time `next` capture, custom and overridden iterables, and `IteratorClose`
+  for abrupt consumer exits;
 - Promise construction, `resolve`, `reject`, `then`, and `catch`, including
   chained fulfillment/rejection and Promise adoption, plus FIFO
   `queueMicrotask` callbacks drained at the native execution checkpoint;
@@ -81,7 +84,7 @@ This is not yet an ECMAScript-compatible engine. In particular:
 - primitive coercion includes Boolean, Number, String, null, and undefined;
   Object coercion uses explicit or inherited `valueOf`/`toString` hooks;
 - full BigInt/Symbol and UTF-16 edge semantics, regex,
-  `for...of`, well-known `Symbol.iterator`, dynamic import, import attributes,
+  dynamic import, import attributes,
   generators, async Functions, top-level `await`, thenable assimilation,
   Promise combinators/finally, and browser-level unhandled-rejection reporting
   are absent;

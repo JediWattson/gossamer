@@ -136,7 +136,8 @@ type loopTarget struct {
 	continueLabel            browserruntime.Label
 	breakEnvironmentDepth    int
 	continueEnvironmentDepth int
-	handlerDepth             int
+	breakHandlerDepth        int
+	continueHandlerDepth     int
 }
 
 type functionCompiler struct {

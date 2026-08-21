@@ -38,6 +38,9 @@ adding ownership claims or reference-count traffic.
   strict and loose equality, relational comparisons, String concatenation,
   logical not, and `typeof`.
 - Control flow: unconditional, truthy, falsey, and nullish jumps.
+- Iteration: explicit `GetIterator`, `IteratorNext`, and `IteratorClose` verbs
+  over the well-known `Symbol.iterator` protocol, with compiler-generated
+  finally unwinding for abrupt `for...of` consumer exits.
 - Functions: bytecode calls, registered numeric native calls, captured closure
   creation, Function object metadata, and construction through the Function's
   actual `prototype` property with explicit `this`.

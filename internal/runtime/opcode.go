@@ -90,6 +90,9 @@ const (
 	OpCallMethodSpread
 	OpConstructSpread
 	OpDefineAccessor
+	OpGetIterator
+	OpIteratorNext
+	OpIteratorClose
 )
 
 func (opcode Opcode) String() string {
@@ -260,11 +263,17 @@ func (opcode Opcode) String() string {
 		return "ConstructSpread"
 	case OpDefineAccessor:
 		return "DefineAccessor"
+	case OpGetIterator:
+		return "GetIterator"
+	case OpIteratorNext:
+		return "IteratorNext"
+	case OpIteratorClose:
+		return "IteratorClose"
 	default:
 		return fmt.Sprintf("Opcode(%d)", opcode)
 	}
 }
 
 func (opcode Opcode) valid() bool {
-	return opcode >= OpConstant && opcode <= OpDefineAccessor
+	return opcode >= OpConstant && opcode <= OpIteratorClose
 }
