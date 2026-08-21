@@ -15,6 +15,7 @@ func TestModuleSpecifiersIncludesLiteralDynamicImportsAndIgnoresNestedText(t *te
 		const nested = () => import("./lazy.js");
 		const templateImport = () => import(` + "`./template-lazy.js`" + `);
 		const computedImport = name => import(` + "`./${name}.js`" + `);
+		const nestedTemplate = value => ` + "`outer ${value ? `input` : {\"datetime-local\": true}}`" + `;
 		const text = "import './not-a-module.js'";
 		const template = ` + "`import './also-not.js'`" + `;
 		function body() { const importName = "ignored"; }

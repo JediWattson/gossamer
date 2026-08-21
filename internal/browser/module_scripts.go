@@ -5,9 +5,8 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
-	"unicode"
-	"unicode/utf8"
 
+	"github.com/JediWattson/gossamer/internal/js/lexer"
 	"github.com/JediWattson/gossamer/internal/resource"
 )
 
@@ -182,131 +181,24 @@ func moduleSpecifiers(source string) ([]string, error) {
 }
 
 func lexModuleSurface(source string) ([]moduleLexeme, error) {
-	tokens := make([]moduleLexeme, 0, len(source)/5)
-	for offset := 0; offset < len(source); {
-		r, width := utf8.DecodeRuneInString(source[offset:])
-		if r == utf8.RuneError && width == 1 {
-			return nil, fmt.Errorf("invalid UTF-8 at byte %d", offset)
-		}
-		if unicode.IsSpace(r) {
-			offset += width
+	lexed, err := lexer.Lex(source)
+	if err != nil {
+		return nil, err
+	}
+	tokens := make([]moduleLexeme, 0, len(lexed))
+	for _, token := range lexed {
+		switch token.Kind {
+		case lexer.EOF:
 			continue
+		case lexer.Import, lexer.Export:
+			tokens = append(tokens, moduleLexeme{kind: moduleIdentifier, text: token.Lexeme})
+		case lexer.Identifier:
+			tokens = append(tokens, moduleLexeme{kind: moduleIdentifier, text: token.Text})
+		case lexer.String, lexer.TemplateTail:
+			tokens = append(tokens, moduleLexeme{kind: moduleString, text: token.Text})
+		default:
+			tokens = append(tokens, moduleLexeme{kind: modulePunctuator, text: token.Lexeme})
 		}
-		if strings.HasPrefix(source[offset:], "//") {
-			offset += 2
-			for offset < len(source) && source[offset] != '\n' && source[offset] != '\r' {
-				offset++
-			}
-			continue
-		}
-		if strings.HasPrefix(source[offset:], "/*") {
-			end := strings.Index(source[offset+2:], "*/")
-			if end < 0 {
-				return nil, fmt.Errorf("unterminated block comment")
-			}
-			offset += end + 4
-			continue
-		}
-		if r == '\'' || r == '"' {
-			value, next, err := scanModuleString(source, offset, byte(r))
-			if err != nil {
-				return nil, err
-			}
-			tokens = append(tokens, moduleLexeme{kind: moduleString, text: value})
-			offset = next
-			continue
-		}
-		if r == '`' {
-			value, next, literal, err := scanModuleTemplate(source, offset)
-			if err != nil {
-				return nil, err
-			}
-			if literal {
-				tokens = append(tokens, moduleLexeme{kind: moduleString, text: value})
-			}
-			offset = next
-			continue
-		}
-		if r == '$' || r == '_' || unicode.IsLetter(r) {
-			start := offset
-			offset += width
-			for offset < len(source) {
-				next, nextWidth := utf8.DecodeRuneInString(source[offset:])
-				if next != '$' && next != '_' && !unicode.IsLetter(next) && !unicode.IsDigit(next) {
-					break
-				}
-				offset += nextWidth
-			}
-			tokens = append(tokens, moduleLexeme{kind: moduleIdentifier, text: source[start:offset]})
-			continue
-		}
-		tokens = append(tokens, moduleLexeme{kind: modulePunctuator, text: string(r)})
-		offset += width
 	}
 	return tokens, nil
-}
-
-func scanModuleString(source string, start int, quote byte) (string, int, error) {
-	var value strings.Builder
-	for offset := start + 1; offset < len(source); offset++ {
-		current := source[offset]
-		if current == quote {
-			return value.String(), offset + 1, nil
-		}
-		if current == '\n' || current == '\r' {
-			return "", 0, fmt.Errorf("unterminated module string at byte %d", start)
-		}
-		if current == '\\' {
-			offset++
-			if offset >= len(source) {
-				break
-			}
-			escaped := source[offset]
-			switch escaped {
-			case '\\', '\'', '"':
-				value.WriteByte(escaped)
-			case 'n':
-				value.WriteByte('\n')
-			case 'r':
-				value.WriteByte('\r')
-			case 't':
-				value.WriteByte('\t')
-			default:
-				value.WriteByte(escaped)
-			}
-			continue
-		}
-		value.WriteByte(current)
-	}
-	return "", 0, fmt.Errorf("unterminated module string at byte %d", start)
-}
-
-func scanModuleTemplate(source string, start int) (string, int, bool, error) {
-	var value strings.Builder
-	for offset := start + 1; offset < len(source); offset++ {
-		if source[offset] == '\\' {
-			offset++
-			if offset < len(source) {
-				value.WriteByte(source[offset])
-			}
-			continue
-		}
-		if source[offset] == '$' && offset+1 < len(source) && source[offset+1] == '{' {
-			for offset++; offset < len(source); offset++ {
-				if source[offset] == '\\' {
-					offset++
-					continue
-				}
-				if source[offset] == '`' {
-					return "", offset + 1, false, nil
-				}
-			}
-			break
-		}
-		if source[offset] == '`' {
-			return value.String(), offset + 1, true, nil
-		}
-		value.WriteByte(source[offset])
-	}
-	return "", 0, false, fmt.Errorf("unterminated template literal at byte %d", start)
 }
