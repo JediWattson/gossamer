@@ -45,6 +45,9 @@ and ordinary task release invalidates every unpromoted loaded Ref.
 - Promise construction, `resolve`, `reject`, `then`, and `catch`, including
   chained fulfillment/rejection and Promise adoption, plus FIFO
   `queueMicrotask` callbacks drained at the native execution checkpoint;
+- async Function declarations and expressions whose body is empty or a single
+  return statement, including multiple nested `await` expressions lowered to
+  Promise reactions backed by ordinary RegionStore closures;
 - assignment, deletion, and prefix/postfix identifier or property updates;
 - numeric, bitwise, strict comparison, logical, nullish, and conditional
   expressions, plus coercive arithmetic, relational comparison, unary `+`,
@@ -87,7 +90,8 @@ This is not yet an ECMAScript-compatible engine. In particular:
   Object coercion uses explicit or inherited `valueOf`/`toString` hooks;
 - full BigInt/Symbol and UTF-16 edge semantics, regex,
   computed or script-level dynamic import, import attributes,
-  generators, async Functions, top-level `await`, thenable assimilation,
+  generators, multi-statement async Function bodies, async arrows, top-level
+  `await`, thenable assimilation,
   Promise combinators/finally, and browser-level unhandled-rejection reporting
   are absent;
 - the native browser facade is intentionally smaller than the stock V8 facade:

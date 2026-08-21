@@ -879,7 +879,7 @@ func (compiler *functionCompiler) compileHoistedFunction(declaration *ast.Functi
 	if err != nil {
 		return err
 	}
-	function, err := compiler.compileNestedFunction(declaration.Name.Name, declaration.Parameters, declaration.Body, declaration.Span())
+	function, err := compiler.compileNestedFunction(declaration.Name.Name, declaration.Parameters, declaration.Body, declaration.Span(), declaration.Async)
 	if err != nil {
 		return err
 	}
@@ -900,7 +900,14 @@ func (compiler *functionCompiler) compileHoistedFunction(declaration *ast.Functi
 	return compiler.emit(browserruntime.Instruction{Op: browserruntime.OpPop}, declaration.Span())
 }
 
-func (compiler *functionCompiler) compileNestedFunction(name string, parameters []*ast.Identifier, body *ast.BlockStatement, span lexer.Span) (uint32, error) {
+func (compiler *functionCompiler) compileNestedFunction(name string, parameters []*ast.Identifier, body *ast.BlockStatement, span lexer.Span, async bool) (uint32, error) {
+	if async {
+		var err error
+		body, err = lowerAsyncBody(body)
+		if err != nil {
+			return 0, compiler.problem(span, err.Error())
+		}
+	}
 	index, err := compiler.owner.reserveFunction()
 	if err != nil {
 		return 0, err

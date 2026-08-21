@@ -57,6 +57,8 @@ func (compiler *functionCompiler) compileExpression(expression ast.Expression) e
 		return compiler.compileImportMeta(expression)
 	case *ast.DynamicImportExpression:
 		return compiler.compileDynamicImport(expression)
+	case *ast.AwaitExpression:
+		return compiler.problem(expression.Span(), "await must be lowered inside an async Function")
 	case *ast.ArrayLiteral:
 		return compiler.compileArray(expression)
 	case *ast.ObjectLiteral:
@@ -183,7 +185,7 @@ func (compiler *functionCompiler) compileArrowFunctionExpression(expression *ast
 			Body: []ast.Statement{&ast.ReturnStatement{Base: ast.Base{Range: expression.Expression.Span()}, Argument: expression.Expression}},
 		}
 	}
-	function, err := compiler.compileNestedFunction("", expression.Parameters, body, expression.Span())
+	function, err := compiler.compileNestedFunction("", expression.Parameters, body, expression.Span(), expression.Async)
 	if err != nil {
 		return err
 	}
@@ -256,7 +258,7 @@ func (compiler *functionCompiler) compileFunctionExpression(expression *ast.Func
 	if expression.Name != nil {
 		name = expression.Name.Name
 	}
-	function, err := compiler.compileNestedFunction(name, expression.Parameters, expression.Body, expression.Span())
+	function, err := compiler.compileNestedFunction(name, expression.Parameters, expression.Body, expression.Span(), expression.Async)
 	if err != nil {
 		return err
 	}

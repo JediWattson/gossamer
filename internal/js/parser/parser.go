@@ -29,6 +29,7 @@ func (problem *Error) Unwrap() error { return ErrInvalidSyntax }
 type parser struct {
 	tokens []lexer.Token
 	index  int
+	async  int
 }
 
 func Parse(source string) (*ast.Script, error) {
@@ -72,6 +73,10 @@ func (input *parser) parseModuleItem() (ast.Statement, error) {
 }
 
 func (input *parser) parseStatement() (ast.Statement, error) {
+	if input.checkContextual("async") && input.peek(1).Kind == lexer.Function &&
+		input.current().Span.End.Line == input.peek(1).Span.Start.Line {
+		return input.parseAsyncFunctionDeclaration()
+	}
 	switch input.current().Kind {
 	case lexer.Semicolon:
 		token := input.advance()
@@ -423,20 +428,36 @@ func (input *parser) parseArrayBindingPattern() ([]*ast.Identifier, lexer.Span, 
 
 func (input *parser) parseFunctionDeclaration() (ast.Statement, error) {
 	start := input.advance()
+	return input.parseFunctionDeclarationAfterStart(start, false)
+}
+
+func (input *parser) parseAsyncFunctionDeclaration() (ast.Statement, error) {
+	start := input.advance()
+	if _, err := input.consume(lexer.Function, "expected function after async"); err != nil {
+		return nil, err
+	}
+	return input.parseFunctionDeclarationAfterStart(start, true)
+}
+
+func (input *parser) parseFunctionDeclarationAfterStart(start lexer.Token, async bool) (ast.Statement, error) {
 	nameToken, err := input.consume(lexer.Identifier, "function declaration requires a name")
 	if err != nil {
 		return nil, err
 	}
-	parameters, body, end, err := input.parseFunctionTail()
+	parameters, body, end, err := input.parseFunctionTailAsync(async)
 	if err != nil {
 		return nil, err
 	}
 	return &ast.FunctionDeclaration{
-		Base: ast.Base{Range: join(start.Span, end)}, Name: identifier(nameToken), Parameters: parameters, Body: body,
+		Base: ast.Base{Range: join(start.Span, end)}, Name: identifier(nameToken), Parameters: parameters, Body: body, Async: async,
 	}, nil
 }
 
 func (input *parser) parseFunctionTail() ([]*ast.Identifier, *ast.BlockStatement, lexer.Span, error) {
+	return input.parseFunctionTailAsync(false)
+}
+
+func (input *parser) parseFunctionTailAsync(async bool) ([]*ast.Identifier, *ast.BlockStatement, lexer.Span, error) {
 	if _, err := input.consume(lexer.LeftParen, "expected '(' before parameters"); err != nil {
 		return nil, nil, lexer.Span{}, err
 	}
@@ -465,6 +486,13 @@ func (input *parser) parseFunctionTail() ([]*ast.Identifier, *ast.BlockStatement
 	if _, err := input.consume(lexer.RightParen, "expected ')' after parameters"); err != nil {
 		return nil, nil, lexer.Span{}, err
 	}
+	previousAsync := input.async
+	if async {
+		input.async = 1
+	} else {
+		input.async = 0
+	}
+	defer func() { input.async = previousAsync }()
 	body, err := input.parseBlock()
 	if err != nil {
 		return nil, nil, lexer.Span{}, err
@@ -955,6 +983,14 @@ func (input *parser) parseBinary(next func() (ast.Expression, error), operators 
 }
 
 func (input *parser) parseUnary() (ast.Expression, error) {
+	if input.async > 0 && input.checkContextual("await") {
+		start := input.advance()
+		argument, err := input.parseUnary()
+		if err != nil {
+			return nil, err
+		}
+		return &ast.AwaitExpression{Base: ast.Base{Range: join(start.Span, argument.Span())}, Argument: argument}, nil
+	}
 	if input.match(lexer.Bang, lexer.Minus, lexer.Plus, lexer.Typeof, lexer.Delete, lexer.Void, lexer.Tilde) {
 		operator := input.previous()
 		argument, err := input.parseUnary()
@@ -1229,6 +1265,10 @@ func (input *parser) parsePrimary() (ast.Expression, error) {
 	token := input.advance()
 	switch token.Kind {
 	case lexer.Identifier:
+		if token.Text == "async" && input.check(lexer.Function) && token.Span.End.Line == input.current().Span.Start.Line {
+			input.advance()
+			return input.parseFunctionExpressionAsync(token, true)
+		}
 		return identifier(token), nil
 	case lexer.Number:
 		return &ast.NumberLiteral{Base: ast.Base{Range: token.Span}, Value: token.Number}, nil
@@ -1441,16 +1481,20 @@ func isPropertyName(kind lexer.Kind) bool {
 }
 
 func (input *parser) parseFunctionExpression(start lexer.Token) (ast.Expression, error) {
+	return input.parseFunctionExpressionAsync(start, false)
+}
+
+func (input *parser) parseFunctionExpressionAsync(start lexer.Token, async bool) (ast.Expression, error) {
 	var name *ast.Identifier
 	if input.check(lexer.Identifier) {
 		name = identifier(input.advance())
 	}
-	parameters, body, end, err := input.parseFunctionTail()
+	parameters, body, end, err := input.parseFunctionTailAsync(async)
 	if err != nil {
 		return nil, err
 	}
 	return &ast.FunctionExpression{
-		Base: ast.Base{Range: join(start.Span, end)}, Name: name, Parameters: parameters, Body: body,
+		Base: ast.Base{Range: join(start.Span, end)}, Name: name, Parameters: parameters, Body: body, Async: async,
 	}, nil
 }
 
@@ -1485,6 +1529,10 @@ func (input *parser) matchContextual(text string) bool {
 		return true
 	}
 	return false
+}
+
+func (input *parser) checkContextual(text string) bool {
+	return input.check(lexer.Identifier) && input.current().Text == text
 }
 
 func contains(kinds []lexer.Kind, kind lexer.Kind) bool {

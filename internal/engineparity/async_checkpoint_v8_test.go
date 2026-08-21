@@ -15,3 +15,11 @@ func TestStockV8AsyncCheckpointParity(t *testing.T) {
 	}
 	runAsyncCheckpointParity(t, engine)
 }
+
+func TestStockV8AsyncFunctionParity(t *testing.T) {
+	engine, err := v8engine.New(v8engine.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runAsyncFunctionParity(t, engine)
+}

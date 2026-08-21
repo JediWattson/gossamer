@@ -150,6 +150,7 @@ type FunctionDeclaration struct {
 	Name       *Identifier
 	Parameters []*Identifier
 	Body       *BlockStatement
+	Async      bool
 }
 
 func (*FunctionDeclaration) statementNode() {}
@@ -335,6 +336,13 @@ type DynamicImportExpression struct {
 
 func (*DynamicImportExpression) expressionNode() {}
 
+type AwaitExpression struct {
+	Base
+	Argument Expression
+}
+
+func (*AwaitExpression) expressionNode() {}
+
 type ArrayLiteral struct {
 	Base
 	// A nil element is an array hole.
@@ -454,6 +462,7 @@ type FunctionExpression struct {
 	Name       *Identifier
 	Parameters []*Identifier
 	Body       *BlockStatement
+	Async      bool
 }
 
 func (*FunctionExpression) expressionNode() {}
@@ -463,6 +472,7 @@ type ArrowFunctionExpression struct {
 	Parameters []*Identifier
 	Body       *BlockStatement
 	Expression Expression
+	Async      bool
 }
 
 func (*ArrowFunctionExpression) expressionNode() {}

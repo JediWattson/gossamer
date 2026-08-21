@@ -15,6 +15,68 @@ func TestStrandAsyncCheckpointParity(t *testing.T) {
 	runAsyncCheckpointParity(t, nativeengine.New(nativeengine.Config{}))
 }
 
+func TestStrandAsyncFunctionParity(t *testing.T) {
+	runAsyncFunctionParity(t, nativeengine.New(nativeengine.Config{}))
+}
+
+func runAsyncFunctionParity(t *testing.T, engine browser.Engine) {
+	t.Helper()
+	root, err := htmlparser.Parse(strings.NewReader(`<!doctype html><html><body></body></html>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	browserRuntime, err := browser.NewWithEngine(engine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	location, _ := url.Parse("https://parity.gossamer.test/async-functions.html")
+	page, err := browserRuntime.NewPage(root, location)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := func(label, source string) {
+		t.Helper()
+		if _, queueErr := page.QueueScript(browser.ScriptSource{URL: location.ResolveReference(&url.URL{Path: label + ".js"}).String(), Source: source}); queueErr != nil {
+			t.Fatalf("queue %s: %v", label, queueErr)
+		}
+		for page.Realm.Tasks.Len() != 0 {
+			if runErr := page.Realm.RunOne(context.Background()); runErr != nil {
+				t.Fatalf("run %s: %v", label, runErr)
+			}
+		}
+	}
+	run("schedule-async-functions", `
+globalThis.__asyncValues = [];
+async function compute(value) { return (await Promise.resolve(value + 1)) * 2; }
+const named = async function named(value) { return await compute(value); };
+async function rejected() { return await Promise.reject(new Error("boom")); }
+async function thrown() { return missingAsyncBinding; }
+const promise = compute(2);
+if (!(promise instanceof Promise)) throw new Error("async Function did not return a Promise");
+promise.then(value => __asyncValues.push(value));
+named(4).then(value => __asyncValues.push(value));
+rejected().catch(error => __asyncValues.push(error.message));
+thrown().catch(error => __asyncValues.push(error instanceof ReferenceError));
+__asyncValues.push("sync");
+`)
+	run("assert-async-functions", `
+if (__asyncValues[0] !== "sync" || __asyncValues.length !== 5 ||
+    __asyncValues.indexOf(6) < 1 || __asyncValues.indexOf(10) < 1 ||
+    __asyncValues.indexOf("boom") < 1 || __asyncValues.indexOf(true) < 1) {
+  throw new Error("async Function results: " + __asyncValues.join(","));
+}
+`)
+	if err := page.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if stats := browserRuntime.Ledger().Stats(); stats.LiveObjects != 0 || stats.PersistentObjects != 0 {
+		t.Fatalf("async Function teardown ownership = %#v", stats)
+	}
+	if err := browserRuntime.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func runAsyncCheckpointParity(t *testing.T, engine browser.Engine) {
 	t.Helper()
 	root, err := htmlparser.Parse(strings.NewReader(`

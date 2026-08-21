@@ -367,6 +367,33 @@ export function load(name) { return import(name); }
 	}
 }
 
+func TestParseAsyncFunctionAwaitExpressions(t *testing.T) {
+	t.Parallel()
+
+	script, err := parser.Parse(`
+async function load(value) { return (await Promise.resolve(value)) + 1; }
+const expression = async function named() { return await load(2); };
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	declaration := script.Body[0].(*ast.FunctionDeclaration)
+	if !declaration.Async {
+		t.Fatal("async Function declaration lost its flag")
+	}
+	returned := declaration.Body.Body[0].(*ast.ReturnStatement).Argument.(*ast.BinaryExpression)
+	if _, ok := returned.Left.(*ast.AwaitExpression); !ok {
+		t.Fatalf("async declaration return = %#v", returned.Left)
+	}
+	expression := script.Body[1].(*ast.VariableDeclaration).Declarations[0].Init.(*ast.FunctionExpression)
+	if !expression.Async {
+		t.Fatal("async Function expression lost its flag")
+	}
+	if _, ok := expression.Body.Body[0].(*ast.ReturnStatement).Argument.(*ast.AwaitExpression); !ok {
+		t.Fatalf("async expression body = %#v", expression.Body.Body)
+	}
+}
+
 func TestParseRejectsNestedAndMalformedModuleDeclarations(t *testing.T) {
 	t.Parallel()
 

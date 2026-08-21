@@ -574,6 +574,23 @@ func TestCompileRejectsInvalidFunctionControlFlow(t *testing.T) {
 	}
 }
 
+func TestCompileLowersAsyncReturnAwaitToPromiseChains(t *testing.T) {
+	t.Parallel()
+
+	if _, err := compiler.Compile(`
+async function compute(value) {
+  return (await Promise.resolve(value + 1)) * 2;
+}
+const named = async function named(value) { return await compute(value); };
+compute(2).then(value => value);
+`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := compiler.Compile(`async function unsupported() { let value = 1; return value; }`); !errors.Is(err, compiler.ErrCompile) {
+		t.Fatalf("multi-statement async Function error = %v", err)
+	}
+}
+
 func execute(t *testing.T, realmID browserruntime.RealmID, image program.Program) memory.Value {
 	t.Helper()
 	realm, err := browserruntime.NewRealm(realmID, nil)
