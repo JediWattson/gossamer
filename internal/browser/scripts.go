@@ -298,7 +298,9 @@ func (page *Page) applyNavigationScript(
 		return nil
 	case navigationDOMContentLoaded:
 		if err := page.dispatchNavigationLifecycleEvent(task, id, generation, InputDOMContentLoaded); err != nil {
-			page.recordNavigationScriptFailure(id, generation)
+			page.recordNavigationScriptFailure(id, generation, ScriptFailure{
+				Phase: "DOMContentLoaded", Message: err.Error(),
+			})
 		}
 		return nil
 	case navigationReadyComplete:
@@ -310,10 +312,14 @@ func (page *Page) applyNavigationScript(
 		page.readyState = "complete"
 		page.mutex.Unlock()
 		if err := page.dispatchNavigationLifecycleEvent(task, id, generation, InputLoad); err != nil {
-			page.recordNavigationScriptFailure(id, generation)
+			page.recordNavigationScriptFailure(id, generation, ScriptFailure{
+				Phase: "load", Message: err.Error(),
+			})
 		}
 		if err := page.dispatchWindowNavigationLifecycleEvent(task, id, generation, InputPageShow, false); err != nil {
-			page.recordNavigationScriptFailure(id, generation)
+			page.recordNavigationScriptFailure(id, generation, ScriptFailure{
+				Phase: "pageshow", Message: err.Error(),
+			})
 		}
 		page.mutex.Lock()
 		defer page.mutex.Unlock()
@@ -327,8 +333,10 @@ func (page *Page) applyNavigationScript(
 		return fmt.Errorf("browser: unknown navigation script result %d", result.kind)
 	}
 
+	phase := "load"
 	scriptErr := result.err
 	if scriptErr == nil && script != nil {
+		phase = "evaluate"
 		host := &taskHost{page: page, task: task, generation: generation, autoRender: false}
 		if result.script.kind == navigationModuleScript {
 			moduleRealm, ok := script.(JSModuleRealm)
@@ -350,6 +358,9 @@ func (page *Page) applyNavigationScript(
 	}
 	if scriptErr != nil {
 		page.navigation.scriptsFailed++
+		page.appendScriptFailureLocked(ScriptFailure{
+			URL: result.source.URL, Phase: phase, Message: scriptErr.Error(),
+		})
 	}
 	if page.navigation.scriptsPending > 0 {
 		page.navigation.scriptsPending--
@@ -357,12 +368,30 @@ func (page *Page) applyNavigationScript(
 	return nil
 }
 
-func (page *Page) recordNavigationScriptFailure(id NavigationID, generation DocumentGeneration) {
+func (page *Page) recordNavigationScriptFailure(id NavigationID, generation DocumentGeneration, failure ScriptFailure) {
 	page.mutex.Lock()
 	if page.matchesNavigationLocked(id, generation) && page.navigation.state == NavigationLoadingScripts {
 		page.navigation.scriptsFailed++
+		page.appendScriptFailureLocked(failure)
 	}
 	page.mutex.Unlock()
+}
+
+func (page *Page) appendScriptFailureLocked(failure ScriptFailure) {
+	const (
+		maximumScriptFailureDiagnostics = 64
+		maximumScriptFailureMessage     = 4096
+	)
+	if len(page.navigation.scriptFailures) >= maximumScriptFailureDiagnostics {
+		return
+	}
+	failure.URL = strings.TrimSpace(failure.URL)
+	failure.Phase = strings.TrimSpace(failure.Phase)
+	failure.Message = strings.TrimSpace(failure.Message)
+	if len(failure.Message) > maximumScriptFailureMessage {
+		failure.Message = failure.Message[:maximumScriptFailureMessage] + "..."
+	}
+	page.navigation.scriptFailures = append(page.navigation.scriptFailures, failure)
 }
 
 func (page *Page) dispatchNavigationLifecycleEvent(

@@ -55,7 +55,16 @@ type NavigationSnapshot struct {
 	ScriptsTotal       int
 	ScriptsPending     int
 	ScriptsFailed      int
+	ScriptFailures     []ScriptFailure
 	Err                error
+}
+
+// ScriptFailure is one bounded diagnostic captured while loading, evaluating,
+// or dispatching lifecycle events for an initial-navigation script.
+type ScriptFailure struct {
+	URL     string `json:"url,omitempty"`
+	Phase   string `json:"phase"`
+	Message string `json:"message"`
 }
 
 type navigationRecord struct {
@@ -69,6 +78,7 @@ type navigationRecord struct {
 	scriptsTotal       int
 	scriptsPending     int
 	scriptsFailed      int
+	scriptFailures     []ScriptFailure
 	scripts            []navigationScript
 	fetcher            resource.Fetcher
 	err                error
@@ -370,6 +380,7 @@ func (page *Page) navigationSnapshotLocked() NavigationSnapshot {
 		ScriptsTotal:       page.navigation.scriptsTotal,
 		ScriptsPending:     page.navigation.scriptsPending,
 		ScriptsFailed:      page.navigation.scriptsFailed,
+		ScriptFailures:     append([]ScriptFailure(nil), page.navigation.scriptFailures...),
 		Err:                page.navigation.err,
 	}
 }

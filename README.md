@@ -65,6 +65,18 @@ also run directly with `go run ./cmd/gossamer-window --engine=strand <url>`.
 Its JavaScript and Web API surface is deliberately smaller than the stock-V8
 reference path.
 
+Production bundles can be exercised without opening a window. The
+engine-selectable site compatibility harness emits navigation, script, DOM,
+frame, and ownership-teardown diagnostics:
+
+```sh
+go run ./cmd/gossamer-sitecheck --engine=strand --dist /absolute/path/to/dist
+./tools/v8/sitecheck.sh --engine=v8 --dist /absolute/path/to/dist
+```
+
+See [`docs/site-compatibility.md`](docs/site-compatibility.md) for the report
+contract, screenshot mode, and the current efchat baseline.
+
 Subsequent launches only need `window.sh`; rerun `build.sh` after changing the
 C++ V8 bridge. URLs containing shell characters such as `&` should be quoted.
 An optional title can be supplied before the URL:

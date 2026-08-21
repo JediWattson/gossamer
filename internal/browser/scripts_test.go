@@ -15,6 +15,28 @@ import (
 	"github.com/JediWattson/gossamer/internal/resource"
 )
 
+func TestNavigationSnapshotCopiesBoundedScriptFailureDiagnostics(t *testing.T) {
+	page := &Page{navigation: navigationRecord{}}
+	longMessage := strings.Repeat("x", 5000)
+	for index := 0; index < 65; index++ {
+		page.appendScriptFailureLocked(ScriptFailure{
+			URL: " https://example.test/app.js ", Phase: " evaluate ", Message: " " + longMessage + " ",
+		})
+	}
+	snapshot := page.navigationSnapshotLocked()
+	if len(snapshot.ScriptFailures) != 64 {
+		t.Fatalf("script failure diagnostics = %d, want 64", len(snapshot.ScriptFailures))
+	}
+	first := snapshot.ScriptFailures[0]
+	if first.URL != "https://example.test/app.js" || first.Phase != "evaluate" || len(first.Message) != 4099 || !strings.HasSuffix(first.Message, "...") {
+		t.Fatalf("bounded script failure = %#v", first)
+	}
+	snapshot.ScriptFailures[0].Message = "changed"
+	if page.navigation.scriptFailures[0].Message == "changed" {
+		t.Fatal("NavigationSnapshot exposed mutable script failure storage")
+	}
+}
+
 func TestNavigationScriptSequenceDoesNotDelayDOMContentLoadedForAsyncScript(t *testing.T) {
 	t.Parallel()
 	asyncURL, _ := url.Parse("https://example.test/async.js")
