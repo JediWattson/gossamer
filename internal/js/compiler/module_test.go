@@ -59,6 +59,17 @@ export default () => answer;
 		!byName["read"].mutable || byName["*default*"].mutable {
 		t.Fatalf("binding metadata = %#v", bindings)
 	}
+	for _, binding := range bindings {
+		if binding.Name == "read" {
+			if !binding.HasFunction || int(binding.FunctionIndex) >= module.Program().FunctionCount() {
+				t.Fatalf("Function binding metadata = %#v", binding)
+			}
+			continue
+		}
+		if binding.HasFunction {
+			t.Fatalf("non-Function binding has template metadata: %#v", binding)
+		}
+	}
 	exports := module.Exports()
 	if len(exports) != 8 {
 		t.Fatalf("exports = %#v", exports)

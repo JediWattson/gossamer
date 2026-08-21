@@ -172,9 +172,12 @@ graphs. The browser pipeline fetches, MIME-checks, scans, URL-resolves, and
 caches the complete pointer-free graph in Go. Strand compiles portable module
 records, creates one RegionStore Context per canonical URL, links imports to
 immutable indirect bindings, constructs namespace objects over live getters,
-and evaluates the dependency graph once per Realm. Cycles link before
-evaluation; cached link or evaluation failures are replayed without executing
-the module again.
+and evaluates the dependency graph once per Realm. Instantiation declares every
+module local before dependency evaluation: `var` starts as undefined, hoisted
+Functions close over the module environment immediately, and lexical bindings
+retain their temporal dead zone until their declaration executes. Cycles link
+before evaluation; cached link or evaluation failures are replayed without
+executing the module again.
 
 The production gate is a normal split Vite Solid build: its application entry
 imports a separately emitted Solid runtime chunk. The shared gate runs the same

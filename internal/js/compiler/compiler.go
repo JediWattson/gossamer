@@ -151,6 +151,8 @@ type functionCompiler struct {
 	environmentDepth int
 	handlerDepth     int
 	nextTemporary    uint64
+	moduleRoot       bool
+	moduleFunctions  map[string]uint32
 }
 
 type constantKey struct {

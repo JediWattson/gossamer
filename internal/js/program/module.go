@@ -1,12 +1,15 @@
 package program
 
-// ModuleBinding describes one local environment slot created before module
-// evaluation. InitializeUndefined distinguishes var bindings from lexical and
-// Function bindings that remain uninitialized until their bytecode prologue.
+// ModuleBinding describes one local environment slot created during module
+// instantiation. Lexical bindings remain uninitialized until evaluation, var
+// bindings receive undefined, and Function bindings receive a closure over the
+// module environment before any dependency begins evaluating.
 type ModuleBinding struct {
 	Name                string
 	Mutable             bool
 	InitializeUndefined bool
+	FunctionIndex       uint32
+	HasFunction         bool
 }
 
 type ModuleImport struct {

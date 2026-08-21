@@ -75,6 +75,22 @@ func (compiler *functionCompiler) instantiateFunctionScope(statements []ast.Stat
 	// All names exist before any initializer runs. This is what lets mutually
 	// recursive Function declarations capture the complete Function scope.
 	for _, action := range actions {
+		if compiler.moduleRoot {
+			if action.declaration.function == nil {
+				continue
+			}
+			index, err := compiler.compileNestedFunction(
+				action.declaration.function.Name.Name,
+				action.declaration.function.Parameters,
+				action.declaration.function.Body,
+				action.declaration.function.Span(),
+			)
+			if err != nil {
+				return err
+			}
+			compiler.moduleFunctions[action.declaration.name] = index
+			continue
+		}
 		if !action.initialize {
 			continue
 		}
@@ -87,6 +103,9 @@ func (compiler *functionCompiler) instantiateFunctionScope(statements []ast.Stat
 		}
 	}
 	for _, declaration := range lexicals {
+		if compiler.moduleRoot {
+			continue
+		}
 		name, err := compiler.stringConstant(declaration.name)
 		if err != nil {
 			return err
@@ -100,6 +119,9 @@ func (compiler *functionCompiler) instantiateFunctionScope(statements []ast.Stat
 		}
 	}
 	for _, action := range actions {
+		if compiler.moduleRoot {
+			continue
+		}
 		if action.declaration.function != nil {
 			if err := compiler.compileHoistedFunction(action.declaration.function, action.initialize); err != nil {
 				return err

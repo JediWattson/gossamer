@@ -133,6 +133,8 @@ func CompileModuleASTWithOptions(script *ast.Script, options Options) (program.M
 	moduleScript := &ast.Script{Base: script.Base, Body: body}
 	owner := &imageCompiler{functions: []program.FunctionTemplate{{}}, options: options}
 	function := newFunctionCompiler(owner, nil, false)
+	function.moduleRoot = true
+	function.moduleFunctions = make(map[string]uint32)
 	for name, imported := range importBindings {
 		function.scopes[0][name] = imported
 	}
@@ -152,6 +154,14 @@ func CompileModuleASTWithOptions(script *ast.Script, options Options) (program.M
 	bindings, localNames, err := moduleLocalBindings(body)
 	if err != nil {
 		return program.Module{}, err
+	}
+	for index := range bindings {
+		functionIndex, found := function.moduleFunctions[bindings[index].Name]
+		if !found {
+			continue
+		}
+		bindings[index].FunctionIndex = functionIndex
+		bindings[index].HasFunction = true
 	}
 	for name := range importBindings {
 		localNames[name] = struct{}{}

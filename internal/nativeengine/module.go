@@ -25,6 +25,7 @@ const (
 type nativeModule struct {
 	source browser.ScriptSource
 	image  program.Module
+	entry  memory.Ref
 	status nativeModuleStatus
 	err    error
 }
@@ -210,6 +211,13 @@ func (realm *Realm) linkModuleLocked(context *browserruntime.TaskContext, url st
 			module.err = result
 		}
 	}()
+	environment, err := realm.moduleContextLocked(context, url)
+	if err != nil {
+		return err
+	}
+	if err := realm.instantiateModuleLocalsLocked(context, module, environment); err != nil {
+		return evaluationError(url, err)
+	}
 	for _, request := range module.image.Requests() {
 		dependency, err := realm.resolveModuleRequest(url, request)
 		if err != nil {
@@ -218,10 +226,6 @@ func (realm *Realm) linkModuleLocked(context *browserruntime.TaskContext, url st
 		if err := realm.linkModuleLocked(context, dependency); err != nil {
 			return err
 		}
-	}
-	environment, err := realm.moduleContextLocked(context, url)
-	if err != nil {
-		return err
 	}
 	for _, imported := range module.image.Imports() {
 		dependency, err := realm.resolveModuleRequest(url, imported.ModuleRequest)
@@ -277,6 +281,57 @@ func (realm *Realm) linkModuleLocked(context *browserruntime.TaskContext, url st
 	return nil
 }
 
+func (realm *Realm) instantiateModuleLocalsLocked(context *browserruntime.TaskContext, module *nativeModule, environment memory.Ref) error {
+	loaded, err := program.Load(context, module.image.Program(), memory.RefValue(environment))
+	if err != nil {
+		return err
+	}
+	module.entry = loaded.Entry
+	bindings := module.image.Bindings()
+	names := make(map[string]memory.Ref, len(bindings))
+	for _, binding := range bindings {
+		name, err := context.NewString(binding.Name)
+		if err != nil {
+			return err
+		}
+		if err := context.DeclareBinding(environment, name, binding.Mutable); err != nil {
+			return err
+		}
+		names[binding.Name] = name
+	}
+	for _, binding := range bindings {
+		name := names[binding.Name]
+		switch {
+		case binding.InitializeUndefined:
+			if err := context.InitializeBinding(environment, name, memory.UndefinedValue()); err != nil {
+				return err
+			}
+		case binding.HasFunction:
+			if uint64(binding.FunctionIndex) >= uint64(len(loaded.Functions)) {
+				return fmt.Errorf("%w: binding %q references function %d", program.ErrInvalidProgram, binding.Name, binding.FunctionIndex)
+			}
+			template, err := context.DerefFunction(loaded.Functions[binding.FunctionIndex])
+			if err != nil {
+				return err
+			}
+			closure, err := context.NewBytecodeFunction(
+				template.Name,
+				memory.RefValue(environment),
+				template.Arity,
+				template.Code,
+				template.Constants,
+			)
+			if err != nil {
+				return err
+			}
+			if err := context.InitializeBinding(environment, name, memory.RefValue(closure)); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func (realm *Realm) evaluateModuleLocked(context *browserruntime.TaskContext, url string) (result error) {
 	module := realm.modules[url]
 	if module == nil {
@@ -294,6 +349,7 @@ func (realm *Realm) evaluateModuleLocked(context *browserruntime.TaskContext, ur
 	}
 	module.status = moduleEvaluating
 	defer func() {
+		module.entry = memory.Ref{}
 		if result != nil {
 			module.status = moduleErrored
 			module.err = result
@@ -308,17 +364,12 @@ func (realm *Realm) evaluateModuleLocked(context *browserruntime.TaskContext, ur
 			return err
 		}
 	}
-	environment, err := realm.moduleContextLocked(context, url)
-	if err != nil {
-		return evaluationError(url, err)
-	}
-	loaded, err := program.Load(context, module.image.Program(), memory.RefValue(environment))
-	if err != nil {
-		return evaluationError(url, err)
+	if module.entry == (memory.Ref{}) {
+		return evaluationError(url, fmt.Errorf("%w: source %q has no instantiated entry", ErrModuleLink, url))
 	}
 	realm.evaluations++
 	realm.sourceBytes += uint64(len(module.source.Source))
-	if _, err := realm.interpreter.ExecuteWithoutCheckpoint(context, loaded.Entry); err != nil {
+	if _, err := realm.interpreter.ExecuteWithoutCheckpoint(context, module.entry); err != nil {
 		return evaluationError(url, describeExecutionError(context, err))
 	}
 	module.status = moduleEvaluated

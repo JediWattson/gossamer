@@ -40,6 +40,17 @@ func TestStrandCachesModuleFailuresAndReleasesGraphs(t *testing.T) {
 	})
 }
 
+func TestStrandInstantiatesCyclicModuleBindingsBeforeEvaluation(t *testing.T) {
+	engine := nativeengine.New(nativeengine.Config{})
+	runModuleInstantiationParity(t, engine, func(page *browser.Page) error {
+		realm, ok := engine.LatestRealm()
+		if !ok {
+			return nativeengine.ErrRealmClosed
+		}
+		return realm.CollectGarbage(page)
+	})
+}
+
 func runLiveModuleGraphParity(t *testing.T, engine browser.Engine, collect func(*browser.Page) error) {
 	t.Helper()
 	client := &moduleGraphMemoryLoader{sources: map[string]string{
@@ -183,10 +194,150 @@ if (typeof __moduleLinkShouldNotRun !== "undefined") {
 	}
 }
 
+func runModuleInstantiationParity(t *testing.T, engine browser.Engine, collect func(*browser.Page) error) {
+	t.Helper()
+	client := &moduleInstantiationMemoryLoader{sources: map[string]string{
+		"https://module-instantiation.gossamer.test/root.js": `
+import {result, varResult, helper} from "./dependency.js";
+export var late = 7;
+export function early() { return helper(); }
+globalThis.__moduleInstantiationRuns = (globalThis.__moduleInstantiationRuns || 0) + 1;
+globalThis.__moduleInstantiationResult = [result, varResult, late].join(":");
+`,
+		"https://module-instantiation.gossamer.test/dependency.js": `
+import {early, late} from "./root.js";
+export function helper() { return "function"; }
+export const result = early();
+export const varResult = typeof late;
+`,
+		"https://module-instantiation.gossamer.test/tdz-root.js": `
+import "./tdz-reader.js";
+export let lexical = "ready";
+globalThis.__moduleTDZRootRan = true;
+`,
+		"https://module-instantiation.gossamer.test/tdz-reader.js": `
+import {lexical} from "./tdz-root.js";
+globalThis.__moduleTDZAttempts = (globalThis.__moduleTDZAttempts || 0) + 1;
+globalThis.__moduleTDZValue = lexical;
+`,
+	}}
+	browserRuntime, err := browser.NewWithEngine(engine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := browserRuntime.LoadPage(context.Background(), moduleInstantiationPageURL, client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := page.Navigation()
+	if snapshot.State != browser.NavigationComplete || snapshot.ScriptsTotal != 4 || snapshot.ScriptsFailed != 2 {
+		t.Fatalf("module instantiation navigation = %#v", snapshot)
+	}
+	if _, err := page.QueueScript(browser.ScriptSource{URL: moduleInstantiationPageURL + "assert.js", Source: `
+if (__moduleInstantiationRuns !== 1) {
+  throw new Error("instantiated module evaluated more than once: " + __moduleInstantiationRuns);
+}
+if (__moduleInstantiationResult !== "function:undefined:7") {
+  throw new Error("module instantiation result: " + __moduleInstantiationResult);
+}
+if (__moduleTDZAttempts !== 1 || typeof __moduleTDZRootRan !== "undefined") {
+  throw new Error("module TDZ failure was not cached before root evaluation");
+}
+`}); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	wantLoads := []string{
+		"https://module-instantiation.gossamer.test/dependency.js",
+		"https://module-instantiation.gossamer.test/root.js",
+		"https://module-instantiation.gossamer.test/tdz-reader.js",
+		"https://module-instantiation.gossamer.test/tdz-root.js",
+	}
+	if got := client.loadedOnce(); fmt.Sprint(got) != fmt.Sprint(wantLoads) {
+		t.Fatalf("module instantiation fetches = %#v, want %#v", got, wantLoads)
+	}
+	if err := collect(page); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.Close(); err != nil {
+		t.Fatal(err)
+	}
+	stats := browserRuntime.Ledger().Stats()
+	if stats.LiveObjects != 0 || stats.PersistentObjects != 0 {
+		t.Fatalf("module instantiation ownership survived Page close: %#v", stats)
+	}
+	if err := browserRuntime.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 type moduleGraphMemoryLoader struct {
 	mutex   sync.Mutex
 	sources map[string]string
 	loads   map[string]int
+}
+
+const moduleInstantiationPageURL = "https://module-instantiation.gossamer.test/"
+
+type moduleInstantiationMemoryLoader struct {
+	mutex   sync.Mutex
+	sources map[string]string
+	loads   map[string]int
+}
+
+func (client *moduleInstantiationMemoryLoader) Load(_ context.Context, rawURL string) (*loader.Response, error) {
+	if rawURL != moduleInstantiationPageURL {
+		return nil, fmt.Errorf("unexpected document URL %q", rawURL)
+	}
+	location, _ := url.Parse(rawURL)
+	body := `<!doctype html><html><body>
+<script type="module" src="/root.js"></script>
+<script type="module" src="/root.js"></script>
+<script type="module" src="/tdz-root.js"></script>
+<script type="module" src="/tdz-root.js"></script>
+</body></html>`
+	return &loader.Response{
+		URL: location, StatusCode: http.StatusOK,
+		Header: http.Header{"Content-Type": []string{"text/html"}},
+		Body:   io.NopCloser(bytes.NewBufferString(body)),
+	}, nil
+}
+
+func (client *moduleInstantiationMemoryLoader) LoadResource(_ context.Context, rawURL string, destination loader.Destination) (*loader.Response, error) {
+	if destination != loader.ScriptDestination {
+		return nil, fmt.Errorf("unexpected destination %d for %q", destination, rawURL)
+	}
+	source, found := client.sources[rawURL]
+	if !found {
+		return nil, fmt.Errorf("unexpected module URL %q", rawURL)
+	}
+	client.mutex.Lock()
+	if client.loads == nil {
+		client.loads = make(map[string]int)
+	}
+	client.loads[rawURL]++
+	client.mutex.Unlock()
+	location, _ := url.Parse(rawURL)
+	return &loader.Response{
+		URL: location, StatusCode: http.StatusOK,
+		Header: http.Header{"Content-Type": []string{"application/javascript"}},
+		Body:   io.NopCloser(bytes.NewBufferString(source)),
+	}, nil
+}
+
+func (client *moduleInstantiationMemoryLoader) loadedOnce() []string {
+	client.mutex.Lock()
+	defer client.mutex.Unlock()
+	result := make([]string, 0, len(client.loads))
+	for url, count := range client.loads {
+		if count == 1 {
+			result = append(result, url)
+		}
+	}
+	sort.Strings(result)
+	return result
 }
 
 const moduleFailurePageURL = "https://module-errors.gossamer.test/"
