@@ -151,11 +151,13 @@ func slotReferences(slot *Slot) []Value {
 		return values
 	}
 	if slot.Kind == HeapContext {
-		values := make([]Value, 0, 1+len(slot.Context.Bindings)*2)
+		values := make([]Value, 0, 1+len(slot.Context.Bindings)*3)
 		values = append(values, slot.Context.Parent)
 		for _, binding := range slot.Context.Bindings {
 			values = append(values, RefValue(binding.Name))
-			if binding.Initialized {
+			if binding.Indirect {
+				values = append(values, RefValue(binding.Target), RefValue(binding.TargetName))
+			} else if binding.Initialized {
 				values = append(values, binding.Value)
 			}
 		}

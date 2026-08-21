@@ -7,6 +7,9 @@ type Binding struct {
 	Value       Value
 	Mutable     bool
 	Initialized bool
+	Indirect    bool
+	Target      Ref
+	TargetName  Ref
 }
 
 // Context is a native lexical environment. Parent is null or another Context

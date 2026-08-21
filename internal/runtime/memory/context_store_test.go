@@ -118,3 +118,89 @@ func TestNativeContextPromotionPreservesParentAndBindingState(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestIndirectContextBindingIsLiveImmutableAndCopied(t *testing.T) {
+	t.Parallel()
+
+	store := memory.NewStore(nil)
+	defer store.Close()
+	owner := realmOwner(43)
+	reader := realmOwner(44)
+	exportRegion := mustRegion(t, store, owner)
+	importRegion := mustRegion(t, store, owner)
+	exporter, _ := store.AllocContext(owner, exportRegion, memory.NullValue())
+	importer, _ := store.AllocContext(owner, importRegion, memory.NullValue())
+	exportedName, _ := store.AllocString(owner, exportRegion, "counter")
+	localName, _ := store.AllocString(owner, importRegion, "value")
+	if err := store.DeclareBinding(owner, exporter, exportedName, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.InitializeBinding(owner, exporter, exportedName, memory.NumberValue(1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeclareIndirectBinding(owner, importer, localName, exporter, exportedName); err != nil {
+		t.Fatal(err)
+	}
+	if value, found, err := store.ResolveBinding(owner, importer, localName); err != nil || !found || value.Number() != 1 {
+		t.Fatalf("initial indirect value = %#v, %t, %v", value, found, err)
+	}
+	if err := store.SetBinding(owner, exporter, exportedName, memory.NumberValue(2)); err != nil {
+		t.Fatal(err)
+	}
+	if value, found, err := store.ResolveBinding(owner, importer, localName); err != nil || !found || value.Number() != 2 {
+		t.Fatalf("updated indirect value = %#v, %t, %v", value, found, err)
+	}
+	if err := store.SetBinding(owner, importer, localName, memory.NumberValue(3)); !errors.Is(err, memory.ErrImmutableBinding) {
+		t.Fatalf("SetBinding(indirect) = %v, want ErrImmutableBinding", err)
+	}
+	if got := store.EdgeCount(importRegion, exportRegion); got != 2 {
+		t.Fatalf("import -> export edge count = %d, want target Context and name", got)
+	}
+
+	copied, err := store.Copy(owner, reader, importer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	copyContext, err := store.DerefContext(reader, copied[0])
+	if err != nil || len(copyContext.Bindings) != 1 || !copyContext.Bindings[0].Indirect {
+		t.Fatalf("copied importer = %#v, %v", copyContext, err)
+	}
+	copyName := copyContext.Bindings[0].Name
+	if value, found, err := store.ResolveBinding(reader, copied[0], copyName); err != nil || !found || value.Number() != 2 {
+		t.Fatalf("copied indirect value = %#v, %t, %v", value, found, err)
+	}
+	if err := store.ReleaseOwner(owner); err != nil {
+		t.Fatal(err)
+	}
+	if value, found, err := store.ResolveBinding(reader, copied[0], copyName); err != nil || !found || value.Number() != 2 {
+		t.Fatalf("copied indirect value after source release = %#v, %t, %v", value, found, err)
+	}
+	if err := store.CheckInvariants(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestIndirectContextBindingRejectsAliasCycles(t *testing.T) {
+	t.Parallel()
+
+	store := memory.NewStore(nil)
+	defer store.Close()
+	owner := realmOwner(45)
+	region := mustRegion(t, store, owner)
+	left, _ := store.AllocContext(owner, region, memory.NullValue())
+	right, _ := store.AllocContext(owner, region, memory.NullValue())
+	leftName, _ := store.AllocString(owner, region, "left")
+	rightName, _ := store.AllocString(owner, region, "right")
+	if err := store.DeclareIndirectBinding(owner, left, leftName, right, rightName); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeclareIndirectBinding(owner, right, rightName, left, leftName); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := store.ResolveBinding(owner, left, leftName); !found || !errors.Is(err, memory.ErrBindingCycle) {
+		t.Fatalf("ResolveBinding(alias cycle) = found:%t err:%v", found, err)
+	}
+	if err := store.CheckInvariants(); err != nil {
+		t.Fatal(err)
+	}
+}

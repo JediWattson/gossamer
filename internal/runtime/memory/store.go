@@ -29,6 +29,7 @@ var (
 	ErrBindingNotFound       = errors.New("memory: binding not found")
 	ErrBindingUninitialized  = errors.New("memory: binding is uninitialized")
 	ErrImmutableBinding      = errors.New("memory: binding is immutable")
+	ErrBindingCycle          = errors.New("memory: indirect binding cycle")
 	ErrContextCycle          = errors.New("memory: context parent cycle")
 	ErrPrototypeCycle        = errors.New("memory: object prototype cycle")
 	ErrReadOnlyProperty      = errors.New("memory: property is not writable")
@@ -1428,6 +1429,13 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 			}
 			for _, binding := range sourceSlot.Context.Bindings {
 				name := mapping[binding.Name]
+				if binding.Indirect {
+					if err := store.declareIndirectBindingLocked(to, copyRef, name, mapping[binding.Target], mapping[binding.TargetName], true); err != nil {
+						_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
+						return nil, err
+					}
+					continue
+				}
 				if err := store.declareBindingLocked(to, copyRef, name, binding.Mutable, true); err != nil {
 					_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
 					return nil, err

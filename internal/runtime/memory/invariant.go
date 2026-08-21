@@ -281,6 +281,21 @@ func (store *Store) CheckInvariants() error {
 						return invariantError("Context %s has duplicate binding %q", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, nameSlot.String.Text)
 					}
 					seenNames[nameSlot.String.Text] = struct{}{}
+					if binding.Indirect {
+						if !binding.Initialized || binding.Mutable || binding.Value != (Value{}) {
+							return invariantError("Context %s indirect binding %q has invalid local state", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, nameSlot.String.Text)
+						}
+						if err := store.checkOptionalTypedRefLocked(RefValue(binding.Target), HeapContext, "indirect binding target"); err != nil {
+							return err
+						}
+						if err := store.checkOptionalTypedRefLocked(RefValue(binding.TargetName), HeapString, "indirect binding target name"); err != nil {
+							return err
+						}
+						continue
+					}
+					if binding.Target != (Ref{}) || binding.TargetName != (Ref{}) {
+						return invariantError("Context %s direct binding %q retains an indirect target", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, nameSlot.String.Text)
+					}
 					if !binding.Initialized && binding.Value != (Value{}) {
 						return invariantError("Context %s binding %q retains an uninitialized value", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, nameSlot.String.Text)
 					}

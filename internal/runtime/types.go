@@ -222,6 +222,13 @@ func (context *TaskContext) DeclareBinding(contextRef, name memory.Ref, mutable 
 	return context.Realm.store.DeclareBinding(context.Owner, contextRef, name, mutable)
 }
 
+func (context *TaskContext) DeclareIndirectBinding(contextRef, name, targetContext, targetName memory.Ref) error {
+	if context == nil || context.Realm == nil {
+		return fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.DeclareIndirectBinding(context.Owner, contextRef, name, targetContext, targetName)
+}
+
 func (context *TaskContext) InitializeBinding(contextRef, name memory.Ref, value memory.Value) error {
 	if context == nil || context.Realm == nil {
 		return fmt.Errorf("runtime: nil task context")
