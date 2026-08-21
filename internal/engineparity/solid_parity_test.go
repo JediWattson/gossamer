@@ -12,11 +12,11 @@ import (
 	"github.com/JediWattson/gossamer/internal/nativeengine"
 )
 
-func TestStrandRunsProductionSolidKeyedFor(t *testing.T) {
-	runProductionSolidKeyedFor(t, nativeengine.New(nativeengine.Config{}))
+func TestStrandRunsProductionSolidKeyedForAndShow(t *testing.T) {
+	runProductionSolidKeyedForAndShow(t, nativeengine.New(nativeengine.Config{}))
 }
 
-func runProductionSolidKeyedFor(t *testing.T, engine browser.Engine) {
+func runProductionSolidKeyedForAndShow(t *testing.T, engine browser.Engine) {
 	t.Helper()
 	source, err := os.ReadFile("testdata/vite-solid/dist/solid-counter-1.9.14.production.js")
 	if err != nil {
@@ -97,9 +97,23 @@ if (list.children.length !== 3 || list.children[0] !== __solidInitialC ||
 	if got := handle("solid-item-c").Node; got != initialC {
 		t.Fatalf("keyed C identity = %d, want %d", got, initialC)
 	}
+	click("solid-toggle")
+	queueScript("assert-show-hidden", `
+if (document.getElementById("solid-visible") !== null ||
+    document.getElementById("solid-hidden") === null || __solidBranchCleanups !== 1) {
+  throw new Error("Solid Show did not dispose the visible branch");
+}
+`)
+	click("solid-toggle")
+	queueScript("assert-show-visible", `
+if (document.getElementById("solid-visible") === null ||
+    document.getElementById("solid-hidden") !== null || __solidBranchCleanups !== 1) {
+  throw new Error("Solid Show did not restore the visible branch");
+}
+`)
 	queueScript("dispose-keyed-list", `
 globalThis.__solidDispose();
-if (__solidCleanupCount !== 1 || __solidRowCleanups !== 4 ||
+if (__solidCleanupCount !== 1 || __solidRowCleanups !== 4 || __solidBranchCleanups !== 2 ||
     document.getElementById("solid-root").firstChild !== null) {
   throw new Error("Solid keyed list teardown failed");
 }

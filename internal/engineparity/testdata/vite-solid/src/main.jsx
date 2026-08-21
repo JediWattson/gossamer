@@ -1,8 +1,16 @@
-import { createSignal, For, onCleanup } from "solid-js";
+import { createSignal, For, onCleanup, Show } from "solid-js";
 import { render } from "solid-js/web";
 
 globalThis.__solidCleanupCount = 0;
 globalThis.__solidRowCleanups = 0;
+globalThis.__solidBranchCleanups = 0;
+
+function VisibleBranch() {
+  onCleanup(() => {
+    globalThis.__solidBranchCleanups += 1;
+  });
+  return <p id="solid-visible">Visible branch</p>;
+}
 
 function Row(props) {
   onCleanup(() => {
@@ -22,6 +30,7 @@ function SolidParityApp() {
     { id: "b", label: "Beta" },
     { id: "c", label: "Gamma" }
   ]);
+  const [visible, setVisible] = createSignal(true);
   onCleanup(() => {
     globalThis.__solidCleanupCount += 1;
   });
@@ -43,6 +52,12 @@ function SolidParityApp() {
       <ul id="solid-list">
         <For each={items()}>{item => <Row item={item} />}</For>
       </ul>
+      <button id="solid-toggle" onClick={() => setVisible(value => !value)}>
+        Toggle branch
+      </button>
+      <Show when={visible()} fallback={<p id="solid-hidden">Hidden branch</p>}>
+        <VisibleBranch />
+      </Show>
     </section>
   );
 }
