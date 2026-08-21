@@ -1,0 +1,1 @@
+import{t as e}from"./react-taskboard-runtime-19.2.7.production.module.js";var t=e();function n({task:e}){return(0,t.jsxs)(`aside`,{id:`react-task-details`,"data-task":e.id,children:[(0,t.jsx)(`strong`,{children:e.title}),(0,t.jsx)(`span`,{children:e.done?`Complete`:`In progress`})]})}export{n as default};

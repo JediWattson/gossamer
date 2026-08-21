@@ -5,3 +5,4 @@
 /.cache/
 /tools/v8/react-fixture/node_modules/
 /internal/engineparity/testdata/vite-solid/node_modules/
+/internal/engineparity/testdata/vite-react/node_modules/

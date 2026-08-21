@@ -1,0 +1,1 @@
+var e=[{id:`react-app`,title:`Boot a real React app`,done:!1},{id:`module-graph`,title:`Link the Vite module graph`,done:!0},{id:`teardown`,title:`Release the React root`,done:!0}];function t(t){return t===`open`?e.filter(e=>!e.done):t===`done`?e.filter(e=>e.done):e}export{t as tasksFor};
