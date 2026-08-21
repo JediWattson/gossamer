@@ -105,7 +105,6 @@ if (__solidTaskboardRuns !== 1 ||
 }
 
 `)
-
 	open, found := page.Document().ElementByID("filter-open")
 	if !found {
 		t.Fatal("taskboard open filter is missing")
@@ -125,6 +124,27 @@ if (document.getElementById("task-summary").textContent !== "open:1" ||
     list.children.length !== 1 ||
     list.firstChild.getAttribute("data-task") !== "solid-app") {
   throw new Error("split Solid taskboard did not react to its resource filter");
+}
+`)
+	detailsButton, found := page.Document().ElementByID("task-solid-app")
+	if !found {
+		t.Fatal("taskboard lazy-details trigger is missing")
+	}
+	if _, err := page.QueueInputEvent(browser.InputEvent{
+		Type:   browser.InputClick,
+		Target: browser.NodeHandle{Document: page.DocumentGeneration(), Node: detailsButton},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	runScript("assert-taskboard-details", `
+const details = document.getElementById("task-details");
+if (details === null || details.getAttribute("data-task") !== "solid-app" ||
+    details.textContent !== "Boot a real Solid appIn progress" ||
+    document.getElementById("details-loading") !== null) {
+  throw new Error("split Solid taskboard did not resolve its lazy details chunk");
 }
 const releaseTaskboard = globalThis.__solidTaskboardDispose;
 globalThis.__solidTaskboardDispose = undefined;
