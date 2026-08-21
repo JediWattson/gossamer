@@ -429,6 +429,10 @@ struct gossamer_v8_realm {
   v8::Global<v8::FunctionTemplate> html_button_element_template;
   v8::Global<v8::FunctionTemplate> html_template_element_template;
   v8::Global<v8::FunctionTemplate> html_iframe_element_template;
+  v8::Global<v8::FunctionTemplate> html_head_element_template;
+  v8::Global<v8::FunctionTemplate> html_script_element_template;
+  v8::Global<v8::FunctionTemplate> html_media_element_template;
+  v8::Global<v8::FunctionTemplate> html_image_element_template;
   v8::Global<v8::FunctionTemplate> form_data_template;
   v8::Global<v8::FunctionTemplate> text_template;
   v8::Global<v8::FunctionTemplate> document_template;
@@ -1270,6 +1274,15 @@ GetOrCreateNodeWrapper(gossamer_v8_realm *realm, v8::Local<v8::Context> context,
     } else if (metadata.local_name == "iframe") {
       node_template =
           realm->html_iframe_element_template.Get(realm->isolate);
+    } else if (metadata.local_name == "head") {
+      node_template = realm->html_head_element_template.Get(realm->isolate);
+    } else if (metadata.local_name == "script") {
+      node_template = realm->html_script_element_template.Get(realm->isolate);
+    } else if (metadata.local_name == "audio" ||
+               metadata.local_name == "video") {
+      node_template = realm->html_media_element_template.Get(realm->isolate);
+    } else if (metadata.local_name == "img") {
+      node_template = realm->html_image_element_template.Get(realm->isolate);
     } else {
       node_template = realm->html_element_template.Get(realm->isolate);
     }
@@ -10515,6 +10528,408 @@ void IllegalDOMConstructor(
   ThrowError(info.GetIsolate(), "Illegal constructor");
 }
 
+bool InstallURLSearchParams(v8::Local<v8::Context> context) {
+  static constexpr const char source[] = R"JS(
+(function(global) {
+  const state = new WeakMap();
+  const searchParamOwners = new WeakMap();
+  const text = value => String(value);
+  const decode = value => {
+    try { return decodeURIComponent(value.replace(/\+/g, " ")); }
+    catch (_) { return value.replace(/\+/g, " "); }
+  };
+  const encode = value => encodeURIComponent(value)
+    .replace(/%20/g, "+")
+    .replace(/[!'()~]/g, character => "%" + character.charCodeAt(0).toString(16).toUpperCase());
+  const require = object => {
+    const pairs = state.get(object);
+    if (!pairs) throw new TypeError("Illegal invocation");
+    return pairs;
+  };
+  const renderSearchParams = object => require(object).map(pair => encode(pair[0]) + "=" + encode(pair[1])).join("&");
+  const notifySearchParamsOwner = object => {
+    const owner = searchParamOwners.get(object);
+    if (!owner) return;
+    const query = renderSearchParams(object);
+    owner.search = query ? "?" + query : "";
+  };
+  class URLSearchParams {
+    constructor(initial = "") {
+      const pairs = [];
+      state.set(this, pairs);
+      if (initial instanceof URLSearchParams) {
+        for (const pair of require(initial)) pairs.push(pair.slice());
+      } else if (Array.isArray(initial)) {
+        for (const pair of initial) {
+          if (!pair || pair.length !== 2) throw new TypeError("Each query pair must contain two values");
+          pairs.push([text(pair[0]), text(pair[1])]);
+        }
+      } else if (initial !== null && typeof initial === "object") {
+        for (const key of Object.keys(initial)) pairs.push([key, text(initial[key])]);
+      } else {
+        let query = text(initial);
+        if (query[0] === "?") query = query.slice(1);
+        if (query !== "") for (const part of query.split("&")) {
+          const separator = part.indexOf("=");
+          pairs.push(separator < 0
+            ? [decode(part), ""]
+            : [decode(part.slice(0, separator)), decode(part.slice(separator + 1))]);
+        }
+      }
+    }
+    append(name, value) { require(this).push([text(name), text(value)]); notifySearchParamsOwner(this); }
+    delete(name, value) {
+      name = text(name);
+      const matchValue = arguments.length > 1;
+      if (matchValue) value = text(value);
+      const pairs = require(this);
+      for (let index = pairs.length - 1; index >= 0; --index)
+        if (pairs[index][0] === name && (!matchValue || pairs[index][1] === value)) pairs.splice(index, 1);
+      notifySearchParamsOwner(this);
+    }
+    get(name) {
+      name = text(name);
+      const pair = require(this).find(pair => pair[0] === name);
+      return pair ? pair[1] : null;
+    }
+    getAll(name) { name = text(name); return require(this).filter(pair => pair[0] === name).map(pair => pair[1]); }
+    has(name, value) {
+      name = text(name);
+      const matchValue = arguments.length > 1;
+      if (matchValue) value = text(value);
+      return require(this).some(pair => pair[0] === name && (!matchValue || pair[1] === value));
+    }
+    set(name, value) {
+      name = text(name); value = text(value);
+      const pairs = require(this);
+      let found = false;
+      for (let index = 0; index < pairs.length;) {
+        if (pairs[index][0] !== name) { ++index; continue; }
+        if (!found) { pairs[index][1] = value; found = true; ++index; }
+        else pairs.splice(index, 1);
+      }
+      if (!found) pairs.push([name, value]);
+      notifySearchParamsOwner(this);
+    }
+    sort() { require(this).sort((left, right) => left[0] < right[0] ? -1 : left[0] > right[0] ? 1 : 0); notifySearchParamsOwner(this); }
+    toString() { return renderSearchParams(this); }
+    *keys() { for (const pair of require(this)) yield pair[0]; }
+    *values() { for (const pair of require(this)) yield pair[1]; }
+    *entries() { for (const pair of require(this)) yield pair.slice(); }
+    forEach(callback, thisArg) { for (const pair of require(this)) callback.call(thisArg, pair[1], pair[0], this); }
+    get size() { return require(this).length; }
+    [Symbol.iterator]() { return this.entries(); }
+  }
+  Object.defineProperty(URLSearchParams.prototype, Symbol.toStringTag, {value: "URLSearchParams", configurable: true});
+  global.URLSearchParams = URLSearchParams;
+
+  const urlState = new WeakMap();
+  const parseURL = (input, base) => {
+    input = String(input);
+    if (!/^[A-Za-z][A-Za-z0-9+.-]*:/.test(input)) {
+      if (base === undefined) throw new TypeError("Invalid URL");
+      const parent = parseURL(String(base));
+      const parentAuthority = parent.protocol + "//" +
+        (parent.username || parent.password ? parent.username + (parent.password ? ":" + parent.password : "") + "@" : "") +
+        parent.host;
+      if (input.startsWith("//")) input = parent.protocol + input;
+      else if (input.startsWith("/")) input = parentAuthority + input;
+      else if (input.startsWith("?") || input.startsWith("#")) input = parentAuthority + parent.pathname + input;
+      else input = parentAuthority + parent.pathname.replace(/[^/]*$/, "") + input;
+    }
+    const match = /^([A-Za-z][A-Za-z0-9+.-]*:)(?:\/\/([^/?#]*))?([^?#]*)(\?[^#]*)?(#.*)?$/.exec(input);
+    if (!match) throw new TypeError("Invalid URL");
+    const protocol = match[1].toLowerCase();
+    let authority = match[2] || "";
+    let username = "", password = "";
+    const at = authority.lastIndexOf("@");
+    if (at >= 0) {
+      const user = authority.slice(0, at).split(":");
+      username = user.shift() || ""; password = user.join(":"); authority = authority.slice(at + 1);
+    }
+    let hostname = authority, port = "";
+    const portMatch = /^(\[[^\]]+\]|[^:]*)(?::([0-9]*))?$/.exec(authority);
+    if (portMatch) { hostname = portMatch[1]; port = portMatch[2] || ""; }
+    let pathname = match[3] || "/";
+    const trailingSlash = pathname.endsWith("/") || pathname.endsWith("/.") || pathname.endsWith("/..");
+    const segments = [];
+    for (const segment of pathname.split("/")) {
+      if (!segment || segment === ".") continue;
+      if (segment === "..") segments.pop(); else segments.push(segment);
+    }
+    pathname = "/" + segments.join("/") + (trailingSlash && segments.length ? "/" : "");
+    const host = hostname + (port ? ":" + port : "");
+    const origin = ["http:", "https:", "ws:", "wss:"].includes(protocol) ? protocol + "//" + host : "null";
+    return {protocol, username, password, host, hostname, port, pathname, search: match[4] || "", hash: match[5] || "", origin};
+  };
+  const renderURL = value => value.protocol + "//" +
+    (value.username || value.password ? value.username + (value.password ? ":" + value.password : "") + "@" : "") +
+    value.host + value.pathname + value.search + value.hash;
+  const syncSearchParams = value => {
+    if (!value.searchParams) return;
+    const parsed = new URLSearchParams(value.search);
+    const target = require(value.searchParams);
+    target.splice(0, target.length, ...require(parsed).map(pair => pair.slice()));
+  };
+  class URL {
+    constructor(input, base) { urlState.set(this, parseURL(input, base)); }
+    static canParse(input, base) { try { parseURL(input, base); return true; } catch (_) { return false; } }
+    toString() { return this.href; }
+    toJSON() { return this.href; }
+    get href() { const value = urlState.get(this); if (!value) throw new TypeError("Illegal invocation"); return renderURL(value); }
+    set href(input) {
+      const previous = urlState.get(this);
+      const next = parseURL(input);
+      if (previous && previous.searchParams) {
+        next.searchParams = previous.searchParams;
+        searchParamOwners.set(next.searchParams, next);
+        syncSearchParams(next);
+      }
+      urlState.set(this, next);
+    }
+    get origin() { return urlState.get(this).origin; }
+    get protocol() { return urlState.get(this).protocol; }
+    set protocol(value) { const state = urlState.get(this); state.protocol = String(value).replace(/:?$/, ":"); state.origin = state.protocol + "//" + state.host; }
+    get username() { return urlState.get(this).username; }
+    set username(value) { urlState.get(this).username = String(value); }
+    get password() { return urlState.get(this).password; }
+    set password(value) { urlState.get(this).password = String(value); }
+    get host() { return urlState.get(this).host; }
+    set host(value) { const state = urlState.get(this); const parsed = parseURL(state.protocol + "//" + value + state.pathname); state.host = parsed.host; state.hostname = parsed.hostname; state.port = parsed.port; state.origin = state.protocol + "//" + state.host; }
+    get hostname() { return urlState.get(this).hostname; }
+    set hostname(value) { const state = urlState.get(this); state.hostname = String(value); state.host = state.hostname + (state.port ? ":" + state.port : ""); state.origin = state.protocol + "//" + state.host; }
+    get port() { return urlState.get(this).port; }
+    set port(value) { const state = urlState.get(this); state.port = String(value); state.host = state.hostname + (state.port ? ":" + state.port : ""); state.origin = state.protocol + "//" + state.host; }
+    get pathname() { return urlState.get(this).pathname; }
+    set pathname(value) { urlState.get(this).pathname = String(value).startsWith("/") ? String(value) : "/" + value; }
+    get search() { return urlState.get(this).search; }
+    set search(value) {
+      value = String(value);
+      const current = urlState.get(this);
+      current.search = value && !value.startsWith("?") ? "?" + value : value;
+      syncSearchParams(current);
+    }
+    get searchParams() {
+      const current = urlState.get(this);
+      if (!current.searchParams) {
+        current.searchParams = new URLSearchParams(current.search);
+        searchParamOwners.set(current.searchParams, current);
+      }
+      return current.searchParams;
+    }
+    get hash() { return urlState.get(this).hash; }
+    set hash(value) { value = String(value); urlState.get(this).hash = value && !value.startsWith("#") ? "#" + value : value; }
+  }
+  Object.defineProperty(URL.prototype, Symbol.toStringTag, {value: "URL", configurable: true});
+  global.URL = URL;
+
+  const utf8Encode = input => {
+    input = String(input);
+    const bytes = [];
+    for (let index = 0; index < input.length; ++index) {
+      let point = input.charCodeAt(index);
+      if (point >= 0xD800 && point <= 0xDBFF) {
+        const low = input.charCodeAt(index + 1);
+        if (low >= 0xDC00 && low <= 0xDFFF) {
+          point = 0x10000 + ((point - 0xD800) << 10) + low - 0xDC00;
+          ++index;
+        } else point = 0xFFFD;
+      } else if (point >= 0xDC00 && point <= 0xDFFF) point = 0xFFFD;
+      if (point <= 0x7F) bytes.push(point);
+      else if (point <= 0x7FF) bytes.push(0xC0 | point >> 6, 0x80 | point & 0x3F);
+      else if (point <= 0xFFFF) bytes.push(0xE0 | point >> 12, 0x80 | point >> 6 & 0x3F, 0x80 | point & 0x3F);
+      else bytes.push(0xF0 | point >> 18, 0x80 | point >> 12 & 0x3F, 0x80 | point >> 6 & 0x3F, 0x80 | point & 0x3F);
+    }
+    return bytes;
+  };
+  class TextEncoder {
+    get encoding() { return "utf-8"; }
+    encode(input = "") { return Uint8Array.from(utf8Encode(input)); }
+    encodeInto(input, destination) {
+      if (!(destination instanceof Uint8Array)) throw new TypeError("destination must be a Uint8Array");
+      input = String(input);
+      let read = 0, written = 0;
+      while (read < input.length) {
+        const width = input.codePointAt(read) > 0xFFFF ? 2 : 1;
+        const bytes = utf8Encode(input.slice(read, read + width));
+        if (written + bytes.length > destination.length) break;
+        destination.set(bytes, written);
+        read += width; written += bytes.length;
+      }
+      return {read, written};
+    }
+  }
+  Object.defineProperty(TextEncoder.prototype, Symbol.toStringTag, {value: "TextEncoder", configurable: true});
+  global.TextEncoder = TextEncoder;
+
+  const decoderState = new WeakMap();
+  const utf8Decode = (bytes, fatal) => {
+    let result = "";
+    for (let index = 0; index < bytes.length;) {
+      const first = bytes[index++];
+      let point, count, minimum;
+      if (first <= 0x7F) { point = first; count = 0; minimum = 0; }
+      else if (first >= 0xC2 && first <= 0xDF) { point = first & 0x1F; count = 1; minimum = 0x80; }
+      else if (first >= 0xE0 && first <= 0xEF) { point = first & 0x0F; count = 2; minimum = 0x800; }
+      else if (first >= 0xF0 && first <= 0xF4) { point = first & 0x07; count = 3; minimum = 0x10000; }
+      else { if (fatal) throw new TypeError("invalid UTF-8 input"); result += "\uFFFD"; continue; }
+      let valid = index + count <= bytes.length;
+      for (let offset = 0; valid && offset < count; ++offset) {
+        const next = bytes[index + offset];
+        if ((next & 0xC0) !== 0x80) valid = false;
+        else point = point << 6 | next & 0x3F;
+      }
+      if (!valid || point < minimum || point > 0x10FFFF || point >= 0xD800 && point <= 0xDFFF) {
+        if (fatal) throw new TypeError("invalid UTF-8 input");
+        result += "\uFFFD";
+        continue;
+      }
+      index += count;
+      result += String.fromCodePoint(point);
+    }
+    return result;
+  };
+  class TextDecoder {
+    constructor(label = "utf-8", options = {}) {
+      label = String(label).trim().toLowerCase();
+      if (!["unicode-1-1-utf-8", "unicode11utf8", "unicode20utf8", "utf-8", "utf8", "x-unicode20utf8"].includes(label))
+        throw new RangeError("unsupported encoding label");
+      decoderState.set(this, {fatal: !!options.fatal, ignoreBOM: !!options.ignoreBOM});
+    }
+    get encoding() { if (!decoderState.has(this)) throw new TypeError("Illegal invocation"); return "utf-8"; }
+    get fatal() { const value = decoderState.get(this); if (!value) throw new TypeError("Illegal invocation"); return value.fatal; }
+    get ignoreBOM() { const value = decoderState.get(this); if (!value) throw new TypeError("Illegal invocation"); return value.ignoreBOM; }
+    decode(input = new Uint8Array()) {
+      const settings = decoderState.get(this);
+      if (!settings) throw new TypeError("Illegal invocation");
+      let bytes;
+      if (input instanceof ArrayBuffer) bytes = new Uint8Array(input);
+      else if (ArrayBuffer.isView(input)) bytes = new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
+      else throw new TypeError("input must be an ArrayBuffer or view");
+      let result = utf8Decode(bytes, settings.fatal);
+      if (!settings.ignoreBOM && result.charCodeAt(0) === 0xFEFF) result = result.slice(1);
+      return result;
+    }
+  }
+  Object.defineProperty(TextDecoder.prototype, Symbol.toStringTag, {value: "TextDecoder", configurable: true});
+  global.TextDecoder = TextDecoder;
+
+  const navigator = {
+    userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Gossamer/0.1",
+    appVersion: "5.0 (Macintosh; Intel Mac OS X 10_15_7) Gossamer/0.1",
+    platform: "MacIntel",
+    vendor: "",
+    language: "en-US",
+    languages: ["en-US"],
+    hardwareConcurrency: 4,
+    deviceMemory: 8,
+    maxTouchPoints: 0,
+    onLine: true,
+    cookieEnabled: true,
+    standalone: false
+  };
+  Object.defineProperty(global, "navigator", {value: navigator, enumerable: true, configurable: true});
+
+  const mediaLength = token => {
+    const match = /^(-?[0-9]+(?:\.[0-9]+)?)(px|em|rem|vw|vh)?$/.exec(token.trim());
+    if (!match) return NaN;
+    const number = Number(match[1]);
+    switch (match[2] || "px") {
+      case "em": case "rem": return number * 16;
+      case "vw": return number * global.innerWidth / 100;
+      case "vh": return number * global.innerHeight / 100;
+      default: return number;
+    }
+  };
+  const mediaFeatureMatches = (name, rawValue) => {
+    name = name.trim().toLowerCase();
+    const value = rawValue === undefined ? "" : rawValue.trim().toLowerCase();
+    if (["width", "min-width", "max-width", "height", "min-height", "max-height"].includes(name)) {
+      if (!value) return (name.includes("width") ? global.innerWidth : global.innerHeight) > 0;
+      const expected = mediaLength(value);
+      if (!Number.isFinite(expected)) return false;
+      const actual = name.includes("width") ? global.innerWidth : global.innerHeight;
+      if (name.startsWith("min-")) return actual >= expected;
+      if (name.startsWith("max-")) return actual <= expected;
+      return actual === expected;
+    }
+    if (name === "orientation") return value === "landscape" ? global.innerWidth > global.innerHeight : value === "portrait" && global.innerHeight >= global.innerWidth;
+    if (name === "hover" || name === "any-hover" || name === "pointer" || name === "any-pointer") return value === "none";
+    if (name === "prefers-color-scheme") return value === "light";
+    if (name === "prefers-reduced-motion") return value === "no-preference";
+    if (name === "display-mode") return value === "browser";
+    if (name === "forced-colors") return value === "none";
+    return false;
+  };
+  const mediaCandidateMatches = source => {
+    let candidate = source.trim().toLowerCase();
+    let negate = false;
+    if (candidate.startsWith("not ")) { negate = true; candidate = candidate.slice(4).trim(); }
+    if (candidate.startsWith("only ")) candidate = candidate.slice(5).trim();
+    let result = true;
+    const type = /^([a-z-]+)\b/.exec(candidate);
+    if (type && !candidate.startsWith("(")) {
+      result = type[1] === "screen" || type[1] === "all";
+      candidate = candidate.slice(type[0].length).trim();
+      if (candidate.startsWith("and")) candidate = candidate.slice(3).trim();
+    }
+    const conditions = [...candidate.matchAll(/\(([^:()]+)(?::\s*([^()]+))?\)/g)];
+    if (candidate && conditions.length === 0) result = false;
+    for (const condition of conditions) result = result && mediaFeatureMatches(condition[1], condition[2]);
+    return negate ? !result : result;
+  };
+  class MediaQueryList {
+    constructor(media) { this.media = String(media); this.matches = this.media.split(",").some(mediaCandidateMatches); this.onchange = null; }
+    addListener() {}
+    removeListener() {}
+    addEventListener() {}
+    removeEventListener() {}
+    dispatchEvent() { return false; }
+  }
+  Object.defineProperty(MediaQueryList.prototype, Symbol.toStringTag, {value: "MediaQueryList", configurable: true});
+  global.MediaQueryList = MediaQueryList;
+  global.matchMedia = media => new MediaQueryList(media);
+
+  function Image(width, height) {
+    const image = global.document.createElement("img");
+    if (width !== undefined) image.width = Number(width);
+    if (height !== undefined) image.height = Number(height);
+    return image;
+  }
+  Image.prototype = global.HTMLImageElement.prototype;
+  global.Image = Image;
+
+  let nextInterval = 1;
+  const intervals = new Map();
+  global.setInterval = (callback, delay = 0, ...arguments) => {
+    if (typeof callback !== "function") throw new TypeError("setInterval requires a function");
+    const interval = nextInterval++;
+    const tick = () => {
+      if (!intervals.has(interval)) return;
+      callback(...arguments);
+      if (intervals.has(interval)) intervals.set(interval, global.setTimeout(tick, delay));
+    };
+    intervals.set(interval, global.setTimeout(tick, delay));
+    return interval;
+  };
+  global.clearInterval = interval => {
+    const timer = intervals.get(Number(interval));
+    if (timer !== undefined) global.clearTimeout(timer);
+    intervals.delete(Number(interval));
+  };
+})(globalThis);
+)JS";
+  v8::Isolate *isolate = v8::Isolate::GetCurrent();
+  v8::Local<v8::String> script_source;
+  v8::Local<v8::Script> script;
+  v8::Local<v8::Value> result;
+  return v8::String::NewFromUtf8(isolate, source, v8::NewStringType::kNormal,
+                                 static_cast<int>(sizeof(source) - 1))
+             .ToLocal(&script_source) &&
+         v8::Script::Compile(context, script_source).ToLocal(&script) &&
+         script->Run(context).ToLocal(&result);
+}
+
 bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   v8::Isolate *isolate = realm->isolate;
   v8::Local<v8::FunctionTemplate> dom_exception_template =
@@ -10542,6 +10957,14 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
   v8::Local<v8::FunctionTemplate> html_template_element_template =
       v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
   v8::Local<v8::FunctionTemplate> html_iframe_element_template =
+      v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
+  v8::Local<v8::FunctionTemplate> html_head_element_template =
+      v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
+  v8::Local<v8::FunctionTemplate> html_script_element_template =
+      v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
+  v8::Local<v8::FunctionTemplate> html_media_element_template =
+      v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
+  v8::Local<v8::FunctionTemplate> html_image_element_template =
       v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
   v8::Local<v8::FunctionTemplate> text_template =
       v8::FunctionTemplate::New(isolate, IllegalDOMConstructor);
@@ -10660,6 +11083,27 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
       v8::String::NewFromUtf8Literal(isolate, "HTMLTemplateElement"));
   html_iframe_element_template->SetClassName(
       v8::String::NewFromUtf8Literal(isolate, "HTMLIFrameElement"));
+  html_head_element_template->SetClassName(
+      v8::String::NewFromUtf8Literal(isolate, "HTMLHeadElement"));
+  html_script_element_template->SetClassName(
+      v8::String::NewFromUtf8Literal(isolate, "HTMLScriptElement"));
+  html_media_element_template->SetClassName(
+      v8::String::NewFromUtf8Literal(isolate, "HTMLMediaElement"));
+  html_image_element_template->SetClassName(
+      v8::String::NewFromUtf8Literal(isolate, "HTMLImageElement"));
+  for (const auto &constant :
+       {std::pair<const char *, int>{"HAVE_NOTHING", 0},
+        {"HAVE_METADATA", 1}, {"HAVE_CURRENT_DATA", 2},
+        {"HAVE_FUTURE_DATA", 3}, {"HAVE_ENOUGH_DATA", 4}}) {
+    html_media_element_template->Set(
+        v8::String::NewFromUtf8(isolate, constant.first).ToLocalChecked(),
+        v8::Integer::New(isolate, constant.second),
+        static_cast<v8::PropertyAttribute>(v8::ReadOnly | v8::DontDelete));
+    html_media_element_template->PrototypeTemplate()->Set(
+        v8::String::NewFromUtf8(isolate, constant.first).ToLocalChecked(),
+        v8::Integer::New(isolate, constant.second),
+        static_cast<v8::PropertyAttribute>(v8::ReadOnly | v8::DontDelete));
+  }
   text_template->SetClassName(v8::String::NewFromUtf8Literal(isolate, "Text"));
   document_template->SetClassName(
       v8::String::NewFromUtf8Literal(isolate, "Document"));
@@ -10746,7 +11190,9 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
        {html_form_element_template, html_input_element_template,
         html_text_area_element_template, html_select_element_template,
         html_option_element_template, html_button_element_template,
-        html_template_element_template, html_iframe_element_template}) {
+        html_template_element_template, html_iframe_element_template,
+        html_head_element_template, html_script_element_template,
+        html_media_element_template, html_image_element_template}) {
     specialized_template->Inherit(html_element_template);
   }
   text_template->Inherit(node_template);
@@ -10765,7 +11211,9 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
         html_form_element_template, html_input_element_template,
         html_text_area_element_template, html_select_element_template,
         html_option_element_template, html_button_element_template,
-        html_template_element_template, html_iframe_element_template}) {
+        html_template_element_template, html_iframe_element_template,
+        html_head_element_template, html_script_element_template,
+        html_media_element_template, html_image_element_template}) {
     interface_template->InstanceTemplate()->SetInternalFieldCount(
         kNodeInternalFieldCount);
   }
@@ -11732,7 +12180,9 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
         html_form_element_template, html_input_element_template,
         html_text_area_element_template, html_select_element_template,
         html_option_element_template, html_button_element_template,
-        html_template_element_template, html_iframe_element_template}) {
+        html_template_element_template, html_iframe_element_template,
+        html_head_element_template, html_script_element_template,
+        html_media_element_template, html_image_element_template}) {
     install_node_instance_surface(interface_template->InstanceTemplate());
   }
   install_element_instance_surface(element_template->InstanceTemplate());
@@ -11741,7 +12191,9 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
         html_input_element_template, html_text_area_element_template,
         html_select_element_template, html_option_element_template,
         html_button_element_template, html_template_element_template,
-        html_iframe_element_template}) {
+        html_iframe_element_template, html_head_element_template,
+        html_script_element_template, html_media_element_template,
+        html_image_element_template}) {
     install_element_instance_surface(interface_template->InstanceTemplate());
     for (const char *name : {"title", "lang", "dir", "htmlFor"}) {
       interface_template->InstanceTemplate()->SetNativeDataProperty(
@@ -11888,6 +12340,13 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
       isolate, html_template_element_template);
   realm->html_iframe_element_template.Reset(isolate,
                                              html_iframe_element_template);
+  realm->html_head_element_template.Reset(isolate, html_head_element_template);
+  realm->html_script_element_template.Reset(isolate,
+                                             html_script_element_template);
+  realm->html_media_element_template.Reset(isolate,
+                                            html_media_element_template);
+  realm->html_image_element_template.Reset(isolate,
+                                            html_image_element_template);
   realm->text_template.Reset(isolate, text_template);
   realm->document_template.Reset(isolate, document_template);
   realm->document_fragment_template.Reset(isolate,
@@ -12137,7 +12596,7 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
                          constructor)
                    .FromMaybe(false);
       };
-  return expose_interface("DOMException", dom_exception_template) &&
+  if (!(expose_interface("DOMException", dom_exception_template) &&
          expose_interface("EventTarget", event_target_template) &&
          expose_interface("Event", event_template) &&
          expose_interface("CustomEvent", custom_event_template) &&
@@ -12170,6 +12629,10 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
          expose_interface("HTMLTemplateElement",
                           html_template_element_template) &&
          expose_interface("HTMLIFrameElement", html_iframe_element_template) &&
+         expose_interface("HTMLHeadElement", html_head_element_template) &&
+         expose_interface("HTMLScriptElement", html_script_element_template) &&
+         expose_interface("HTMLMediaElement", html_media_element_template) &&
+         expose_interface("HTMLImageElement", html_image_element_template) &&
          expose_interface("Text", text_template) &&
          expose_interface("Document", document_template) &&
          expose_interface("DocumentFragment", document_fragment_template) &&
@@ -12251,7 +12714,10 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
              ->Set(context,
                    v8::String::NewFromUtf8Literal(isolate, "scrollBy"),
                    window_scroll_by)
-             .FromMaybe(false);
+             .FromMaybe(false))) {
+    return false;
+  }
+  return InstallURLSearchParams(context);
 }
 
 bool ConfigureNativeEvent(const gossamer_v8_input_event *input,
@@ -12580,6 +13046,10 @@ void ClearRealmHandles(gossamer_v8_realm *realm) {
   realm->html_button_element_template.Reset();
   realm->html_template_element_template.Reset();
   realm->html_iframe_element_template.Reset();
+  realm->html_head_element_template.Reset();
+  realm->html_script_element_template.Reset();
+  realm->html_media_element_template.Reset();
+  realm->html_image_element_template.Reset();
   realm->text_template.Reset();
   realm->document_template.Reset();
   realm->document_fragment_template.Reset();

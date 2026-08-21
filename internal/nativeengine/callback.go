@@ -13,6 +13,8 @@ import (
 const (
 	nativeGlobalSetTimeout uint64 = 11_000 + iota
 	nativeGlobalClearTimeout
+	nativeGlobalSetInterval
+	nativeGlobalClearInterval
 	nativeGlobalRequestAnimationFrame
 	nativeGlobalCancelAnimationFrame
 	nativePerformanceNow
@@ -42,11 +44,59 @@ func (realm *Realm) globalSetTimeout(context *browserruntime.TaskContext, _ memo
 
 func (realm *Realm) globalClearTimeout(context *browserruntime.TaskContext, _ memory.Value, arguments []memory.Value) (memory.Value, error) {
 	timer := timerID(argument(arguments, 0))
+	return realm.clearTimer(context, timer)
+}
+
+func (realm *Realm) globalSetInterval(context *browserruntime.TaskContext, _ memory.Value, arguments []memory.Value) (memory.Value, error) {
+	callback := argument(arguments, 0)
+	if err := requireFunction(context, callback); err != nil {
+		return memory.Value{}, err
+	}
+	delay, err := timeoutDuration(argument(arguments, 1))
+	if err != nil {
+		return memory.Value{}, err
+	}
+	handle, err := realm.retainCallbackLocked(context, callback)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	timer, err := realm.host.SetTimeout(handle, delay)
+	if err != nil {
+		_, _ = context.MapDelete(realm.bindings.callbackCache, memory.NumberValue(float64(handle)))
+		return memory.Value{}, err
+	}
+	realm.intervalCallbacks[timer] = handle
+	realm.intervalTimers[timer] = timer
+	realm.callbackIntervals[handle] = timer
+	realm.intervalDelays[timer] = delay
+	return memory.NumberValue(float64(timer)), nil
+}
+
+func (realm *Realm) globalClearInterval(context *browserruntime.TaskContext, _ memory.Value, arguments []memory.Value) (memory.Value, error) {
+	timer := timerID(argument(arguments, 0))
+	return realm.clearTimer(context, timer)
+}
+
+func (realm *Realm) clearTimer(context *browserruntime.TaskContext, timer browser.TimerID) (memory.Value, error) {
 	if timer == 0 {
 		return memory.UndefinedValue(), nil
 	}
-	if err := realm.host.ClearTimeout(timer); err != nil {
+	hostTimer := timer
+	if current, found := realm.intervalTimers[timer]; found {
+		hostTimer = current
+	}
+	if err := realm.host.ClearTimeout(hostTimer); err != nil {
 		return memory.Value{}, err
+	}
+	if handle, found := realm.intervalCallbacks[timer]; found {
+		delete(realm.intervalCallbacks, timer)
+		delete(realm.intervalTimers, timer)
+		delete(realm.callbackIntervals, handle)
+		delete(realm.intervalDelays, timer)
+		if _, err := context.MapDelete(realm.bindings.callbackCache, memory.NumberValue(float64(handle))); err != nil {
+			return memory.Value{}, err
+		}
+		return memory.UndefinedValue(), nil
 	}
 	handle, found := realm.timerCallbacks[timer]
 	if found {
@@ -140,22 +190,44 @@ func (realm *Realm) invokeCallbackArgumentsLocked(context *browserruntime.TaskCo
 	if !found {
 		return fmt.Errorf("%w: %d", ErrUnknownValueHandle, handle)
 	}
-	if remove {
+	interval, recurring := realm.callbackIntervals[handle]
+	if remove && !recurring {
 		if _, err := context.MapDelete(realm.bindings.callbackCache, key); err != nil {
 			return err
 		}
 	}
-	for timer, callbackHandle := range realm.timerCallbacks {
-		if callbackHandle == handle {
-			delete(realm.timerCallbacks, timer)
-			break
+	if !recurring {
+		for timer, callbackHandle := range realm.timerCallbacks {
+			if callbackHandle == handle {
+				delete(realm.timerCallbacks, timer)
+				break
+			}
 		}
 	}
 	if err := requireFunction(context, callback); err != nil {
 		return err
 	}
-	_, err = realm.interpreter.CallWithoutCheckpoint(context, callback.Ref(), this, arguments...)
-	return err
+	_, callErr := realm.interpreter.CallWithoutCheckpoint(context, callback.Ref(), this, arguments...)
+	if !recurring {
+		return callErr
+	}
+	if current, active := realm.intervalCallbacks[interval]; !active || current != handle {
+		return callErr
+	}
+	next, scheduleErr := realm.host.SetTimeout(handle, realm.intervalDelays[interval])
+	if scheduleErr != nil {
+		delete(realm.intervalCallbacks, interval)
+		delete(realm.intervalTimers, interval)
+		delete(realm.callbackIntervals, handle)
+		delete(realm.intervalDelays, interval)
+		_, _ = context.MapDelete(realm.bindings.callbackCache, key)
+		if callErr != nil {
+			return fmt.Errorf("%v; interval reschedule: %w", callErr, scheduleErr)
+		}
+		return scheduleErr
+	}
+	realm.intervalTimers[interval] = next
+	return callErr
 }
 
 func requireFunction(context *browserruntime.TaskContext, value memory.Value) error {

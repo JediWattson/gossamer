@@ -52,9 +52,26 @@ func (realm *Realm) newDOMInterfaces(context *browserruntime.TaskContext, bindin
 		{"HTMLButtonElement", &bindings.htmlButtonElementPrototype},
 		{"HTMLTemplateElement", &bindings.templatePrototype},
 		{"HTMLIFrameElement", &bindings.htmlIFrameElementPrototype},
+		{"HTMLHeadElement", &bindings.htmlHeadElementPrototype},
+		{"HTMLScriptElement", &bindings.htmlScriptElementPrototype},
+		{"HTMLMediaElement", &bindings.htmlMediaElementPrototype},
+		{"HTMLImageElement", &bindings.htmlImageElementPrototype},
 	} {
 		if err := add(definition.name, bindings.htmlElementPrototype, definition.destination); err != nil {
 			return nil, err
+		}
+		if definition.name == "HTMLMediaElement" {
+			constructor := interfaces[len(interfaces)-1].constructor
+			prototype := interfaces[len(interfaces)-1].prototype
+			for index, name := range []string{"HAVE_NOTHING", "HAVE_METADATA", "HAVE_CURRENT_DATA", "HAVE_FUTURE_DATA", "HAVE_ENOUGH_DATA"} {
+				value := memory.NumberValue(float64(index))
+				if err := defineData(context, constructor, name, value, false, false, false); err != nil {
+					return nil, err
+				}
+				if err := defineData(context, prototype, name, value, false, false, false); err != nil {
+					return nil, err
+				}
+			}
 		}
 	}
 	for _, definition := range []struct {
@@ -107,6 +124,14 @@ func (bindings *browserBindings) prototypeForNode(metadata browser.NodeMetadata)
 			return bindings.templatePrototype, nil
 		case "iframe":
 			return bindings.htmlIFrameElementPrototype, nil
+		case "head":
+			return bindings.htmlHeadElementPrototype, nil
+		case "script":
+			return bindings.htmlScriptElementPrototype, nil
+		case "audio", "video":
+			return bindings.htmlMediaElementPrototype, nil
+		case "img":
+			return bindings.htmlImageElementPrototype, nil
 		default:
 			return bindings.htmlElementPrototype, nil
 		}

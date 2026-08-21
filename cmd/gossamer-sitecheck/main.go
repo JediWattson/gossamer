@@ -72,13 +72,15 @@ func run(arguments []string, output io.Writer) error {
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
 
-	var screenshot *os.File
+	var screenshot io.Writer
+	var screenshotFile *os.File
 	if strings.TrimSpace(*screenshotPath) != "" {
-		screenshot, err = os.Create(*screenshotPath)
+		screenshotFile, err = os.Create(*screenshotPath)
 		if err != nil {
 			return err
 		}
-		defer screenshot.Close()
+		defer screenshotFile.Close()
+		screenshot = screenshotFile
 	}
 	report, runErr := sitecompat.Run(ctx, engine, rawURL, loader.New(nil), sitecompat.Options{
 		EngineName: strings.ToLower(strings.TrimSpace(*engineName)), DOMLimit: *domLimit, Screenshot: screenshot,

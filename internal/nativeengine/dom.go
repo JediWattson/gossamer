@@ -203,6 +203,10 @@ const (
 	bindingHTMLOptionElementPrototype   = "\x00gossamer.html-option-element.prototype"
 	bindingHTMLButtonElementPrototype   = "\x00gossamer.html-button-element.prototype"
 	bindingHTMLIFrameElementPrototype   = "\x00gossamer.html-iframe-element.prototype"
+	bindingHTMLHeadElementPrototype     = "\x00gossamer.html-head-element.prototype"
+	bindingHTMLScriptElementPrototype   = "\x00gossamer.html-script-element.prototype"
+	bindingHTMLMediaElementPrototype    = "\x00gossamer.html-media-element.prototype"
+	bindingHTMLImageElementPrototype    = "\x00gossamer.html-image-element.prototype"
 	bindingHTMLCollectionPrototype      = "\x00gossamer.html-collection.prototype"
 	bindingTemplatePrototype            = "\x00gossamer.template.prototype"
 	bindingTextPrototype                = "\x00gossamer.text.prototype"
@@ -246,6 +250,10 @@ type browserBindings struct {
 	htmlOptionElementPrototype   memory.Ref
 	htmlButtonElementPrototype   memory.Ref
 	htmlIFrameElementPrototype   memory.Ref
+	htmlHeadElementPrototype     memory.Ref
+	htmlScriptElementPrototype   memory.Ref
+	htmlMediaElementPrototype    memory.Ref
+	htmlImageElementPrototype    memory.Ref
 	htmlCollectionPrototype      memory.Ref
 	templatePrototype            memory.Ref
 	textPrototype                memory.Ref
@@ -260,6 +268,16 @@ type browserBindings struct {
 	mutationObserverConstructor  memory.Ref
 	domExceptionPrototype        memory.Ref
 	domExceptionConstructor      memory.Ref
+	urlSearchParamsPrototype     memory.Ref
+	urlSearchParamsConstructor   memory.Ref
+	urlPrototype                 memory.Ref
+	urlConstructor               memory.Ref
+	textEncoderPrototype         memory.Ref
+	textEncoderConstructor       memory.Ref
+	textDecoderPrototype         memory.Ref
+	textDecoderConstructor       memory.Ref
+	uint8ArrayPrototype          memory.Ref
+	uint8ArrayConstructor        memory.Ref
 	rangePrototype               memory.Ref
 	selectionPrototype           memory.Ref
 	selection                    memory.Ref
@@ -406,6 +424,8 @@ func (realm *Realm) installBrowserNatives() error {
 		{nativeTemplateContent, realm.templateContent},
 		{nativeGlobalSetTimeout, realm.globalSetTimeout},
 		{nativeGlobalClearTimeout, realm.globalClearTimeout},
+		{nativeGlobalSetInterval, realm.globalSetInterval},
+		{nativeGlobalClearInterval, realm.globalClearInterval},
 		{nativeGlobalRequestAnimationFrame, realm.globalRequestAnimationFrame},
 		{nativeGlobalCancelAnimationFrame, realm.globalCancelAnimationFrame},
 		{nativePerformanceNow, realm.performanceNow},
@@ -464,6 +484,65 @@ func (realm *Realm) installBrowserNatives() error {
 		{nativeNodeNextElementSibling, realm.nodeRelation(browser.RelationNextElementSibling)},
 		{nativeDOMExceptionConstructor, realm.domExceptionConstructor},
 		{nativeDOMExceptionToString, realm.domExceptionToString},
+		{nativeURLSearchParamsConstructor, realm.urlSearchParamsConstructor},
+		{nativeURLSearchParamsAppend, realm.urlSearchParamsAppend},
+		{nativeURLSearchParamsDelete, realm.urlSearchParamsDelete},
+		{nativeURLSearchParamsGet, realm.urlSearchParamsGet},
+		{nativeURLSearchParamsGetAll, realm.urlSearchParamsGetAll},
+		{nativeURLSearchParamsHas, realm.urlSearchParamsHas},
+		{nativeURLSearchParamsSet, realm.urlSearchParamsSet},
+		{nativeURLSearchParamsSort, realm.urlSearchParamsSort},
+		{nativeURLSearchParamsToString, realm.urlSearchParamsToString},
+		{nativeURLSearchParamsKeys, realm.urlSearchParamsKeys},
+		{nativeURLSearchParamsValues, realm.urlSearchParamsValues},
+		{nativeURLSearchParamsEntries, realm.urlSearchParamsEntries},
+		{nativeURLSearchParamsForEach, realm.urlSearchParamsForEach},
+		{nativeURLSearchParamsSize, realm.urlSearchParamsSize},
+		{nativeURLConstructor, realm.urlConstructor},
+		{nativeURLCanParse, realm.urlCanParse},
+		{nativeURLToString, realm.urlToString},
+		{nativeURLToJSON, realm.urlToJSON},
+		{nativeURLHrefGet, realm.urlHrefGet},
+		{nativeURLHrefSet, realm.urlHrefSet},
+		{nativeURLOrigin, realm.urlOrigin},
+		{nativeURLProtocolGet, realm.urlProtocolGet},
+		{nativeURLProtocolSet, realm.urlProtocolSet},
+		{nativeURLUsernameGet, realm.urlUsernameGet},
+		{nativeURLUsernameSet, realm.urlUsernameSet},
+		{nativeURLPasswordGet, realm.urlPasswordGet},
+		{nativeURLPasswordSet, realm.urlPasswordSet},
+		{nativeURLHostGet, realm.urlHostGet},
+		{nativeURLHostSet, realm.urlHostSet},
+		{nativeURLHostnameGet, realm.urlHostnameGet},
+		{nativeURLHostnameSet, realm.urlHostnameSet},
+		{nativeURLPortGet, realm.urlPortGet},
+		{nativeURLPortSet, realm.urlPortSet},
+		{nativeURLPathnameGet, realm.urlPathnameGet},
+		{nativeURLPathnameSet, realm.urlPathnameSet},
+		{nativeURLSearchGet, realm.urlSearchGet},
+		{nativeURLSearchSet, realm.urlSearchSet},
+		{nativeURLSearchParams, realm.urlSearchParams},
+		{nativeURLHashGet, realm.urlHashGet},
+		{nativeURLHashSet, realm.urlHashSet},
+		{nativeTextEncoderConstructor, realm.textEncoderConstructor},
+		{nativeTextEncoderEncode, realm.textEncoderEncode},
+		{nativeTextEncoderEncodeInto, realm.textEncoderEncodeInto},
+		{nativeTextEncoderEncoding, realm.textEncoderEncoding},
+		{nativeTextDecoderConstructor, realm.textDecoderConstructor},
+		{nativeTextDecoderDecode, realm.textDecoderDecode},
+		{nativeTextDecoderEncoding, realm.textDecoderEncoding},
+		{nativeTextDecoderFatal, realm.textDecoderFatal},
+		{nativeTextDecoderIgnoreBOM, realm.textDecoderIgnoreBOM},
+		{nativeUint8ArrayConstructor, realm.uint8ArrayConstructor},
+		{nativeUint8ArrayFrom, realm.uint8ArrayFrom},
+		{nativeUint8ArraySet, realm.uint8ArraySet},
+		{nativeUint8ArraySlice, realm.uint8ArraySlice},
+		{nativeUint8ArraySubarray, realm.uint8ArraySubarray},
+		{nativeUint8ArrayFill, realm.uint8ArrayFill},
+		{nativeMatchMedia, realm.matchMedia},
+		{nativeMediaQueryNoop, realm.mediaQueryNoop},
+		{nativeMediaQueryDispatch, realm.mediaQueryDispatch},
+		{nativeImageConstructor, realm.imageConstructor},
 		{nativeNodeAppend, realm.nodeConvenienceMutation(dom.MutationAppend)},
 		{nativeNodePrepend, realm.nodeConvenienceMutation(dom.MutationPrepend)},
 		{nativeNodeBefore, realm.nodeConvenienceMutation(dom.MutationBefore)},
@@ -518,6 +597,10 @@ func (realm *Realm) prepareBrowserBindingsLocked(context *browserruntime.TaskCon
 			{bindingHTMLOptionElementPrototype, &bindings.htmlOptionElementPrototype},
 			{bindingHTMLButtonElementPrototype, &bindings.htmlButtonElementPrototype},
 			{bindingHTMLIFrameElementPrototype, &bindings.htmlIFrameElementPrototype},
+			{bindingHTMLHeadElementPrototype, &bindings.htmlHeadElementPrototype},
+			{bindingHTMLScriptElementPrototype, &bindings.htmlScriptElementPrototype},
+			{bindingHTMLMediaElementPrototype, &bindings.htmlMediaElementPrototype},
+			{bindingHTMLImageElementPrototype, &bindings.htmlImageElementPrototype},
 			{bindingHTMLCollectionPrototype, &bindings.htmlCollectionPrototype},
 			{bindingTemplatePrototype, &bindings.templatePrototype},
 			{bindingTextPrototype, &bindings.textPrototype},
@@ -532,6 +615,16 @@ func (realm *Realm) prepareBrowserBindingsLocked(context *browserruntime.TaskCon
 			{bindingMutationObserverConstructor, &bindings.mutationObserverConstructor},
 			{bindingDOMExceptionPrototype, &bindings.domExceptionPrototype},
 			{bindingDOMExceptionConstructor, &bindings.domExceptionConstructor},
+			{bindingURLSearchParamsPrototype, &bindings.urlSearchParamsPrototype},
+			{bindingURLSearchParamsConstructor, &bindings.urlSearchParamsConstructor},
+			{bindingURLPrototype, &bindings.urlPrototype},
+			{bindingURLConstructor, &bindings.urlConstructor},
+			{bindingTextEncoderPrototype, &bindings.textEncoderPrototype},
+			{bindingTextEncoderConstructor, &bindings.textEncoderConstructor},
+			{bindingTextDecoderPrototype, &bindings.textDecoderPrototype},
+			{bindingTextDecoderConstructor, &bindings.textDecoderConstructor},
+			{bindingUint8ArrayPrototype, &bindings.uint8ArrayPrototype},
+			{bindingUint8ArrayConstructor, &bindings.uint8ArrayConstructor},
 			{bindingRangePrototype, &bindings.rangePrototype},
 			{bindingSelectionPrototype, &bindings.selectionPrototype},
 			{bindingSelection, &bindings.selection},
@@ -625,6 +718,23 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 	if err != nil {
 		return err
 	}
+	bindings.urlSearchParamsConstructor, bindings.urlSearchParamsPrototype, err = realm.newURLSearchParamsConstructor(context)
+	if err != nil {
+		return err
+	}
+	bindings.urlConstructor, bindings.urlPrototype, err = realm.newURLConstructor(context)
+	if err != nil {
+		return err
+	}
+	bindings.textEncoderConstructor, bindings.textEncoderPrototype,
+		bindings.textDecoderConstructor, bindings.textDecoderPrototype, err = realm.newTextCodecConstructors(context)
+	if err != nil {
+		return err
+	}
+	bindings.uint8ArrayConstructor, bindings.uint8ArrayPrototype, err = realm.newUint8ArrayConstructor(context)
+	if err != nil {
+		return err
+	}
 	rangeConstructor, err := realm.newDOMInterfaceConstructor(context, "Range", realm.active.ObjectPrototype)
 	if err != nil {
 		return err
@@ -670,6 +780,14 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 	if err != nil {
 		return err
 	}
+	setInterval, err := realm.newNativeFunction(context, "setInterval", 2, nativeGlobalSetInterval)
+	if err != nil {
+		return err
+	}
+	clearInterval, err := realm.newNativeFunction(context, "clearInterval", 1, nativeGlobalClearInterval)
+	if err != nil {
+		return err
+	}
 	requestAnimationFrame, err := realm.newNativeFunction(context, "requestAnimationFrame", 1, nativeGlobalRequestAnimationFrame)
 	if err != nil {
 		return err
@@ -697,6 +815,18 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 	if err != nil {
 		return err
 	}
+	imageConstructor, err := realm.newImageConstructor(context)
+	if err != nil {
+		return err
+	}
+	navigator, err := realm.newNavigator(context)
+	if err != nil {
+		return err
+	}
+	matchMedia, err := realm.newNativeFunction(context, "matchMedia", 1, nativeMatchMedia)
+	if err != nil {
+		return err
+	}
 	windowProperties := []struct {
 		name  string
 		value memory.Value
@@ -708,11 +838,21 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{"queueMicrotask", memory.RefValue(realm.active.QueueMicrotask)},
 		{"setTimeout", memory.RefValue(setTimeout)},
 		{"clearTimeout", memory.RefValue(clearTimeout)},
+		{"setInterval", memory.RefValue(setInterval)},
+		{"clearInterval", memory.RefValue(clearInterval)},
 		{"requestAnimationFrame", memory.RefValue(requestAnimationFrame)},
 		{"cancelAnimationFrame", memory.RefValue(cancelAnimationFrame)},
 		{"performance", memory.RefValue(bindings.performance)},
+		{"navigator", memory.RefValue(navigator)},
+		{"matchMedia", memory.RefValue(matchMedia)},
+		{"Image", memory.RefValue(imageConstructor)},
 		{"MutationObserver", memory.RefValue(bindings.mutationObserverConstructor)},
 		{bindingDOMException, memory.RefValue(bindings.domExceptionConstructor)},
+		{"URLSearchParams", memory.RefValue(bindings.urlSearchParamsConstructor)},
+		{"URL", memory.RefValue(bindings.urlConstructor)},
+		{"TextEncoder", memory.RefValue(bindings.textEncoderConstructor)},
+		{"TextDecoder", memory.RefValue(bindings.textDecoderConstructor)},
+		{"Uint8Array", memory.RefValue(bindings.uint8ArrayConstructor)},
 		{"Event", memory.RefValue(eventConstructor)},
 		{"CustomEvent", memory.RefValue(customEventConstructor)},
 		{"getComputedStyle", memory.RefValue(getComputedStyle)},
@@ -748,6 +888,10 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{bindingHTMLOptionElementPrototype, bindings.htmlOptionElementPrototype, false},
 		{bindingHTMLButtonElementPrototype, bindings.htmlButtonElementPrototype, false},
 		{bindingHTMLIFrameElementPrototype, bindings.htmlIFrameElementPrototype, false},
+		{bindingHTMLHeadElementPrototype, bindings.htmlHeadElementPrototype, false},
+		{bindingHTMLScriptElementPrototype, bindings.htmlScriptElementPrototype, false},
+		{bindingHTMLMediaElementPrototype, bindings.htmlMediaElementPrototype, false},
+		{bindingHTMLImageElementPrototype, bindings.htmlImageElementPrototype, false},
 		{bindingHTMLCollectionPrototype, bindings.htmlCollectionPrototype, false},
 		{bindingTemplatePrototype, bindings.templatePrototype, false},
 		{bindingTextPrototype, bindings.textPrototype, false},
@@ -762,6 +906,16 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{bindingMutationObserverConstructor, bindings.mutationObserverConstructor, false},
 		{bindingDOMExceptionPrototype, bindings.domExceptionPrototype, false},
 		{bindingDOMExceptionConstructor, bindings.domExceptionConstructor, false},
+		{bindingURLSearchParamsPrototype, bindings.urlSearchParamsPrototype, false},
+		{bindingURLSearchParamsConstructor, bindings.urlSearchParamsConstructor, false},
+		{bindingURLPrototype, bindings.urlPrototype, false},
+		{bindingURLConstructor, bindings.urlConstructor, false},
+		{bindingTextEncoderPrototype, bindings.textEncoderPrototype, false},
+		{bindingTextEncoderConstructor, bindings.textEncoderConstructor, false},
+		{bindingTextDecoderPrototype, bindings.textDecoderPrototype, false},
+		{bindingTextDecoderConstructor, bindings.textDecoderConstructor, false},
+		{bindingUint8ArrayPrototype, bindings.uint8ArrayPrototype, false},
+		{bindingUint8ArrayConstructor, bindings.uint8ArrayConstructor, false},
 		{bindingRangePrototype, bindings.rangePrototype, false},
 		{bindingSelectionPrototype, bindings.selectionPrototype, false},
 		{bindingSelection, bindings.selection, false},
@@ -776,12 +930,22 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{"globalThis", bindings.window, false},
 		{bindingDocument, bindings.document, false},
 		{bindingPerformance, bindings.performance, false},
+		{"navigator", navigator, false},
+		{"matchMedia", matchMedia, true},
+		{"Image", imageConstructor, true},
 		{bindingMutationObserver, bindings.mutationObserverConstructor, false},
 		{bindingDOMException, bindings.domExceptionConstructor, true},
+		{"URLSearchParams", bindings.urlSearchParamsConstructor, true},
+		{"URL", bindings.urlConstructor, true},
+		{"TextEncoder", bindings.textEncoderConstructor, true},
+		{"TextDecoder", bindings.textDecoderConstructor, true},
+		{"Uint8Array", bindings.uint8ArrayConstructor, true},
 		{"Event", eventConstructor, true},
 		{"CustomEvent", customEventConstructor, true},
 		{"setTimeout", setTimeout, true},
 		{"clearTimeout", clearTimeout, true},
+		{"setInterval", setInterval, true},
+		{"clearInterval", clearInterval, true},
 		{"requestAnimationFrame", requestAnimationFrame, true},
 		{"cancelAnimationFrame", cancelAnimationFrame, true},
 		{"getComputedStyle", getComputedStyle, true},

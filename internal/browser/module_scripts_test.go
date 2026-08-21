@@ -30,6 +30,26 @@ func TestModuleSpecifiersIncludesLiteralDynamicImportsAndIgnoresNestedText(t *te
 	}
 }
 
+func TestModuleSpecifiersToleratesPrivateNames(t *testing.T) {
+	t.Parallel()
+	source := `
+		class FrameReader {
+			#reader;
+			#closed = false;
+			read() { return this.#closed ? undefined : this.#reader.read(); }
+		}
+		import "./after-private-names.js";
+	`
+	got, err := moduleSpecifiers(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"./after-private-names.js"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("module specifiers = %#v, want %#v", got, want)
+	}
+}
+
 func TestResolveModuleSpecifierRejectsBareAndNonHTTPModules(t *testing.T) {
 	t.Parallel()
 	resolved, err := resolveModuleSpecifier("https://example.test/app/main.js", "../vendor.js?hash=1")

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/JediWattson/gossamer/internal/browser"
 	"github.com/JediWattson/gossamer/internal/js/compiler"
@@ -83,6 +84,10 @@ type Realm struct {
 	host                      browser.Host
 	nextCallback              browser.ValueHandle
 	timerCallbacks            map[browser.TimerID]browser.ValueHandle
+	intervalCallbacks         map[browser.TimerID]browser.ValueHandle
+	intervalTimers            map[browser.TimerID]browser.TimerID
+	callbackIntervals         map[browser.ValueHandle]browser.TimerID
+	intervalDelays            map[browser.TimerID]time.Duration
 	animationCallbacks        map[browser.AnimationFrameID]browser.ValueHandle
 	mutationObservers         map[uint64]*mutationObserverState
 	nextMutationObserver      uint64
@@ -117,6 +122,10 @@ func (engine *Engine) NewRealm() (browser.JSRealm, error) {
 		engine:             engine,
 		interpreter:        browserruntime.NewInterpreter(engine.config.Interpreter),
 		timerCallbacks:     make(map[browser.TimerID]browser.ValueHandle),
+		intervalCallbacks:  make(map[browser.TimerID]browser.ValueHandle),
+		intervalTimers:     make(map[browser.TimerID]browser.TimerID),
+		callbackIntervals:  make(map[browser.ValueHandle]browser.TimerID),
+		intervalDelays:     make(map[browser.TimerID]time.Duration),
 		animationCallbacks: make(map[browser.AnimationFrameID]browser.ValueHandle),
 		mutationObservers:  make(map[uint64]*mutationObserverState),
 		listeners:          make(map[eventListenerKey][]eventListener),
@@ -428,6 +437,10 @@ func (realm *Realm) Close() error {
 	realm.persistentObserverCache = memory.Ref{}
 	realm.persistentModuleCache = memory.Ref{}
 	realm.timerCallbacks = nil
+	realm.intervalCallbacks = nil
+	realm.intervalTimers = nil
+	realm.callbackIntervals = nil
+	realm.intervalDelays = nil
 	realm.animationCallbacks = nil
 	realm.mutationObservers = nil
 	realm.collectedWrappers = nil

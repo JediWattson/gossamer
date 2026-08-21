@@ -44,8 +44,15 @@ binding work.
 
 ## Current efchat baseline
 
-The current efchat production distribution reaches HTML, CSS, DOM indexing,
-layout, painting, and clean ownership teardown under both engines. Its first
-shared blocker is module-graph scanning of JavaScript private-name syntax (`#`)
-in the production entry chunk. Neither engine evaluates the entry module until
-that shared scanner accepts the graph.
+The shared module scanner now tolerates production-only syntax while extracting
+imports, without weakening Strand's strict evaluator. With the stock-V8 oracle,
+the current efchat production distribution evaluates its entry module, builds
+the initial chat shell, paints a frame, reports zero script failures, and tears
+ownership down to zero.
+
+The same distribution currently reaches the evaluator under Strand and then
+fails explicitly on private-class syntax (`#`) at `122:42627`. That is now a
+Strand language-parity backlog rather than a shared browser-kernel or module
+scanner failure. Native parity tests cover the browser utility surface added at
+this rung: URL/URLSearchParams, UTF-8 codecs, Uint8Array, navigator,
+matchMedia, interval timers, Image, and specialized HTML element identities.

@@ -101,6 +101,7 @@ const (
 	ShiftLeftAssign
 	ShiftRightAssign
 	UnsignedShiftRightAssign
+	Unknown
 )
 
 var kindNames = [...]string{
@@ -195,6 +196,7 @@ var kindNames = [...]string{
 	ShiftLeftAssign:          "<<=",
 	ShiftRightAssign:         ">>=",
 	UnsignedShiftRightAssign: ">>>=",
+	Unknown:                  "unsupported token",
 }
 
 func (kind Kind) String() string {

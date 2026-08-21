@@ -181,7 +181,7 @@ func moduleSpecifiers(source string) ([]string, error) {
 }
 
 func lexModuleSurface(source string) ([]moduleLexeme, error) {
-	lexed, err := lexer.Lex(source)
+	lexed, err := lexer.LexSurface(source)
 	if err != nil {
 		return nil, err
 	}

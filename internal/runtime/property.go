@@ -51,6 +51,49 @@ func (execution *execution) getProperty(base, key memory.Value) (memory.Value, b
 			return context.ArrayElement(ref, index)
 		}
 		return execution.getNamedProperty(base, ref, name)
+	case memory.HeapTypedArray:
+		index, length, indexed, name, err := execution.arrayPropertyKey(key)
+		if err != nil {
+			return memory.Value{}, false, err
+		}
+		view, err := context.DerefTypedArray(ref)
+		if err != nil {
+			return memory.Value{}, false, err
+		}
+		if length {
+			return memory.NumberValue(float64(view.Length)), true, nil
+		}
+		if indexed {
+			if uint64(index) >= view.Length {
+				return memory.Value{}, false, nil
+			}
+			value, err := context.ReadTypedArrayElement(ref, uint64(index))
+			return memory.NumberValue(value), true, err
+		}
+		nameText, stringKey, err := execution.stringPropertyName(name)
+		if err != nil {
+			return memory.Value{}, false, err
+		}
+		if stringKey {
+			switch nameText {
+			case "byteLength":
+				return memory.NumberValue(float64(view.Length * typedArrayElementSize(view.Element))), true, nil
+			case "byteOffset":
+				return memory.NumberValue(float64(view.ByteOffset)), true, nil
+			case "buffer":
+				return memory.RefValue(view.Buffer), true, nil
+			}
+			for _, interceptor := range execution.interpreter.propertyInterceptors() {
+				if interceptor.Get == nil {
+					continue
+				}
+				value, found, handled, interceptErr := interceptor.Get(context, ref, nameText)
+				if interceptErr != nil || handled {
+					return value, found, interceptErr
+				}
+			}
+		}
+		return memory.Value{}, false, nil
 	case memory.HeapString:
 		name, err := execution.propertyName(key)
 		if err != nil {
@@ -177,6 +220,19 @@ func (execution *execution) instanceOf(value, constructor memory.Value) (bool, e
 		return false, ErrNotCallable
 	}
 	_ = descriptor
+	if value.IsRef() {
+		kind, kindErr := execution.context.HeapKind(value.Ref())
+		if kindErr != nil {
+			return false, kindErr
+		}
+		if kind == memory.HeapTypedArray && descriptor.Name.IsRef() {
+			name, nameErr := execution.context.DerefString(descriptor.Name.Ref())
+			if nameErr == nil && name == "Uint8Array" {
+				view, viewErr := execution.context.DerefTypedArray(value.Ref())
+				return viewErr == nil && view.Element == memory.ElementUint8, viewErr
+			}
+		}
+	}
 	prototypeName, err := execution.context.NewString("prototype")
 	if err != nil {
 		return false, err
@@ -322,6 +378,29 @@ func (execution *execution) setPropertyValue(base, key, value memory.Value) erro
 			return context.SetArrayElement(ref, index, value)
 		}
 		return execution.setNamedProperty(base, ref, name, value)
+	case memory.HeapTypedArray:
+		index, length, indexed, _, err := execution.arrayPropertyKey(key)
+		if err != nil {
+			return err
+		}
+		if length {
+			return memory.ErrReadOnlyProperty
+		}
+		if indexed {
+			view, err := context.DerefTypedArray(ref)
+			if err != nil {
+				return err
+			}
+			if uint64(index) >= view.Length {
+				return nil
+			}
+			number, err := execution.toNumber(value)
+			if err != nil {
+				return err
+			}
+			return context.WriteTypedArrayElement(ref, uint64(index), number)
+		}
+		return memory.ErrReadOnlyProperty
 	case memory.HeapRegExp:
 		name, err := execution.propertyName(key)
 		if err != nil {
@@ -456,10 +535,41 @@ func (execution *execution) deletePropertyValue(base, key memory.Value) (bool, e
 			return true, nil
 		}
 		return context.DeleteProperty(ref, name)
+	case memory.HeapTypedArray:
+		index, length, indexed, _, err := execution.arrayPropertyKey(key)
+		if err != nil {
+			return false, err
+		}
+		if length {
+			return false, nil
+		}
+		if indexed {
+			view, err := context.DerefTypedArray(ref)
+			if err != nil {
+				return false, err
+			}
+			return uint64(index) >= view.Length, nil
+		}
+		return true, nil
 	case memory.HeapString, memory.HeapSymbol:
 		return false, nil
 	default:
 		return false, fmt.Errorf("%w: HeapKind(%d) has no properties", ErrOperandType, kind)
+	}
+}
+
+func typedArrayElementSize(kind memory.ElementKind) uint64 {
+	switch kind {
+	case memory.ElementInt8, memory.ElementUint8, memory.ElementUint8Clamped:
+		return 1
+	case memory.ElementInt16, memory.ElementUint16:
+		return 2
+	case memory.ElementInt32, memory.ElementUint32, memory.ElementFloat32:
+		return 4
+	case memory.ElementFloat64:
+		return 8
+	default:
+		return 0
 	}
 }
 

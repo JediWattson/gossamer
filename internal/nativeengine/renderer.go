@@ -125,6 +125,16 @@ func (realm *Realm) facadeRecord(context *browserruntime.TaskContext, object mem
 }
 
 func (realm *Realm) facadePropertyGet(context *browserruntime.TaskContext, object memory.Ref, name string) (memory.Value, bool, bool, error) {
+	if kind, err := context.HeapKind(object); err != nil {
+		return memory.Value{}, false, false, err
+	} else if kind == memory.HeapTypedArray {
+		key, err := context.NewString(name)
+		if err != nil {
+			return memory.Value{}, false, true, err
+		}
+		value, found, err := context.GetOwnProperty(realm.bindings.uint8ArrayPrototype, key)
+		return value, found, true, err
+	}
 	record, facade, err := realm.facadeRecord(context, object)
 	if err != nil || !facade {
 		return memory.Value{}, false, facade, err

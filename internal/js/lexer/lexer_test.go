@@ -184,6 +184,32 @@ func TestLexRejectsMalformedInputPrecisely(t *testing.T) {
 	}
 }
 
+func TestLexSurfaceToleratesUnsupportedProductionSyntax(t *testing.T) {
+	t.Parallel()
+
+	tokens, err := lexer.LexSurface(`class Reader { #field; value = 42_069n; } import "./next.js";`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawHash, sawBigInt, sawImport bool
+	for _, token := range tokens {
+		switch {
+		case token.Kind == lexer.Unknown && token.Lexeme == "#":
+			sawHash = true
+		case token.Kind == lexer.Number && token.Lexeme == "42_069n":
+			sawBigInt = true
+		case token.Kind == lexer.Import:
+			sawImport = true
+		}
+	}
+	if !sawHash || !sawBigInt || !sawImport {
+		t.Fatalf("surface tokens omitted production syntax: %#v", tokens)
+	}
+	if _, err := lexer.Lex(`#field = 42_069n`); err == nil {
+		t.Fatal("strict lexer accepted unsupported production syntax")
+	}
+}
+
 func FuzzLexNeverPanicsAndSpansStayOrdered(f *testing.F) {
 	f.Add("let answer = 40 + 2;")
 	f.Add("function f(x) { try { return x; } finally {} }")

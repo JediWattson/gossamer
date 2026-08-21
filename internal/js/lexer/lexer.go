@@ -32,6 +32,7 @@ type scanner struct {
 	line           uint32
 	column         uint32
 	templateFrames []templateFrame
+	tolerant       bool
 }
 
 type templateFrame struct {
@@ -40,10 +41,21 @@ type templateFrame struct {
 }
 
 func Lex(source string) ([]Token, error) {
+	return lex(source, false)
+}
+
+// LexSurface tokenizes enough JavaScript structure to discover module
+// specifiers without requiring the source to fit Strand's executable syntax
+// subset. Unsupported punctuators and numeric forms remain opaque tokens.
+func LexSurface(source string) ([]Token, error) {
+	return lex(source, true)
+}
+
+func lex(source string, tolerant bool) ([]Token, error) {
 	if uint64(len(source)) > math.MaxUint32 {
 		return nil, &Error{Span: Span{Start: Position{Line: 1, Column: 1}}, Message: "source exceeds uint32 offsets"}
 	}
-	input := &scanner{source: source, line: 1, column: 1}
+	input := &scanner{source: source, line: 1, column: 1, tolerant: tolerant}
 	tokens := make([]Token, 0, len(source)/3+1)
 	allowRegExp := true
 	for {
@@ -299,6 +311,16 @@ func (input *scanner) scanNumber(start Position) (Token, error) {
 	if input.offset < len(input.source) {
 		r, _ := input.peekRune()
 		if isIdentifierStart(r) {
+			if input.tolerant {
+				for input.offset < len(input.source) {
+					r, _ = input.peekRune()
+					if !isIdentifierContinue(r) && !unicode.IsDigit(r) {
+						break
+					}
+					_, _ = input.advance()
+				}
+				return Token{Kind: Number, Lexeme: input.source[start.Offset:input.offset], Span: Span{Start: start, End: input.position()}}, nil
+			}
 			return Token{}, input.problem(start, "identifier cannot immediately follow a number")
 		}
 	}
@@ -328,6 +350,16 @@ func (input *scanner) scanRadixNumber(start Position, base, prefix int) (Token, 
 	if input.offset < len(input.source) {
 		r, _ := input.peekRune()
 		if isIdentifierContinue(r) || unicode.IsDigit(r) {
+			if input.tolerant {
+				for input.offset < len(input.source) {
+					r, _ = input.peekRune()
+					if !isIdentifierContinue(r) && !unicode.IsDigit(r) {
+						break
+					}
+					_, _ = input.advance()
+				}
+				return Token{Kind: Number, Lexeme: input.source[start.Offset:input.offset], Span: Span{Start: start, End: input.position()}}, nil
+			}
 			return Token{}, input.problem(start, "invalid radix digit")
 		}
 	}
@@ -630,6 +662,9 @@ func (input *scanner) scanPunctuator(start Position) (Token, error) {
 	r, err := input.advance()
 	if err != nil {
 		return Token{}, err
+	}
+	if input.tolerant {
+		return Token{Kind: Unknown, Lexeme: string(r), Span: Span{Start: start, End: input.position()}}, nil
 	}
 	return Token{}, input.problem(start, fmt.Sprintf("unexpected character %q", r))
 }
