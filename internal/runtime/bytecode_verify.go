@@ -43,6 +43,9 @@ func verifyInstructions(instructions []Instruction, constantCount int) error {
 		if instruction.Op == OpUpdateProperty && (instruction.A > 1 || instruction.B > 1) {
 			return fmt.Errorf("%w: UpdateProperty mode %d/%d", ErrInvalidBytecode, instruction.A, instruction.B)
 		}
+		if instruction.Op == OpDefineAccessor && instruction.A > 1 {
+			return fmt.Errorf("%w: DefineAccessor mode %d", ErrInvalidBytecode, instruction.A)
+		}
 	}
 
 	depths := map[int]int{0: 0}
@@ -127,7 +130,7 @@ func instructionStackEffect(instruction Instruction) (required, delta int, termi
 	case OpGetOwnProperty, OpDeleteOwnProperty, OpGetElement, OpDeleteElement,
 		OpGetProperty, OpDeleteProperty, OpUpdateProperty:
 		return 2, -1, false, nil
-	case OpSetOwnProperty, OpSetElement, OpSetProperty:
+	case OpSetOwnProperty, OpSetElement, OpSetProperty, OpDefineAccessor:
 		return 3, -2, false, nil
 	case OpGetLength:
 		return 1, 0, false, nil
@@ -165,6 +168,10 @@ func instructionStackEffect(instruction Instruction) (required, delta int, termi
 		}
 		count := int(instruction.A)
 		return count + 2, -(count + 1), false, nil
+	case OpCallSpread, OpConstructSpread:
+		return 2, -1, false, nil
+	case OpCallMethodSpread:
+		return 3, -2, false, nil
 	case OpThrow:
 		return 1, -1, true, nil
 	case OpEnterCatch:

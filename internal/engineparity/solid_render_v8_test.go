@@ -15,3 +15,11 @@ func TestStockV8RunsProductionSolidCounterLifecycle(t *testing.T) {
 	}
 	runProductionSolidCounterParity(t, engine)
 }
+
+func TestStockV8RunsProductionSolidKeyedFor(t *testing.T) {
+	engine, err := v8engine.New(v8engine.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runProductionSolidKeyedFor(t, engine)
+}

@@ -69,6 +69,7 @@ while (i < 10) {
   if (i === 6) { break; }
   sum = sum + i;
 }
+
 (chosen === 10 && fallback === 30) ? sum : 0;
 `)
 	if err != nil {
@@ -77,6 +78,38 @@ while (i < 10) {
 	result := execute(t, 811, image)
 	if result.Kind() != memory.ValueNumber || result.Number() != 12 {
 		t.Fatalf("control result = %#v, want 12", result)
+	}
+}
+
+func TestCompileEmitsSpreadCallsArraysConstructionAndAccessors(t *testing.T) {
+	t.Parallel()
+
+	image, err := compiler.Compile(`
+function sum(a, b, c) { return a + b + c; }
+function Box(value) { this.value = value; }
+let receiver = {
+  base: 2,
+  add(a, b) { return this.base + a + b; },
+  get doubled() { return this.base * 2; },
+  set doubled(value) { this.base = value / 2; }
+};
+let values = [0, ...[1, 2, 3], ...[4, 5]];
+sum(...values);
+receiver.add(...[3, 4]);
+new Box(...[9]);
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, _ := image.Function(image.Entry())
+	disassembly, err := browserruntime.Disassemble(entry.Code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, opcode := range []string{"CallSpread", "CallMethodSpread", "ConstructSpread", "DefineAccessor"} {
+		if !strings.Contains(disassembly, opcode) {
+			t.Fatalf("disassembly does not contain %s:\n%s", opcode, disassembly)
+		}
 	}
 }
 

@@ -367,6 +367,31 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 				return memory.Value{}, err
 			}
 			frame.push(value)
+		case OpDefineAccessor:
+			callable, err := frame.pop()
+			if err != nil {
+				return memory.Value{}, err
+			}
+			name, object, err := popRefPair(frame, "Object", "property name")
+			if err != nil {
+				return memory.Value{}, err
+			}
+			descriptor, found, err := context.GetOwnPropertyDescriptor(object, name)
+			if err != nil {
+				return memory.Value{}, err
+			}
+			if !found || descriptor.Kind != memory.PropertyAccessor {
+				descriptor = memory.AccessorProperty(memory.UndefinedValue(), memory.UndefinedValue(), true, true)
+			}
+			if instruction.A == 0 {
+				descriptor.Getter = callable
+			} else {
+				descriptor.Setter = callable
+			}
+			if err := context.DefineProperty(object, name, descriptor); err != nil {
+				return memory.Value{}, err
+			}
+			frame.push(callable)
 		case OpDeleteOwnProperty:
 			name, object, err := popRefPair(frame, "Object", "property name")
 			if err != nil {
@@ -673,11 +698,24 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 			if jump {
 				frame.ip = instruction.A
 			}
-		case OpCall, OpCallNative, OpConstruct, OpCallMethod:
-			if instruction.Op == OpCallMethod {
-				base, key, arguments, err := popMethodOperands(frame, instruction.A)
+		case OpCall, OpCallNative, OpConstruct, OpCallMethod, OpCallSpread, OpCallMethodSpread, OpConstructSpread:
+			methodCall := instruction.Op == OpCallMethod || instruction.Op == OpCallMethodSpread
+			spreadCall := instruction.Op == OpCallSpread || instruction.Op == OpCallMethodSpread || instruction.Op == OpConstructSpread
+			if methodCall {
+				var base, key memory.Value
+				var arguments []memory.Value
+				var err error
+				if spreadCall {
+					base, key, arguments, err = execution.popSpreadMethodOperands(frame)
+				} else {
+					base, key, arguments, err = popMethodOperands(frame, instruction.A)
+				}
 				if err != nil {
-					return memory.Value{}, err
+					if handled, terminal := execution.routeFrameError(frame, err); handled {
+						continue
+					} else {
+						return memory.Value{}, terminal
+					}
 				}
 				calleeValue, present, err := execution.getProperty(base, key)
 				if err != nil {
@@ -721,7 +759,14 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 				frame.push(result)
 				continue
 			}
-			callee, arguments, err := popCallOperands(frame, instruction.A)
+			var callee memory.Ref
+			var arguments []memory.Value
+			var err error
+			if spreadCall {
+				callee, arguments, err = execution.popSpreadCallOperands(frame)
+			} else {
+				callee, arguments, err = popCallOperands(frame, instruction.A)
+			}
 			if err != nil {
 				if handled, terminal := execution.routeFrameError(frame, err); handled {
 					continue
@@ -735,7 +780,8 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 			if instruction.Op == OpCallNative {
 				mode = callNativeOnly
 			}
-			if instruction.Op == OpConstruct {
+			construct := instruction.Op == OpConstruct || instruction.Op == OpConstructSpread
+			if construct {
 				descriptor, descriptorErr := context.DerefFunction(callee)
 				if descriptorErr != nil {
 					return memory.Value{}, descriptorErr
@@ -776,7 +822,7 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 					return memory.Value{}, terminal
 				}
 			}
-			if instruction.Op == OpConstruct {
+			if construct {
 				object, err := isObjectValue(context, result)
 				if err != nil {
 					return memory.Value{}, err

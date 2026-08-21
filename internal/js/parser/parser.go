@@ -984,7 +984,20 @@ func (input *parser) parseArgumentsAfterOpen() ([]ast.Expression, lexer.Span, er
 	arguments := make([]ast.Expression, 0)
 	if !input.check(lexer.RightParen) {
 		for {
-			argument, err := input.parseAssignment()
+			var argument ast.Expression
+			var err error
+			if input.match(lexer.Ellipsis) {
+				spread := input.previous()
+				value, valueErr := input.parseAssignment()
+				if valueErr != nil {
+					return nil, lexer.Span{}, valueErr
+				}
+				argument = &ast.SpreadElement{
+					Base: ast.Base{Range: join(spread.Span, value.Span())}, Argument: value,
+				}
+			} else {
+				argument, err = input.parseAssignment()
+			}
 			if err != nil {
 				return nil, lexer.Span{}, err
 			}
@@ -1082,10 +1095,13 @@ func (input *parser) parseArrayLiteral(open lexer.Token) (ast.Expression, error)
 			elements = append(elements, &ast.SpreadElement{
 				Base: ast.Base{Range: join(spread.Span, argument.Span())}, Argument: argument,
 			})
-			if !input.check(lexer.RightBracket) {
-				return nil, input.errorAt(input.current(), "native array spread currently requires a single spread element")
+			if !input.match(lexer.Comma) {
+				break
 			}
-			break
+			if input.check(lexer.RightBracket) {
+				break
+			}
+			continue
 		}
 		element, err := input.parseAssignment()
 		if err != nil {
@@ -1112,6 +1128,36 @@ func (input *parser) parseObjectLiteral(open lexer.Token) (ast.Expression, error
 		key := input.advance()
 		if !isPropertyName(key.Kind) && key.Kind != lexer.String && key.Kind != lexer.Number {
 			return nil, input.errorAt(key, "object property requires identifier, String, or number key")
+		}
+		if key.Kind == lexer.Identifier && (key.Text == "get" || key.Text == "set") &&
+			(isPropertyName(input.current().Kind) || input.current().Kind == lexer.String || input.current().Kind == lexer.Number) &&
+			input.peek(1).Kind == lexer.LeftParen {
+			propertyName := input.advance()
+			propertyText := propertyName.Text
+			if propertyName.Kind == lexer.Number {
+				propertyText = propertyName.Lexeme
+			}
+			parameters, body, end, err := input.parseFunctionTail()
+			if err != nil {
+				return nil, err
+			}
+			accessor := ast.ObjectPropertyGetter
+			if key.Text == "set" {
+				accessor = ast.ObjectPropertySetter
+			}
+			value := &ast.FunctionExpression{
+				Base: ast.Base{Range: join(key.Span, end)}, Parameters: parameters, Body: body,
+			}
+			properties = append(properties, &ast.ObjectProperty{
+				Base: ast.Base{Range: join(key.Span, end)}, Key: propertyText, Value: value, Accessor: accessor,
+			})
+			if !input.match(lexer.Comma) {
+				break
+			}
+			if input.check(lexer.RightBrace) {
+				break
+			}
+			continue
 		}
 		keyText := key.Text
 		if key.Kind == lexer.Number {

@@ -231,6 +231,30 @@ func TestParseRetainsSingleArraySpread(t *testing.T) {
 	}
 }
 
+func TestParseRetainsSpreadArgumentsAndObjectAccessors(t *testing.T) {
+	t.Parallel()
+
+	script, err := parser.Parse(`const value = target.call(1, ...items); const copy = [0, ...left, ...right]; const object = {get value() { return 1; }, set value(next) { this.next = next; }};`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := script.Body[0].(*ast.VariableDeclaration).Declarations[0].Init.(*ast.CallExpression)
+	if len(call.Arguments) != 2 {
+		t.Fatalf("call arguments = %#v", call.Arguments)
+	}
+	if _, ok := call.Arguments[1].(*ast.SpreadElement); !ok {
+		t.Fatalf("spread call argument = %#v", call.Arguments[1])
+	}
+	array := script.Body[1].(*ast.VariableDeclaration).Declarations[0].Init.(*ast.ArrayLiteral)
+	if len(array.Elements) != 3 {
+		t.Fatalf("multi-spread array = %#v", array.Elements)
+	}
+	object := script.Body[2].(*ast.VariableDeclaration).Declarations[0].Init.(*ast.ObjectLiteral)
+	if object.Properties[0].Accessor != ast.ObjectPropertyGetter || object.Properties[1].Accessor != ast.ObjectPropertySetter {
+		t.Fatalf("object accessors = %#v", object.Properties)
+	}
+}
+
 func TestParseFunctionExpressionsCallsConstructionAndUpdates(t *testing.T) {
 	t.Parallel()
 

@@ -279,7 +279,16 @@ type ObjectProperty struct {
 	Key       string
 	Value     Expression
 	Shorthand bool
+	Accessor  ObjectPropertyAccessor
 }
+
+type ObjectPropertyAccessor uint8
+
+const (
+	ObjectPropertyData ObjectPropertyAccessor = iota
+	ObjectPropertyGetter
+	ObjectPropertySetter
+)
 
 type ObjectLiteral struct {
 	Base

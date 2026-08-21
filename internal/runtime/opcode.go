@@ -86,6 +86,10 @@ const (
 	OpInstanceOf
 	OpTypeOfBinding
 	OpArguments
+	OpCallSpread
+	OpCallMethodSpread
+	OpConstructSpread
+	OpDefineAccessor
 )
 
 func (opcode Opcode) String() string {
@@ -248,11 +252,19 @@ func (opcode Opcode) String() string {
 		return "TypeOfBinding"
 	case OpArguments:
 		return "Arguments"
+	case OpCallSpread:
+		return "CallSpread"
+	case OpCallMethodSpread:
+		return "CallMethodSpread"
+	case OpConstructSpread:
+		return "ConstructSpread"
+	case OpDefineAccessor:
+		return "DefineAccessor"
 	default:
 		return fmt.Sprintf("Opcode(%d)", opcode)
 	}
 }
 
 func (opcode Opcode) valid() bool {
-	return opcode >= OpConstant && opcode <= OpArguments
+	return opcode >= OpConstant && opcode <= OpDefineAccessor
 }

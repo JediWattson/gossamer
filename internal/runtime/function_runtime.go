@@ -116,3 +116,37 @@ func createListFromArrayLike(execution *execution, value memory.Value) ([]memory
 	}
 	return result, nil
 }
+
+func (execution *execution) popSpreadCallOperands(frame *Frame) (memory.Ref, []memory.Value, error) {
+	argumentList, err := frame.pop()
+	if err != nil {
+		return memory.Ref{}, nil, err
+	}
+	arguments, err := createListFromArrayLike(execution, argumentList)
+	if err != nil {
+		return memory.Ref{}, nil, err
+	}
+	calleeValue, err := frame.pop()
+	if err != nil {
+		return memory.Ref{}, nil, err
+	}
+	callee, err := requireRef(calleeValue, "Function")
+	return callee, arguments, err
+}
+
+func (execution *execution) popSpreadMethodOperands(frame *Frame) (memory.Value, memory.Value, []memory.Value, error) {
+	argumentList, err := frame.pop()
+	if err != nil {
+		return memory.Value{}, memory.Value{}, nil, err
+	}
+	arguments, err := createListFromArrayLike(execution, argumentList)
+	if err != nil {
+		return memory.Value{}, memory.Value{}, nil, err
+	}
+	key, err := frame.pop()
+	if err != nil {
+		return memory.Value{}, memory.Value{}, nil, err
+	}
+	base, err := frame.pop()
+	return base, key, arguments, err
+}

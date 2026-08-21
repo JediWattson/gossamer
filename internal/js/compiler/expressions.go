@@ -146,12 +146,19 @@ func (compiler *functionCompiler) compileArrowFunctionExpression(expression *ast
 }
 
 func (compiler *functionCompiler) compileCall(call *ast.CallExpression) error {
+	spread := hasSpread(call.Arguments)
 	if member, ok := call.Callee.(*ast.MemberExpression); ok {
 		if err := compiler.compileExpression(member.Object); err != nil {
 			return err
 		}
 		if err := compiler.compileMemberKey(member); err != nil {
 			return err
+		}
+		if spread {
+			if err := compiler.compileArray(&ast.ArrayLiteral{Base: call.Base, Elements: call.Arguments}); err != nil {
+				return err
+			}
+			return compiler.emit(browserruntime.Instruction{Op: browserruntime.OpCallMethodSpread}, call.Span())
 		}
 		for _, argument := range call.Arguments {
 			if err := compiler.compileExpression(argument); err != nil {
@@ -162,6 +169,12 @@ func (compiler *functionCompiler) compileCall(call *ast.CallExpression) error {
 	}
 	if err := compiler.compileExpression(call.Callee); err != nil {
 		return err
+	}
+	if spread {
+		if err := compiler.compileArray(&ast.ArrayLiteral{Base: call.Base, Elements: call.Arguments}); err != nil {
+			return err
+		}
+		return compiler.emit(browserruntime.Instruction{Op: browserruntime.OpCallSpread}, call.Span())
 	}
 	for _, argument := range call.Arguments {
 		if err := compiler.compileExpression(argument); err != nil {
@@ -174,6 +187,12 @@ func (compiler *functionCompiler) compileCall(call *ast.CallExpression) error {
 func (compiler *functionCompiler) compileNew(expression *ast.NewExpression) error {
 	if err := compiler.compileExpression(expression.Callee); err != nil {
 		return err
+	}
+	if hasSpread(expression.Arguments) {
+		if err := compiler.compileArray(&ast.ArrayLiteral{Base: expression.Base, Elements: expression.Arguments}); err != nil {
+			return err
+		}
+		return compiler.emit(browserruntime.Instruction{Op: browserruntime.OpConstructSpread}, expression.Span())
 	}
 	for _, argument := range expression.Arguments {
 		if err := compiler.compileExpression(argument); err != nil {
@@ -211,15 +230,50 @@ func (compiler *functionCompiler) compileArray(array *ast.ArrayLiteral) error {
 			})
 		}
 	}
-	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpNewArray, A: uint32(len(array.Elements))}, array.Span()); err != nil {
+	if !hasSpread(array.Elements) {
+		return compiler.compileFixedArray(array.Elements, array.Span())
+	}
+	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpNewArray}, array.Span()); err != nil {
 		return err
 	}
-	for index, element := range array.Elements {
+	for _, element := range array.Elements {
+		property, err := compiler.stringConstant("concat")
+		if err != nil {
+			return err
+		}
+		if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpConstant, A: property}, array.Span()); err != nil {
+			return err
+		}
+		if spread, ok := element.(*ast.SpreadElement); ok {
+			if err := compiler.compileExpression(spread.Argument); err != nil {
+				return err
+			}
+		} else if err := compiler.compileFixedArray([]ast.Expression{element}, array.Span()); err != nil {
+			return err
+		}
+		if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpCallMethod, A: 1}, array.Span()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func hasSpread(expressions []ast.Expression) bool {
+	for _, expression := range expressions {
+		if _, ok := expression.(*ast.SpreadElement); ok {
+			return true
+		}
+	}
+	return false
+}
+
+func (compiler *functionCompiler) compileFixedArray(elements []ast.Expression, span lexer.Span) error {
+	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpNewArray, A: uint32(len(elements))}, span); err != nil {
+		return err
+	}
+	for index, element := range elements {
 		if element == nil {
 			continue
-		}
-		if _, spread := element.(*ast.SpreadElement); spread {
-			return compiler.problem(element.Span(), "native array spread currently requires a single spread element")
 		}
 		if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpDup}, element.Span()); err != nil {
 			return err
@@ -262,7 +316,15 @@ func (compiler *functionCompiler) compileObject(object *ast.ObjectLiteral) error
 		if err := compiler.compileExpression(property.Value); err != nil {
 			return err
 		}
-		if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpSetOwnProperty}, property.Span()); err != nil {
+		opcode := browserruntime.OpSetOwnProperty
+		mode := uint32(0)
+		if property.Accessor != ast.ObjectPropertyData {
+			opcode = browserruntime.OpDefineAccessor
+			if property.Accessor == ast.ObjectPropertySetter {
+				mode = 1
+			}
+		}
+		if err := compiler.emit(browserruntime.Instruction{Op: opcode, A: mode}, property.Span()); err != nil {
 			return err
 		}
 		if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpPop}, property.Span()); err != nil {
