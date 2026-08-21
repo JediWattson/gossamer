@@ -693,6 +693,27 @@ let {first: renamed, second = renamed + 1, third = 9, nullable = 10} = {
 	}
 }
 
+func TestCompileExecutesDestructuredFunctionParameters(t *testing.T) {
+	t.Parallel()
+
+	image, err := compiler.Compile(`
+let missing;
+function describe({task: value, state = "ready"}, [first], suffix = state) {
+  return value + ":" + state + ":" + first + ":" + suffix;
+}
+const select = ({item}) => item;
+(describe({task: "build", state: missing}, [3]) === "build:ready:3:ready" &&
+ select({item: 9}) === 9) ? 1 : 0;
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := execute(t, 831, image)
+	if result.Kind() != memory.ValueNumber || result.Number() != 1 {
+		t.Fatalf("destructured parameter result = %#v, want 1", result)
+	}
+}
+
 func TestCompileLowersLazyForOfGenerator(t *testing.T) {
 	t.Parallel()
 

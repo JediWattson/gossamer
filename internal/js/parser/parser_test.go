@@ -305,6 +305,36 @@ func TestParseLowersDestructuredArrowParameter(t *testing.T) {
 	}
 }
 
+func TestParseLowersDestructuredFunctionAndObjectArrowParameters(t *testing.T) {
+	t.Parallel()
+
+	script, err := parser.Parse(`
+function describe({task: value, state = "ready"}, [first]) { return value + state + first; }
+const select = ({item}) => item;
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	function := script.Body[0].(*ast.FunctionDeclaration)
+	if len(function.Parameters) != 2 || len(function.Body.Body) != 3 {
+		t.Fatalf("FunctionDeclaration = %#v", function)
+	}
+	object := function.Body.Body[0].(*ast.VariableDeclaration).Declarations[0]
+	array := function.Body.Body[1].(*ast.VariableDeclaration).Declarations[0]
+	if len(object.ObjectPattern) != 2 || object.ObjectPattern[0].Binding.Name != "value" ||
+		object.ObjectPattern[1].Default == nil || len(array.ArrayPattern) != 1 || array.ArrayPattern[0].Name != "first" {
+		t.Fatalf("function parameter patterns = %#v %#v", object, array)
+	}
+	arrow := script.Body[1].(*ast.VariableDeclaration).Declarations[0].Init.(*ast.ArrowFunctionExpression)
+	if len(arrow.Parameters) != 1 || arrow.Body == nil || len(arrow.Body.Body) != 2 {
+		t.Fatalf("object ArrowFunctionExpression = %#v", arrow)
+	}
+	declaration := arrow.Body.Body[0].(*ast.VariableDeclaration).Declarations[0]
+	if len(declaration.ObjectPattern) != 1 || declaration.ObjectPattern[0].Binding.Name != "item" {
+		t.Fatalf("arrow object pattern = %#v", declaration)
+	}
+}
+
 func TestParseRetainsSingleArraySpread(t *testing.T) {
 	t.Parallel()
 
