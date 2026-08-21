@@ -1063,7 +1063,8 @@ func (input *parser) parseNewExpression(start lexer.Token) (ast.Expression, erro
 			return nil, err
 		}
 	}
-	return &ast.NewExpression{Base: ast.Base{Range: join(start.Span, end)}, Callee: callee, Arguments: arguments}, nil
+	expression := &ast.NewExpression{Base: ast.Base{Range: join(start.Span, end)}, Callee: callee, Arguments: arguments}
+	return input.parsePostfixSuffix(expression)
 }
 
 func (input *parser) parsePostfix() (ast.Expression, error) {
@@ -1071,6 +1072,27 @@ func (input *parser) parsePostfix() (ast.Expression, error) {
 	if err != nil {
 		return nil, err
 	}
+	expression, err = input.parsePostfixSuffix(expression)
+	if err != nil {
+		return nil, err
+	}
+	if input.check(lexer.PlusPlus) || input.check(lexer.MinusMinus) {
+		operator := input.current()
+		if operator.Span.Start.Line == expression.Span().End.Line {
+			input.advance()
+			if !ast.IsAssignmentTarget(expression) {
+				return nil, input.errorAt(operator, "update operand is not assignable")
+			}
+			expression = &ast.UpdateExpression{
+				Base: ast.Base{Range: join(expression.Span(), operator.Span)}, Operator: operator.Kind, Argument: expression,
+			}
+		}
+	}
+	return expression, nil
+}
+
+func (input *parser) parsePostfixSuffix(expression ast.Expression) (ast.Expression, error) {
+	var err error
 	for {
 		expression, err = input.parseMembers(expression)
 		if err != nil {
@@ -1095,18 +1117,6 @@ func (input *parser) parsePostfix() (ast.Expression, error) {
 				Base: ast.Base{Range: join(expression.Span(), end)}, Callee: expression, Arguments: arguments, Optional: optional,
 			}
 			continue
-		}
-	}
-	if input.check(lexer.PlusPlus) || input.check(lexer.MinusMinus) {
-		operator := input.current()
-		if operator.Span.Start.Line == expression.Span().End.Line {
-			input.advance()
-			if !ast.IsAssignmentTarget(expression) {
-				return nil, input.errorAt(operator, "update operand is not assignable")
-			}
-			expression = &ast.UpdateExpression{
-				Base: ast.Base{Range: join(expression.Span(), operator.Span)}, Operator: operator.Kind, Argument: expression,
-			}
 		}
 	}
 	return expression, nil

@@ -239,6 +239,24 @@ func TestParseOptionalMemberMethodAndCallChains(t *testing.T) {
 	}
 }
 
+func TestParsePostfixMembersAndCallsAfterConstruction(t *testing.T) {
+	t.Parallel()
+
+	script, err := parser.Parse("new URL(path, base).href; new Factory()(3).value;")
+	if err != nil {
+		t.Fatal(err)
+	}
+	member := script.Body[0].(*ast.ExpressionStatement).Expression.(*ast.MemberExpression)
+	if _, ok := member.Object.(*ast.NewExpression); !ok || member.Property.(*ast.Identifier).Name != "href" {
+		t.Fatalf("constructed member = %#v", member)
+	}
+	outer := script.Body[1].(*ast.ExpressionStatement).Expression.(*ast.MemberExpression)
+	call := outer.Object.(*ast.CallExpression)
+	if _, ok := call.Callee.(*ast.NewExpression); !ok || len(call.Arguments) != 1 {
+		t.Fatalf("constructed call chain = %#v", outer)
+	}
+}
+
 func TestParseLowersDestructuredArrowParameter(t *testing.T) {
 	t.Parallel()
 

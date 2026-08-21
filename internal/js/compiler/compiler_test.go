@@ -638,6 +638,23 @@ let sixth = missing?.(4);
 	}
 }
 
+func TestCompileExecutesPostfixMembersAfterConstruction(t *testing.T) {
+	t.Parallel()
+
+	image, err := compiler.Compile(`
+function Box(value) { this.value = value; }
+function Factory() { return function(value) { return {value: value + 1}; }; }
+(new Box(4).value === 4 && new Factory()(4).value === 5) ? 1 : 0;
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := execute(t, 825, image)
+	if result.Kind() != memory.ValueNumber || result.Number() != 1 {
+		t.Fatalf("constructed postfix chain = %#v, want 1", result)
+	}
+}
+
 func TestCompileLowersLazyForOfGenerator(t *testing.T) {
 	t.Parallel()
 
