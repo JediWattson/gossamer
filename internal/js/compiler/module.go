@@ -102,14 +102,27 @@ func CompileModuleASTWithOptions(script *ast.Script, options Options) (program.M
 			}
 
 		case *ast.ExportDefaultDeclaration:
-			identifier := &ast.Identifier{Base: ast.Base{Range: statement.Span()}, Name: defaultExportBinding}
-			body = append(body, &ast.VariableDeclaration{
-				Base: ast.Base{Range: statement.Span()}, Kind: ast.VariableConst,
-				Declarations: []*ast.VariableDeclarator{{
-					Base: ast.Base{Range: statement.Span()}, Name: identifier, Init: statement.Expression,
-				}},
-			})
-			if err := addExport(program.ModuleExport{ExportName: "default", LocalName: defaultExportBinding}, statement.Span()); err != nil {
+			localName := defaultExportBinding
+			if function, ok := statement.Expression.(*ast.FunctionExpression); ok {
+				if function.Name != nil {
+					localName = function.Name.Name
+				}
+				body = append(body, &ast.FunctionDeclaration{
+					Base:       function.Base,
+					Name:       &ast.Identifier{Base: ast.Base{Range: function.Span()}, Name: localName},
+					Parameters: function.Parameters,
+					Body:       function.Body,
+				})
+			} else {
+				identifier := &ast.Identifier{Base: ast.Base{Range: statement.Span()}, Name: localName}
+				body = append(body, &ast.VariableDeclaration{
+					Base: ast.Base{Range: statement.Span()}, Kind: ast.VariableConst,
+					Declarations: []*ast.VariableDeclarator{{
+						Base: ast.Base{Range: statement.Span()}, Name: identifier, Init: statement.Expression,
+					}},
+				})
+			}
+			if err := addExport(program.ModuleExport{ExportName: "default", LocalName: localName}, statement.Span()); err != nil {
 				return program.Module{}, err
 			}
 
@@ -162,6 +175,10 @@ func CompileModuleASTWithOptions(script *ast.Script, options Options) (program.M
 		}
 		bindings[index].FunctionIndex = functionIndex
 		bindings[index].HasFunction = true
+		bindings[index].FunctionName = bindings[index].Name
+		if bindings[index].Name == defaultExportBinding {
+			bindings[index].FunctionName = "default"
+		}
 	}
 	for name := range importBindings {
 		localNames[name] = struct{}{}

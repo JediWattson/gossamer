@@ -220,6 +220,24 @@ import {lexical} from "./tdz-root.js";
 globalThis.__moduleTDZAttempts = (globalThis.__moduleTDZAttempts || 0) + 1;
 globalThis.__moduleTDZValue = lexical;
 `,
+		"https://module-instantiation.gossamer.test/default-root.js": `
+import {result} from "./default-dependency.js";
+export default function namedDefault() { return "default"; }
+globalThis.__moduleDefaultRuns = (globalThis.__moduleDefaultRuns || 0) + 1;
+globalThis.__moduleDefaultResult = [result, namedDefault()].join(":");
+`,
+		"https://module-instantiation.gossamer.test/default-dependency.js": `
+import namedDefault from "./default-root.js";
+export const result = namedDefault();
+`,
+		"https://module-instantiation.gossamer.test/anonymous-root.js": `
+import "./anonymous-reader.js";
+export default function () { return "anonymous"; }
+`,
+		"https://module-instantiation.gossamer.test/anonymous-reader.js": `
+import anonymousDefault from "./anonymous-root.js";
+globalThis.__moduleAnonymousDefault = [anonymousDefault.name, anonymousDefault()].join(":");
+`,
 	}}
 	browserRuntime, err := browser.NewWithEngine(engine)
 	if err != nil {
@@ -230,7 +248,7 @@ globalThis.__moduleTDZValue = lexical;
 		t.Fatal(err)
 	}
 	snapshot := page.Navigation()
-	if snapshot.State != browser.NavigationComplete || snapshot.ScriptsTotal != 4 || snapshot.ScriptsFailed != 2 {
+	if snapshot.State != browser.NavigationComplete || snapshot.ScriptsTotal != 8 || snapshot.ScriptsFailed != 2 {
 		t.Fatalf("module instantiation navigation = %#v", snapshot)
 	}
 	if _, err := page.QueueScript(browser.ScriptSource{URL: moduleInstantiationPageURL + "assert.js", Source: `
@@ -243,6 +261,12 @@ if (__moduleInstantiationResult !== "function:undefined:7") {
 if (__moduleTDZAttempts !== 1 || typeof __moduleTDZRootRan !== "undefined") {
   throw new Error("module TDZ failure was not cached before root evaluation");
 }
+if (__moduleDefaultRuns !== 1 || __moduleDefaultResult !== "default:default") {
+  throw new Error("default Function was not hoisted across its cycle");
+}
+if (__moduleAnonymousDefault !== "default:anonymous") {
+  throw new Error("anonymous default Function name or instantiation diverged: " + __moduleAnonymousDefault);
+}
 `}); err != nil {
 		t.Fatal(err)
 	}
@@ -250,6 +274,10 @@ if (__moduleTDZAttempts !== 1 || typeof __moduleTDZRootRan !== "undefined") {
 		t.Fatal(err)
 	}
 	wantLoads := []string{
+		"https://module-instantiation.gossamer.test/anonymous-reader.js",
+		"https://module-instantiation.gossamer.test/anonymous-root.js",
+		"https://module-instantiation.gossamer.test/default-dependency.js",
+		"https://module-instantiation.gossamer.test/default-root.js",
 		"https://module-instantiation.gossamer.test/dependency.js",
 		"https://module-instantiation.gossamer.test/root.js",
 		"https://module-instantiation.gossamer.test/tdz-reader.js",
@@ -297,6 +325,10 @@ func (client *moduleInstantiationMemoryLoader) Load(_ context.Context, rawURL st
 <script type="module" src="/root.js"></script>
 <script type="module" src="/tdz-root.js"></script>
 <script type="module" src="/tdz-root.js"></script>
+<script type="module" src="/default-root.js"></script>
+<script type="module" src="/default-root.js"></script>
+<script type="module" src="/anonymous-root.js"></script>
+<script type="module" src="/anonymous-root.js"></script>
 </body></html>`
 	return &loader.Response{
 		URL: location, StatusCode: http.StatusOK,

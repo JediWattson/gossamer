@@ -10,6 +10,7 @@ type ModuleBinding struct {
 	InitializeUndefined bool
 	FunctionIndex       uint32
 	HasFunction         bool
+	FunctionName        string
 }
 
 type ModuleImport struct {

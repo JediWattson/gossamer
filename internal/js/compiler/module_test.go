@@ -124,3 +124,34 @@ func TestCompileModuleRejectsBindingAndExportConflicts(t *testing.T) {
 		}
 	}
 }
+
+func TestCompileModuleHoistsDefaultFunctionExports(t *testing.T) {
+	t.Parallel()
+
+	named, err := compiler.CompileModule(`
+export default function named() { return named; }
+export {named};
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bindings := named.Bindings()
+	if len(bindings) != 1 || bindings[0].Name != "named" || !bindings[0].HasFunction {
+		t.Fatalf("named default Function bindings = %#v", bindings)
+	}
+	exports := named.Exports()
+	if len(exports) != 2 || exports[0].ExportName != "default" || exports[0].LocalName != "named" ||
+		exports[1].ExportName != "named" || exports[1].LocalName != "named" {
+		t.Fatalf("named default Function exports = %#v", exports)
+	}
+
+	anonymous, err := compiler.CompileModule(`export default function () { return 1; }`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bindings = anonymous.Bindings()
+	if len(bindings) != 1 || bindings[0].Name != "*default*" || !bindings[0].HasFunction ||
+		bindings[0].FunctionName != "default" || anonymous.Exports()[0].LocalName != "*default*" {
+		t.Fatalf("anonymous default Function metadata: bindings=%#v exports=%#v", bindings, anonymous.Exports())
+	}
+}

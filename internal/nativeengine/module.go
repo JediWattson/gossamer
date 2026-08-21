@@ -314,8 +314,16 @@ func (realm *Realm) instantiateModuleLocalsLocked(context *browserruntime.TaskCo
 			if err != nil {
 				return err
 			}
+			functionName := template.Name
+			if binding.FunctionName != "" {
+				name, err := context.NewString(binding.FunctionName)
+				if err != nil {
+					return err
+				}
+				functionName = memory.RefValue(name)
+			}
 			closure, err := context.NewBytecodeFunction(
-				template.Name,
+				functionName,
 				memory.RefValue(environment),
 				template.Arity,
 				template.Code,
