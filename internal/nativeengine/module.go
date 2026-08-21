@@ -54,15 +54,13 @@ func (realm *Realm) EvaluateModule(host browser.Host, graph browser.ModuleGraph)
 	if realm == nil {
 		return ErrRealmClosed
 	}
-	compiled, resolutions, err := compileNativeModuleGraph(graph)
-	if err != nil {
-		return err
-	}
-
 	realm.mutex.Lock()
 	defer realm.mutex.Unlock()
 	if realm.closed {
 		return ErrRealmClosed
+	}
+	if err := validateNativeModuleGraphRoot(graph); err != nil {
+		return err
 	}
 	if existing := realm.modules[graph.RootURL]; existing != nil {
 		switch existing.status {
@@ -72,6 +70,11 @@ func (realm *Realm) EvaluateModule(host browser.Host, graph browser.ModuleGraph)
 			return existing.err
 		}
 	}
+	compiled, resolutions, compilations, err := compileNativeModuleGraph(graph, realm.modules)
+	if err != nil {
+		return err
+	}
+	realm.moduleCompilations += compilations
 	for key, destination := range resolutions {
 		if previous, exists := realm.moduleResolutions[key]; exists && previous != destination {
 			return fmt.Errorf("%w: %q from %q resolved to both %q and %q", ErrModuleGraphInvalid, key.specifier, key.referrer, previous, destination)
@@ -108,48 +111,67 @@ func (realm *Realm) EvaluateModule(host browser.Host, graph browser.ModuleGraph)
 	return realm.evaluateModuleLocked(scope, graph.RootURL)
 }
 
-func compileNativeModuleGraph(graph browser.ModuleGraph) (map[string]nativeModule, map[moduleResolutionKey]string, error) {
+func validateNativeModuleGraphRoot(graph browser.ModuleGraph) error {
 	if graph.RootURL == "" || len(graph.Sources) == 0 {
-		return nil, nil, fmt.Errorf("%w: graph has no root source", ErrModuleGraphInvalid)
+		return fmt.Errorf("%w: graph has no root source", ErrModuleGraphInvalid)
 	}
-	compiled := make(map[string]nativeModule, len(graph.Sources))
+	seen := make(map[string]struct{}, len(graph.Sources))
+	rootFound := false
 	for _, source := range graph.Sources {
 		if source.URL == "" {
-			return nil, nil, fmt.Errorf("%w: source has no URL", ErrModuleGraphInvalid)
+			return fmt.Errorf("%w: source has no URL", ErrModuleGraphInvalid)
 		}
-		if _, duplicate := compiled[source.URL]; duplicate {
-			return nil, nil, fmt.Errorf("%w: duplicate source %q", ErrModuleGraphInvalid, source.URL)
+		if _, duplicate := seen[source.URL]; duplicate {
+			return fmt.Errorf("%w: duplicate source %q", ErrModuleGraphInvalid, source.URL)
+		}
+		seen[source.URL] = struct{}{}
+		rootFound = rootFound || source.URL == graph.RootURL
+	}
+	if !rootFound {
+		return fmt.Errorf("%w: root %q is absent", ErrModuleGraphInvalid, graph.RootURL)
+	}
+	return nil
+}
+
+func compileNativeModuleGraph(graph browser.ModuleGraph, cached map[string]*nativeModule) (map[string]nativeModule, map[moduleResolutionKey]string, uint64, error) {
+	if err := validateNativeModuleGraphRoot(graph); err != nil {
+		return nil, nil, 0, err
+	}
+	compiled := make(map[string]nativeModule, len(graph.Sources))
+	var compilations uint64
+	for _, source := range graph.Sources {
+		if existing := cached[source.URL]; existing != nil {
+			compiled[source.URL] = *existing
+			continue
 		}
 		image, err := compiler.CompileModuleWithOptions(source.Source, compiler.Options{AllowUnresolvedGlobals: true})
 		if err != nil {
-			return nil, nil, evaluationError(source.URL, err)
+			return nil, nil, compilations, evaluationError(source.URL, err)
 		}
 		compiled[source.URL] = nativeModule{source: source, image: image}
-	}
-	if _, found := compiled[graph.RootURL]; !found {
-		return nil, nil, fmt.Errorf("%w: root %q is absent", ErrModuleGraphInvalid, graph.RootURL)
+		compilations++
 	}
 	resolutions := make(map[moduleResolutionKey]string, len(graph.Resolutions))
 	for _, resolution := range graph.Resolutions {
 		if _, found := compiled[resolution.Referrer]; !found {
-			return nil, nil, fmt.Errorf("%w: resolution referrer %q is absent", ErrModuleGraphInvalid, resolution.Referrer)
+			return nil, nil, compilations, fmt.Errorf("%w: resolution referrer %q is absent", ErrModuleGraphInvalid, resolution.Referrer)
 		}
 		if _, found := compiled[resolution.URL]; !found {
-			return nil, nil, fmt.Errorf("%w: resolution target %q is absent", ErrModuleGraphInvalid, resolution.URL)
+			return nil, nil, compilations, fmt.Errorf("%w: resolution target %q is absent", ErrModuleGraphInvalid, resolution.URL)
 		}
 		if resolution.Specifier == "" {
-			return nil, nil, fmt.Errorf("%w: empty specifier from %q", ErrModuleGraphInvalid, resolution.Referrer)
+			return nil, nil, compilations, fmt.Errorf("%w: empty specifier from %q", ErrModuleGraphInvalid, resolution.Referrer)
 		}
 		key := moduleResolutionKey{referrer: resolution.Referrer, specifier: resolution.Specifier}
 		if previous, duplicate := resolutions[key]; duplicate && previous != resolution.URL {
-			return nil, nil, fmt.Errorf("%w: conflicting resolution for %q from %q", ErrModuleGraphInvalid, resolution.Specifier, resolution.Referrer)
+			return nil, nil, compilations, fmt.Errorf("%w: conflicting resolution for %q from %q", ErrModuleGraphInvalid, resolution.Specifier, resolution.Referrer)
 		}
 		resolutions[key] = resolution.URL
 	}
 	for url, module := range compiled {
 		for _, request := range module.image.Requests() {
 			if _, found := resolutions[moduleResolutionKey{referrer: url, specifier: request}]; !found {
-				return nil, nil, fmt.Errorf("%w: unresolved request %q from %q", ErrModuleGraphInvalid, request, url)
+				return nil, nil, compilations, fmt.Errorf("%w: unresolved request %q from %q", ErrModuleGraphInvalid, request, url)
 			}
 		}
 	}
@@ -166,9 +188,9 @@ func compileNativeModuleGraph(graph browser.ModuleGraph) (map[string]nativeModul
 	}
 	visit(graph.RootURL)
 	if len(reachable) != len(compiled) {
-		return nil, nil, fmt.Errorf("%w: graph contains %d unreachable source(s)", ErrModuleGraphInvalid, len(compiled)-len(reachable))
+		return nil, nil, compilations, fmt.Errorf("%w: graph contains %d unreachable source(s)", ErrModuleGraphInvalid, len(compiled)-len(reachable))
 	}
-	return compiled, resolutions, nil
+	return compiled, resolutions, compilations, nil
 }
 
 func (realm *Realm) moduleContextLocked(context *browserruntime.TaskContext, url string) (memory.Ref, error) {

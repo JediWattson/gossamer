@@ -27,6 +27,9 @@ func TestStrandLinksLiveModuleGraphWithCycles(t *testing.T) {
 		}
 		return realm.CollectGarbage(page)
 	})
+	if profile := engine.Profile(); profile.ModuleCompilations != 5 {
+		t.Fatalf("native module graph compilations = %d, want five canonical sources", profile.ModuleCompilations)
+	}
 }
 
 func TestStrandCachesModuleFailuresAndReleasesGraphs(t *testing.T) {
@@ -38,6 +41,9 @@ func TestStrandCachesModuleFailuresAndReleasesGraphs(t *testing.T) {
 		}
 		return realm.CollectGarbage(page)
 	})
+	if profile := engine.Profile(); profile.ModuleCompilations != 6 {
+		t.Fatalf("native errored module compilations = %d, want six canonical sources", profile.ModuleCompilations)
+	}
 }
 
 func TestStrandInstantiatesCyclicModuleBindingsBeforeEvaluation(t *testing.T) {
@@ -49,6 +55,9 @@ func TestStrandInstantiatesCyclicModuleBindingsBeforeEvaluation(t *testing.T) {
 		}
 		return realm.CollectGarbage(page)
 	})
+	if profile := engine.Profile(); profile.ModuleCompilations != 8 {
+		t.Fatalf("native module instantiation compilations = %d, want eight canonical sources", profile.ModuleCompilations)
+	}
 }
 
 func runLiveModuleGraphParity(t *testing.T, engine browser.Engine, collect func(*browser.Page) error) {

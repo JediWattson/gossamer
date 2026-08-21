@@ -32,21 +32,23 @@ type Config struct {
 }
 
 type EngineProfile struct {
-	RealmsCreated uint64
-	RealmsClosed  uint64
-	LiveRealms    uint64
-	Evaluations   uint64
-	Checkpoints   uint64
-	SourceBytes   uint64
+	RealmsCreated      uint64
+	RealmsClosed       uint64
+	LiveRealms         uint64
+	ModuleCompilations uint64
+	Evaluations        uint64
+	Checkpoints        uint64
+	SourceBytes        uint64
 }
 
 type RealmProfile struct {
-	Evaluations      uint64
-	Checkpoints      uint64
-	SourceBytes      uint64
-	PersistentRegion memory.RegionID
-	ActiveTask       browserruntime.TaskID
-	Closed           bool
+	ModuleCompilations uint64
+	Evaluations        uint64
+	Checkpoints        uint64
+	SourceBytes        uint64
+	PersistentRegion   memory.RegionID
+	ActiveTask         browserruntime.TaskID
+	Closed             bool
 }
 
 type Engine struct {
@@ -91,10 +93,11 @@ type Realm struct {
 	modules                   map[string]*nativeModule
 	moduleResolutions         map[moduleResolutionKey]string
 
-	evaluations uint64
-	checkpoints uint64
-	sourceBytes uint64
-	closed      bool
+	evaluations        uint64
+	moduleCompilations uint64
+	checkpoints        uint64
+	sourceBytes        uint64
+	closed             bool
 }
 
 func New(config Config) *Engine {
@@ -147,15 +150,17 @@ func (engine *Engine) Profile() EngineProfile {
 	engine.mutex.Lock()
 	defer engine.mutex.Unlock()
 	profile := EngineProfile{
-		RealmsCreated: engine.created,
-		RealmsClosed:  engine.closedCount,
-		LiveRealms:    uint64(len(engine.realms)),
-		Evaluations:   engine.closedProfile.Evaluations,
-		Checkpoints:   engine.closedProfile.Checkpoints,
-		SourceBytes:   engine.closedProfile.SourceBytes,
+		RealmsCreated:      engine.created,
+		RealmsClosed:       engine.closedCount,
+		LiveRealms:         uint64(len(engine.realms)),
+		ModuleCompilations: engine.closedProfile.ModuleCompilations,
+		Evaluations:        engine.closedProfile.Evaluations,
+		Checkpoints:        engine.closedProfile.Checkpoints,
+		SourceBytes:        engine.closedProfile.SourceBytes,
 	}
 	for realm := range engine.realms {
 		realmProfile := realm.profile()
+		profile.ModuleCompilations += realmProfile.ModuleCompilations
 		profile.Evaluations += realmProfile.Evaluations
 		profile.Checkpoints += realmProfile.Checkpoints
 		profile.SourceBytes += realmProfile.SourceBytes
@@ -194,6 +199,7 @@ func (engine *Engine) forget(realm *Realm, profile RealmProfile) {
 	if _, exists := engine.realms[realm]; exists {
 		delete(engine.realms, realm)
 		engine.closedCount++
+		engine.closedProfile.ModuleCompilations += profile.ModuleCompilations
 		engine.closedProfile.Evaluations += profile.Evaluations
 		engine.closedProfile.Checkpoints += profile.Checkpoints
 		engine.closedProfile.SourceBytes += profile.SourceBytes
@@ -389,12 +395,13 @@ func (realm *Realm) profile() RealmProfile {
 
 func (realm *Realm) profileLocked() RealmProfile {
 	return RealmProfile{
-		Evaluations:      realm.evaluations,
-		Checkpoints:      realm.checkpoints,
-		SourceBytes:      realm.sourceBytes,
-		PersistentRegion: realm.persistentRegion,
-		ActiveTask:       realm.activeTask,
-		Closed:           realm.closed,
+		ModuleCompilations: realm.moduleCompilations,
+		Evaluations:        realm.evaluations,
+		Checkpoints:        realm.checkpoints,
+		SourceBytes:        realm.sourceBytes,
+		PersistentRegion:   realm.persistentRegion,
+		ActiveTask:         realm.activeTask,
+		Closed:             realm.closed,
 	}
 }
 

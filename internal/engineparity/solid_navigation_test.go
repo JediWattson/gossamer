@@ -31,6 +31,9 @@ func TestStrandBootsProductionSolidModuleThroughNavigation(t *testing.T) {
 		}
 		return realm.CollectGarbage(page)
 	})
+	if profile := engine.Profile(); profile.ModuleCompilations != 2 {
+		t.Fatalf("native split Solid compilations = %d, want entry and runtime once", profile.ModuleCompilations)
+	}
 }
 
 func runProductionSolidNavigationParity(t *testing.T, engine browser.Engine, collect func(*browser.Page) error) {

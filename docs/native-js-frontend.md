@@ -177,7 +177,9 @@ module local before dependency evaluation: `var` starts as undefined, hoisted
 Functions close over the module environment immediately, and lexical bindings
 retain their temporal dead zone until their declaration executes. Cycles link
 before evaluation; cached link or evaluation failures are replayed without
-executing the module again. Each canonical module namespace is a sorted,
+recompiling or executing the module again. Graphs rooted at another URL reuse
+already compiled dependency records by canonical source identity. Each
+canonical module namespace is a sorted,
 null-prototype, non-extensible object whose immutable prototype and live export
 properties survive RegionStore copying and reject script mutation.
 
