@@ -12,6 +12,8 @@ Run an already-built distribution with Strand:
 GOCACHE=/tmp/gossamer-go-cache go run ./cmd/gossamer-sitecheck \
   --engine=strand \
   --dist /absolute/path/to/web/dist \
+  --viewport-width 1280 \
+  --viewport-height 720 \
   --screenshot /tmp/site-strand.png
 ```
 
@@ -31,10 +33,22 @@ go run ./cmd/gossamer-sitecheck --engine=strand https://example.com
 ```
 
 The report includes navigation/resource/script counters, bounded script
-failures with URL and phase, a DOM excerpt, frame dimensions and display-list
-command count, plus ownership statistics before and after teardown. The command
-exits nonzero if navigation, resources, scripts, diagnostics, rasterization, or
+failures with URL and phase, a DOM excerpt, frame dimensions, display-list
+command count, raster SHA-256, painted/opaque pixel counts, a bounded unique
+color count, painted bounds, plus ownership statistics before and after
+teardown. Every run rasterizes the final frame even when no PNG is requested,
+under a 16-megapixel viewport budget. The command exits
+nonzero if navigation, resources, scripts, diagnostics, rasterization, or
 zero-ownership teardown fail.
+
+Once a frame is accepted, make it a repeatable visual gate by passing its
+reported digest back to a later run:
+
+```sh
+go run ./cmd/gossamer-sitecheck \
+  --expect-paint-sha256 0123456789abcdef... \
+  https://example.com
+```
 
 The harness deliberately does not hide unsupported features or retry with a
 different engine. Its first job is to turn a real bundle into a deterministic
@@ -97,3 +111,19 @@ text and binary `send()`, explicit `close()`, handler properties, and event
 listener surface. Their parity gates use an injected browser socket to prove
 that open handlers can send, inbound messages run from the Page queue, close
 metadata reaches JavaScript, and no engine retains a Go connection pointer.
+
+## Rendering-fidelity rung
+
+Sitecheck now establishes the requested viewport before navigation, so CSS
+media queries, `matchMedia`, viewport units, synchronous geometry reads, final
+layout, and rasterization all consume one environment from the first script.
+The visual digest includes the viewport dimensions and canonical RGBA pixels;
+an expected-digest mismatch is a first-class compatibility failure rather than
+an informal screenshot comparison.
+
+The committed 640x360 fidelity fixture covers responsive CSS, Grid, Flex,
+positioning, borders, typography, and script-driven class/text mutations.
+Native Strand and stock V8 must both produce the same committed pixel SHA-256.
+This is the rendering regression floor for real-site work, not a claim of full
+CSS fidelity: unsupported effects such as radii, shadows, transforms, and
+author web fonts remain explicit follow-up compatibility items.

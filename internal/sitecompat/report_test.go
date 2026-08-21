@@ -1,6 +1,7 @@
 package sitecompat_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"github.com/JediWattson/gossamer/internal/browser"
 	"github.com/JediWattson/gossamer/internal/browser/fake"
 	"github.com/JediWattson/gossamer/internal/loader"
+	"github.com/JediWattson/gossamer/internal/render"
 	"github.com/JediWattson/gossamer/internal/sitecompat"
 )
 
@@ -39,6 +41,39 @@ func TestRunReportsScriptFailureDOMFrameAndCleanTeardown(t *testing.T) {
 	}
 	if report.Teardown.LiveObjects != 0 || report.Teardown.PersistentObjects != 0 {
 		t.Fatalf("teardown = %#v", report.Teardown)
+	}
+}
+
+func TestRunEnforcesDeterministicPaintAtRequestedViewport(t *testing.T) {
+	var screenshot bytes.Buffer
+	options := sitecompat.Options{
+		EngineName: "fake", DOMLimit: 20, Screenshot: &screenshot,
+		Viewport: render.Viewport{Width: 320, Height: 180},
+	}
+	first, err := sitecompat.Run(context.Background(), fake.New(), "https://compat.test/", compatLoader{}, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first.Passed || first.Frame == nil || first.Frame.Width != 320 || first.Frame.Height != 180 ||
+		len(first.Frame.PaintSHA256) != 64 || first.Frame.PaintedPixels == 0 || first.Frame.PaintedBounds == nil || screenshot.Len() == 0 {
+		t.Fatalf("fidelity report = %#v, screenshot bytes = %d", first, screenshot.Len())
+	}
+	options.Screenshot = nil
+	options.ExpectedPaintSHA256 = first.Frame.PaintSHA256
+	second, err := sitecompat.Run(context.Background(), fake.New(), "https://compat.test/", compatLoader{}, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !second.Passed || second.Frame == nil || second.Frame.PaintSHA256 != first.Frame.PaintSHA256 {
+		t.Fatalf("repeat report = %#v", second)
+	}
+	options.ExpectedPaintSHA256 = strings.Repeat("0", 64)
+	mismatch, err := sitecompat.Run(context.Background(), fake.New(), "https://compat.test/", compatLoader{}, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mismatch.Passed || !strings.Contains(mismatch.FidelityError, first.Frame.PaintSHA256) {
+		t.Fatalf("mismatch report = %#v", mismatch)
 	}
 }
 
