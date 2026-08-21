@@ -60,16 +60,6 @@ if (typeof document !== "object" || typeof document.getElementById !== "function
   throw new Error("document facade was not initialized");
 }
 `
-	if render {
-		preflightSource += `
-// Keep this fixture on React's timer fallback. The separate stock-V8 async
-// checkpoint gate owns queueMicrotask and Promise transport parity.
-globalThis.queueMicrotask = undefined;
-queueMicrotask = undefined;
-globalThis.Promise = undefined;
-Promise = undefined;
-`
-	}
 	if _, err := page.QueueScript(browser.ScriptSource{URL: location.ResolveReference(&url.URL{Path: "preflight.js"}).String(), Source: preflightSource}); err != nil {
 		t.Fatal(err)
 	}
