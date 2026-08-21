@@ -132,6 +132,8 @@ const (
 	nativeDocumentImportNode
 	nativeNodeRemove
 	nativeTemplateContent
+	nativeElementHiddenGet
+	nativeElementHiddenSet
 )
 
 const (
@@ -293,6 +295,8 @@ func (realm *Realm) installBrowserNatives() error {
 		{nativeElementSelectionEndSet, realm.elementSelectionEndSet},
 		{nativeElementSelectionDirectionGet, realm.elementSelectionDirectionGet},
 		{nativeElementSelectionDirectionSet, realm.elementSelectionDirectionSet},
+		{nativeElementHiddenGet, realm.elementHiddenGet},
+		{nativeElementHiddenSet, realm.elementHiddenSet},
 		{nativeElementSetSelectionRange, realm.elementSetSelectionRange},
 		{nativeElementSelect, realm.elementSelect},
 		{nativeElementFocus, realm.elementFocus},
@@ -715,6 +719,7 @@ func (realm *Realm) installDOMPrototypeProperties(context *browserruntime.TaskCo
 		{realm.bindings.elementPrototype, "selectionStart", nativeElementSelectionStartGet, nativeElementSelectionStartSet},
 		{realm.bindings.elementPrototype, "selectionEnd", nativeElementSelectionEndGet, nativeElementSelectionEndSet},
 		{realm.bindings.elementPrototype, "selectionDirection", nativeElementSelectionDirectionGet, nativeElementSelectionDirectionSet},
+		{realm.bindings.elementPrototype, "hidden", nativeElementHiddenGet, nativeElementHiddenSet},
 		{realm.bindings.elementPrototype, "clientWidth", nativeElementClientWidth, 0},
 		{realm.bindings.elementPrototype, "clientHeight", nativeElementClientHeight, 0},
 		{realm.bindings.elementPrototype, "offsetWidth", nativeElementOffsetWidth, 0},

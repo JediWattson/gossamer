@@ -118,6 +118,20 @@ function SolidParityApp() {
       <output id="solid-form-state">
         {name()}:{enabled() ? "enabled" : "disabled"}:{choice()}:{pick()}
       </output>
+
+      <div
+        id="solid-dynamic"
+        classList={{ active: enabled() }}
+        style={{
+          color: enabled() ? "red" : "blue",
+          "--solid-count": String(count())
+        }}
+        data-state={enabled() ? "on" : "off"}
+        title={`count-${count()}`}
+        hidden={!visible()}
+      >
+        Dynamic surface
+      </div>
     </section>
   );
 }

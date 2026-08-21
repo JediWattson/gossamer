@@ -107,14 +107,16 @@ if (list.children.length !== 3 || list.children[0] !== __solidInitialC ||
 	click("solid-toggle")
 	queueScript("assert-show-hidden", `
 if (document.getElementById("solid-visible") !== null ||
-    document.getElementById("solid-hidden") === null || __solidBranchCleanups !== 1) {
+    document.getElementById("solid-hidden") === null || __solidBranchCleanups !== 1 ||
+    !document.getElementById("solid-dynamic").hasAttribute("hidden")) {
   throw new Error("Solid Show did not dispose the visible branch");
 }
 `)
 	click("solid-toggle")
 	queueScript("assert-show-visible", `
 if (document.getElementById("solid-visible") === null ||
-    document.getElementById("solid-hidden") !== null || __solidBranchCleanups !== 1) {
+    document.getElementById("solid-hidden") !== null || __solidBranchCleanups !== 1 ||
+    document.getElementById("solid-dynamic").hasAttribute("hidden")) {
   throw new Error("Solid Show did not restore the visible branch");
 }
 `)
@@ -142,6 +144,20 @@ if (document.getElementById("solid-text").value !== "seedX" ||
     document.getElementById("solid-form-state").textContent !== "seedX:enabled:beta:two") {
   throw new Error("Solid controlled form state diverged from Go input/change events");
 }
+`)
+	click("solid-counter")
+	queueScript("assert-reactive-dom", `
+var solidDynamic = document.getElementById("solid-dynamic");
+if (!solidDynamic.classList.contains("active") ||
+    solidDynamic.style.getPropertyValue("color") !== "red" ||
+    solidDynamic.style.getPropertyValue("--solid-count") !== "1" ||
+    solidDynamic.getAttribute("data-state") !== "on" ||
+    solidDynamic.getAttribute("title") !== "count-1" ||
+    solidDynamic.hasAttribute("hidden") ||
+    document.getElementById("solid-counter").textContent !== "Count 1") {
+  throw new Error("Solid reactive DOM bindings did not converge");
+}
+solidDynamic = undefined;
 `)
 	queueScript("dispose-keyed-list", `
 globalThis.__solidDispose();

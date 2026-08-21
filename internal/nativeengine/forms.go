@@ -20,6 +20,26 @@ func (realm *Realm) elementFormValueGet(context *browserruntime.TaskContext, thi
 	return newString(context, value)
 }
 
+func (realm *Realm) elementHiddenGet(context *browserruntime.TaskContext, this memory.Value, _ []memory.Value) (memory.Value, error) {
+	handle, err := realm.unwrapNode(context, this)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	_, found, err := realm.host.GetAttribute(handle, "hidden")
+	return memory.BoolValue(found), err
+}
+
+func (realm *Realm) elementHiddenSet(context *browserruntime.TaskContext, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+	handle, err := realm.unwrapNode(context, this)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	if truthy(argument(arguments, 0)) {
+		return memory.UndefinedValue(), realm.host.SetAttribute(handle, "hidden", "")
+	}
+	return memory.UndefinedValue(), realm.host.RemoveAttribute(handle, "hidden")
+}
+
 func (realm *Realm) elementFormValueSet(context *browserruntime.TaskContext, this memory.Value, arguments []memory.Value) (memory.Value, error) {
 	handle, host, err := realm.formOperands(context, this)
 	if err != nil {
