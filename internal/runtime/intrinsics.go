@@ -122,6 +122,8 @@ const (
 	nativeArrayUnshift
 	nativeArraySplice
 	nativeObjectDefineProperties
+	nativePromiseAll
+	nativePromiseAllFulfill
 )
 
 // Intrinsics is one task-local instantiation of the native ECMAScript
@@ -474,6 +476,8 @@ func (interpreter *Interpreter) registerBuiltinCallbacks() error {
 		nativeObjectCreate:                   builtinObjectCreate,
 		nativeObjectDefineProperty:           builtinObjectDefineProperty,
 		nativeObjectDefineProperties:         builtinObjectDefineProperties,
+		nativePromiseAll:                     builtinPromiseAll,
+		nativePromiseAllFulfill:              builtinPromiseAllFulfill,
 		nativeObjectGetPrototypeOf:           builtinObjectGetPrototypeOf,
 		nativeObjectSetPrototypeOf:           builtinObjectSetPrototypeOf,
 		nativeObjectKeys:                     builtinObjectKeys,
