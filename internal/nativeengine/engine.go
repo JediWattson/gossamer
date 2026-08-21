@@ -68,6 +68,8 @@ type Realm struct {
 	persistentWrapperCache    memory.Ref
 	persistentFacadeCache     memory.Ref
 	persistentCollectionCache memory.Ref
+	persistentCallbackCache   memory.Ref
+	persistentObserverCache   memory.Ref
 	active                    *browserruntime.Intrinsics
 	activeRegion              memory.RegionID
 	activeTask                browserruntime.TaskID
@@ -403,6 +405,8 @@ func (realm *Realm) Close() error {
 	realm.persistentWrapperCache = memory.Ref{}
 	realm.persistentFacadeCache = memory.Ref{}
 	realm.persistentCollectionCache = memory.Ref{}
+	realm.persistentCallbackCache = memory.Ref{}
+	realm.persistentObserverCache = memory.Ref{}
 	realm.timerCallbacks = nil
 	realm.animationCallbacks = nil
 	realm.mutationObservers = nil
@@ -509,6 +513,16 @@ func (realm *Realm) persistLocked(task *browserruntime.TaskContext) (result erro
 		_ = task.Realm.Store().DestroyRegion(realm.runtime.Owner(), newRegion)
 		return err
 	}
+	newCallbackCache, err := persistentBindingRef(task.Realm.Store(), realm.runtime.Owner(), newRegion, newIntrinsics.Global, bindingCallbackCache)
+	if err != nil {
+		_ = task.Realm.Store().DestroyRegion(realm.runtime.Owner(), newRegion)
+		return err
+	}
+	newObserverCache, err := persistentBindingRef(task.Realm.Store(), realm.runtime.Owner(), newRegion, newIntrinsics.Global, bindingObserverCache)
+	if err != nil {
+		_ = task.Realm.Store().DestroyRegion(realm.runtime.Owner(), newRegion)
+		return err
+	}
 	if realm.persistentRegion != 0 {
 		if err := task.Realm.Store().DestroyRegion(realm.runtime.Owner(), realm.persistentRegion); err != nil {
 			_ = task.Realm.Store().DestroyRegion(realm.runtime.Owner(), newRegion)
@@ -520,6 +534,8 @@ func (realm *Realm) persistLocked(task *browserruntime.TaskContext) (result erro
 	realm.persistentWrapperCache = newWrapperCache
 	realm.persistentFacadeCache = newFacadeCache
 	realm.persistentCollectionCache = newCollectionCache
+	realm.persistentCallbackCache = newCallbackCache
+	realm.persistentObserverCache = newObserverCache
 	return task.Realm.Store().CheckInvariants()
 }
 

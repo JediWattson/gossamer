@@ -5,6 +5,7 @@ package engineparity
 import (
 	"testing"
 
+	"github.com/JediWattson/gossamer/internal/browser"
 	"github.com/JediWattson/gossamer/internal/v8engine"
 )
 
@@ -21,5 +22,11 @@ func TestStockV8RunsProductionSolidParitySequence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runProductionSolidParitySequence(t, engine)
+	runProductionSolidParitySequence(t, engine, func(page *browser.Page) error {
+		realm, ok := engine.LatestRealm()
+		if !ok {
+			return v8engine.ErrRealmClosed
+		}
+		return realm.CollectGarbage(page)
+	})
 }

@@ -23,6 +23,20 @@ type canonicalCache struct {
 	entries []canonicalCacheEntry
 }
 
+type evacuatedMutationObserver struct {
+	id       uint64
+	callback browser.ValueHandle
+	wrapper  memory.Ref
+	function memory.Ref
+}
+
+type evacuatedEventListener struct {
+	key      eventListenerKey
+	listener eventListener
+	wrapper  memory.Ref
+	function memory.Ref
+}
+
 // CollectGarbage runs the native owner-local tracing collector between tasks.
 // Canonical identity caches are evacuated before tracing so they do not turn
 // weak wrapper identity into lifetime ownership. Surviving values are restored
@@ -31,8 +45,12 @@ func (realm *Realm) CollectGarbage(lifetimes ...browser.NodeWrapperLifetimeHost)
 	if realm == nil {
 		return ErrRealmClosed
 	}
+	var listenerLifetime browser.NodeEventListenerLifetimeHost
+	if len(lifetimes) != 0 {
+		listenerLifetime, _ = lifetimes[0].(browser.NodeEventListenerLifetimeHost)
+	}
 	realm.mutex.Lock()
-	handles, err := realm.collectGarbageLocked(len(lifetimes) != 0)
+	handles, err := realm.collectGarbageLocked(len(lifetimes) != 0, listenerLifetime)
 	realm.mutex.Unlock()
 	if err != nil {
 		return err
@@ -46,7 +64,7 @@ func (realm *Realm) CollectGarbage(lifetimes ...browser.NodeWrapperLifetimeHost)
 	return lifetimes[0].ReleaseNodeWrappers(handles)
 }
 
-func (realm *Realm) collectGarbageLocked(drainWrappers bool) ([]browser.NodeHandle, error) {
+func (realm *Realm) collectGarbageLocked(drainWrappers bool, listenerLifetime browser.NodeEventListenerLifetimeHost) ([]browser.NodeHandle, error) {
 	if realm.closed {
 		return nil, ErrRealmClosed
 	}
@@ -76,11 +94,21 @@ func (realm *Realm) collectGarbageLocked(drainWrappers bool) ([]browser.NodeHand
 			return nil, err
 		}
 	}
+	observers, err := realm.evacuateMutationObserversLocked(store, owner)
+	if err != nil {
+		return nil, err
+	}
+	listeners, err := realm.evacuateEventListenersLocked(store, owner, caches[0].entries)
+	if err != nil {
+		return nil, err
+	}
 
 	_, collectErr := realm.runtime.CollectNative(realm.persistent.Roots()...)
 	collected, restoreErr := realm.restoreCanonicalCachesLocked(caches)
-	if collectErr != nil || restoreErr != nil {
-		return nil, errors.Join(collectErr, restoreErr)
+	observerRestoreErr := realm.restoreMutationObserversLocked(store, owner, observers)
+	listenerRestoreErr := realm.restoreEventListenersLocked(store, owner, listeners, listenerLifetime)
+	if collectErr != nil || restoreErr != nil || observerRestoreErr != nil || listenerRestoreErr != nil {
+		return nil, errors.Join(collectErr, restoreErr, observerRestoreErr, listenerRestoreErr)
 	}
 	realm.collectedWrappers = append(realm.collectedWrappers, collected...)
 	if err := store.CheckInvariants(); err != nil {
@@ -92,6 +120,141 @@ func (realm *Realm) collectGarbageLocked(drainWrappers bool) ([]browser.NodeHand
 	handles := append([]browser.NodeHandle(nil), realm.collectedWrappers...)
 	realm.collectedWrappers = nil
 	return handles, nil
+}
+
+func (realm *Realm) evacuateMutationObserversLocked(store *memory.Store, owner ownership.OwnerID) ([]evacuatedMutationObserver, error) {
+	observers := make([]evacuatedMutationObserver, 0, len(realm.mutationObservers))
+	for id, state := range realm.mutationObservers {
+		observerKey := memory.NumberValue(float64(id))
+		wrapper, found, err := store.MapGet(owner, realm.persistentObserverCache, observerKey)
+		if err != nil || !found || !wrapper.IsRef() {
+			return nil, errors.Join(err, fmt.Errorf("nativeengine: MutationObserver %d lost its wrapper", id))
+		}
+		callbackKey := memory.NumberValue(float64(state.Callback))
+		function, found, err := store.MapGet(owner, realm.persistentCallbackCache, callbackKey)
+		if err != nil || !found || !function.IsRef() {
+			return nil, errors.Join(err, fmt.Errorf("nativeengine: MutationObserver %d lost callback %d", id, state.Callback))
+		}
+		observers = append(observers, evacuatedMutationObserver{
+			id: id, callback: state.Callback, wrapper: wrapper.Ref(), function: function.Ref(),
+		})
+		if _, err := store.MapDelete(owner, realm.persistentCallbackCache, callbackKey); err != nil {
+			return nil, err
+		}
+	}
+	if err := store.MapClear(owner, realm.persistentObserverCache); err != nil {
+		return nil, err
+	}
+	return observers, nil
+}
+
+func (realm *Realm) restoreMutationObserversLocked(store *memory.Store, owner ownership.OwnerID, observers []evacuatedMutationObserver) error {
+	for _, observer := range observers {
+		if _, err := store.Kind(owner, observer.wrapper); err != nil {
+			if errors.Is(err, memory.ErrStaleRef) {
+				delete(realm.mutationObservers, observer.id)
+				continue
+			}
+			return err
+		}
+		if _, err := store.Kind(owner, observer.function); err != nil {
+			return fmt.Errorf("nativeengine: live MutationObserver %d lost callback: %w", observer.id, err)
+		}
+		if err := store.MapSet(owner, realm.persistentObserverCache, memory.NumberValue(float64(observer.id)), memory.RefValue(observer.wrapper)); err != nil {
+			return err
+		}
+		if err := store.MapSet(owner, realm.persistentCallbackCache, memory.NumberValue(float64(observer.callback)), memory.RefValue(observer.function)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (realm *Realm) evacuateEventListenersLocked(store *memory.Store, owner ownership.OwnerID, wrappers []canonicalCacheEntry) ([]evacuatedEventListener, error) {
+	byTarget := make(map[eventTargetID]memory.Ref, len(wrappers))
+	for _, entry := range wrappers {
+		handle, err := parseNodeCacheKey(entry.key)
+		if err != nil {
+			return nil, err
+		}
+		byTarget[nodeEventTarget(handle)] = entry.value
+	}
+	listeners := make([]evacuatedEventListener, 0)
+	for key, registered := range realm.listeners {
+		if key.Target.Window {
+			// Window listeners live for the Realm and retain their callbacks.
+			continue
+		}
+		wrapper, found := byTarget[key.Target]
+		if !found {
+			return nil, fmt.Errorf("nativeengine: event target %#v lost its wrapper", key.Target)
+		}
+		for _, listener := range registered {
+			callbackKey := memory.NumberValue(float64(listener.Handle))
+			function, found, err := store.MapGet(owner, realm.persistentCallbackCache, callbackKey)
+			if err != nil || !found || !function.IsRef() {
+				return nil, errors.Join(err, fmt.Errorf("nativeengine: event listener %d lost its callback", listener.Handle))
+			}
+			listeners = append(listeners, evacuatedEventListener{
+				key: key, listener: listener, wrapper: wrapper, function: function.Ref(),
+			})
+			if _, err := store.MapDelete(owner, realm.persistentCallbackCache, callbackKey); err != nil {
+				return nil, err
+			}
+		}
+	}
+	return listeners, nil
+}
+
+func (realm *Realm) restoreEventListenersLocked(store *memory.Store, owner ownership.OwnerID, listeners []evacuatedEventListener, lifetime browser.NodeEventListenerLifetimeHost) error {
+	deadTargets := make(map[eventTargetID]struct{})
+	for _, evacuated := range listeners {
+		if _, err := store.Kind(owner, evacuated.wrapper); err != nil {
+			if !errors.Is(err, memory.ErrStaleRef) {
+				return err
+			}
+			registered := realm.listeners[evacuated.key]
+			for index, listener := range registered {
+				if listener.Handle != evacuated.listener.Handle {
+					continue
+				}
+				copy(registered[index:], registered[index+1:])
+				registered[len(registered)-1] = eventListener{}
+				registered = registered[:len(registered)-1]
+				break
+			}
+			if len(registered) == 0 {
+				delete(realm.listeners, evacuated.key)
+			} else {
+				realm.listeners[evacuated.key] = registered
+			}
+			if realm.listenerTargets[evacuated.key.Target] <= 1 {
+				delete(realm.listenerTargets, evacuated.key.Target)
+				deadTargets[evacuated.key.Target] = struct{}{}
+			} else {
+				realm.listenerTargets[evacuated.key.Target]--
+			}
+			continue
+		}
+		if _, err := store.Kind(owner, evacuated.function); err != nil {
+			return fmt.Errorf("nativeengine: live event listener %d lost callback: %w", evacuated.listener.Handle, err)
+		}
+		if err := store.MapSet(owner, realm.persistentCallbackCache, memory.NumberValue(float64(evacuated.listener.Handle)), memory.RefValue(evacuated.function)); err != nil {
+			return err
+		}
+	}
+	if len(deadTargets) == 0 {
+		return nil
+	}
+	if lifetime == nil {
+		return fmt.Errorf("nativeengine: browser host does not expose event listener lifetimes")
+	}
+	for target := range deadTargets {
+		if err := lifetime.ReleaseNodeEventTarget(target.nodeHandle()); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func snapshotCanonicalCache(store *memory.Store, owner ownership.OwnerID, ref memory.Ref) ([]canonicalCacheEntry, error) {

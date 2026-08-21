@@ -3,6 +3,7 @@ package nativeengine
 import (
 	"errors"
 	"fmt"
+	"strconv"
 
 	"github.com/JediWattson/gossamer/internal/browser"
 	"github.com/JediWattson/gossamer/internal/dom"
@@ -107,14 +108,20 @@ func (realm *Realm) eventTargetAdd(context *browserruntime.TaskContext, this mem
 	if err != nil {
 		return memory.Value{}, err
 	}
+	if err := defineData(context, this.Ref(), eventListenerCallbackProperty(handle), callback, false, false, true); err != nil {
+		_, _ = context.MapDelete(realm.bindings.callbackCache, memory.NumberValue(float64(handle)))
+		return memory.Value{}, err
+	}
 	if !target.Window && realm.listenerTargets[target] == 0 {
 		lifetime, ok := realm.host.(browser.NodeEventListenerLifetimeHost)
 		if !ok {
 			_, _ = context.MapDelete(realm.bindings.callbackCache, memory.NumberValue(float64(handle)))
+			_ = realm.deleteEventListenerCallbackProperty(context, this.Ref(), handle)
 			return memory.Value{}, fmt.Errorf("nativeengine: browser host does not expose event listener lifetimes")
 		}
 		if err := lifetime.RetainNodeEventTarget(target.nodeHandle()); err != nil {
 			_, _ = context.MapDelete(realm.bindings.callbackCache, memory.NumberValue(float64(handle)))
+			_ = realm.deleteEventListenerCallbackProperty(context, this.Ref(), handle)
 			return memory.Value{}, err
 		}
 	}
@@ -370,6 +377,13 @@ func (realm *Realm) removeEventListenerLocked(context *browserruntime.TaskContex
 	if _, err := context.MapDelete(realm.bindings.callbackCache, memory.NumberValue(float64(handle))); err != nil {
 		return err
 	}
+	targetValue, err := realm.eventTargetValue(context, key.Target)
+	if err != nil {
+		return err
+	}
+	if err := realm.deleteEventListenerCallbackProperty(context, targetValue.Ref(), handle); err != nil {
+		return err
+	}
 	count := realm.listenerTargets[key.Target]
 	if count <= 1 {
 		delete(realm.listenerTargets, key.Target)
@@ -384,6 +398,19 @@ func (realm *Realm) removeEventListenerLocked(context *browserruntime.TaskContex
 		realm.listenerTargets[key.Target] = count - 1
 	}
 	return nil
+}
+
+func eventListenerCallbackProperty(handle browser.ValueHandle) string {
+	return "\x00gossamer.event-listener." + strconv.FormatUint(uint64(handle), 10)
+}
+
+func (realm *Realm) deleteEventListenerCallbackProperty(context *browserruntime.TaskContext, target memory.Ref, handle browser.ValueHandle) error {
+	name, err := context.NewString(eventListenerCallbackProperty(handle))
+	if err != nil {
+		return err
+	}
+	_, err = context.DeleteProperty(target, name)
+	return err
 }
 
 func (realm *Realm) callbackLocked(context *browserruntime.TaskContext, handle browser.ValueHandle) (memory.Value, bool, error) {

@@ -1,9 +1,11 @@
-import { createSignal, For, onCleanup, Show } from "solid-js";
+import { createEffect, createSignal, For, onCleanup, Show } from "solid-js";
 import { render } from "solid-js/web";
 
 globalThis.__solidCleanupCount = 0;
 globalThis.__solidRowCleanups = 0;
 globalThis.__solidBranchCleanups = 0;
+globalThis.__solidEffectRuns = 0;
+globalThis.__solidMutationRecords = 0;
 
 function VisibleBranch() {
   onCleanup(() => {
@@ -35,6 +37,18 @@ function SolidParityApp() {
   const [enabled, setEnabled] = createSignal(false);
   const [choice, setChoice] = createSignal("alpha");
   const [pick, setPick] = createSignal("one");
+  let nextItem = 0;
+
+  createEffect(() => {
+    count();
+    items();
+    visible();
+    name();
+    enabled();
+    choice();
+    pick();
+    globalThis.__solidEffectRuns += 1;
+  });
   onCleanup(() => {
     globalThis.__solidCleanupCount += 1;
   });
@@ -45,11 +59,14 @@ function SolidParityApp() {
       </button>
       <button
         id="solid-reorder"
-        onClick={() => setItems(current => [
-          current[2],
-          current[0],
-          { id: "d", label: "Delta" }
-        ])}
+        onClick={() => setItems(current => {
+          nextItem += 1;
+          return [
+            current[2],
+            current[0],
+            { id: `new-${nextItem}`, label: `New ${nextItem}` }
+          ];
+        })}
       >
         Reorder list
       </button>
@@ -136,8 +153,20 @@ function SolidParityApp() {
   );
 }
 
-globalThis.__solidDispose = render(
-  () => <SolidParityApp />,
-  document.getElementById("solid-root")
-);
+const mount = document.getElementById("solid-root");
+const observer = new MutationObserver(records => {
+  globalThis.__solidMutationRecords += records.length;
+});
+observer.observe(mount, {
+  subtree: true,
+  childList: true,
+  attributes: true,
+  characterData: true
+});
+
+const dispose = render(() => <SolidParityApp />, mount);
+globalThis.__solidDispose = () => {
+  dispose();
+  observer.disconnect();
+};
 globalThis.__solidReady = true;

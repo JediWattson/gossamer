@@ -16,6 +16,8 @@ const (
 	nativeMutationObserverTakeRecords
 )
 
+const mutationObserverCallbackProperty = "\x00gossamer.mutation-observer.callback"
+
 type mutationObserverState struct {
 	ID                uint64
 	Callback          browser.ValueHandle
@@ -85,6 +87,12 @@ func (realm *Realm) mutationObserverConstructor(context *browserruntime.TaskCont
 		return memory.Value{}, err
 	}
 	if err := defineData(context, this.Ref(), hostRecordProperty, memory.RefValue(record), false, false, false); err != nil {
+		return memory.Value{}, err
+	}
+	// The wrapper owns its callback in the traced heap. The numeric callback
+	// cache is temporarily evacuated at GC checkpoints, so an unreachable
+	// observer cannot keep its lexical environment alive forever.
+	if err := defineData(context, this.Ref(), mutationObserverCallbackProperty, callback, false, false, false); err != nil {
 		return memory.Value{}, err
 	}
 	if err := context.MapSet(realm.bindings.observerCache, memory.NumberValue(float64(id)), this); err != nil {

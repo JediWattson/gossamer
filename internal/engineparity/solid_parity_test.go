@@ -13,10 +13,17 @@ import (
 )
 
 func TestStrandRunsProductionSolidParitySequence(t *testing.T) {
-	runProductionSolidParitySequence(t, nativeengine.New(nativeengine.Config{}))
+	engine := nativeengine.New(nativeengine.Config{})
+	runProductionSolidParitySequence(t, engine, func(page *browser.Page) error {
+		realm, ok := engine.LatestRealm()
+		if !ok {
+			return nativeengine.ErrRealmClosed
+		}
+		return realm.CollectGarbage(page)
+	})
 }
 
-func runProductionSolidParitySequence(t *testing.T, engine browser.Engine) {
+func runProductionSolidParitySequence(t *testing.T, engine browser.Engine, collect func(*browser.Page) error) {
 	t.Helper()
 	source, err := os.ReadFile("testdata/vite-solid/dist/solid-counter-1.9.14.production.js")
 	if err != nil {
@@ -35,6 +42,7 @@ func runProductionSolidParitySequence(t *testing.T, engine browser.Engine) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	baselineNodes := page.Document().Store().LiveLen()
 	runQueued := func(label string) {
 		t.Helper()
 		if page.Realm.Tasks.Len() == 0 {
@@ -54,6 +62,10 @@ func runProductionSolidParitySequence(t *testing.T, engine browser.Engine) {
 			t.Fatalf("queue %s: %v", label, queueErr)
 		}
 		runQueued(label)
+	}
+	queueIsolated := func(label, script string) {
+		t.Helper()
+		queueScript(label, "(() => {\n"+script+"\n})();")
 	}
 	handle := func(id string) browser.NodeHandle {
 		t.Helper()
@@ -79,7 +91,7 @@ func runProductionSolidParitySequence(t *testing.T, engine browser.Engine) {
 	}
 
 	queueScript("solid-for", string(source))
-	queueScript("remember-keyed-nodes", `
+	queueIsolated("remember-keyed-nodes", `
 globalThis.__solidInitialA = document.getElementById("solid-item-a");
 globalThis.__solidInitialB = document.getElementById("solid-item-b");
 globalThis.__solidInitialC = document.getElementById("solid-item-c");
@@ -90,11 +102,11 @@ if (!__solidInitialA || !__solidInitialB || !__solidInitialC) {
 	initialA := handle("solid-item-a").Node
 	initialC := handle("solid-item-c").Node
 	click("solid-reorder")
-	queueScript("assert-keyed-reconciliation", `
+	queueIsolated("assert-keyed-reconciliation", `
 const list = document.getElementById("solid-list");
 if (list.children.length !== 3 || list.children[0] !== __solidInitialC ||
     list.children[1] !== __solidInitialA || __solidInitialB.parentNode !== null ||
-    document.getElementById("solid-item-d") === null || __solidRowCleanups !== 1) {
+    document.getElementById("solid-item-new-1") === null || __solidRowCleanups !== 1) {
   throw new Error("Solid keyed reconciliation lost identity or cleanup");
 }
 `)
@@ -104,8 +116,16 @@ if (list.children.length !== 3 || list.children[0] !== __solidInitialC ||
 	if got := handle("solid-item-c").Node; got != initialC {
 		t.Fatalf("keyed C identity = %d, want %d", got, initialC)
 	}
+	for cycle := 1; cycle < 40; cycle++ {
+		click("solid-reorder")
+	}
+	queueIsolated("assert-reconciliation-churn", `
+if (document.getElementById("solid-list").children.length !== 3 || __solidRowCleanups !== 40) {
+  throw new Error("Solid reconciliation churn did not dispose exactly one row per cycle");
+}
+`)
 	click("solid-toggle")
-	queueScript("assert-show-hidden", `
+	queueIsolated("assert-show-hidden", `
 if (document.getElementById("solid-visible") !== null ||
     document.getElementById("solid-hidden") === null || __solidBranchCleanups !== 1 ||
     !document.getElementById("solid-dynamic").hasAttribute("hidden")) {
@@ -113,14 +133,14 @@ if (document.getElementById("solid-visible") !== null ||
 }
 `)
 	click("solid-toggle")
-	queueScript("assert-show-visible", `
+	queueIsolated("assert-show-visible", `
 if (document.getElementById("solid-visible") === null ||
     document.getElementById("solid-hidden") !== null || __solidBranchCleanups !== 1 ||
     document.getElementById("solid-dynamic").hasAttribute("hidden")) {
   throw new Error("Solid Show did not restore the visible branch");
 }
 `)
-	queueScript("position-text-selection", `
+	queueIsolated("position-text-selection", `
 var solidText = document.getElementById("solid-text");
 solidText.setSelectionRange(solidText.value.length, solidText.value.length);
 solidText = undefined;
@@ -132,9 +152,9 @@ solidText = undefined;
 	queueInput("checkbox change", browser.InputEvent{Type: browser.InputChange, Target: handle("solid-check")})
 	click("solid-radio-beta")
 	queueInput("radio change", browser.InputEvent{Type: browser.InputChange, Target: handle("solid-radio-beta")})
-	queueScript("select-two", `document.getElementById("solid-select").value = "two";`)
+	queueIsolated("select-two", `document.getElementById("solid-select").value = "two";`)
 	queueInput("select change", browser.InputEvent{Type: browser.InputChange, Target: handle("solid-select")})
-	queueScript("assert-controlled-forms", `
+	queueIsolated("assert-controlled-forms", `
 if (document.getElementById("solid-text").value !== "seedX" ||
     document.getElementById("solid-name").textContent !== "seedX" ||
     document.getElementById("solid-check").checked !== true ||
@@ -146,7 +166,7 @@ if (document.getElementById("solid-text").value !== "seedX" ||
 }
 `)
 	click("solid-counter")
-	queueScript("assert-reactive-dom", `
+	queueIsolated("assert-reactive-dom", `
 var solidDynamic = document.getElementById("solid-dynamic");
 if (!solidDynamic.classList.contains("active") ||
     solidDynamic.style.getPropertyValue("color") !== "red" ||
@@ -157,15 +177,37 @@ if (!solidDynamic.classList.contains("active") ||
     document.getElementById("solid-counter").textContent !== "Count 1") {
   throw new Error("Solid reactive DOM bindings did not converge");
 }
+if (__solidEffectRuns < 8 || __solidMutationRecords < 1) {
+  throw new Error("Solid effects or MutationObserver did not observe churn");
+}
 solidDynamic = undefined;
 `)
-	queueScript("dispose-keyed-list", `
-globalThis.__solidDispose();
-if (__solidCleanupCount !== 1 || __solidRowCleanups !== 4 || __solidBranchCleanups !== 2 ||
+	queueIsolated("dispose-keyed-list", `
+const releaseSolid = globalThis.__solidDispose;
+globalThis.__solidDispose = undefined;
+globalThis.__solidInitialA = undefined;
+globalThis.__solidInitialB = undefined;
+globalThis.__solidInitialC = undefined;
+releaseSolid();
+if (__solidCleanupCount !== 1 || __solidRowCleanups !== 43 || __solidBranchCleanups !== 2 ||
     document.getElementById("solid-root").firstChild !== null) {
   throw new Error("Solid keyed list teardown failed");
 }
 `)
+	nodesBeforeCollection := page.Document().Store().LiveLen()
+	if err := collect(page); err != nil {
+		t.Fatalf("forced garbage collection: %v", err)
+	}
+	stableNodes := page.Document().Store().LiveLen()
+	if stableNodes <= baselineNodes || stableNodes >= nodesBeforeCollection {
+		t.Fatalf("Solid GC plateau = %d nodes from %d before collection and %d baseline", stableNodes, nodesBeforeCollection, baselineNodes)
+	}
+	if err := collect(page); err != nil {
+		t.Fatalf("second forced garbage collection: %v", err)
+	}
+	if got := page.Document().Store().LiveLen(); got != stableNodes {
+		t.Fatalf("Solid GC did not stabilize: second plateau %d, first %d", got, stableNodes)
+	}
 	if err := page.Close(); err != nil {
 		t.Fatal(err)
 	}
