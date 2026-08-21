@@ -121,6 +121,7 @@ const (
 	nativeArrayShift
 	nativeArrayUnshift
 	nativeArraySplice
+	nativeObjectDefineProperties
 )
 
 // Intrinsics is one task-local instantiation of the native ECMAScript
@@ -472,6 +473,7 @@ func (interpreter *Interpreter) registerBuiltinCallbacks() error {
 		nativeReferenceErrorConstructor:      builtinErrorConstructor(memory.ErrorReference),
 		nativeObjectCreate:                   builtinObjectCreate,
 		nativeObjectDefineProperty:           builtinObjectDefineProperty,
+		nativeObjectDefineProperties:         builtinObjectDefineProperties,
 		nativeObjectGetPrototypeOf:           builtinObjectGetPrototypeOf,
 		nativeObjectSetPrototypeOf:           builtinObjectSetPrototypeOf,
 		nativeObjectKeys:                     builtinObjectKeys,
@@ -675,6 +677,7 @@ func (intrinsics *Intrinsics) installObjectBuiltins(context *TaskContext) error 
 	}{
 		{intrinsics.ObjectConstructor, "create", 2, nativeObjectCreate},
 		{intrinsics.ObjectConstructor, "defineProperty", 3, nativeObjectDefineProperty},
+		{intrinsics.ObjectConstructor, "defineProperties", 2, nativeObjectDefineProperties},
 		{intrinsics.ObjectConstructor, "getPrototypeOf", 1, nativeObjectGetPrototypeOf},
 		{intrinsics.ObjectConstructor, "setPrototypeOf", 2, nativeObjectSetPrototypeOf},
 		{intrinsics.ObjectConstructor, "keys", 1, nativeObjectKeys},
@@ -899,44 +902,103 @@ func builtinObjectDefineProperty(execution *execution, _ memory.Ref, _ memory.Fu
 	if err != nil {
 		return memory.Value{}, err
 	}
-	descriptorRef, err := requireObjectLike(execution.context, argument(arguments, 2), "property descriptor")
+	descriptor, err := toPropertyDescriptor(execution, argument(arguments, 2))
 	if err != nil {
 		return memory.Value{}, err
+	}
+	if err := execution.context.DefineProperty(object, name, descriptor); err != nil {
+		return memory.Value{}, err
+	}
+	return memory.RefValue(object), nil
+}
+
+func builtinObjectDefineProperties(execution *execution, _ memory.Ref, _ memory.Function, _ memory.Value, arguments []memory.Value) (memory.Value, error) {
+	object, err := requireObjectLike(execution.context, argument(arguments, 0), "Object.defineProperties target")
+	if err != nil {
+		return memory.Value{}, err
+	}
+	descriptors := argument(arguments, 1)
+	if _, err := requireObjectLike(execution.context, descriptors, "Object.defineProperties descriptors"); err != nil {
+		return memory.Value{}, err
+	}
+	keys, err := enumerableOwnPropertyKeys(execution, descriptors)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	type pendingDescriptor struct {
+		name       memory.Ref
+		descriptor memory.Property
+	}
+	pending := make([]pendingDescriptor, 0, len(keys))
+	for _, key := range keys {
+		value, found, err := execution.getProperty(descriptors, memory.RefValue(key))
+		if err != nil {
+			return memory.Value{}, err
+		}
+		if !found {
+			continue
+		}
+		descriptor, err := toPropertyDescriptor(execution, value)
+		if err != nil {
+			return memory.Value{}, err
+		}
+		pending = append(pending, pendingDescriptor{name: key, descriptor: descriptor})
+	}
+	for _, property := range pending {
+		if err := execution.context.DefineProperty(object, property.name, property.descriptor); err != nil {
+			return memory.Value{}, err
+		}
+	}
+	return memory.RefValue(object), nil
+}
+
+func toPropertyDescriptor(execution *execution, value memory.Value) (memory.Property, error) {
+	descriptorRef, err := requireObjectLike(execution.context, value, "property descriptor")
+	if err != nil {
+		return memory.Property{}, err
 	}
 	value, hasValue, err := builtinRead(execution, descriptorRef, "value")
 	if err != nil {
-		return memory.Value{}, err
+		return memory.Property{}, err
 	}
 	getter, hasGetter, err := builtinRead(execution, descriptorRef, "get")
 	if err != nil {
-		return memory.Value{}, err
+		return memory.Property{}, err
 	}
 	setter, hasSetter, err := builtinRead(execution, descriptorRef, "set")
 	if err != nil {
-		return memory.Value{}, err
+		return memory.Property{}, err
 	}
 	writable, err := builtinBool(execution, descriptorRef, "writable")
 	if err != nil {
-		return memory.Value{}, err
+		return memory.Property{}, err
 	}
 	enumerable, err := builtinBool(execution, descriptorRef, "enumerable")
 	if err != nil {
-		return memory.Value{}, err
+		return memory.Property{}, err
 	}
 	configurable, err := builtinBool(execution, descriptorRef, "configurable")
 	if err != nil {
-		return memory.Value{}, err
+		return memory.Property{}, err
 	}
 	var descriptor memory.Property
 	if hasGetter || hasSetter {
 		if hasValue || writable {
-			return memory.Value{}, fmt.Errorf("%w: mixed data and accessor descriptor", ErrOperandType)
+			return memory.Property{}, fmt.Errorf("%w: mixed data and accessor descriptor", ErrOperandType)
 		}
 		if !hasGetter {
 			getter = memory.UndefinedValue()
+		} else if getter.Kind() != memory.ValueUndefined {
+			if _, err := requireCallable(execution.context, getter); err != nil {
+				return memory.Property{}, err
+			}
 		}
 		if !hasSetter {
 			setter = memory.UndefinedValue()
+		} else if setter.Kind() != memory.ValueUndefined {
+			if _, err := requireCallable(execution.context, setter); err != nil {
+				return memory.Property{}, err
+			}
 		}
 		descriptor = memory.AccessorProperty(getter, setter, enumerable, configurable)
 	} else {
@@ -945,10 +1007,7 @@ func builtinObjectDefineProperty(execution *execution, _ memory.Ref, _ memory.Fu
 		}
 		descriptor = memory.DataProperty(value, writable, enumerable, configurable)
 	}
-	if err := execution.context.DefineProperty(object, name, descriptor); err != nil {
-		return memory.Value{}, err
-	}
-	return memory.RefValue(object), nil
+	return descriptor, nil
 }
 
 func builtinObjectGetPrototypeOf(execution *execution, _ memory.Ref, _ memory.Function, _ memory.Value, arguments []memory.Value) (memory.Value, error) {

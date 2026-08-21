@@ -32,8 +32,9 @@ and ordinary task release invalidates every unpromoted loaded Ref.
   descriptors with writable, enumerable, and configurable attributes;
 - task-local native intrinsics with canonical Object, Function, Array, and
   Error-family prototypes, constructor metadata, and global bindings;
-- `Object.create`, descriptor definition/inspection, prototype inspection and
-  mutation, `Object.keys`, plus Array `push`, `pop`, `join`, and `slice`;
+- `Object.create`, `defineProperty`/`defineProperties`, descriptor inspection,
+  prototype inspection and mutation, `Object.keys`, plus Array `push`, `pop`,
+  `join`, and `slice`;
 - String construction and core inspection/transformation methods; Array
   callback/search methods; Map and Set constructors, mutation, lookup, size,
   and callback methods;

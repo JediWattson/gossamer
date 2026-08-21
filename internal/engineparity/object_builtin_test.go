@@ -33,6 +33,25 @@ Object.defineProperty(copySource, "hidden", {value: 9, enumerable: false});
 let copyTarget = Object.assign({base: 6}, null, copySource, undefined);
 let ownNames = Object.getOwnPropertyNames(copySource);
 let stringTarget = Object.assign({}, "go");
+let descriptorReads = [];
+let descriptorBag = {};
+Object.defineProperty(descriptorBag, "visible", {enumerable: true, get: function() {
+  descriptorReads.push("visible");
+  return {value: 11, writable: true, enumerable: true, configurable: true};
+}});
+Object.defineProperty(descriptorBag, copyKey, {enumerable: true, get: function() {
+  descriptorReads.push("symbol");
+  return {get: function() { return 12; }, enumerable: false, configurable: true};
+}});
+let defined = Object.defineProperties({}, descriptorBag);
+let rejectedTarget = {};
+let rejected = false;
+try {
+  Object.defineProperties(rejectedTarget, {
+    first: {value: 1},
+    bad: {get: 1}
+  });
+} catch (error) { rejected = error instanceof TypeError; }
 globalThis.dynamicGlobal = 23;
 if (globalThis !== window || dynamicGlobal !== 23 || typeof HTMLIFrameElement !== "function" ||
     document instanceof window.HTMLIFrameElement || copyTarget.base !== 6 || copyTarget.visible !== 7 || copyTarget[copyKey] !== 8 ||
@@ -41,6 +60,8 @@ if (globalThis !== window || dynamicGlobal !== 23 || typeof HTMLIFrameElement !=
     copySource.hasOwnProperty("missing") || !Array.isArray([]) || Array.isArray({}) ||
     !Object.is(NaN, NaN) || Object.is(0, -0) || !Object.is(copySource, copySource) ||
     stringTarget[0] !== "g" || stringTarget[1] !== "o" ||
+    defined.visible !== 11 || defined[copyKey] !== 12 || descriptorReads.join(",") !== "visible,symbol" ||
+    Object.keys(defined).join(",") !== "visible" || !rejected || typeof rejectedTarget.first !== "undefined" ||
     typeof definitelyMissing !== "undefined") {
   throw new Error("Object and Array bootstrap builtin parity failed");
 }
