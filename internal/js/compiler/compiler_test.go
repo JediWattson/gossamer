@@ -674,6 +674,25 @@ let result = {a: 0, ...source, [key]: 3, a: 4, ...null};
 	}
 }
 
+func TestCompileExecutesObjectBindingAliasesAndDefaults(t *testing.T) {
+	t.Parallel()
+
+	image, err := compiler.Compile(`
+let missing;
+let {first: renamed, second = renamed + 1, third = 9, nullable = 10} = {
+  first: 4, second: missing, nullable: null
+};
+(renamed === 4 && second === 5 && third === 9 && nullable === null) ? 1 : 0;
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := execute(t, 827, image)
+	if result.Kind() != memory.ValueNumber || result.Number() != 1 {
+		t.Fatalf("object binding result = %#v, want 1", result)
+	}
+}
+
 func TestCompileLowersLazyForOfGenerator(t *testing.T) {
 	t.Parallel()
 

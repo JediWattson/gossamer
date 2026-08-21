@@ -116,9 +116,17 @@ const (
 
 type VariableDeclarator struct {
 	Base
-	Name         *Identifier
-	ArrayPattern []*Identifier
-	Init         Expression
+	Name          *Identifier
+	ArrayPattern  []*Identifier
+	ObjectPattern []*ObjectBindingProperty
+	Init          Expression
+}
+
+type ObjectBindingProperty struct {
+	Base
+	Key     string
+	Binding *Identifier
+	Default Expression
 }
 
 func (declarator *VariableDeclarator) BindingIdentifiers() []*Identifier {
@@ -127,6 +135,15 @@ func (declarator *VariableDeclarator) BindingIdentifiers() []*Identifier {
 	}
 	if declarator.Name != nil {
 		return []*Identifier{declarator.Name}
+	}
+	if declarator.ObjectPattern != nil {
+		bindings := make([]*Identifier, 0, len(declarator.ObjectPattern))
+		for _, property := range declarator.ObjectPattern {
+			if property != nil && property.Binding != nil {
+				bindings = append(bindings, property.Binding)
+			}
+		}
+		return bindings
 	}
 	bindings := make([]*Identifier, 0, len(declarator.ArrayPattern))
 	for _, identifier := range declarator.ArrayPattern {

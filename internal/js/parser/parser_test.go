@@ -272,6 +272,22 @@ func TestParseObjectSpreadAndComputedProperties(t *testing.T) {
 	}
 }
 
+func TestParseObjectBindingAliasesAndDefaults(t *testing.T) {
+	t.Parallel()
+
+	script, err := parser.Parse("let {showContent: content = true, showFallback = false, count: renamed} = options;")
+	if err != nil {
+		t.Fatal(err)
+	}
+	declarator := script.Body[0].(*ast.VariableDeclaration).Declarations[0]
+	if len(declarator.ObjectPattern) != 3 || declarator.ObjectPattern[0].Binding.Name != "content" ||
+		declarator.ObjectPattern[0].Default == nil || declarator.ObjectPattern[1].Binding.Name != "showFallback" ||
+		declarator.ObjectPattern[1].Default == nil || declarator.ObjectPattern[2].Binding.Name != "renamed" ||
+		len(declarator.BindingIdentifiers()) != 3 {
+		t.Fatalf("object binding pattern = %#v", declarator.ObjectPattern)
+	}
+}
+
 func TestParseLowersDestructuredArrowParameter(t *testing.T) {
 	t.Parallel()
 

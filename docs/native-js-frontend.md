@@ -46,6 +46,8 @@ and ordinary task release invalidates every unpromoted loaded Ref.
   ordering and iterator-result failure behavior shared with stock V8;
 - ordered object-literal spread and computed data-property keys, including
   enumerable String and Symbol keys and getter evaluation;
+- object binding declarations with static keys, aliases, and defaults evaluated
+  only for undefined property values;
 - lazy generator Functions for the production `for...of` shape with direct or
   conditional yields, self-iterable iterator objects, and `return()` forwarding
   to the source iterator;

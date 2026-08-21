@@ -84,6 +84,12 @@ func (compiler *functionCompiler) compileVariableDeclaration(declaration *ast.Va
 			}
 			continue
 		}
+		if declarator.ObjectPattern != nil {
+			if err := compiler.compileObjectBindingDeclaration(declaration.Kind, declarator); err != nil {
+				return err
+			}
+			continue
+		}
 		name, err := compiler.stringConstant(declarator.Name.Name)
 		if err != nil {
 			return err
@@ -121,6 +127,91 @@ func (compiler *functionCompiler) compileVariableDeclaration(declaration *ast.Va
 		}
 	}
 	return nil
+}
+
+func (compiler *functionCompiler) compileObjectBindingDeclaration(kind ast.VariableKind, declarator *ast.VariableDeclarator) error {
+	if declarator.Init == nil {
+		return compiler.problem(declarator.Span(), "object binding pattern requires an initializer")
+	}
+	if err := compiler.compileExpression(declarator.Init); err != nil {
+		return err
+	}
+	temporary := compiler.temporaryName("object.binding")
+	if err := compiler.initializeTemporary(temporary, declarator.Span()); err != nil {
+		return err
+	}
+	for _, property := range declarator.ObjectPattern {
+		if err := compiler.loadTemporary(temporary, property.Span()); err != nil {
+			return err
+		}
+		key, err := compiler.stringConstant(property.Key)
+		if err != nil {
+			return err
+		}
+		if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpConstant, A: key}, property.Span()); err != nil {
+			return err
+		}
+		if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpGetProperty}, property.Span()); err != nil {
+			return err
+		}
+		if property.Default != nil {
+			if err := compiler.compileBindingDefault(property.Default, property.Span()); err != nil {
+				return err
+			}
+		}
+		name, err := compiler.stringConstant(property.Binding.Name)
+		if err != nil {
+			return err
+		}
+		opcode := browserruntime.OpInitializeBinding
+		if kind == ast.VariableVar {
+			opcode = browserruntime.OpStoreBinding
+		}
+		if err := compiler.emit(browserruntime.Instruction{Op: opcode, A: name}, property.Binding.Span()); err != nil {
+			return err
+		}
+		if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpPop}, property.Binding.Span()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (compiler *functionCompiler) compileBindingDefault(defaultValue ast.Expression, span lexer.Span) error {
+	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpDup}, span); err != nil {
+		return err
+	}
+	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpTypeOf}, span); err != nil {
+		return err
+	}
+	undefined, err := compiler.stringConstant("undefined")
+	if err != nil {
+		return err
+	}
+	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpConstant, A: undefined}, span); err != nil {
+		return err
+	}
+	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpStrictEqual}, span); err != nil {
+		return err
+	}
+	useExisting := compiler.builder.NewLabel()
+	end := compiler.builder.NewLabel()
+	if err := compiler.emitJump(browserruntime.OpJumpIfFalse, useExisting, span); err != nil {
+		return err
+	}
+	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpPop}, span); err != nil {
+		return err
+	}
+	if err := compiler.compileExpression(defaultValue); err != nil {
+		return err
+	}
+	if err := compiler.emitJump(browserruntime.OpJump, end, defaultValue.Span()); err != nil {
+		return err
+	}
+	if err := compiler.mark(useExisting); err != nil {
+		return err
+	}
+	return compiler.mark(end)
 }
 
 func (compiler *functionCompiler) compileArrayBindingDeclaration(kind ast.VariableKind, declarator *ast.VariableDeclarator) error {
