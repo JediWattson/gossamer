@@ -68,6 +68,7 @@ type Frame struct {
 	bindings          []frameBinding
 	stackLocals       bool
 	localBindings     []frameLocalBinding
+	localSlots        []uint32
 	localScopes       []int
 	localEnvironments []bool
 }
@@ -95,6 +96,7 @@ type frameLocalBinding struct {
 	value       memory.Value
 	mutable     bool
 	initialized bool
+	previous    uint32
 }
 
 func (frame *Frame) VisitRefs(visit func(memory.Ref) error) error {
@@ -216,6 +218,8 @@ func (frame *Frame) reset() {
 	frame.stackLocals = false
 	clear(frame.localBindings)
 	frame.localBindings = frame.localBindings[:0]
+	clear(frame.localSlots)
+	frame.localSlots = frame.localSlots[:0]
 	clear(frame.localScopes)
 	frame.localScopes = frame.localScopes[:0]
 	clear(frame.localEnvironments)

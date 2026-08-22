@@ -1691,28 +1691,34 @@ func (frame *Frame) declareLocal(name uint32, mutable, initialized bool, value m
 	if len(frame.localScopes) == 0 {
 		return fmt.Errorf("%w: local declaration outside stack scope", ErrExceptionState)
 	}
+	if uint64(name)+1 > uint64(int(^uint(0)>>1)) {
+		return fmt.Errorf("%w: local constant %d", ErrConstantBounds, name)
+	}
+	required := int(name) + 1
+	if required > len(frame.localSlots) {
+		frame.localSlots = append(frame.localSlots, make([]uint32, required-len(frame.localSlots))...)
+	}
+	previous := frame.localSlots[name]
 	start := frame.localScopes[len(frame.localScopes)-1]
-	for index := start; index < len(frame.localBindings); index++ {
-		if frame.localBindings[index].name == name {
-			return fmt.Errorf("%w: local constant %d", memory.ErrBindingExists, name)
-		}
+	if previous != 0 && int(previous-1) >= start {
+		return fmt.Errorf("%w: local constant %d", memory.ErrBindingExists, name)
 	}
 	frame.localBindings = append(frame.localBindings, frameLocalBinding{
-		name: name, value: value, mutable: mutable, initialized: initialized,
+		name: name, value: value, mutable: mutable, initialized: initialized, previous: previous,
 	})
+	frame.localSlots[name] = uint32(len(frame.localBindings))
 	return nil
 }
 
 func (frame *Frame) resolveLocal(name uint32) (*frameLocalBinding, bool) {
-	if frame == nil || !frame.stackLocals {
+	if frame == nil || !frame.stackLocals || uint64(name) >= uint64(len(frame.localSlots)) {
 		return nil, false
 	}
-	for index := len(frame.localBindings) - 1; index >= 0; index-- {
-		if frame.localBindings[index].name == name {
-			return &frame.localBindings[index], true
-		}
+	slot := frame.localSlots[name]
+	if slot == 0 || uint64(slot) > uint64(len(frame.localBindings)) {
+		return nil, false
 	}
-	return nil, false
+	return &frame.localBindings[slot-1], true
 }
 
 func (frame *Frame) leaveEnvironment() error {
@@ -1725,6 +1731,12 @@ func (frame *Frame) leaveEnvironment() error {
 			return fmt.Errorf("%w: local scope stack underflow", ErrExceptionState)
 		}
 		start := frame.localScopes[len(frame.localScopes)-1]
+		for bindingIndex := len(frame.localBindings) - 1; bindingIndex >= start; bindingIndex-- {
+			binding := &frame.localBindings[bindingIndex]
+			if uint64(binding.name) < uint64(len(frame.localSlots)) {
+				frame.localSlots[binding.name] = binding.previous
+			}
+		}
 		clear(frame.localBindings[start:])
 		frame.localBindings = frame.localBindings[:start]
 		frame.localScopes = frame.localScopes[:len(frame.localScopes)-1]
