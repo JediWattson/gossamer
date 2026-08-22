@@ -78,6 +78,11 @@ const (
 	nativePromiseReject
 	nativePromiseThen
 	nativePromiseCatch
+	nativePromiseFinally
+	nativePromiseFinallyFulfill
+	nativePromiseFinallyReject
+	nativePromiseFinallyReturn
+	nativePromiseFinallyThrow
 	nativeQueueMicrotask
 	nativeSymbolConstructor
 	nativeSymbolFor
@@ -125,6 +130,67 @@ const (
 	nativePromiseAll
 	nativePromiseAllFulfill
 	nativeStringEndsWith
+	nativeObjectGetOwnPropertyDescriptors
+	nativeObjectIsFrozen
+	nativeProxyConstructor
+	nativeReflectOwnKeys
+	nativeReflectGetOwnPropertyDescriptor
+	nativeArrayReduce
+	nativeArraySome
+	nativeArrayEvery
+	nativeArrayFind
+	nativeArrayFindIndex
+	nativeStringReplace
+	nativeStringStartsWith
+	nativeMathRound
+	nativeMathCeil
+	nativeMathAbs
+	nativeMathMax
+	nativeStringPadStart
+	nativeStringPadEnd
+	nativeGlobalParseInt
+	nativeGlobalParseFloat
+	nativeGlobalIsFinite
+	nativeNumberIsFinite
+	nativeNumberIsNaN
+	nativeMathCbrt
+	nativeMathSqrt
+	nativeMathTrunc
+	nativeMathSign
+	nativeMathPow
+	nativeMathAtan2
+	nativeMathCos
+	nativeMathSin
+	nativeMathHypot
+	nativeRegExpExec
+	nativeStringMatch
+	nativeObjectEntries
+	nativeObjectValues
+	nativeObjectFreeze
+	nativeObjectFromEntries
+	nativeObjectHasOwn
+	nativeArrayAt
+	nativeStringAt
+	nativeFinalizationRegistryConstructor
+	nativeFinalizationRegistryRegister
+	nativeFinalizationRegistryUnregister
+	nativeEncodeURIComponent
+	nativeDecodeURIComponent
+	nativeBooleanConstructor
+	nativeArraySort
+	nativeArrayFrom
+	nativeArrayFill
+	nativeJSONParse
+	nativeJSONStringify
+	nativeStringSubstring
+	nativeStringLastIndexOf
+	nativeDateGetTime
+	nativeDateToISOString
+	nativeDateToLocaleTimeString
+	nativeDateGetHours
+	nativeDateGetUTCMonth
+	nativeDateGetUTCDate
+	nativeArrayReverse
 )
 
 // Intrinsics is one task-local instantiation of the native ECMAScript
@@ -396,6 +462,10 @@ func (interpreter *Interpreter) Bootstrap(context *TaskContext) (*Intrinsics, er
 		context.intrinsics = nil
 		return nil, err
 	}
+	if err := intrinsics.installURIBuiltins(context); err != nil {
+		context.intrinsics = nil
+		return nil, err
+	}
 	if err := intrinsics.installObjectBuiltins(context); err != nil {
 		context.intrinsics = nil
 		return nil, err
@@ -421,6 +491,16 @@ func (interpreter *Interpreter) Bootstrap(context *TaskContext) (*Intrinsics, er
 		return nil, err
 	}
 	if err := intrinsics.installErrorPrototypes(context); err != nil {
+		context.intrinsics = nil
+		return nil, err
+	}
+	proxyConstructor, reflectObject, err := intrinsics.installProxyBuiltins(context)
+	if err != nil {
+		context.intrinsics = nil
+		return nil, err
+	}
+	jsonObject, err := intrinsics.installJSONBuiltins(context)
+	if err != nil {
 		context.intrinsics = nil
 		return nil, err
 	}
@@ -451,6 +531,9 @@ func (interpreter *Interpreter) Bootstrap(context *TaskContext) (*Intrinsics, er
 		{"RegExp", memory.RefValue(intrinsics.RegExpConstructor)},
 		{"WeakMap", memory.RefValue(intrinsics.WeakMapConstructor)},
 		{"WeakSet", memory.RefValue(intrinsics.WeakSetConstructor)},
+		{"Proxy", memory.RefValue(proxyConstructor)},
+		{"Reflect", memory.RefValue(reflectObject)},
+		{"JSON", memory.RefValue(jsonObject)},
 	} {
 		if err := intrinsics.defineGlobal(context, global.name, global.value); err != nil {
 			context.intrinsics = nil
@@ -469,121 +552,187 @@ func (interpreter *Interpreter) installBuiltinCallbacks() error {
 
 func (interpreter *Interpreter) registerBuiltinCallbacks() error {
 	callbacks := map[uint64]nativeFunction{
-		nativeFunctionPrototype:              builtinFunctionPrototype,
-		nativeObjectConstructor:              builtinObjectConstructor,
-		nativeFunctionConstructor:            builtinFunctionConstructor,
-		nativeArrayConstructor:               builtinArrayConstructor,
-		nativeErrorConstructor:               builtinErrorConstructor(memory.ErrorGeneric),
-		nativeTypeErrorConstructor:           builtinErrorConstructor(memory.ErrorType),
-		nativeRangeErrorConstructor:          builtinErrorConstructor(memory.ErrorRange),
-		nativeReferenceErrorConstructor:      builtinErrorConstructor(memory.ErrorReference),
-		nativeObjectCreate:                   builtinObjectCreate,
-		nativeObjectDefineProperty:           builtinObjectDefineProperty,
-		nativeObjectDefineProperties:         builtinObjectDefineProperties,
-		nativePromiseAll:                     builtinPromiseAll,
-		nativePromiseAllFulfill:              builtinPromiseAllFulfill,
-		nativeObjectGetPrototypeOf:           builtinObjectGetPrototypeOf,
-		nativeObjectSetPrototypeOf:           builtinObjectSetPrototypeOf,
-		nativeObjectKeys:                     builtinObjectKeys,
-		nativeObjectGetOwnPropertyDescriptor: builtinObjectGetOwnPropertyDescriptor,
-		nativeObjectPrototypeToString:        builtinObjectPrototypeToString,
-		nativeObjectPrototypeValueOf:         builtinObjectPrototypeValueOf,
-		nativeArrayPush:                      builtinArrayPush,
-		nativeArrayPop:                       builtinArrayPop,
-		nativeArrayJoin:                      builtinArrayJoin,
-		nativeArraySlice:                     builtinArraySlice,
-		nativeStringConstructor:              builtinStringConstructor,
-		nativeStringToString:                 builtinStringToString,
-		nativeStringValueOf:                  builtinStringToString,
-		nativeStringCharAt:                   builtinStringCharAt,
-		nativeStringIncludes:                 builtinStringIncludes,
-		nativeStringEndsWith:                 builtinStringEndsWith,
-		nativeStringIndexOf:                  builtinStringIndexOf,
-		nativeStringSlice:                    builtinStringSlice,
-		nativeStringToUpperCase:              builtinStringToUpperCase,
-		nativeStringToLowerCase:              builtinStringToLowerCase,
-		nativeStringTrim:                     builtinStringTrim,
-		nativeStringSplit:                    builtinStringSplit,
-		nativeStringValues:                   builtinStringValues,
-		nativeIteratorNext:                   builtinIteratorNext,
-		nativeArrayMap:                       builtinArrayMap,
-		nativeArrayFilter:                    builtinArrayFilter,
-		nativeArrayForEach:                   builtinArrayForEach,
-		nativeArrayIncludes:                  builtinArrayIncludes,
-		nativeArrayIndexOf:                   builtinArrayIndexOf,
-		nativeArrayKeys:                      builtinArrayKeys,
-		nativeArrayValues:                    builtinArrayValues,
-		nativeArrayEntries:                   builtinArrayEntries,
-		nativeMapConstructor:                 builtinMapConstructor,
-		nativeMapGet:                         builtinMapGet,
-		nativeMapSet:                         builtinMapSet,
-		nativeMapHas:                         builtinMapHas,
-		nativeMapDelete:                      builtinMapDelete,
-		nativeMapClear:                       builtinMapClear,
-		nativeMapSize:                        builtinMapSize,
-		nativeMapKeys:                        builtinMapKeys,
-		nativeMapValues:                      builtinMapValues,
-		nativeMapEntries:                     builtinMapEntries,
-		nativeMapForEach:                     builtinMapForEach,
-		nativeSetConstructor:                 builtinSetConstructor,
-		nativeSetAdd:                         builtinSetAdd,
-		nativeSetHas:                         builtinSetHas,
-		nativeSetDelete:                      builtinSetDelete,
-		nativeSetClear:                       builtinSetClear,
-		nativeSetSize:                        builtinSetSize,
-		nativeSetValues:                      builtinSetValues,
-		nativeSetEntries:                     builtinSetEntries,
-		nativeSetForEach:                     builtinSetForEach,
-		nativePromiseConstructor:             builtinPromiseConstructor,
-		nativePromiseResolveFunction:         builtinPromiseResolveFunction,
-		nativePromiseRejectFunction:          builtinPromiseRejectFunction,
-		nativePromiseResolve:                 builtinPromiseResolve,
-		nativePromiseReject:                  builtinPromiseReject,
-		nativePromiseThen:                    builtinPromiseThen,
-		nativePromiseCatch:                   builtinPromiseCatch,
-		nativeQueueMicrotask:                 builtinQueueMicrotask,
-		nativeSymbolConstructor:              builtinSymbolConstructor,
-		nativeSymbolFor:                      builtinSymbolFor,
-		nativeSymbolToString:                 builtinSymbolToString,
-		nativeSymbolValueOf:                  builtinSymbolValueOf,
-		nativeSymbolDescription:              builtinSymbolDescription,
-		nativeIteratorIdentity:               builtinIteratorIdentity,
-		nativeObjectAssign:                   builtinObjectAssign,
-		nativeObjectGetOwnPropertyNames:      builtinObjectGetOwnPropertyNames,
-		nativeObjectIs:                       builtinObjectIs,
-		nativeObjectPrototypeHasOwnProperty:  builtinObjectPrototypeHasOwnProperty,
-		nativeArrayIsArray:                   builtinArrayIsArray,
-		nativeFunctionCall:                   builtinFunctionCall,
-		nativeFunctionApply:                  builtinFunctionApply,
-		nativeFunctionBind:                   builtinFunctionBind,
-		nativeBoundFunction:                  builtinBoundFunction,
-		nativeMathCLZ32:                      builtinMathCLZ32,
-		nativeMathFloor:                      builtinMathFloor,
-		nativeMathLog:                        builtinMathLog,
-		nativeMathMin:                        builtinMathMin,
-		nativeMathRandom:                     builtinMathRandom,
-		nativeDateConstructor:                builtinDateConstructor,
-		nativeDateNow:                        builtinDateNow,
-		nativeGlobalIsNaN:                    builtinGlobalIsNaN,
-		nativeNumberConstructor:              builtinNumberConstructor,
-		nativeNumberToString:                 builtinNumberToString,
-		nativeNumberValueOf:                  builtinNumberValueOf,
-		nativeRegExpConstructor:              builtinRegExpConstructor,
-		nativeRegExpTest:                     builtinRegExpTest,
-		nativeRegExpToString:                 builtinRegExpToString,
-		nativeWeakMapConstructor:             builtinWeakMapConstructor,
-		nativeWeakMapGet:                     builtinWeakMapGet,
-		nativeWeakMapSet:                     builtinWeakMapSet,
-		nativeWeakMapHas:                     builtinWeakMapHas,
-		nativeWeakMapDelete:                  builtinWeakMapDelete,
-		nativeWeakSetConstructor:             builtinWeakSetConstructor,
-		nativeWeakSetAdd:                     builtinWeakSetAdd,
-		nativeWeakSetHas:                     builtinWeakSetHas,
-		nativeWeakSetDelete:                  builtinWeakSetDelete,
-		nativeArrayConcat:                    builtinArrayConcat,
-		nativeArrayShift:                     builtinArrayShift,
-		nativeArrayUnshift:                   builtinArrayUnshift,
-		nativeArraySplice:                    builtinArraySplice,
+		nativeFunctionPrototype:               builtinFunctionPrototype,
+		nativeObjectConstructor:               builtinObjectConstructor,
+		nativeFunctionConstructor:             builtinFunctionConstructor,
+		nativeArrayConstructor:                builtinArrayConstructor,
+		nativeErrorConstructor:                builtinErrorConstructor(memory.ErrorGeneric),
+		nativeTypeErrorConstructor:            builtinErrorConstructor(memory.ErrorType),
+		nativeRangeErrorConstructor:           builtinErrorConstructor(memory.ErrorRange),
+		nativeReferenceErrorConstructor:       builtinErrorConstructor(memory.ErrorReference),
+		nativeObjectCreate:                    builtinObjectCreate,
+		nativeObjectDefineProperty:            builtinObjectDefineProperty,
+		nativeObjectDefineProperties:          builtinObjectDefineProperties,
+		nativePromiseAll:                      builtinPromiseAll,
+		nativePromiseAllFulfill:               builtinPromiseAllFulfill,
+		nativeObjectGetPrototypeOf:            builtinObjectGetPrototypeOf,
+		nativeObjectSetPrototypeOf:            builtinObjectSetPrototypeOf,
+		nativeObjectKeys:                      builtinObjectKeys,
+		nativeObjectGetOwnPropertyDescriptor:  builtinObjectGetOwnPropertyDescriptor,
+		nativeObjectPrototypeToString:         builtinObjectPrototypeToString,
+		nativeObjectPrototypeValueOf:          builtinObjectPrototypeValueOf,
+		nativeArrayPush:                       builtinArrayPush,
+		nativeArrayPop:                        builtinArrayPop,
+		nativeArrayJoin:                       builtinArrayJoin,
+		nativeArraySlice:                      builtinArraySlice,
+		nativeStringConstructor:               builtinStringConstructor,
+		nativeStringToString:                  builtinStringToString,
+		nativeStringValueOf:                   builtinStringToString,
+		nativeStringCharAt:                    builtinStringCharAt,
+		nativeStringIncludes:                  builtinStringIncludes,
+		nativeStringEndsWith:                  builtinStringEndsWith,
+		nativeStringIndexOf:                   builtinStringIndexOf,
+		nativeStringSlice:                     builtinStringSlice,
+		nativeStringToUpperCase:               builtinStringToUpperCase,
+		nativeStringToLowerCase:               builtinStringToLowerCase,
+		nativeStringTrim:                      builtinStringTrim,
+		nativeStringSplit:                     builtinStringSplit,
+		nativeStringValues:                    builtinStringValues,
+		nativeIteratorNext:                    builtinIteratorNext,
+		nativeArrayMap:                        builtinArrayMap,
+		nativeArrayFilter:                     builtinArrayFilter,
+		nativeArrayForEach:                    builtinArrayForEach,
+		nativeArrayIncludes:                   builtinArrayIncludes,
+		nativeArrayIndexOf:                    builtinArrayIndexOf,
+		nativeArrayKeys:                       builtinArrayKeys,
+		nativeArrayValues:                     builtinArrayValues,
+		nativeArrayEntries:                    builtinArrayEntries,
+		nativeMapConstructor:                  builtinMapConstructor,
+		nativeMapGet:                          builtinMapGet,
+		nativeMapSet:                          builtinMapSet,
+		nativeMapHas:                          builtinMapHas,
+		nativeMapDelete:                       builtinMapDelete,
+		nativeMapClear:                        builtinMapClear,
+		nativeMapSize:                         builtinMapSize,
+		nativeMapKeys:                         builtinMapKeys,
+		nativeMapValues:                       builtinMapValues,
+		nativeMapEntries:                      builtinMapEntries,
+		nativeMapForEach:                      builtinMapForEach,
+		nativeSetConstructor:                  builtinSetConstructor,
+		nativeSetAdd:                          builtinSetAdd,
+		nativeSetHas:                          builtinSetHas,
+		nativeSetDelete:                       builtinSetDelete,
+		nativeSetClear:                        builtinSetClear,
+		nativeSetSize:                         builtinSetSize,
+		nativeSetValues:                       builtinSetValues,
+		nativeSetEntries:                      builtinSetEntries,
+		nativeSetForEach:                      builtinSetForEach,
+		nativePromiseConstructor:              builtinPromiseConstructor,
+		nativePromiseResolveFunction:          builtinPromiseResolveFunction,
+		nativePromiseRejectFunction:           builtinPromiseRejectFunction,
+		nativePromiseResolve:                  builtinPromiseResolve,
+		nativePromiseReject:                   builtinPromiseReject,
+		nativePromiseThen:                     builtinPromiseThen,
+		nativePromiseCatch:                    builtinPromiseCatch,
+		nativePromiseFinally:                  builtinPromiseFinally,
+		nativePromiseFinallyFulfill:           builtinPromiseFinallyFulfill,
+		nativePromiseFinallyReject:            builtinPromiseFinallyReject,
+		nativePromiseFinallyReturn:            builtinPromiseFinallyReturn,
+		nativePromiseFinallyThrow:             builtinPromiseFinallyThrow,
+		nativeQueueMicrotask:                  builtinQueueMicrotask,
+		nativeSymbolConstructor:               builtinSymbolConstructor,
+		nativeSymbolFor:                       builtinSymbolFor,
+		nativeSymbolToString:                  builtinSymbolToString,
+		nativeSymbolValueOf:                   builtinSymbolValueOf,
+		nativeSymbolDescription:               builtinSymbolDescription,
+		nativeIteratorIdentity:                builtinIteratorIdentity,
+		nativeObjectAssign:                    builtinObjectAssign,
+		nativeObjectGetOwnPropertyNames:       builtinObjectGetOwnPropertyNames,
+		nativeObjectIs:                        builtinObjectIs,
+		nativeObjectPrototypeHasOwnProperty:   builtinObjectPrototypeHasOwnProperty,
+		nativeObjectGetOwnPropertyDescriptors: builtinObjectGetOwnPropertyDescriptors,
+		nativeObjectIsFrozen:                  builtinObjectIsFrozen,
+		nativeProxyConstructor:                builtinProxyConstructor,
+		nativeReflectOwnKeys:                  builtinReflectOwnKeys,
+		nativeReflectGetOwnPropertyDescriptor: builtinReflectGetOwnPropertyDescriptor,
+		nativeArrayReduce:                     builtinArrayReduce,
+		nativeArraySome:                       builtinArraySome,
+		nativeArrayEvery:                      builtinArrayEvery,
+		nativeArrayFind:                       builtinArrayFind,
+		nativeArrayFindIndex:                  builtinArrayFindIndex,
+		nativeStringReplace:                   builtinStringReplace,
+		nativeStringStartsWith:                builtinStringStartsWith,
+		nativeMathRound:                       builtinMathRound,
+		nativeMathCeil:                        builtinMathCeil,
+		nativeMathAbs:                         builtinMathAbs,
+		nativeMathMax:                         builtinMathMax,
+		nativeStringPadStart:                  builtinStringPadStart,
+		nativeStringPadEnd:                    builtinStringPadEnd,
+		nativeGlobalParseInt:                  builtinGlobalParseInt,
+		nativeGlobalParseFloat:                builtinGlobalParseFloat,
+		nativeGlobalIsFinite:                  builtinGlobalIsFinite,
+		nativeNumberIsFinite:                  builtinNumberIsFinite,
+		nativeNumberIsNaN:                     builtinNumberIsNaN,
+		nativeMathCbrt:                        builtinMathUnary(math.Cbrt),
+		nativeMathSqrt:                        builtinMathUnary(math.Sqrt),
+		nativeMathTrunc:                       builtinMathUnary(math.Trunc),
+		nativeMathSign:                        builtinMathSign,
+		nativeMathPow:                         builtinMathPow,
+		nativeMathAtan2:                       builtinMathAtan2,
+		nativeMathCos:                         builtinMathUnary(math.Cos),
+		nativeMathSin:                         builtinMathUnary(math.Sin),
+		nativeMathHypot:                       builtinMathHypot,
+		nativeRegExpExec:                      builtinRegExpExec,
+		nativeStringMatch:                     builtinStringMatch,
+		nativeObjectEntries:                   builtinObjectEntries,
+		nativeObjectValues:                    builtinObjectValues,
+		nativeObjectFreeze:                    builtinObjectFreeze,
+		nativeObjectFromEntries:               builtinObjectFromEntries,
+		nativeObjectHasOwn:                    builtinObjectHasOwn,
+		nativeArrayAt:                         builtinArrayAt,
+		nativeStringAt:                        builtinStringAt,
+		nativeFinalizationRegistryConstructor: builtinFinalizationRegistryConstructor,
+		nativeFinalizationRegistryRegister:    builtinFinalizationRegistryRegister,
+		nativeFinalizationRegistryUnregister:  builtinFinalizationRegistryUnregister,
+		nativeEncodeURIComponent:              builtinEncodeURIComponent,
+		nativeDecodeURIComponent:              builtinDecodeURIComponent,
+		nativeBooleanConstructor:              builtinBooleanConstructor,
+		nativeArraySort:                       builtinArraySort,
+		nativeArrayFrom:                       builtinArrayFrom,
+		nativeArrayFill:                       builtinArrayFill,
+		nativeJSONParse:                       builtinJSONParse,
+		nativeJSONStringify:                   builtinJSONStringify,
+		nativeStringSubstring:                 builtinStringSubstring,
+		nativeStringLastIndexOf:               builtinStringLastIndexOf,
+		nativeDateGetTime:                     builtinDateGetTime,
+		nativeDateToISOString:                 builtinDateToISOString,
+		nativeDateToLocaleTimeString:          builtinDateToLocaleTimeString,
+		nativeDateGetHours:                    builtinDateGetHours,
+		nativeDateGetUTCMonth:                 builtinDateGetUTCMonth,
+		nativeDateGetUTCDate:                  builtinDateGetUTCDate,
+		nativeArrayReverse:                    builtinArrayReverse,
+		nativeArrayIsArray:                    builtinArrayIsArray,
+		nativeFunctionCall:                    builtinFunctionCall,
+		nativeFunctionApply:                   builtinFunctionApply,
+		nativeFunctionBind:                    builtinFunctionBind,
+		nativeBoundFunction:                   builtinBoundFunction,
+		nativeMathCLZ32:                       builtinMathCLZ32,
+		nativeMathFloor:                       builtinMathFloor,
+		nativeMathLog:                         builtinMathLog,
+		nativeMathMin:                         builtinMathMin,
+		nativeMathRandom:                      builtinMathRandom,
+		nativeDateConstructor:                 builtinDateConstructor,
+		nativeDateNow:                         builtinDateNow,
+		nativeGlobalIsNaN:                     builtinGlobalIsNaN,
+		nativeNumberConstructor:               builtinNumberConstructor,
+		nativeNumberToString:                  builtinNumberToString,
+		nativeNumberValueOf:                   builtinNumberValueOf,
+		nativeRegExpConstructor:               builtinRegExpConstructor,
+		nativeRegExpTest:                      builtinRegExpTest,
+		nativeRegExpToString:                  builtinRegExpToString,
+		nativeWeakMapConstructor:              builtinWeakMapConstructor,
+		nativeWeakMapGet:                      builtinWeakMapGet,
+		nativeWeakMapSet:                      builtinWeakMapSet,
+		nativeWeakMapHas:                      builtinWeakMapHas,
+		nativeWeakMapDelete:                   builtinWeakMapDelete,
+		nativeWeakSetConstructor:              builtinWeakSetConstructor,
+		nativeWeakSetAdd:                      builtinWeakSetAdd,
+		nativeWeakSetHas:                      builtinWeakSetHas,
+		nativeWeakSetDelete:                   builtinWeakSetDelete,
+		nativeArrayConcat:                     builtinArrayConcat,
+		nativeArrayShift:                      builtinArrayShift,
+		nativeArrayUnshift:                    builtinArrayUnshift,
+		nativeArraySplice:                     builtinArraySplice,
 	}
 	for id, callback := range callbacks {
 		interpreter.nativeMutex.RLock()
@@ -694,6 +843,13 @@ func (intrinsics *Intrinsics) installObjectBuiltins(context *TaskContext) error 
 		{intrinsics.ObjectConstructor, "assign", 2, nativeObjectAssign},
 		{intrinsics.ObjectConstructor, "getOwnPropertyNames", 1, nativeObjectGetOwnPropertyNames},
 		{intrinsics.ObjectConstructor, "is", 2, nativeObjectIs},
+		{intrinsics.ObjectConstructor, "getOwnPropertyDescriptors", 1, nativeObjectGetOwnPropertyDescriptors},
+		{intrinsics.ObjectConstructor, "isFrozen", 1, nativeObjectIsFrozen},
+		{intrinsics.ObjectConstructor, "entries", 1, nativeObjectEntries},
+		{intrinsics.ObjectConstructor, "values", 1, nativeObjectValues},
+		{intrinsics.ObjectConstructor, "freeze", 1, nativeObjectFreeze},
+		{intrinsics.ObjectConstructor, "fromEntries", 1, nativeObjectFromEntries},
+		{intrinsics.ObjectConstructor, "hasOwn", 2, nativeObjectHasOwn},
 		{intrinsics.ObjectPrototype, "toString", 0, nativeObjectPrototypeToString},
 		{intrinsics.ObjectPrototype, "valueOf", 0, nativeObjectPrototypeValueOf},
 		{intrinsics.ObjectPrototype, "hasOwnProperty", 1, nativeObjectPrototypeHasOwnProperty},
@@ -717,6 +873,13 @@ func (intrinsics *Intrinsics) installArrayBuiltins(context *TaskContext) error {
 	if err := defineData(context, intrinsics.ArrayConstructor, "isArray", memory.RefValue(isArray), true, false, true); err != nil {
 		return err
 	}
+	from, err := intrinsics.newBuiltinMethod(context, "from", 1, nativeArrayFrom)
+	if err != nil {
+		return err
+	}
+	if err := defineData(context, intrinsics.ArrayConstructor, "from", memory.RefValue(from), true, false, true); err != nil {
+		return err
+	}
 	for _, method := range []struct {
 		name  string
 		arity uint32
@@ -730,6 +893,23 @@ func (intrinsics *Intrinsics) installArrayBuiltins(context *TaskContext) error {
 		{"shift", 0, nativeArrayShift},
 		{"unshift", 1, nativeArrayUnshift},
 		{"splice", 2, nativeArraySplice},
+		{"map", 1, nativeArrayMap},
+		{"filter", 1, nativeArrayFilter},
+		{"forEach", 1, nativeArrayForEach},
+		{"includes", 1, nativeArrayIncludes},
+		{"indexOf", 1, nativeArrayIndexOf},
+		{"keys", 0, nativeArrayKeys},
+		{"values", 0, nativeArrayValues},
+		{"entries", 0, nativeArrayEntries},
+		{"reduce", 1, nativeArrayReduce},
+		{"some", 1, nativeArraySome},
+		{"every", 1, nativeArrayEvery},
+		{"find", 1, nativeArrayFind},
+		{"findIndex", 1, nativeArrayFindIndex},
+		{"at", 1, nativeArrayAt},
+		{"sort", 1, nativeArraySort},
+		{"fill", 1, nativeArrayFill},
+		{"reverse", 0, nativeArrayReverse},
 	} {
 		function, err := intrinsics.newBuiltinMethod(context, method.name, method.arity, method.id)
 		if err != nil {
@@ -1046,37 +1226,22 @@ func builtinObjectSetPrototypeOf(execution *execution, _ memory.Ref, _ memory.Fu
 }
 
 func builtinObjectKeys(execution *execution, _ memory.Ref, _ memory.Function, _ memory.Value, arguments []memory.Value) (memory.Value, error) {
-	object, err := requireObjectLike(execution.context, argument(arguments, 0), "Object.keys target")
+	target := argument(arguments, 0)
+	if _, err := requireObjectLike(execution.context, target, "Object.keys target"); err != nil {
+		return memory.Value{}, err
+	}
+	propertyKeys, err := enumerableOwnPropertyKeys(execution, target)
 	if err != nil {
 		return memory.Value{}, err
 	}
 	keys := make([]memory.Value, 0)
-	if kind, err := execution.context.HeapKind(object); err != nil {
-		return memory.Value{}, err
-	} else if kind == memory.HeapArray {
-		array, err := execution.context.DerefArray(object)
+	for _, key := range propertyKeys {
+		kind, err := execution.context.HeapKind(key)
 		if err != nil {
 			return memory.Value{}, err
 		}
-		for _, element := range array.Elements {
-			ref, err := execution.context.NewString(fmt.Sprintf("%d", element.Index))
-			if err != nil {
-				return memory.Value{}, err
-			}
-			keys = append(keys, memory.RefValue(ref))
-		}
-	}
-	header, err := execution.context.DerefObjectHeader(object)
-	if err != nil {
-		return memory.Value{}, err
-	}
-	for _, property := range header.Properties {
-		kind, err := execution.context.HeapKind(property.Name)
-		if err != nil {
-			return memory.Value{}, err
-		}
-		if property.Enumerable && kind == memory.HeapString {
-			keys = append(keys, memory.RefValue(property.Name))
+		if kind == memory.HeapString {
+			keys = append(keys, memory.RefValue(key))
 		}
 	}
 	array, err := execution.context.NewArray(uint32(len(keys)))
@@ -1092,11 +1257,29 @@ func builtinObjectKeys(execution *execution, _ memory.Ref, _ memory.Function, _ 
 }
 
 func builtinObjectGetOwnPropertyDescriptor(execution *execution, _ memory.Ref, _ memory.Function, _ memory.Value, arguments []memory.Value) (memory.Value, error) {
-	object, err := requireObjectLike(execution.context, argument(arguments, 0), "Object.getOwnPropertyDescriptor target")
-	if err != nil {
+	target := argument(arguments, 0)
+	if _, err := requireObjectLike(execution.context, target, "Object.getOwnPropertyDescriptor target"); err != nil {
 		return memory.Value{}, err
 	}
 	name, err := execution.propertyName(argument(arguments, 1))
+	if err != nil {
+		return memory.Value{}, err
+	}
+	if proxyTarget, handler, proxy, err := execution.proxyRecord(target); err != nil {
+		return memory.Value{}, err
+	} else if proxy {
+		value, _, err := execution.proxyOwnPropertyDescriptor(proxyTarget, handler, memory.RefValue(name))
+		return value, err
+	}
+	return builtinObjectGetOwnPropertyDescriptorOrdinary(execution, target, memory.RefValue(name))
+}
+
+func builtinObjectGetOwnPropertyDescriptorOrdinary(execution *execution, target, key memory.Value) (memory.Value, error) {
+	object, err := requireObjectLike(execution.context, target, "Object.getOwnPropertyDescriptor target")
+	if err != nil {
+		return memory.Value{}, err
+	}
+	name, err := execution.propertyName(key)
 	if err != nil {
 		return memory.Value{}, err
 	}
@@ -1138,12 +1321,18 @@ func builtinObjectPrototypeToString(execution *execution, _ memory.Ref, _ memory
 		tag = "Undefined"
 	} else if this.Kind() == memory.ValueNull {
 		tag = "Null"
+	} else if this.Kind() == memory.ValueBool {
+		tag = "Boolean"
+	} else if this.Kind() == memory.ValueNumber {
+		tag = "Number"
 	} else if this.IsRef() {
 		kind, err := execution.context.HeapKind(this.Ref())
 		if err != nil {
 			return memory.Value{}, err
 		}
 		switch kind {
+		case memory.HeapString:
+			tag = "String"
 		case memory.HeapArray:
 			tag = "Array"
 		case memory.HeapFunction:
@@ -1156,6 +1345,14 @@ func builtinObjectPrototypeToString(execution *execution, _ memory.Ref, _ memory
 			tag = "Set"
 		case memory.HeapPromise:
 			tag = "Promise"
+		case memory.HeapRegExp:
+			tag = "RegExp"
+		case memory.HeapDate:
+			tag = "Date"
+		case memory.HeapSymbol:
+			tag = "Symbol"
+		case memory.HeapBigInt:
+			tag = "BigInt"
 		}
 		if intrinsics := execution.context.intrinsics; intrinsics != nil && intrinsics.SymbolToStringTag != (memory.Ref{}) {
 			custom, found, err := execution.getProperty(this, memory.RefValue(intrinsics.SymbolToStringTag))

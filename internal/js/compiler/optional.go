@@ -62,7 +62,53 @@ func (compiler *functionCompiler) compileOptionalChainExpression(expression ast.
 	case *ast.CallExpression:
 		if member, ok := expression.Callee.(*ast.MemberExpression); ok {
 			if expression.Optional {
-				return compiler.problem(expression.Span(), "optional calls on a resolved method are not implemented")
+				if err := compiler.compileOptionalChainOperand(member.Object, shortCircuit); err != nil {
+					return err
+				}
+				if member.Optional {
+					if err := compiler.emitOptionalNullishJump(shortCircuit, member.Object.Span()); err != nil {
+						return err
+					}
+				}
+				base := compiler.temporaryName("optional.call.base")
+				if err := compiler.initializeTemporary(base, member.Object.Span()); err != nil {
+					return err
+				}
+				if err := compiler.compileMemberKey(member); err != nil {
+					return err
+				}
+				key := compiler.temporaryName("optional.call.key")
+				if err := compiler.initializeTemporary(key, member.Property.Span()); err != nil {
+					return err
+				}
+				if err := compiler.loadTemporary(base, member.Object.Span()); err != nil {
+					return err
+				}
+				if err := compiler.loadTemporary(key, member.Property.Span()); err != nil {
+					return err
+				}
+				if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpGetProperty}, member.Span()); err != nil {
+					return err
+				}
+				if err := compiler.emitOptionalNullishJump(shortCircuit, expression.Callee.Span()); err != nil {
+					return err
+				}
+				call, err := compiler.stringConstant("call")
+				if err != nil {
+					return err
+				}
+				if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpConstant, A: call}, expression.Span()); err != nil {
+					return err
+				}
+				if err := compiler.loadTemporary(base, member.Object.Span()); err != nil {
+					return err
+				}
+				for _, argument := range expression.Arguments {
+					if err := compiler.compileExpression(argument); err != nil {
+						return err
+					}
+				}
+				return compiler.emit(browserruntime.Instruction{Op: browserruntime.OpCallMethod, A: uint32(len(expression.Arguments) + 1)}, expression.Span())
 			}
 			if err := compiler.compileOptionalChainOperand(member.Object, shortCircuit); err != nil {
 				return err

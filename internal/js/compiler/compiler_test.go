@@ -586,7 +586,61 @@ compute(2).then(value => value);
 `); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := compiler.Compile(`async function unsupported() { let value = 1; return value; }`); !errors.Is(err, compiler.ErrCompile) {
+	if _, err := compiler.Compile(`
+async function load(fetcher) {
+  const response = await fetcher();
+  if (!response.ok) throw new Error(await response.text());
+  const payload = await response.json();
+  return payload.value;
+}
+async function readError(response) {
+  let message;
+  try { message = (await response.json()).error; } catch {}
+  throw new Error(message);
+}
+async function choose(response) {
+  return response.ok ? await response.json() : {available: false};
+}
+async function objectResult(response) {
+  return {value: (await response.json()).value, loaded: true};
+}
+async function release(run) {
+  let active = true;
+  try { await run(); } finally { active = false; }
+  return active;
+}
+async function syncAll(values, send) {
+  for (const value of values) {
+    if (!value) continue;
+    await send(value);
+    if (value === "stop") break;
+  }
+  return values.length;
+}
+async function page(load) {
+  let cursor = 0;
+  for (; cursor < 3; cursor++) {
+    const result = await load(cursor);
+    if (!result) break;
+  }
+  return cursor;
+}
+async function write(open, send) {
+  for (await open(); await send(); await send()) break;
+}
+async function dispatch(message, handle) {
+  switch (message.type) {
+    case "one": await handle(message); break;
+    case "two": await handle(message); break;
+    default: break;
+  }
+  return true;
+}
+async function catchUp(run, pending) {
+  do { await run(); if (!pending()) break; } while (pending());
+  return true;
+}
+`); err != nil {
 		t.Fatalf("multi-statement async Function error = %v", err)
 	}
 }
@@ -626,13 +680,16 @@ let third = object?.add(argumentsRead++);
 let fourth = absent?.add(argumentsRead++);
 let fifth = callable?.(4);
 let sixth = missing?.(4);
+let seventh = object.add?.(3);
+let eighth = object.missing?.(argumentsRead++);
 (first === 4 && typeof second === "undefined" && third === 4 && typeof fourth === "undefined" &&
- fifth === 5 && typeof sixth === "undefined" && reads === 2 && argumentsRead === 1) ? 1 : 0;
+ fifth === 5 && typeof sixth === "undefined" && seventh === 7 && typeof eighth === "undefined" &&
+ reads === 2 && argumentsRead === 1) ? 1 : 0;
 `)
 	if err != nil {
 		t.Fatal(err)
 	}
-	result := execute(t, 824, image)
+	result := executeBootstrapped(t, 824, image)
 	if result.Kind() != memory.ValueNumber || result.Number() != 1 {
 		t.Fatalf("optional chains = %#v, want 1", result)
 	}
@@ -712,6 +769,58 @@ const select = ({item}) => item;
 	if result.Kind() != memory.ValueNumber || result.Number() != 1 {
 		t.Fatalf("destructured parameter result = %#v, want 1", result)
 	}
+}
+
+func TestCompileExecutesRecursiveBindingsAndAssignmentPatterns(t *testing.T) {
+	t.Parallel()
+
+	image, err := compiler.Compile(`
+let missing;
+const source = {signal: [2, 3], options: {retry: missing}, extra: 9};
+const {signal: [first, second], options: {retry = 4}, ...rest} = source;
+let a = 0, b = 0, tail = [], copied;
+[a, b, ...tail] = [5, 6, 7, 8];
+({extra: a, ...copied} = source);
+(first === 2 && second === 3 && retry === 4 && rest.extra === 9 &&
+ a === 9 && b === 6 && tail.length === 2 && copied.signal[0] === 2) ? 1 : 0;
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := executeBootstrapped(t, 844, image)
+	if result.Kind() != memory.ValueNumber || result.Number() != 1 {
+		t.Fatalf("recursive binding result = %#v, want 1", result)
+	}
+}
+
+func executeBootstrapped(t *testing.T, realmID browserruntime.RealmID, image program.Program) memory.Value {
+	t.Helper()
+	realm, err := browserruntime.NewRealm(realmID, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer realm.Close()
+	interpreter := browserruntime.NewInterpreter(browserruntime.InterpreterConfig{})
+	var result memory.Value
+	_, err = realm.EnqueueTask(func(task *browserruntime.TaskContext) error {
+		intrinsics, err := interpreter.Bootstrap(task)
+		if err != nil {
+			return err
+		}
+		loaded, err := program.Load(task, image, memory.RefValue(intrinsics.Global))
+		if err != nil {
+			return err
+		}
+		result, err = interpreter.Execute(task, loaded.Entry)
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	return result
 }
 
 func TestCompileLowersLazyForOfGenerator(t *testing.T) {

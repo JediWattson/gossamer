@@ -58,18 +58,34 @@ binding work.
 
 ## Current efchat baseline
 
-The shared module scanner now tolerates production-only syntax while extracting
-imports, without weakening Strand's strict evaluator. With the stock-V8 oracle,
-the current efchat production distribution evaluates its entry module, builds
-the initial chat shell, paints a frame, reports zero script failures, and tears
-ownership down to zero.
+The current efchat production distribution evaluates under Strand, hydrates an
+anonymous session, opens the place WebSocket with the session cookie, and can
+submit the real `#efchat-input` Enter path. The compatibility gate records the
+same `message` envelope efchat would send, verifies the optimistic message in
+the DOM, and requires zero live or persistent objects after teardown:
 
-The same distribution currently reaches the evaluator under Strand and then
-fails explicitly on private-class syntax (`#`) at `122:42627`. That is now a
-Strand language-parity backlog rather than a shared browser-kernel or module
-scanner failure. Native parity tests cover the browser utility surface added at
-this rung: URL/URLSearchParams, UTF-8 codecs, Uint8Array, navigator,
-matchMedia, interval timers, Image, and specialized HTML element identities.
+```sh
+GOCACHE=/tmp/gossamer-go-cache go run ./cmd/gossamer-efchatcheck \
+  --dist /absolute/path/to/efchat/web/dist \
+  --message "hello from Strand"
+```
+
+The command serves the supplied distribution from an ephemeral local origin.
+Its `/api/user` response and WebSocket are deterministic local fakes, so the
+gate exercises the production frontend and Gossamer's cookie/socket boundary
+without sending a message to efchat.net. A passing report contains
+`session.role: "anon"`, `session.cookieOnSocket: true`,
+`webSocket.event: "message"`, the requested content, clean navigation, and
+zero teardown ownership.
+
+For a manual live session, the Graphite shell can open efchat with Strand:
+
+```sh
+go run ./cmd/gossamer-window --engine=strand https://efchat.net/global
+```
+
+Unlike `gossamer-efchatcheck`, this command uses efchat's real HTTP and
+WebSocket services, so a submitted message is public.
 
 ## Fetch and session rung
 

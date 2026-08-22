@@ -80,13 +80,15 @@ func lex(source string, tolerant bool) ([]Token, error) {
 			token, err = input.scanTemplateContinuation(start)
 		case isIdentifierStart(r):
 			token = input.scanIdentifier(start)
+		case r == '#':
+			token, err = input.scanPrivateIdentifier(start)
 		case unicode.IsDigit(r) || r == '.' && input.nextRuneIsDigit():
 			token, err = input.scanNumber(start)
 		case r == '\'' || r == '"':
 			token, err = input.scanString(start, r)
 		case r == '`':
 			token, err = input.scanTemplate(start)
-		case r == '/' && allowRegExp && !strings.HasPrefix(input.source[input.offset:], "/="):
+		case r == '/' && allowRegExp:
 			token, err = input.scanRegExp(start)
 		default:
 			token, err = input.scanPunctuator(start)
@@ -102,7 +104,7 @@ func lex(source string, tolerant bool) ([]Token, error) {
 
 func tokenEndsExpression(kind Kind) bool {
 	switch kind {
-	case Identifier, Number, String, TemplateTail, RegExp, True, False, Null, This,
+	case Identifier, Number, BigInt, String, PrivateIdentifier, TemplateTail, RegExp, True, False, Null, This,
 		RightParen, RightBracket, RightBrace, PlusPlus, MinusMinus:
 		return true
 	default:
@@ -249,6 +251,35 @@ func (input *scanner) scanIdentifier(start Position) Token {
 	return Token{Kind: kind, Lexeme: lexeme, Text: lexeme, Span: Span{Start: start, End: input.position()}}
 }
 
+func (input *scanner) scanPrivateIdentifier(start Position) (Token, error) {
+	_, _ = input.advance() // '#'
+	if input.offset >= len(input.source) {
+		if input.tolerant {
+			return Token{Kind: Unknown, Lexeme: "#", Span: Span{Start: start, End: input.position()}}, nil
+		}
+		return Token{}, input.problem(start, "private identifier requires a name")
+	}
+	r, _ := input.peekRune()
+	if !isIdentifierStart(r) {
+		if input.tolerant {
+			return Token{Kind: Unknown, Lexeme: "#", Span: Span{Start: start, End: input.position()}}, nil
+		}
+		return Token{}, input.problem(start, "private identifier requires a name")
+	}
+	nameStart := input.offset
+	for input.offset < len(input.source) {
+		r, _ = input.peekRune()
+		if !isIdentifierContinue(r) {
+			break
+		}
+		_, _ = input.advance()
+	}
+	return Token{
+		Kind: PrivateIdentifier, Lexeme: input.source[start.Offset:input.offset],
+		Text: input.source[nameStart:input.offset], Span: Span{Start: start, End: input.position()},
+	}, nil
+}
+
 func (input *scanner) nextRuneIsDigit() bool {
 	_, width := input.peekRune()
 	if width == 0 || input.offset+width >= len(input.source) {
@@ -291,7 +322,9 @@ func (input *scanner) scanNumber(start Position) (Token, error) {
 			_, _ = input.advance()
 		}
 	}
+	seenExponent := false
 	if input.offset < len(input.source) && (input.source[input.offset] == 'e' || input.source[input.offset] == 'E') {
+		seenExponent = true
 		_, _ = input.advance()
 		if input.offset < len(input.source) && (input.source[input.offset] == '+' || input.source[input.offset] == '-') {
 			_, _ = input.advance()
@@ -307,6 +340,16 @@ func (input *scanner) scanNumber(start Position) (Token, error) {
 		if digitStart == input.offset {
 			return Token{}, input.problem(start, "malformed numeric exponent")
 		}
+	}
+	if input.hasBigIntSuffix() {
+		if seenDot || seenExponent {
+			return Token{}, input.problem(start, "BigInt literal must be an integer")
+		}
+		_, _ = input.advance()
+		return Token{
+			Kind: BigInt, Lexeme: input.source[start.Offset:input.offset],
+			Text: input.source[start.Offset : input.offset-1], Span: Span{Start: start, End: input.position()},
+		}, nil
 	}
 	if input.offset < len(input.source) {
 		r, _ := input.peekRune()
@@ -347,6 +390,13 @@ func (input *scanner) scanRadixNumber(start Position, base, prefix int) (Token, 
 	if digitStart == input.offset {
 		return Token{}, input.problem(start, "radix literal requires digits")
 	}
+	if input.hasBigIntSuffix() {
+		_, _ = input.advance()
+		return Token{
+			Kind: BigInt, Lexeme: input.source[start.Offset:input.offset],
+			Text: input.source[start.Offset : input.offset-1], Span: Span{Start: start, End: input.position()},
+		}, nil
+	}
 	if input.offset < len(input.source) {
 		r, _ := input.peekRune()
 		if isIdentifierContinue(r) || unicode.IsDigit(r) {
@@ -369,6 +419,18 @@ func (input *scanner) scanRadixNumber(start Position, base, prefix int) (Token, 
 		return Token{}, input.problem(start, "radix literal is out of range")
 	}
 	return Token{Kind: Number, Lexeme: lexeme, Number: float64(integer), Span: Span{Start: start, End: input.position()}}, nil
+}
+
+func (input *scanner) hasBigIntSuffix() bool {
+	if input.offset >= len(input.source) || input.source[input.offset] != 'n' {
+		return false
+	}
+	next := input.offset + 1
+	if next >= len(input.source) {
+		return true
+	}
+	r, _ := utf8.DecodeRuneInString(input.source[next:])
+	return !isIdentifierContinue(r) && !unicode.IsDigit(r)
 }
 
 func digitValue(r rune) int {
@@ -638,12 +700,13 @@ func (input *scanner) scanPunctuator(start Position) (Token, error) {
 		text string
 		kind Kind
 	}{
-		{">>>=", UnsignedShiftRightAssign}, {"===", StrictEqual}, {"!==", StrictNotEqual}, {"...", Ellipsis},
+		{">>>=", UnsignedShiftRightAssign}, {"**=", StarStarAssign}, {"&&=", AndAndAssign}, {"||=", OrOrAssign}, {"??=", NullishAssign},
+		{"===", StrictEqual}, {"!==", StrictNotEqual}, {"...", Ellipsis},
 		{"<<=", ShiftLeftAssign}, {">>=", ShiftRightAssign}, {">>>", UnsignedShiftRight},
 		{"+=", PlusAssign}, {"-=", MinusAssign}, {"*=", StarAssign}, {"/=", SlashAssign},
 		{"%=", PercentAssign}, {"&=", AmpersandAssign}, {"|=", PipeAssign}, {"^=", CaretAssign},
 		{"++", PlusPlus}, {"--", MinusMinus}, {"==", EqualEqual}, {"!=", BangEqual},
-		{"<=", LessEqual}, {">=", GreaterEqual}, {"<<", ShiftLeft}, {">>", ShiftRight},
+		{"<=", LessEqual}, {">=", GreaterEqual}, {"<<", ShiftLeft}, {">>", ShiftRight}, {"**", StarStar},
 		{"&&", AndAnd}, {"||", OrOr}, {"??", Nullish}, {"?.", OptionalChain}, {"=>", Arrow},
 		{"(", LeftParen}, {")", RightParen}, {"{", LeftBrace}, {"}", RightBrace},
 		{"[", LeftBracket}, {"]", RightBracket}, {";", Semicolon}, {",", Comma},
@@ -652,6 +715,12 @@ func (input *scanner) scanPunctuator(start Position) (Token, error) {
 		{"<", Less}, {">", Greater}, {"&", Ampersand}, {"|", Pipe}, {"^", Caret}, {"~", Tilde},
 	}
 	for _, candidate := range table {
+		// ECMAScript reserves ?. for optional chaining only when the dot is
+		// not followed by a decimal digit. Minifiers rely on this distinction
+		// for compact conditionals such as condition?.82:1.
+		if candidate.kind == OptionalChain && input.offset+2 < len(input.source) && input.source[input.offset+2] >= '0' && input.source[input.offset+2] <= '9' {
+			continue
+		}
 		if strings.HasPrefix(input.source[input.offset:], candidate.text) {
 			for range candidate.text {
 				_, _ = input.advance()

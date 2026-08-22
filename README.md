@@ -74,6 +74,25 @@ go run ./cmd/gossamer-sitecheck --engine=strand --dist /absolute/path/to/dist
 ./tools/v8/sitecheck.sh --engine=v8 --dist /absolute/path/to/dist
 ```
 
+The efchat-specific gate runs its production bundle through an anonymous local
+session, submits the real chat input, and records the resulting WebSocket
+message without posting to a public place:
+
+```sh
+go run ./cmd/gossamer-efchatcheck \
+  --dist /absolute/path/to/efchat/web/dist \
+  --message "hello from Strand"
+```
+
+To use the same Strand path interactively against the live service, launch:
+
+```sh
+go run ./cmd/gossamer-window --engine=strand https://efchat.net/global
+```
+
+Messages submitted in that window use the real efchat backend and are public;
+the compatibility gate above remains entirely local.
+
 See [`docs/site-compatibility.md`](docs/site-compatibility.md) for the report
 contract, screenshot mode, and the current efchat baseline.
 
@@ -447,6 +466,7 @@ performance budgets; see
 | `internal/browser` | Browser/Page ownership, loading, stable-ID mutation scheduling, and frame invalidation |
 | `internal/window` | Graphite browser shell, backend-neutral interactive loop, copied frame presentation, and normalized native input |
 | `cmd/gossamer-window` | Strand/stock-V8 selectable launcher for the Graphite AppKit shell |
+| `cmd/gossamer-efchatcheck` | Deterministic Strand anonymous-session and message-send gate for an efchat production bundle |
 
 ## Current limitations
 

@@ -33,6 +33,13 @@ if (!"chunk.js".endsWith(".js") ||
     "chunk.js".endsWith("chunk", -1) !== false ||
     "chunk.js".endsWith("js", 999) !== true ||
     "chunk.js".endsWith(".css") !== false ||
+    "strand".substring(1, 4) !== "tra" ||
+    "strand".substring(4, 1) !== "tra" ||
+    "strand".substring(-5, 2) !== "st" ||
+    "strand".substring(2) !== "rand" ||
+    "ababa".lastIndexOf("ba") !== 3 ||
+    "ababa".lastIndexOf("ba", 2) !== 1 ||
+    "ababa".lastIndexOf("z") !== -1 ||
     regexpRejected !== true) {
   throw new Error("String.prototype.endsWith parity");
 }

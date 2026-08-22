@@ -117,6 +117,12 @@ func CompileModuleASTWithOptions(script *ast.Script, options Options) (program.M
 					Parameters: function.Parameters,
 					Body:       function.Body,
 				})
+			} else if class, ok := statement.Expression.(*ast.ClassExpression); ok && class.Name != nil {
+				localName = class.Name.Name
+				body = append(body, &ast.ClassDeclaration{
+					Base: class.Base, Name: class.Name, SuperClass: class.SuperClass,
+					SuperBinding: class.SuperBinding, Elements: class.Elements,
+				})
 			} else {
 				identifier := &ast.Identifier{Base: ast.Base{Range: statement.Span()}, Name: localName}
 				body = append(body, &ast.VariableDeclaration{
@@ -220,6 +226,8 @@ func exportedDeclarationNames(statement ast.Statement) []string {
 		}
 		return names
 	case *ast.FunctionDeclaration:
+		return []string{statement.Name.Name}
+	case *ast.ClassDeclaration:
 		return []string{statement.Name.Name}
 	default:
 		return nil

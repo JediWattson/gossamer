@@ -53,6 +53,29 @@ if (!(document.head instanceof HTMLHeadElement) || !(script instanceof HTMLScrip
 const interval = setInterval(() => { throw new Error("cleared interval fired"); }, 60000);
 clearInterval(interval);
 if (typeof interval !== "number") throw new Error("interval timer parity failed");
+if (console !== window.console || typeof console.log !== "function" ||
+    console.log("strand", { owned: true }) !== undefined || console.warn("warning") !== undefined) {
+  throw new Error("console parity failed");
+}
+const keyboard = new KeyboardEvent("keydown", { key: "Enter", code: "Enter", altKey: true, cancelable: true });
+if (!(keyboard instanceof KeyboardEvent) || !(keyboard instanceof Event) || keyboard.key !== "Enter" ||
+    keyboard.code !== "Enter" || !keyboard.altKey || !keyboard.getModifierState("Alt") ||
+    keyboard.getModifierState("Shift")) {
+  throw new Error("KeyboardEvent parity failed");
+}
+const intersection = new IntersectionObserver(() => {});
+intersection.observe(document.body);
+intersection.unobserve(document.body);
+if (!(intersection instanceof IntersectionObserver) || intersection.takeRecords().length !== 0 ||
+    intersection.disconnect() !== undefined) {
+  throw new Error("IntersectionObserver surface failed");
+}
+const firstUUID = crypto.randomUUID();
+const secondUUID = crypto.randomUUID();
+if (crypto !== window.crypto || firstUUID === secondUUID ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(firstUUID)) {
+  throw new Error("crypto.randomUUID parity failed");
+}
 `}); err != nil {
 		t.Fatal(err)
 	}

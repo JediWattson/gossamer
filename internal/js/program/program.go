@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/big"
 
 	browserruntime "github.com/JediWattson/gossamer/internal/runtime"
 	"github.com/JediWattson/gossamer/internal/runtime/memory"
@@ -20,6 +21,7 @@ const (
 	ConstantNull
 	ConstantBool
 	ConstantNumber
+	ConstantBigInt
 	ConstantString
 	ConstantRegExp
 	ConstantFunction
@@ -39,6 +41,7 @@ func Undefined() Constant           { return Constant{kind: ConstantUndefined} }
 func Null() Constant                { return Constant{kind: ConstantNull} }
 func Bool(value bool) Constant      { return Constant{kind: ConstantBool, boolean: value} }
 func Number(value float64) Constant { return Constant{kind: ConstantNumber, number: value} }
+func BigInt(value string) Constant  { return Constant{kind: ConstantBigInt, text: value} }
 func String(value string) Constant  { return Constant{kind: ConstantString, text: value} }
 func RegExp(pattern, flags string) Constant {
 	return Constant{kind: ConstantRegExp, text: pattern, flags: flags}
@@ -126,6 +129,10 @@ func validateFunction(function FunctionTemplate, functionCount, index int) error
 	for constantIndex, constant := range function.Constants {
 		switch constant.kind {
 		case ConstantUndefined, ConstantNull, ConstantBool, ConstantNumber, ConstantString:
+		case ConstantBigInt:
+			if _, ok := new(big.Int).SetString(constant.text, 0); !ok {
+				return fmt.Errorf("%w: function %d constant %d has invalid BigInt %q", ErrInvalidProgram, index, constantIndex, constant.text)
+			}
 		case ConstantRegExp:
 			if _, err := memory.ParseRegExpFlags(constant.flags); err != nil {
 				return fmt.Errorf("%w: function %d constant %d: %v", ErrInvalidProgram, index, constantIndex, err)

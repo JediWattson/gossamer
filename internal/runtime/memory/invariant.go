@@ -302,7 +302,7 @@ func (store *Store) CheckInvariants() error {
 				}
 			case HeapFunction:
 				liveFunctions++
-				liveBytes += uint64(len(slot.Function.Code))
+				liveBytes += uint64(len(slot.Function.Code)) + uint64(len(slot.Function.Locations))*8
 				if slotHasOtherPayload(slot, HeapFunction) {
 					return invariantError("Function %s retains another typed payload", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
 				}
@@ -312,7 +312,7 @@ func (store *Store) CheckInvariants() error {
 				if slot.Function.Kind == FunctionBytecode && slot.Function.NativeID != 0 {
 					return invariantError("bytecode Function %s has native ID %d", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot.Function.NativeID)
 				}
-				if slot.Function.Kind == FunctionNative && (slot.Function.NativeID == 0 || len(slot.Function.Code) != 0 || len(slot.Function.Constants) != 0) {
+				if slot.Function.Kind == FunctionNative && (slot.Function.NativeID == 0 || len(slot.Function.Code) != 0 || len(slot.Function.Locations) != 0 || len(slot.Function.Constants) != 0) {
 					return invariantError("native Function %s has an invalid descriptor", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
 				}
 				if err := store.checkOptionalTypedRefLocked(slot.Function.Name, HeapString, "Function name"); err != nil {
@@ -723,7 +723,7 @@ func slotHasOtherPayload(slot *Slot, kind HeapKind) bool {
 	if kind != HeapContext && (slot.Context.Parent != (Value{}) || len(slot.Context.Bindings) != 0) {
 		return true
 	}
-	if kind != HeapFunction && (!objectHeaderStorageEmpty(slot.Function.ObjectHeader) || slot.Function.Kind != 0 || slot.Function.Name != (Value{}) || slot.Function.Environment != (Value{}) || slot.Function.Arity != 0 || slot.Function.Constructible || len(slot.Function.Code) != 0 || len(slot.Function.Constants) != 0 || len(slot.Function.Captures) != 0 || slot.Function.NativeID != 0) {
+	if kind != HeapFunction && (!objectHeaderStorageEmpty(slot.Function.ObjectHeader) || slot.Function.Kind != 0 || slot.Function.Name != (Value{}) || slot.Function.Environment != (Value{}) || slot.Function.Arity != 0 || slot.Function.Constructible || len(slot.Function.Code) != 0 || len(slot.Function.Locations) != 0 || len(slot.Function.Constants) != 0 || len(slot.Function.Captures) != 0 || slot.Function.NativeID != 0) {
 		return true
 	}
 	if kind != HeapPromise && (!objectHeaderStorageEmpty(slot.Promise.ObjectHeader) || slot.Promise.State != PromisePending || slot.Promise.Result != (Value{}) || len(slot.Promise.Reactions) != 0 || slot.Promise.Handled) {

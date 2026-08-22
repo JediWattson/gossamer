@@ -47,23 +47,45 @@ func runAsyncFunctionParity(t *testing.T, engine browser.Engine) {
 	}
 	run("schedule-async-functions", `
 globalThis.__asyncValues = [];
+globalThis.__finallyValues = [];
 async function compute(value) { return (await Promise.resolve(value + 1)) * 2; }
 const named = async function named(value) { return await compute(value); };
 async function rejected() { return await Promise.reject(new Error("boom")); }
 async function thrown() { return missingAsyncBinding; }
+async function nestedSession() {
+  const session = await Promise.resolve({ userUuid: "anon-id", isAnonymous: true });
+  if (!session.isAnonymous) return session;
+  try {
+    if (!(await Promise.resolve(false))) return session;
+    return await Promise.resolve({ userUuid: "member-id" });
+  } catch (error) {
+    return session;
+  }
+}
 const promise = compute(2);
 if (!(promise instanceof Promise)) throw new Error("async Function did not return a Promise");
 promise.then(value => __asyncValues.push(value));
 named(4).then(value => __asyncValues.push(value));
 rejected().catch(error => __asyncValues.push(error.message));
 thrown().catch(error => __asyncValues.push(error instanceof ReferenceError));
+nestedSession().then(session => __asyncValues.push(session?.userUuid));
+Promise.resolve("kept")
+  .finally(() => Promise.resolve(__finallyValues.push("fulfilled-cleanup")))
+  .then(value => __finallyValues.push(value));
+Promise.reject("reason")
+  .finally(() => Promise.resolve(__finallyValues.push("rejected-cleanup")))
+  .catch(reason => __finallyValues.push(reason));
 __asyncValues.push("sync");
 `)
 	run("assert-async-functions", `
-if (__asyncValues[0] !== "sync" || __asyncValues.length !== 5 ||
+if (__asyncValues[0] !== "sync" || __asyncValues.length !== 6 ||
     __asyncValues.indexOf(6) < 1 || __asyncValues.indexOf(10) < 1 ||
-    __asyncValues.indexOf("boom") < 1 || __asyncValues.indexOf(true) < 1) {
+    __asyncValues.indexOf("boom") < 1 || __asyncValues.indexOf(true) < 1 ||
+    __asyncValues.indexOf("anon-id") < 1) {
   throw new Error("async Function results: " + __asyncValues.join(","));
+}
+if (__finallyValues.join(",") !== "fulfilled-cleanup,rejected-cleanup,kept,reason") {
+  throw new Error("Promise.finally results: " + __finallyValues.join(","));
 }
 `)
 	if err := page.Close(); err != nil {

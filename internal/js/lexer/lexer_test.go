@@ -89,6 +89,41 @@ func TestLexRecognizesOptionalChainBeforeQuestionAndDot(t *testing.T) {
 	}
 }
 
+func TestLexDoesNotTreatConditionalDecimalAsOptionalChain(t *testing.T) {
+	t.Parallel()
+
+	tokens, err := lexer.Lex("enabled?.82:1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []lexer.Kind{lexer.Identifier, lexer.Question, lexer.Number, lexer.Colon, lexer.Number, lexer.EOF}
+	for index, kind := range want {
+		if tokens[index].Kind != kind {
+			t.Fatalf("token %d = %s, want %s", index, tokens[index].Kind, kind)
+		}
+	}
+	if tokens[2].Lexeme != ".82" {
+		t.Fatalf("decimal = %q, want .82", tokens[2].Lexeme)
+	}
+}
+
+func TestLexRegexMayBeginWithEquals(t *testing.T) {
+	t.Parallel()
+
+	tokens, err := lexer.Lex(`value.replace(/=+$/g, ""); value /= 2;`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawRegex, sawAssign bool
+	for _, token := range tokens {
+		sawRegex = sawRegex || token.Kind == lexer.RegExp && token.Lexeme == `/=+$/g`
+		sawAssign = sawAssign || token.Kind == lexer.SlashAssign
+	}
+	if !sawRegex || !sawAssign {
+		t.Fatalf("tokens = %#v", tokens)
+	}
+}
+
 func TestLexRecognizesReactFrontendTokens(t *testing.T) {
 	t.Parallel()
 
@@ -184,29 +219,56 @@ func TestLexRejectsMalformedInputPrecisely(t *testing.T) {
 	}
 }
 
-func TestLexSurfaceToleratesUnsupportedProductionSyntax(t *testing.T) {
+func TestLexProductionClassAndBigIntSyntax(t *testing.T) {
 	t.Parallel()
 
-	tokens, err := lexer.LexSurface(`class Reader { #field; value = 42_069n; } import "./next.js";`)
+	tokens, err := lexer.Lex(`class Reader { #field; value = 42069n; } import "./next.js";`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var sawHash, sawBigInt, sawImport bool
+	var sawClass, sawPrivate, sawBigInt, sawImport bool
 	for _, token := range tokens {
 		switch {
-		case token.Kind == lexer.Unknown && token.Lexeme == "#":
-			sawHash = true
-		case token.Kind == lexer.Number && token.Lexeme == "42_069n":
+		case token.Kind == lexer.Class:
+			sawClass = true
+		case token.Kind == lexer.PrivateIdentifier && token.Text == "field":
+			sawPrivate = true
+		case token.Kind == lexer.BigInt && token.Text == "42069":
 			sawBigInt = true
 		case token.Kind == lexer.Import:
 			sawImport = true
 		}
 	}
-	if !sawHash || !sawBigInt || !sawImport {
-		t.Fatalf("surface tokens omitted production syntax: %#v", tokens)
+	if !sawClass || !sawPrivate || !sawBigInt || !sawImport {
+		t.Fatalf("tokens omitted production syntax: %#v", tokens)
 	}
-	if _, err := lexer.Lex(`#field = 42_069n`); err == nil {
-		t.Fatal("strict lexer accepted unsupported production syntax")
+	if _, err := lexer.Lex(`# = 1n`); err == nil {
+		t.Fatal("strict lexer accepted a malformed private identifier")
+	}
+}
+
+func TestLexModernAssignmentAndExponentiationOperators(t *testing.T) {
+	t.Parallel()
+
+	tokens, err := lexer.Lex(`a ** b; a **= b; a &&= b; a ||= b; a ??= b;`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []lexer.Kind{
+		lexer.Identifier, lexer.StarStar, lexer.Identifier, lexer.Semicolon,
+		lexer.Identifier, lexer.StarStarAssign, lexer.Identifier, lexer.Semicolon,
+		lexer.Identifier, lexer.AndAndAssign, lexer.Identifier, lexer.Semicolon,
+		lexer.Identifier, lexer.OrOrAssign, lexer.Identifier, lexer.Semicolon,
+		lexer.Identifier, lexer.NullishAssign, lexer.Identifier, lexer.Semicolon,
+		lexer.EOF,
+	}
+	if len(tokens) != len(want) {
+		t.Fatalf("token count = %d, want %d: %#v", len(tokens), len(want), tokens)
+	}
+	for index, kind := range want {
+		if tokens[index].Kind != kind {
+			t.Fatalf("token %d = %s, want %s", index, tokens[index].Kind, kind)
+		}
 	}
 }
 

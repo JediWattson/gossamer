@@ -117,7 +117,7 @@ func (realm *Realm) facadeRecord(context *browserruntime.TaskContext, object mem
 		return memory.HostObject{}, false, err
 	}
 	switch record.Class {
-	case hostClassClassList, hostClassDataset, hostClassStyle, hostClassComputedStyle, hostClassFormElements, hostClassSelectOptions:
+	case hostClassClassList, hostClassDataset, hostClassStyle, hostClassComputedStyle, hostClassFormElements, hostClassSelectOptions, hostClassLocation:
 		return record, true, nil
 	default:
 		return memory.HostObject{}, false, nil
@@ -138,6 +138,22 @@ func (realm *Realm) facadePropertyGet(context *browserruntime.TaskContext, objec
 	record, facade, err := realm.facadeRecord(context, object)
 	if err != nil || !facade {
 		return memory.Value{}, false, facade, err
+	}
+	if record.Class == hostClassLocation {
+		component, found := locationComponent(name)
+		if !found {
+			return memory.Value{}, false, true, nil
+		}
+		host, ok := realm.host.(browser.SessionHistoryHost)
+		if !ok {
+			return memory.Value{}, false, true, fmt.Errorf("nativeengine: browser host does not expose location")
+		}
+		value, valueErr := host.LocationComponent(component)
+		if valueErr != nil {
+			return memory.Value{}, false, true, valueErr
+		}
+		result, valueErr := newString(context, value)
+		return result, true, true, valueErr
 	}
 	handle := browser.NodeHandle{Document: browser.DocumentGeneration(record.Scope), Node: dom.NodeID(record.Identity)}
 	switch record.Class {
@@ -204,6 +220,21 @@ func (realm *Realm) facadePropertySet(context *browserruntime.TaskContext, objec
 	record, facade, err := realm.facadeRecord(context, object)
 	if err != nil || !facade {
 		return facade, err
+	}
+	if record.Class == hostClassLocation {
+		component, found := locationComponent(name)
+		if !found || component == browser.LocationOrigin {
+			return true, memory.ErrReadOnlyProperty
+		}
+		text, stringErr := valueString(context, value)
+		if stringErr != nil {
+			return true, stringErr
+		}
+		host, ok := realm.host.(browser.SessionHistoryHost)
+		if !ok {
+			return true, fmt.Errorf("nativeengine: browser host does not expose location")
+		}
+		return true, host.SetLocationComponent(component, text)
 	}
 	handle := browser.NodeHandle{Document: browser.DocumentGeneration(record.Scope), Node: dom.NodeID(record.Identity)}
 	if record.Class == hostClassFormElements || record.Class == hostClassSelectOptions {

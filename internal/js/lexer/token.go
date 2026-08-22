@@ -10,7 +10,9 @@ const (
 	EOF Kind = iota
 	Identifier
 	Number
+	BigInt
 	String
+	PrivateIdentifier
 	TemplateHead
 	TemplateMiddle
 	TemplateTail
@@ -47,6 +49,9 @@ const (
 	Void
 	Import
 	Export
+	Class
+	Extends
+	Super
 
 	LeftParen
 	RightParen
@@ -65,6 +70,7 @@ const (
 	Plus
 	Minus
 	Star
+	StarStar
 	Slash
 	Percent
 	PlusPlus
@@ -93,6 +99,7 @@ const (
 	PlusAssign
 	MinusAssign
 	StarAssign
+	StarStarAssign
 	SlashAssign
 	PercentAssign
 	AmpersandAssign
@@ -101,6 +108,9 @@ const (
 	ShiftLeftAssign
 	ShiftRightAssign
 	UnsignedShiftRightAssign
+	AndAndAssign
+	OrOrAssign
+	NullishAssign
 	Unknown
 )
 
@@ -108,7 +118,9 @@ var kindNames = [...]string{
 	EOF:                      "end of input",
 	Identifier:               "identifier",
 	Number:                   "number",
+	BigInt:                   "bigint",
 	String:                   "string",
+	PrivateIdentifier:        "private identifier",
 	TemplateHead:             "template head",
 	TemplateMiddle:           "template middle",
 	TemplateTail:             "template tail",
@@ -144,6 +156,9 @@ var kindNames = [...]string{
 	Void:                     "void",
 	Import:                   "import",
 	Export:                   "export",
+	Class:                    "class",
+	Extends:                  "extends",
+	Super:                    "super",
 	LeftParen:                "(",
 	RightParen:               ")",
 	LeftBrace:                "{",
@@ -160,6 +175,7 @@ var kindNames = [...]string{
 	Plus:                     "+",
 	Minus:                    "-",
 	Star:                     "*",
+	StarStar:                 "**",
 	Slash:                    "/",
 	Percent:                  "%",
 	PlusPlus:                 "++",
@@ -188,6 +204,7 @@ var kindNames = [...]string{
 	PlusAssign:               "+=",
 	MinusAssign:              "-=",
 	StarAssign:               "*=",
+	StarStarAssign:           "**=",
 	SlashAssign:              "/=",
 	PercentAssign:            "%=",
 	AmpersandAssign:          "&=",
@@ -196,6 +213,9 @@ var kindNames = [...]string{
 	ShiftLeftAssign:          "<<=",
 	ShiftRightAssign:         ">>=",
 	UnsignedShiftRightAssign: ">>>=",
+	AndAndAssign:             "&&=",
+	OrOrAssign:               "||=",
+	NullishAssign:            "??=",
 	Unknown:                  "unsupported token",
 }
 
@@ -260,4 +280,7 @@ var keywords = map[string]Kind{
 	"void":       Void,
 	"import":     Import,
 	"export":     Export,
+	"class":      Class,
+	"extends":    Extends,
+	"super":      Super,
 }

@@ -105,29 +105,38 @@ const (
 )
 
 var nativeGlobalBindings = map[string]bool{
-	"undefined":      false,
-	"NaN":            false,
-	"Infinity":       false,
-	"Object":         true,
-	"Function":       true,
-	"Array":          true,
-	"String":         true,
-	"Number":         true,
-	"RegExp":         true,
-	"Symbol":         true,
-	"Math":           true,
-	"Date":           true,
-	"isNaN":          true,
-	"Error":          true,
-	"TypeError":      true,
-	"RangeError":     true,
-	"ReferenceError": true,
-	"Map":            true,
-	"Set":            true,
-	"WeakMap":        true,
-	"WeakSet":        true,
-	"Promise":        true,
-	"queueMicrotask": true,
+	"undefined":            false,
+	"NaN":                  false,
+	"Infinity":             false,
+	"Object":               true,
+	"Function":             true,
+	"Array":                true,
+	"String":               true,
+	"Number":               true,
+	"RegExp":               true,
+	"Symbol":               true,
+	"Math":                 true,
+	"Date":                 true,
+	"isNaN":                true,
+	"isFinite":             true,
+	"parseInt":             true,
+	"parseFloat":           true,
+	"Error":                true,
+	"TypeError":            true,
+	"RangeError":           true,
+	"ReferenceError":       true,
+	"Map":                  true,
+	"Set":                  true,
+	"WeakMap":              true,
+	"WeakSet":              true,
+	"FinalizationRegistry": true,
+	"encodeURIComponent":   true,
+	"decodeURIComponent":   true,
+	"Boolean":              true,
+	"Promise":              true,
+	"Proxy":                true,
+	"Reflect":              true,
+	"queueMicrotask":       true,
 }
 
 type loopTarget struct {
@@ -266,7 +275,7 @@ func (compiler *functionCompiler) addConstant(constant program.Constant) (uint32
 		key.boolean = constant.Bool()
 	case program.ConstantNumber:
 		key.bits = math.Float64bits(constant.Number())
-	case program.ConstantString:
+	case program.ConstantString, program.ConstantBigInt:
 		key.text = constant.String()
 	case program.ConstantRegExp:
 		key.text = constant.String()

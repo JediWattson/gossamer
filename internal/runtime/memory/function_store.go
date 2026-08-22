@@ -81,6 +81,25 @@ func (store *Store) DerefFunction(owner ownership.OwnerID, ref Ref) (Function, e
 	return cloneFunction(slot.Function), nil
 }
 
+func (store *Store) SetFunctionLocations(owner ownership.OwnerID, ref Ref, locations []SourceSpan) error {
+	if store == nil {
+		return fmt.Errorf("memory: nil store")
+	}
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+	_, slot, err := store.writeSlotLocked(owner, ref, false)
+	if err != nil {
+		return err
+	}
+	if slot.Kind != HeapFunction || slot.Function.Kind != FunctionBytecode {
+		return typeError(ref, slot.Kind, HeapFunction)
+	}
+	store.stats.LiveBytes -= uint64(len(slot.Function.Locations)) * 8
+	slot.Function.Locations = append([]SourceSpan(nil), locations...)
+	store.stats.LiveBytes += uint64(len(slot.Function.Locations)) * 8
+	return nil
+}
+
 func (store *Store) initializeFunctionLocked(owner ownership.OwnerID, ref Ref, function Function, internal bool) error {
 	region, slot, err := store.writeSlotLocked(owner, ref, internal)
 	if err != nil {
@@ -98,7 +117,7 @@ func (store *Store) initializeFunctionLocked(owner ownership.OwnerID, ref Ref, f
 	if function.Kind == FunctionBytecode && function.NativeID != 0 {
 		return fmt.Errorf("%w: bytecode Function has native ID", ErrInvalidFunction)
 	}
-	if function.Kind == FunctionNative && (function.NativeID == 0 || len(function.Code) != 0 || len(function.Constants) != 0) {
+	if function.Kind == FunctionNative && (function.NativeID == 0 || len(function.Code) != 0 || len(function.Locations) != 0 || len(function.Constants) != 0) {
 		return fmt.Errorf("%w: native Function requires only a nonzero native ID", ErrInvalidFunction)
 	}
 	if function.ObjectHeader.Prototype == (Value{}) {
@@ -131,6 +150,6 @@ func (store *Store) initializeFunctionLocked(owner ownership.OwnerID, ref Ref, f
 	function.Constants = append([]Value(nil), linked[2:constantEnd]...)
 	function.Captures = append([]Value(nil), linked[constantEnd:]...)
 	slot.Function = cloneFunction(function)
-	store.stats.LiveBytes += uint64(len(slot.Function.Code))
+	store.stats.LiveBytes += uint64(len(slot.Function.Code)) + uint64(len(slot.Function.Locations))*8
 	return nil
 }

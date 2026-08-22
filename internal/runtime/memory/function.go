@@ -9,6 +9,13 @@ const (
 	FunctionNative
 )
 
+// SourceSpan identifies the half-open source byte range that emitted one
+// bytecode instruction. It is diagnostic metadata, not a heap reference.
+type SourceSpan struct {
+	Start uint32
+	End   uint32
+}
+
 // Function is an immutable executable descriptor. Name is null or a String
 // Ref; Environment is null or a Context Ref. Constants may contain scalars or
 // arbitrary heap Refs.
@@ -20,6 +27,7 @@ type Function struct {
 	Arity         uint32
 	Constructible bool
 	Code          []byte
+	Locations     []SourceSpan
 	Constants     []Value
 	Captures      []Value
 	NativeID      uint64
@@ -34,6 +42,7 @@ func cloneFunction(function Function) Function {
 		Arity:         function.Arity,
 		Constructible: function.Constructible,
 		Code:          append([]byte(nil), function.Code...),
+		Locations:     append([]SourceSpan(nil), function.Locations...),
 		Constants:     append([]Value(nil), function.Constants...),
 		Captures:      append([]Value(nil), function.Captures...),
 		NativeID:      function.NativeID,

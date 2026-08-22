@@ -32,12 +32,18 @@ let parityFirstMatch = parityGlobalExpression.test("ba");
 let parityFirstIndex = parityGlobalExpression.lastIndex;
 let paritySecondMatch = parityGlobalExpression.test("ba");
 let parityUnicodeExpression = RegExp("^[\\u00C0-\\u00D6]+$");
+let parityUnmatchedCapture = "/global".replace(/^\/+|(\/)\/+$/g, "$1");
+let parityCaptures = "abc".replace(/(a)(b)(c)/, "$3$2$1");
+let parityTwoDigitFallback = "ab".replace(/(a)(b)/, "$12");
+let parityContextReplacement = "abc".replace(/(b)/, "<$&-$'");
 if (!parityExpression.test("GOO") || parityExpression.test("stop") ||
     parityExpression.source !== "^go+$" || parityExpression.flags !== "i" ||
     parityExpression.toString() !== "/^go+$/i" || !parityFirstMatch ||
     parityFirstIndex !== 2 || paritySecondMatch || parityGlobalExpression.lastIndex !== 0 ||
     !parityUnicodeExpression.test("ÀÖ") || parityUnicodeExpression.test("AZ") ||
-    parityUnicodeExpression.source !== "^[\\u00C0-\\u00D6]+$") {
+    parityUnicodeExpression.source !== "^[\\u00C0-\\u00D6]+$" ||
+    parityUnmatchedCapture !== "global" || parityCaptures !== "cba" ||
+    parityTwoDigitFallback !== "a2" || parityContextReplacement !== "a<b-cc") {
   throw new Error("RegExp builtin parity failed");
 }
 `}); err != nil {

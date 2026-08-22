@@ -275,7 +275,7 @@ func slotLiveBytes(slot *Slot) uint64 {
 	case HeapString:
 		return uint64(len(slot.String.Text))
 	case HeapFunction:
-		return uint64(len(slot.Function.Code))
+		return uint64(len(slot.Function.Code)) + uint64(len(slot.Function.Locations))*8
 	case HeapBigInt:
 		return uint64(len(slot.BigInt.Magnitude))
 	case HeapArrayBuffer:

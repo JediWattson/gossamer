@@ -83,7 +83,11 @@ func (loader *programLoader) loadFunction(index uint32, environment memory.Value
 		}
 		name = memory.RefValue(ref)
 	}
-	ref, err := loader.context.NewBytecodeFunction(name, environment, function.Arity, function.Code, constants)
+	locations := make([]memory.SourceSpan, len(function.Locations))
+	for index, location := range function.Locations {
+		locations[index] = memory.SourceSpan{Start: location.Start, End: location.End}
+	}
+	ref, err := loader.context.NewBytecodeFunctionWithLocations(name, environment, function.Arity, function.Code, constants, locations)
 	if err != nil {
 		return memory.Ref{}, err
 	}
@@ -102,6 +106,9 @@ func (loader *programLoader) loadConstant(constant Constant) (memory.Value, erro
 		return memory.BoolValue(constant.Bool()), nil
 	case ConstantNumber:
 		return memory.NumberValue(constant.Number()), nil
+	case ConstantBigInt:
+		ref, err := loader.context.ParseBigInt(constant.String(), 0)
+		return memory.RefValue(ref), err
 	case ConstantString:
 		ref, err := loader.loadString(constant.String())
 		if err != nil {

@@ -188,134 +188,144 @@ const (
 	hostClassMutationObserver
 	hostClassFormElements
 	hostClassSelectOptions
+	hostClassLocation
 )
 
 const (
-	bindingWindowPrototype              = "\x00gossamer.window.prototype"
-	bindingDocumentPrototype            = "\x00gossamer.document.prototype"
-	bindingNodePrototype                = "\x00gossamer.node.prototype"
-	bindingElementPrototype             = "\x00gossamer.element.prototype"
-	bindingHTMLElementPrototype         = "\x00gossamer.html-element.prototype"
-	bindingHTMLFormElementPrototype     = "\x00gossamer.html-form-element.prototype"
-	bindingHTMLInputElementPrototype    = "\x00gossamer.html-input-element.prototype"
-	bindingHTMLTextAreaElementPrototype = "\x00gossamer.html-text-area-element.prototype"
-	bindingHTMLSelectElementPrototype   = "\x00gossamer.html-select-element.prototype"
-	bindingHTMLOptionElementPrototype   = "\x00gossamer.html-option-element.prototype"
-	bindingHTMLButtonElementPrototype   = "\x00gossamer.html-button-element.prototype"
-	bindingHTMLIFrameElementPrototype   = "\x00gossamer.html-iframe-element.prototype"
-	bindingHTMLHeadElementPrototype     = "\x00gossamer.html-head-element.prototype"
-	bindingHTMLScriptElementPrototype   = "\x00gossamer.html-script-element.prototype"
-	bindingHTMLMediaElementPrototype    = "\x00gossamer.html-media-element.prototype"
-	bindingHTMLImageElementPrototype    = "\x00gossamer.html-image-element.prototype"
-	bindingHTMLCollectionPrototype      = "\x00gossamer.html-collection.prototype"
-	bindingTemplatePrototype            = "\x00gossamer.template.prototype"
-	bindingTextPrototype                = "\x00gossamer.text.prototype"
-	bindingFragmentPrototype            = "\x00gossamer.fragment.prototype"
-	bindingEventPrototype               = "\x00gossamer.event.prototype"
-	bindingClassListPrototype           = "\x00gossamer.class-list.prototype"
-	bindingDatasetPrototype             = "\x00gossamer.dataset.prototype"
-	bindingStylePrototype               = "\x00gossamer.style.prototype"
-	bindingComputedStylePrototype       = "\x00gossamer.computed-style.prototype"
-	bindingDOMRectPrototype             = "\x00gossamer.dom-rect.prototype"
-	bindingMutationObserverPrototype    = "\x00gossamer.mutation-observer.prototype"
-	bindingMutationObserverConstructor  = "\x00gossamer.mutation-observer.constructor"
-	bindingDOMException                 = "DOMException"
-	bindingWrapperCache                 = "\x00gossamer.wrapper.cache"
-	bindingCallbackCache                = "\x00gossamer.callback.cache"
-	bindingFacadeCache                  = "\x00gossamer.facade.cache"
-	bindingCollectionCache              = "\x00gossamer.collection.cache"
-	bindingObserverCache                = "\x00gossamer.observer.cache"
-	bindingModuleCache                  = "\x00gossamer.module.cache"
-	bindingWindow                       = "window"
-	bindingSelf                         = "self"
-	bindingDocument                     = "document"
-	bindingPerformance                  = "performance"
-	bindingMutationObserver             = "MutationObserver"
-	bindingRangePrototype               = "\x00gossamer.range.prototype"
-	bindingSelectionPrototype           = "\x00gossamer.selection.prototype"
-	bindingSelection                    = "\x00gossamer.selection"
-	bindingHeadersPrototype             = "\x00gossamer.headers.prototype"
-	bindingHeadersConstructor           = "\x00gossamer.headers.constructor"
-	bindingRequestPrototype             = "\x00gossamer.request.prototype"
-	bindingRequestConstructor           = "\x00gossamer.request.constructor"
-	bindingResponsePrototype            = "\x00gossamer.response.prototype"
-	bindingResponseConstructor          = "\x00gossamer.response.constructor"
-	bindingStoragePrototype             = "\x00gossamer.storage.prototype"
-	bindingStorageConstructor           = "\x00gossamer.storage.constructor"
-	bindingLocalStorage                 = "\x00gossamer.local-storage"
-	bindingSessionStorage               = "\x00gossamer.session-storage"
-	bindingWebSocketPrototype           = "\x00gossamer.websocket.prototype"
-	bindingWebSocketConstructor         = "\x00gossamer.websocket.constructor"
-	bindingWebSocketCache               = "\x00gossamer.websocket.cache"
-	hostRecordProperty                  = "\x00gossamer.host.record"
+	bindingWindowPrototype                 = "\x00gossamer.window.prototype"
+	bindingDocumentPrototype               = "\x00gossamer.document.prototype"
+	bindingNodePrototype                   = "\x00gossamer.node.prototype"
+	bindingElementPrototype                = "\x00gossamer.element.prototype"
+	bindingHTMLElementPrototype            = "\x00gossamer.html-element.prototype"
+	bindingHTMLFormElementPrototype        = "\x00gossamer.html-form-element.prototype"
+	bindingHTMLInputElementPrototype       = "\x00gossamer.html-input-element.prototype"
+	bindingHTMLTextAreaElementPrototype    = "\x00gossamer.html-text-area-element.prototype"
+	bindingHTMLSelectElementPrototype      = "\x00gossamer.html-select-element.prototype"
+	bindingHTMLOptionElementPrototype      = "\x00gossamer.html-option-element.prototype"
+	bindingHTMLButtonElementPrototype      = "\x00gossamer.html-button-element.prototype"
+	bindingHTMLIFrameElementPrototype      = "\x00gossamer.html-iframe-element.prototype"
+	bindingHTMLHeadElementPrototype        = "\x00gossamer.html-head-element.prototype"
+	bindingHTMLScriptElementPrototype      = "\x00gossamer.html-script-element.prototype"
+	bindingHTMLMediaElementPrototype       = "\x00gossamer.html-media-element.prototype"
+	bindingHTMLImageElementPrototype       = "\x00gossamer.html-image-element.prototype"
+	bindingHTMLCollectionPrototype         = "\x00gossamer.html-collection.prototype"
+	bindingTemplatePrototype               = "\x00gossamer.template.prototype"
+	bindingTextPrototype                   = "\x00gossamer.text.prototype"
+	bindingFragmentPrototype               = "\x00gossamer.fragment.prototype"
+	bindingEventPrototype                  = "\x00gossamer.event.prototype"
+	bindingClassListPrototype              = "\x00gossamer.class-list.prototype"
+	bindingDatasetPrototype                = "\x00gossamer.dataset.prototype"
+	bindingStylePrototype                  = "\x00gossamer.style.prototype"
+	bindingComputedStylePrototype          = "\x00gossamer.computed-style.prototype"
+	bindingDOMRectPrototype                = "\x00gossamer.dom-rect.prototype"
+	bindingMutationObserverPrototype       = "\x00gossamer.mutation-observer.prototype"
+	bindingMutationObserverConstructor     = "\x00gossamer.mutation-observer.constructor"
+	bindingIntersectionObserverPrototype   = "\x00gossamer.intersection-observer.prototype"
+	bindingIntersectionObserverConstructor = "\x00gossamer.intersection-observer.constructor"
+	bindingDOMException                    = "DOMException"
+	bindingWrapperCache                    = "\x00gossamer.wrapper.cache"
+	bindingCallbackCache                   = "\x00gossamer.callback.cache"
+	bindingFacadeCache                     = "\x00gossamer.facade.cache"
+	bindingCollectionCache                 = "\x00gossamer.collection.cache"
+	bindingObserverCache                   = "\x00gossamer.observer.cache"
+	bindingModuleCache                     = "\x00gossamer.module.cache"
+	bindingWindow                          = "window"
+	bindingSelf                            = "self"
+	bindingDocument                        = "document"
+	bindingPerformance                     = "performance"
+	bindingHistory                         = "history"
+	bindingLocation                        = "location"
+	bindingMutationObserver                = "MutationObserver"
+	bindingIntersectionObserver            = "IntersectionObserver"
+	bindingRangePrototype                  = "\x00gossamer.range.prototype"
+	bindingSelectionPrototype              = "\x00gossamer.selection.prototype"
+	bindingSelection                       = "\x00gossamer.selection"
+	bindingHeadersPrototype                = "\x00gossamer.headers.prototype"
+	bindingHeadersConstructor              = "\x00gossamer.headers.constructor"
+	bindingRequestPrototype                = "\x00gossamer.request.prototype"
+	bindingRequestConstructor              = "\x00gossamer.request.constructor"
+	bindingResponsePrototype               = "\x00gossamer.response.prototype"
+	bindingResponseConstructor             = "\x00gossamer.response.constructor"
+	bindingStoragePrototype                = "\x00gossamer.storage.prototype"
+	bindingStorageConstructor              = "\x00gossamer.storage.constructor"
+	bindingLocalStorage                    = "\x00gossamer.local-storage"
+	bindingSessionStorage                  = "\x00gossamer.session-storage"
+	bindingWebSocketPrototype              = "\x00gossamer.websocket.prototype"
+	bindingWebSocketConstructor            = "\x00gossamer.websocket.constructor"
+	bindingWebSocketCache                  = "\x00gossamer.websocket.cache"
+	hostRecordProperty                     = "\x00gossamer.host.record"
 )
 
 type browserBindings struct {
-	windowPrototype              memory.Ref
-	documentPrototype            memory.Ref
-	nodePrototype                memory.Ref
-	elementPrototype             memory.Ref
-	htmlElementPrototype         memory.Ref
-	htmlFormElementPrototype     memory.Ref
-	htmlInputElementPrototype    memory.Ref
-	htmlTextAreaElementPrototype memory.Ref
-	htmlSelectElementPrototype   memory.Ref
-	htmlOptionElementPrototype   memory.Ref
-	htmlButtonElementPrototype   memory.Ref
-	htmlIFrameElementPrototype   memory.Ref
-	htmlHeadElementPrototype     memory.Ref
-	htmlScriptElementPrototype   memory.Ref
-	htmlMediaElementPrototype    memory.Ref
-	htmlImageElementPrototype    memory.Ref
-	htmlCollectionPrototype      memory.Ref
-	templatePrototype            memory.Ref
-	textPrototype                memory.Ref
-	fragmentPrototype            memory.Ref
-	eventPrototype               memory.Ref
-	classListPrototype           memory.Ref
-	datasetPrototype             memory.Ref
-	stylePrototype               memory.Ref
-	computedStylePrototype       memory.Ref
-	domRectPrototype             memory.Ref
-	mutationObserverPrototype    memory.Ref
-	mutationObserverConstructor  memory.Ref
-	domExceptionPrototype        memory.Ref
-	domExceptionConstructor      memory.Ref
-	urlSearchParamsPrototype     memory.Ref
-	urlSearchParamsConstructor   memory.Ref
-	urlPrototype                 memory.Ref
-	urlConstructor               memory.Ref
-	textEncoderPrototype         memory.Ref
-	textEncoderConstructor       memory.Ref
-	textDecoderPrototype         memory.Ref
-	textDecoderConstructor       memory.Ref
-	uint8ArrayPrototype          memory.Ref
-	uint8ArrayConstructor        memory.Ref
-	headersPrototype             memory.Ref
-	headersConstructor           memory.Ref
-	requestPrototype             memory.Ref
-	requestConstructor           memory.Ref
-	responsePrototype            memory.Ref
-	responseConstructor          memory.Ref
-	storagePrototype             memory.Ref
-	storageConstructor           memory.Ref
-	localStorage                 memory.Ref
-	sessionStorage               memory.Ref
-	webSocketPrototype           memory.Ref
-	webSocketConstructor         memory.Ref
-	webSocketCache               memory.Ref
-	rangePrototype               memory.Ref
-	selectionPrototype           memory.Ref
-	selection                    memory.Ref
-	wrapperCache                 memory.Ref
-	callbackCache                memory.Ref
-	facadeCache                  memory.Ref
-	collectionCache              memory.Ref
-	observerCache                memory.Ref
-	moduleCache                  memory.Ref
-	window                       memory.Ref
-	document                     memory.Ref
-	performance                  memory.Ref
+	windowPrototype                 memory.Ref
+	documentPrototype               memory.Ref
+	nodePrototype                   memory.Ref
+	elementPrototype                memory.Ref
+	htmlElementPrototype            memory.Ref
+	htmlFormElementPrototype        memory.Ref
+	htmlInputElementPrototype       memory.Ref
+	htmlTextAreaElementPrototype    memory.Ref
+	htmlSelectElementPrototype      memory.Ref
+	htmlOptionElementPrototype      memory.Ref
+	htmlButtonElementPrototype      memory.Ref
+	htmlIFrameElementPrototype      memory.Ref
+	htmlHeadElementPrototype        memory.Ref
+	htmlScriptElementPrototype      memory.Ref
+	htmlMediaElementPrototype       memory.Ref
+	htmlImageElementPrototype       memory.Ref
+	htmlCollectionPrototype         memory.Ref
+	templatePrototype               memory.Ref
+	textPrototype                   memory.Ref
+	fragmentPrototype               memory.Ref
+	eventPrototype                  memory.Ref
+	classListPrototype              memory.Ref
+	datasetPrototype                memory.Ref
+	stylePrototype                  memory.Ref
+	computedStylePrototype          memory.Ref
+	domRectPrototype                memory.Ref
+	mutationObserverPrototype       memory.Ref
+	mutationObserverConstructor     memory.Ref
+	intersectionObserverPrototype   memory.Ref
+	intersectionObserverConstructor memory.Ref
+	domExceptionPrototype           memory.Ref
+	domExceptionConstructor         memory.Ref
+	urlSearchParamsPrototype        memory.Ref
+	urlSearchParamsConstructor      memory.Ref
+	urlPrototype                    memory.Ref
+	urlConstructor                  memory.Ref
+	textEncoderPrototype            memory.Ref
+	textEncoderConstructor          memory.Ref
+	textDecoderPrototype            memory.Ref
+	textDecoderConstructor          memory.Ref
+	uint8ArrayPrototype             memory.Ref
+	uint8ArrayConstructor           memory.Ref
+	headersPrototype                memory.Ref
+	headersConstructor              memory.Ref
+	requestPrototype                memory.Ref
+	requestConstructor              memory.Ref
+	responsePrototype               memory.Ref
+	responseConstructor             memory.Ref
+	storagePrototype                memory.Ref
+	storageConstructor              memory.Ref
+	localStorage                    memory.Ref
+	sessionStorage                  memory.Ref
+	webSocketPrototype              memory.Ref
+	webSocketConstructor            memory.Ref
+	webSocketCache                  memory.Ref
+	rangePrototype                  memory.Ref
+	selectionPrototype              memory.Ref
+	selection                       memory.Ref
+	wrapperCache                    memory.Ref
+	callbackCache                   memory.Ref
+	facadeCache                     memory.Ref
+	collectionCache                 memory.Ref
+	observerCache                   memory.Ref
+	moduleCache                     memory.Ref
+	window                          memory.Ref
+	document                        memory.Ref
+	performance                     memory.Ref
+	history                         memory.Ref
+	location                        memory.Ref
 }
 
 type nativeRegistration struct {
@@ -325,6 +335,7 @@ type nativeRegistration struct {
 
 func (realm *Realm) installBrowserNatives() error {
 	registrations := []nativeRegistration{
+		{nativeConsoleMethod, realm.consoleMethod},
 		{nativeDocumentGetElementByID, realm.documentGetElementByID},
 		{nativeDocumentGetElementsByTagName, realm.documentGetElementsByTagName},
 		{nativeDocumentCreateElement, realm.documentCreateElement},
@@ -459,11 +470,18 @@ func (realm *Realm) installBrowserNatives() error {
 		{nativeMutationObserverObserve, realm.mutationObserverObserve},
 		{nativeMutationObserverDisconnect, realm.mutationObserverDisconnect},
 		{nativeMutationObserverTakeRecords, realm.mutationObserverTakeRecords},
+		{nativeIntersectionObserverConstructor, realm.intersectionObserverConstructor},
+		{nativeIntersectionObserverObserve, realm.intersectionObserverObserve},
+		{nativeIntersectionObserverUnobserve, realm.intersectionObserverUnobserve},
+		{nativeIntersectionObserverDisconnect, realm.intersectionObserverDisconnect},
+		{nativeIntersectionObserverTakeRecords, realm.intersectionObserverTakeRecords},
 		{nativeEventTargetAdd, realm.eventTargetAdd},
 		{nativeEventTargetRemove, realm.eventTargetRemove},
 		{nativeEventTargetDispatch, realm.eventTargetDispatch},
 		{nativeEventConstructor, realm.eventConstructor},
 		{nativeCustomEventConstructor, realm.customEventConstructor},
+		{nativeKeyboardEventConstructor, realm.keyboardEventConstructor},
+		{nativeKeyboardEventGetModifierState, realm.keyboardEventGetModifierState},
 		{nativeEventPreventDefault, realm.eventPreventDefault},
 		{nativeEventStopPropagation, realm.eventStopPropagation},
 		{nativeEventStopImmediatePropagation, realm.eventStopImmediatePropagation},
@@ -569,7 +587,17 @@ func (realm *Realm) installBrowserNatives() error {
 		{nativeMediaQueryNoop, realm.mediaQueryNoop},
 		{nativeMediaQueryDispatch, realm.mediaQueryDispatch},
 		{nativeImageConstructor, realm.imageConstructor},
+		{nativeHistoryPushState, realm.historyPushState},
+		{nativeHistoryReplaceState, realm.historyReplaceState},
+		{nativeHistoryGo, realm.historyGo},
+		{nativeHistoryBack, realm.historyBack},
+		{nativeHistoryForward, realm.historyForward},
+		{nativeLocationAssign, realm.locationAssign},
+		{nativeLocationReplace, realm.locationReplace},
+		{nativeLocationReload, realm.locationReload},
+		{nativeLocationToString, realm.locationToString},
 		{nativeGlobalFetch, realm.globalFetch},
+		{nativeCryptoRandomUUID, realm.cryptoRandomUUID},
 		{nativeHeadersConstructor, realm.headersConstructor},
 		{nativeHeadersAppend, realm.headersAppend},
 		{nativeHeadersDelete, realm.headersDelete},
@@ -638,6 +666,8 @@ func (realm *Realm) prepareBrowserBindingsLocked(context *browserruntime.TaskCon
 		}{
 			{bindingDocument, &bindings.document},
 			{bindingPerformance, &bindings.performance},
+			{bindingHistory, &bindings.history},
+			{bindingLocation, &bindings.location},
 			{bindingWindowPrototype, &bindings.windowPrototype},
 			{bindingDocumentPrototype, &bindings.documentPrototype},
 			{bindingNodePrototype, &bindings.nodePrototype},
@@ -666,6 +696,8 @@ func (realm *Realm) prepareBrowserBindingsLocked(context *browserruntime.TaskCon
 			{bindingDOMRectPrototype, &bindings.domRectPrototype},
 			{bindingMutationObserverPrototype, &bindings.mutationObserverPrototype},
 			{bindingMutationObserverConstructor, &bindings.mutationObserverConstructor},
+			{bindingIntersectionObserverPrototype, &bindings.intersectionObserverPrototype},
+			{bindingIntersectionObserverConstructor, &bindings.intersectionObserverConstructor},
 			{bindingDOMExceptionPrototype, &bindings.domExceptionPrototype},
 			{bindingDOMExceptionConstructor, &bindings.domExceptionConstructor},
 			{bindingURLSearchParamsPrototype, &bindings.urlSearchParamsPrototype},
@@ -752,6 +784,17 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 	if err != nil {
 		return err
 	}
+	keyboardEventConstructor, keyboardEventPrototype, err := realm.newEventConstructor(context, "KeyboardEvent", nativeKeyboardEventConstructor, eventPrototype)
+	if err != nil {
+		return err
+	}
+	getModifierState, err := realm.newNativeFunction(context, "getModifierState", 1, nativeKeyboardEventGetModifierState)
+	if err != nil {
+		return err
+	}
+	if err := defineData(context, keyboardEventPrototype, "getModifierState", memory.RefValue(getModifierState), true, false, true); err != nil {
+		return err
+	}
 	bindings.wrapperCache, err = context.NewMap()
 	if err != nil {
 		return err
@@ -777,6 +820,10 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		return err
 	}
 	bindings.mutationObserverConstructor, bindings.mutationObserverPrototype, err = realm.newMutationObserverConstructor(context)
+	if err != nil {
+		return err
+	}
+	bindings.intersectionObserverConstructor, bindings.intersectionObserverPrototype, err = realm.newIntersectionObserverConstructor(context)
 	if err != nil {
 		return err
 	}
@@ -855,6 +902,13 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 	if err != nil {
 		return err
 	}
+	bindings.location, err = realm.newLocation(context, metadata.Root.Document)
+	if err != nil {
+		return err
+	}
+	if err := defineData(context, bindings.document, bindingLocation, memory.RefValue(bindings.location), false, true, true); err != nil {
+		return err
+	}
 	bindings.selection, err = realm.newSelectionLocked(context)
 	if err != nil {
 		return err
@@ -902,11 +956,23 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 	if err != nil {
 		return err
 	}
+	console, err := realm.newConsole(context)
+	if err != nil {
+		return err
+	}
+	cryptoObject, err := realm.newCrypto(context)
+	if err != nil {
+		return err
+	}
 	imageConstructor, err := realm.newImageConstructor(context)
 	if err != nil {
 		return err
 	}
 	navigator, err := realm.newNavigator(context)
+	if err != nil {
+		return err
+	}
+	bindings.history, err = realm.newHistory(context)
 	if err != nil {
 		return err
 	}
@@ -934,10 +1000,14 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{"requestAnimationFrame", memory.RefValue(requestAnimationFrame)},
 		{"cancelAnimationFrame", memory.RefValue(cancelAnimationFrame)},
 		{"performance", memory.RefValue(bindings.performance)},
+		{bindingHistory, memory.RefValue(bindings.history)},
+		{bindingLocation, memory.RefValue(bindings.location)},
 		{"navigator", memory.RefValue(navigator)},
 		{"matchMedia", memory.RefValue(matchMedia)},
 		{"Image", memory.RefValue(imageConstructor)},
 		{"fetch", memory.RefValue(fetch)},
+		{"console", memory.RefValue(console)},
+		{"crypto", memory.RefValue(cryptoObject)},
 		{"Headers", memory.RefValue(bindings.headersConstructor)},
 		{"Request", memory.RefValue(bindings.requestConstructor)},
 		{"Response", memory.RefValue(bindings.responseConstructor)},
@@ -946,6 +1016,7 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{"sessionStorage", memory.RefValue(bindings.sessionStorage)},
 		{"WebSocket", memory.RefValue(bindings.webSocketConstructor)},
 		{"MutationObserver", memory.RefValue(bindings.mutationObserverConstructor)},
+		{"IntersectionObserver", memory.RefValue(bindings.intersectionObserverConstructor)},
 		{bindingDOMException, memory.RefValue(bindings.domExceptionConstructor)},
 		{"URLSearchParams", memory.RefValue(bindings.urlSearchParamsConstructor)},
 		{"URL", memory.RefValue(bindings.urlConstructor)},
@@ -954,6 +1025,7 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{"Uint8Array", memory.RefValue(bindings.uint8ArrayConstructor)},
 		{"Event", memory.RefValue(eventConstructor)},
 		{"CustomEvent", memory.RefValue(customEventConstructor)},
+		{"KeyboardEvent", memory.RefValue(keyboardEventConstructor)},
 		{"getComputedStyle", memory.RefValue(getComputedStyle)},
 		{"getSelection", memory.RefValue(getSelection)},
 		{"Range", memory.RefValue(rangeConstructor)},
@@ -1003,6 +1075,8 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{bindingDOMRectPrototype, bindings.domRectPrototype, false},
 		{bindingMutationObserverPrototype, bindings.mutationObserverPrototype, false},
 		{bindingMutationObserverConstructor, bindings.mutationObserverConstructor, false},
+		{bindingIntersectionObserverPrototype, bindings.intersectionObserverPrototype, false},
+		{bindingIntersectionObserverConstructor, bindings.intersectionObserverConstructor, false},
 		{bindingDOMExceptionPrototype, bindings.domExceptionPrototype, false},
 		{bindingDOMExceptionConstructor, bindings.domExceptionConstructor, false},
 		{bindingURLSearchParamsPrototype, bindings.urlSearchParamsPrototype, false},
@@ -1042,11 +1116,16 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{"globalThis", bindings.window, false},
 		{bindingDocument, bindings.document, false},
 		{bindingPerformance, bindings.performance, false},
+		{bindingHistory, bindings.history, false},
+		{bindingLocation, bindings.location, false},
 		{"navigator", navigator, false},
 		{"matchMedia", matchMedia, true},
 		{"Image", imageConstructor, true},
 		{"fetch", fetch, true},
+		{"console", console, false},
+		{"crypto", cryptoObject, false},
 		{bindingMutationObserver, bindings.mutationObserverConstructor, false},
+		{bindingIntersectionObserver, bindings.intersectionObserverConstructor, true},
 		{bindingDOMException, bindings.domExceptionConstructor, true},
 		{"URLSearchParams", bindings.urlSearchParamsConstructor, true},
 		{"URL", bindings.urlConstructor, true},
@@ -1062,6 +1141,7 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{"WebSocket", bindings.webSocketConstructor, true},
 		{"Event", eventConstructor, true},
 		{"CustomEvent", customEventConstructor, true},
+		{"KeyboardEvent", keyboardEventConstructor, true},
 		{"setTimeout", setTimeout, true},
 		{"clearTimeout", clearTimeout, true},
 		{"setInterval", setInterval, true},
@@ -1171,6 +1251,10 @@ func (realm *Realm) installDOMPrototypeProperties(context *browserruntime.TaskCo
 		{realm.bindings.mutationObserverPrototype, "observe", 2, nativeMutationObserverObserve},
 		{realm.bindings.mutationObserverPrototype, "disconnect", 0, nativeMutationObserverDisconnect},
 		{realm.bindings.mutationObserverPrototype, "takeRecords", 0, nativeMutationObserverTakeRecords},
+		{realm.bindings.intersectionObserverPrototype, "observe", 1, nativeIntersectionObserverObserve},
+		{realm.bindings.intersectionObserverPrototype, "unobserve", 1, nativeIntersectionObserverUnobserve},
+		{realm.bindings.intersectionObserverPrototype, "disconnect", 0, nativeIntersectionObserverDisconnect},
+		{realm.bindings.intersectionObserverPrototype, "takeRecords", 0, nativeIntersectionObserverTakeRecords},
 		{realm.bindings.nodePrototype, "addEventListener", 2, nativeEventTargetAdd},
 		{realm.bindings.nodePrototype, "removeEventListener", 2, nativeEventTargetRemove},
 		{realm.bindings.nodePrototype, "dispatchEvent", 1, nativeEventTargetDispatch},

@@ -52,6 +52,8 @@ func (compiler *functionCompiler) compileStatement(statement ast.Statement) erro
 		// Function declarations are instantiated in the containing Function
 		// scope before any statement executes.
 		return nil
+	case *ast.ClassDeclaration:
+		return compiler.compileClassDeclaration(statement)
 	case *ast.ReturnStatement:
 		if !compiler.inFunction {
 			return compiler.problem(statement.Span(), "return is only valid inside a Function")
@@ -78,6 +80,18 @@ func (compiler *functionCompiler) compileStatement(statement ast.Statement) erro
 
 func (compiler *functionCompiler) compileVariableDeclaration(declaration *ast.VariableDeclaration) error {
 	for _, declarator := range declaration.Declarations {
+		if declarator.Pattern != nil {
+			if declarator.Init == nil {
+				return compiler.problem(declarator.Span(), "binding pattern requires an initializer")
+			}
+			if err := compiler.compileExpression(declarator.Init); err != nil {
+				return err
+			}
+			if err := compiler.compileBindingPattern(declaration.Kind, declarator.Pattern); err != nil {
+				return err
+			}
+			continue
+		}
 		if declarator.ArrayPattern != nil {
 			if err := compiler.compileArrayBindingDeclaration(declaration.Kind, declarator); err != nil {
 				return err
@@ -786,8 +800,29 @@ func (compiler *functionCompiler) compileForOf(statement *ast.ForInStatement, la
 func (compiler *functionCompiler) initializeForBinding(statement *ast.ForInStatement) error {
 	if declaration := statement.LeftDeclaration; declaration != nil {
 		item := declaration.Declarations[0]
+		if item.Pattern != nil {
+			if declaration.Kind != ast.VariableVar {
+				for _, binding := range item.Pattern.BindingIdentifiers() {
+					if err := compiler.declare(binding.Name, declaration.Kind == ast.VariableLet, binding.Span()); err != nil {
+						return err
+					}
+					name, err := compiler.stringConstant(binding.Name)
+					if err != nil {
+						return err
+					}
+					mutable := uint32(0)
+					if declaration.Kind == ast.VariableLet {
+						mutable = 1
+					}
+					if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpDeclareBinding, A: name, B: mutable}, binding.Span()); err != nil {
+						return err
+					}
+				}
+			}
+			return compiler.compileBindingPattern(declaration.Kind, item.Pattern)
+		}
 		if item.Name == nil {
-			return compiler.problem(item.Span(), "for-in/of array binding patterns are not implemented")
+			return compiler.problem(item.Span(), "for-in/of binding requires a name or pattern")
 		}
 		name, err := compiler.stringConstant(item.Name.Name)
 		if err != nil {

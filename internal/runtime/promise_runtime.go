@@ -43,7 +43,7 @@ func (intrinsics *Intrinsics) installPromiseBuiltins(context *TaskContext) error
 		return err
 	}
 	if err := installMethods(intrinsics, context, intrinsics.PromisePrototype, []builtinMethod{
-		{"then", 2, nativePromiseThen}, {"catch", 1, nativePromiseCatch},
+		{"then", 2, nativePromiseThen}, {"catch", 1, nativePromiseCatch}, {"finally", 1, nativePromiseFinally},
 	}); err != nil {
 		return err
 	}
@@ -312,6 +312,89 @@ func builtinPromiseThen(execution *execution, _ memory.Ref, _ memory.Function, t
 
 func builtinPromiseCatch(execution *execution, function memory.Ref, descriptor memory.Function, this memory.Value, arguments []memory.Value) (memory.Value, error) {
 	return builtinPromiseThen(execution, function, descriptor, this, []memory.Value{memory.UndefinedValue(), argument(arguments, 0)})
+}
+
+func builtinPromiseFinally(execution *execution, function memory.Ref, descriptor memory.Function, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+	promise, err := requireKind(execution.context, this, memory.HeapPromise, "Promise receiver")
+	if err != nil {
+		return memory.Value{}, err
+	}
+	callback := optionalCallable(execution.context, argument(arguments, 0))
+	if !callback.IsRef() {
+		return builtinPromiseThen(execution, function, descriptor, memory.RefValue(promise), nil)
+	}
+	fulfill, err := newPromiseFinallyHandler(execution.context, "Promise.finally fulfill", nativePromiseFinallyFulfill, callback.Ref())
+	if err != nil {
+		return memory.Value{}, err
+	}
+	reject, err := newPromiseFinallyHandler(execution.context, "Promise.finally reject", nativePromiseFinallyReject, callback.Ref())
+	if err != nil {
+		return memory.Value{}, err
+	}
+	return builtinPromiseThen(execution, function, descriptor, memory.RefValue(promise), []memory.Value{memory.RefValue(fulfill), memory.RefValue(reject)})
+}
+
+func newPromiseFinallyHandler(context *TaskContext, name string, nativeID uint64, callback memory.Ref) (memory.Ref, error) {
+	nameRef, err := context.NewString(name)
+	if err != nil {
+		return memory.Ref{}, err
+	}
+	return context.NewBoundNativeFunction(memory.RefValue(nameRef), memory.NullValue(), 1, nativeID, memory.RefValue(callback))
+}
+
+func builtinPromiseFinallyFulfill(execution *execution, _ memory.Ref, function memory.Function, _ memory.Value, arguments []memory.Value) (memory.Value, error) {
+	return runPromiseFinallyHandler(execution, function, argument(arguments, 0), false)
+}
+
+func builtinPromiseFinallyReject(execution *execution, _ memory.Ref, function memory.Function, _ memory.Value, arguments []memory.Value) (memory.Value, error) {
+	return runPromiseFinallyHandler(execution, function, argument(arguments, 0), true)
+}
+
+func runPromiseFinallyHandler(execution *execution, function memory.Function, original memory.Value, rejected bool) (memory.Value, error) {
+	if len(function.Captures) != 1 || !function.Captures[0].IsRef() {
+		return memory.Value{}, fmt.Errorf("%w: Promise.finally handler has invalid captures", ErrNativeFunction)
+	}
+	callbackResult, err := execution.call(function.Captures[0].Ref(), memory.UndefinedValue(), nil, callAny)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	cleanup, err := builtinPromiseResolve(execution, memory.Ref{}, memory.Function{}, memory.UndefinedValue(), []memory.Value{callbackResult})
+	if err != nil {
+		return memory.Value{}, err
+	}
+	name := "Promise.finally return"
+	nativeID := uint64(nativePromiseFinallyReturn)
+	if rejected {
+		name = "Promise.finally throw"
+		nativeID = nativePromiseFinallyThrow
+	}
+	passThrough, err := newPromiseFinallyPassThrough(execution.context, name, nativeID, original)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	return builtinPromiseThen(execution, memory.Ref{}, memory.Function{}, cleanup, []memory.Value{memory.RefValue(passThrough)})
+}
+
+func newPromiseFinallyPassThrough(context *TaskContext, name string, nativeID uint64, original memory.Value) (memory.Ref, error) {
+	nameRef, err := context.NewString(name)
+	if err != nil {
+		return memory.Ref{}, err
+	}
+	return context.NewBoundNativeFunction(memory.RefValue(nameRef), memory.NullValue(), 0, nativeID, original)
+}
+
+func builtinPromiseFinallyReturn(_ *execution, _ memory.Ref, function memory.Function, _ memory.Value, _ []memory.Value) (memory.Value, error) {
+	if len(function.Captures) != 1 {
+		return memory.Value{}, fmt.Errorf("%w: Promise.finally return has invalid captures", ErrNativeFunction)
+	}
+	return function.Captures[0], nil
+}
+
+func builtinPromiseFinallyThrow(_ *execution, _ memory.Ref, function memory.Function, _ memory.Value, _ []memory.Value) (memory.Value, error) {
+	if len(function.Captures) != 1 {
+		return memory.Value{}, fmt.Errorf("%w: Promise.finally throw has invalid captures", ErrNativeFunction)
+	}
+	return memory.Value{}, Throw(function.Captures[0])
 }
 
 func optionalCallable(context *TaskContext, value memory.Value) memory.Value {

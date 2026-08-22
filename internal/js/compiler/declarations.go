@@ -183,19 +183,28 @@ func directLexicalDeclarations(statements []ast.Statement) ([]lexicalDeclaration
 	declarations := make([]lexicalDeclaration, 0)
 	seen := make(map[string]lexer.Span)
 	for _, statement := range statements {
-		declaration, ok := statement.(*ast.VariableDeclaration)
-		if !ok || declaration.Kind == ast.VariableVar {
-			continue
-		}
-		for _, declarator := range declaration.Declarations {
-			for _, binding := range declarator.BindingIdentifiers() {
-				name := binding.Name
-				if previous, duplicate := seen[name]; duplicate {
-					return nil, &declarationProblem{span: binding.Span(), message: fmt.Sprintf("binding %q already declared at %d:%d", name, previous.Start.Line, previous.Start.Column)}
-				}
-				seen[name] = binding.Span()
-				declarations = append(declarations, lexicalDeclaration{name: name, mutable: declaration.Kind == ast.VariableLet, span: binding.Span()})
+		switch declaration := statement.(type) {
+		case *ast.VariableDeclaration:
+			if declaration.Kind == ast.VariableVar {
+				continue
 			}
+			for _, declarator := range declaration.Declarations {
+				for _, binding := range declarator.BindingIdentifiers() {
+					name := binding.Name
+					if previous, duplicate := seen[name]; duplicate {
+						return nil, &declarationProblem{span: binding.Span(), message: fmt.Sprintf("binding %q already declared at %d:%d", name, previous.Start.Line, previous.Start.Column)}
+					}
+					seen[name] = binding.Span()
+					declarations = append(declarations, lexicalDeclaration{name: name, mutable: declaration.Kind == ast.VariableLet, span: binding.Span()})
+				}
+			}
+		case *ast.ClassDeclaration:
+			name := declaration.Name.Name
+			if previous, duplicate := seen[name]; duplicate {
+				return nil, &declarationProblem{span: declaration.Name.Span(), message: fmt.Sprintf("binding %q already declared at %d:%d", name, previous.Start.Line, previous.Start.Column)}
+			}
+			seen[name] = declaration.Name.Span()
+			declarations = append(declarations, lexicalDeclaration{name: name, mutable: false, span: declaration.Name.Span()})
 		}
 	}
 	return declarations, nil

@@ -109,14 +109,16 @@ func urlSearchParamsInitializer(context *browserruntime.TaskContext, initial mem
 		return webapi.URLSearchParams{}, nil
 	}
 	if initial.IsRef() {
-		if params, ok, err := maybeURLSearchParamsState(context, initial.Ref()); err != nil {
-			return webapi.URLSearchParams{}, err
-		} else if ok {
-			return params, nil
-		}
 		kind, err := context.HeapKind(initial.Ref())
 		if err != nil {
 			return webapi.URLSearchParams{}, err
+		}
+		if kind == memory.HeapObject {
+			if params, ok, err := maybeURLSearchParamsState(context, initial.Ref()); err != nil {
+				return webapi.URLSearchParams{}, err
+			} else if ok {
+				return params, nil
+			}
 		}
 		if kind == memory.HeapArray {
 			return urlSearchParamsFromSequence(context, initial.Ref())

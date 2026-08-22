@@ -20,6 +20,8 @@ const (
 	nativeEventPreventDefault
 	nativeEventStopPropagation
 	nativeEventStopImmediatePropagation
+	nativeKeyboardEventConstructor
+	nativeKeyboardEventGetModifierState
 )
 
 const eventBrandProperty = "\x00gossamer.event"
@@ -125,6 +127,85 @@ func (realm *Realm) eventConstructor(context *browserruntime.TaskContext, this m
 
 func (realm *Realm) customEventConstructor(context *browserruntime.TaskContext, this memory.Value, arguments []memory.Value) (memory.Value, error) {
 	return realm.initializeConstructedEvent(context, this, arguments, true)
+}
+
+func (realm *Realm) keyboardEventConstructor(context *browserruntime.TaskContext, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+	if _, err := realm.initializeConstructedEvent(context, this, arguments, false); err != nil {
+		return memory.Value{}, err
+	}
+	init := argument(arguments, 1)
+	properties := []struct {
+		name     string
+		fallback memory.Value
+	}{
+		{"key", memory.UndefinedValue()},
+		{"code", memory.UndefinedValue()},
+		{"location", memory.NumberValue(0)},
+		{"ctrlKey", memory.BoolValue(false)},
+		{"shiftKey", memory.BoolValue(false)},
+		{"altKey", memory.BoolValue(false)},
+		{"metaKey", memory.BoolValue(false)},
+		{"repeat", memory.BoolValue(false)},
+		{"isComposing", memory.BoolValue(false)},
+	}
+	for _, property := range properties {
+		value := property.fallback
+		if init.IsRef() {
+			candidate, found, err := ownProperty(context, init.Ref(), property.name)
+			if err != nil {
+				return memory.Value{}, err
+			}
+			if found {
+				value = candidate
+			}
+		}
+		if property.name == "key" || property.name == "code" {
+			if value.Kind() == memory.ValueUndefined {
+				empty, stringErr := newString(context, "")
+				if stringErr != nil {
+					return memory.Value{}, stringErr
+				}
+				value = empty
+			} else {
+				text, err := valueString(context, value)
+				if err != nil {
+					return memory.Value{}, err
+				}
+				value, err = newString(context, text)
+				if err != nil {
+					return memory.Value{}, err
+				}
+			}
+		} else if property.name != "location" {
+			value = memory.BoolValue(truthy(value))
+		}
+		if err := defineData(context, this.Ref(), property.name, value, true, true, true); err != nil {
+			return memory.Value{}, err
+		}
+	}
+	return memory.UndefinedValue(), nil
+}
+
+func (realm *Realm) keyboardEventGetModifierState(context *browserruntime.TaskContext, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+	if _, err := realm.requireEventObject(context, this); err != nil {
+		return memory.Value{}, err
+	}
+	modifier, err := stringArgument(context, arguments, 0)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	property := map[string]string{
+		"Alt": "altKey", "AltGraph": "altGraphKey", "Control": "ctrlKey",
+		"Meta": "metaKey", "Shift": "shiftKey",
+	}[modifier]
+	if property == "" {
+		return memory.BoolValue(false), nil
+	}
+	value, found, err := ownProperty(context, this.Ref(), property)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	return memory.BoolValue(found && truthy(value)), nil
 }
 
 func (realm *Realm) initializeConstructedEvent(

@@ -885,7 +885,7 @@ func (store *Store) recordKindFreeLocked(slot *Slot) {
 		store.stats.LiveContexts--
 	case HeapFunction:
 		store.stats.LiveFunctions--
-		store.stats.LiveBytes -= uint64(len(slot.Function.Code))
+		store.stats.LiveBytes -= uint64(len(slot.Function.Code)) + uint64(len(slot.Function.Locations))*8
 	case HeapPromise:
 		store.stats.LivePromises--
 	case HeapBigInt:

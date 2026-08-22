@@ -34,6 +34,7 @@ const (
 	OpAdd
 	OpSubtract
 	OpMultiply
+	OpExponentiate
 	OpDivide
 	OpRemainder
 	OpNegate
@@ -153,6 +154,8 @@ func (opcode Opcode) String() string {
 		return "Subtract"
 	case OpMultiply:
 		return "Multiply"
+	case OpExponentiate:
+		return "Exponentiate"
 	case OpDivide:
 		return "Divide"
 	case OpRemainder:

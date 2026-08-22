@@ -736,7 +736,7 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 			frame.push(value)
 		case OpLoadThis:
 			frame.push(frame.This)
-		case OpAdd, OpSubtract, OpMultiply, OpDivide, OpRemainder,
+		case OpAdd, OpSubtract, OpMultiply, OpExponentiate, OpDivide, OpRemainder,
 			OpNegate, OpIncrement, OpDecrement,
 			OpBitwiseAnd, OpBitwiseOr, OpBitwiseXor,
 			OpShiftLeft, OpShiftRight, OpUnsignedShiftRight,
@@ -933,7 +933,7 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 			var closure memory.Ref
 			switch descriptor.Kind {
 			case memory.FunctionBytecode:
-				closure, err = context.NewBytecodeFunction(descriptor.Name, frame.Environment, descriptor.Arity, descriptor.Code, descriptor.Constants)
+				closure, err = context.NewBytecodeFunctionWithLocations(descriptor.Name, frame.Environment, descriptor.Arity, descriptor.Code, descriptor.Constants, descriptor.Locations)
 			case memory.FunctionNative:
 				closure, err = context.NewNativeFunction(descriptor.Name, frame.Environment, descriptor.Arity, descriptor.NativeID)
 			default:
@@ -1447,7 +1447,7 @@ func executeOperator(execution *execution, frame *Frame, opcode Opcode) error {
 		}
 		frame.push(memory.NumberValue(leftNumber + rightNumber))
 		return nil
-	case OpSubtract, OpMultiply, OpDivide, OpRemainder,
+	case OpSubtract, OpMultiply, OpExponentiate, OpDivide, OpRemainder,
 		OpBitwiseAnd, OpBitwiseOr, OpBitwiseXor,
 		OpShiftLeft, OpShiftRight, OpUnsignedShiftRight:
 		rightValue, leftValue, err := popBinary(frame)
@@ -1467,6 +1467,8 @@ func executeOperator(execution *execution, frame *Frame, opcode Opcode) error {
 			frame.push(memory.NumberValue(left - right))
 		case OpMultiply:
 			frame.push(memory.NumberValue(left * right))
+		case OpExponentiate:
+			frame.push(memory.NumberValue(math.Pow(left, right)))
 		case OpDivide:
 			frame.push(memory.NumberValue(left / right))
 		case OpRemainder:

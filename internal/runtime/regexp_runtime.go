@@ -11,8 +11,83 @@ import (
 func (intrinsics *Intrinsics) installRegExpBuiltins(context *TaskContext) error {
 	return installMethods(intrinsics, context, intrinsics.RegExpPrototype, []builtinMethod{
 		{"test", 1, nativeRegExpTest},
+		{"exec", 1, nativeRegExpExec},
 		{"toString", 0, nativeRegExpToString},
 	})
+}
+
+func builtinRegExpExec(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+	expressionRef, expression, err := requireRegExp(execution.context, this)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	text, err := execution.toString(argument(arguments, 0))
+	if err != nil {
+		return memory.Value{}, err
+	}
+	return regexpExec(execution, expressionRef, expression, text)
+}
+
+func regexpExec(execution *execution, expressionRef memory.Ref, expression memory.RegExp, text string) (memory.Value, error) {
+	compiled, err := compileRegExp(execution.context, expression)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	start := uint64(0)
+	stateful := expression.Flags&(memory.RegExpGlobal|memory.RegExpSticky) != 0
+	if stateful {
+		start = expression.LastIndex
+	}
+	if start > uint64(len(text)) {
+		if stateful {
+			_ = execution.context.SetRegExpLastIndex(expressionRef, 0)
+		}
+		return memory.NullValue(), nil
+	}
+	match := compiled.FindStringSubmatchIndex(text[start:])
+	if match == nil || expression.Flags&memory.RegExpSticky != 0 && match[0] != 0 {
+		if stateful {
+			_ = execution.context.SetRegExpLastIndex(expressionRef, 0)
+		}
+		return memory.NullValue(), nil
+	}
+	for index := range match {
+		if match[index] >= 0 {
+			match[index] += int(start)
+		}
+	}
+	if stateful {
+		if err := execution.context.SetRegExpLastIndex(expressionRef, uint64(match[1])); err != nil {
+			return memory.Value{}, err
+		}
+	}
+	result, err := execution.context.NewArray(uint32(len(match) / 2))
+	if err != nil {
+		return memory.Value{}, err
+	}
+	for index := 0; index < len(match); index += 2 {
+		if match[index] < 0 {
+			continue
+		}
+		value, err := newStringValue(execution.context, text[match[index]:match[index+1]])
+		if err != nil {
+			return memory.Value{}, err
+		}
+		if err := execution.context.SetArrayElement(result, uint32(index/2), value); err != nil {
+			return memory.Value{}, err
+		}
+	}
+	input, err := newStringValue(execution.context, text)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	if err := defineData(execution.context, result, "index", memory.NumberValue(float64(match[0])), true, false, true); err != nil {
+		return memory.Value{}, err
+	}
+	if err := defineData(execution.context, result, "input", input, true, false, true); err != nil {
+		return memory.Value{}, err
+	}
+	return memory.RefValue(result), nil
 }
 
 func builtinRegExpConstructor(execution *execution, _ memory.Ref, _ memory.Function, _ memory.Value, arguments []memory.Value) (memory.Value, error) {

@@ -24,11 +24,12 @@ const (
 )
 
 type nativeModule struct {
-	source browser.ScriptSource
-	image  program.Module
-	entry  memory.Ref
-	status nativeModuleStatus
-	err    error
+	source   browser.ScriptSource
+	image    program.Module
+	compiled bool
+	entry    memory.Ref
+	status   nativeModuleStatus
+	err      error
 }
 
 type moduleResolutionKey struct {
@@ -82,9 +83,12 @@ func (realm *Realm) EvaluateModule(host browser.Host, graph browser.ModuleGraph)
 		}
 	}
 	for url, candidate := range compiled {
-		if _, exists := realm.modules[url]; !exists {
+		if existing, exists := realm.modules[url]; !exists {
 			copy := candidate
 			realm.modules[url] = &copy
+		} else if !existing.compiled && candidate.compiled {
+			existing.image = candidate.image
+			existing.compiled = true
 		}
 	}
 	for key, destination := range resolutions {
@@ -145,12 +149,7 @@ func compileNativeModuleGraph(graph browser.ModuleGraph, cached map[string]*nati
 			compiled[source.URL] = *existing
 			continue
 		}
-		image, err := compiler.CompileModuleWithOptions(source.Source, compiler.Options{AllowUnresolvedGlobals: true})
-		if err != nil {
-			return nil, nil, compilations, evaluationError(source.URL, err)
-		}
-		compiled[source.URL] = nativeModule{source: source, image: image}
-		compilations++
+		compiled[source.URL] = nativeModule{source: source}
 	}
 	resolutions := make(map[moduleResolutionKey]string, len(graph.Resolutions))
 	for _, resolution := range graph.Resolutions {
@@ -169,12 +168,39 @@ func compileNativeModuleGraph(graph browser.ModuleGraph, cached map[string]*nati
 		}
 		resolutions[key] = resolution.URL
 	}
-	for url, module := range compiled {
-		for _, request := range module.image.Requests() {
-			if _, found := resolutions[moduleResolutionKey{referrer: url, specifier: request}]; !found {
-				return nil, nil, compilations, fmt.Errorf("%w: unresolved request %q from %q", ErrModuleGraphInvalid, request, url)
+	compiling := make(map[string]bool)
+	var compileStatic func(string) error
+	compileStatic = func(moduleURL string) error {
+		module, found := compiled[moduleURL]
+		if !found {
+			return fmt.Errorf("%w: missing source %q", ErrModuleGraphInvalid, moduleURL)
+		}
+		if module.compiled || compiling[moduleURL] {
+			return nil
+		}
+		image, err := compiler.CompileModuleWithOptions(module.source.Source, compiler.Options{AllowUnresolvedGlobals: true})
+		if err != nil {
+			return evaluationError(moduleURL, err)
+		}
+		module.image = image
+		module.compiled = true
+		compiled[moduleURL] = module
+		compilations++
+		compiling[moduleURL] = true
+		defer delete(compiling, moduleURL)
+		for _, request := range image.Requests() {
+			target, found := resolutions[moduleResolutionKey{referrer: moduleURL, specifier: request}]
+			if !found {
+				return fmt.Errorf("%w: unresolved request %q from %q", ErrModuleGraphInvalid, request, moduleURL)
+			}
+			if err := compileStatic(target); err != nil {
+				return err
 			}
 		}
+		return nil
+	}
+	if err := compileStatic(graph.RootURL); err != nil {
+		return nil, nil, compilations, err
 	}
 	reachable := make(map[string]struct{}, len(compiled))
 	var visit func(string)
@@ -220,6 +246,9 @@ func (realm *Realm) linkModuleLocked(context *browserruntime.TaskContext, url st
 	module := realm.modules[url]
 	if module == nil {
 		return fmt.Errorf("%w: missing source %q", ErrModuleLink, url)
+	}
+	if err := realm.ensureModuleCompiledLocked(url, make(map[string]bool)); err != nil {
+		return err
 	}
 	switch module.status {
 	case moduleLinked, moduleEvaluating, moduleEvaluated:
@@ -303,6 +332,35 @@ func (realm *Realm) linkModuleLocked(context *browserruntime.TaskContext, url st
 		}
 	}
 	module.status = moduleLinked
+	return nil
+}
+
+func (realm *Realm) ensureModuleCompiledLocked(url string, compiling map[string]bool) error {
+	module := realm.modules[url]
+	if module == nil {
+		return fmt.Errorf("%w: missing source %q", ErrModuleLink, url)
+	}
+	if module.compiled || compiling[url] {
+		return nil
+	}
+	image, err := compiler.CompileModuleWithOptions(module.source.Source, compiler.Options{AllowUnresolvedGlobals: true})
+	if err != nil {
+		return evaluationError(url, err)
+	}
+	module.image = image
+	module.compiled = true
+	realm.moduleCompilations++
+	compiling[url] = true
+	defer delete(compiling, url)
+	for _, request := range image.Requests() {
+		dependency, err := realm.resolveModuleRequest(url, request)
+		if err != nil {
+			return err
+		}
+		if err := realm.ensureModuleCompiledLocked(dependency, compiling); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

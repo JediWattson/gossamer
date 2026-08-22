@@ -14,9 +14,15 @@ const (
 	nativeMutationObserverObserve
 	nativeMutationObserverDisconnect
 	nativeMutationObserverTakeRecords
+	nativeIntersectionObserverConstructor
+	nativeIntersectionObserverObserve
+	nativeIntersectionObserverUnobserve
+	nativeIntersectionObserverDisconnect
+	nativeIntersectionObserverTakeRecords
 )
 
 const mutationObserverCallbackProperty = "\x00gossamer.mutation-observer.callback"
+const intersectionObserverCallbackProperty = "\x00gossamer.intersection-observer.callback"
 
 type mutationObserverState struct {
 	ID                uint64
@@ -49,6 +55,67 @@ func (realm *Realm) newMutationObserverConstructor(context *browserruntime.TaskC
 		return memory.Ref{}, memory.Ref{}, fmt.Errorf("nativeengine: MutationObserver constructor lost its prototype")
 	}
 	return constructor, prototype.Ref(), nil
+}
+
+func (realm *Realm) newIntersectionObserverConstructor(context *browserruntime.TaskContext) (memory.Ref, memory.Ref, error) {
+	name, err := newString(context, "IntersectionObserver")
+	if err != nil {
+		return memory.Ref{}, memory.Ref{}, err
+	}
+	constructor, err := context.NewNativeConstructor(name, memory.RefValue(realm.active.Global), 1, nativeIntersectionObserverConstructor)
+	if err != nil {
+		return memory.Ref{}, memory.Ref{}, err
+	}
+	prototypeName, err := context.NewString("prototype")
+	if err != nil {
+		return memory.Ref{}, memory.Ref{}, err
+	}
+	prototype, found, err := context.GetOwnProperty(constructor, prototypeName)
+	if err != nil || !found || !prototype.IsRef() {
+		return memory.Ref{}, memory.Ref{}, fmt.Errorf("nativeengine: IntersectionObserver constructor lost its prototype")
+	}
+	return constructor, prototype.Ref(), nil
+}
+
+// IntersectionObserver is deliberately deterministic in Strand today: it
+// owns its callback and validates observed DOM nodes, but does not synthesize
+// geometry changes. That is enough for applications to install visibility
+// sentinels without inventing a viewport event stream the host cannot prove.
+func (realm *Realm) intersectionObserverConstructor(context *browserruntime.TaskContext, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+	if !this.IsRef() {
+		return memory.Value{}, fmt.Errorf("%w: IntersectionObserver requires new", browserruntime.ErrOperandType)
+	}
+	callback := argument(arguments, 0)
+	if err := requireFunction(context, callback); err != nil {
+		return memory.Value{}, err
+	}
+	if err := defineData(context, this.Ref(), intersectionObserverCallbackProperty, callback, false, false, false); err != nil {
+		return memory.Value{}, err
+	}
+	return memory.UndefinedValue(), nil
+}
+
+func (realm *Realm) intersectionObserverObserve(context *browserruntime.TaskContext, _ memory.Value, arguments []memory.Value) (memory.Value, error) {
+	if _, err := realm.unwrapNode(context, argument(arguments, 0)); err != nil {
+		return memory.Value{}, err
+	}
+	return memory.UndefinedValue(), nil
+}
+
+func (realm *Realm) intersectionObserverUnobserve(context *browserruntime.TaskContext, _ memory.Value, arguments []memory.Value) (memory.Value, error) {
+	if _, err := realm.unwrapNode(context, argument(arguments, 0)); err != nil {
+		return memory.Value{}, err
+	}
+	return memory.UndefinedValue(), nil
+}
+
+func (realm *Realm) intersectionObserverDisconnect(_ *browserruntime.TaskContext, _ memory.Value, _ []memory.Value) (memory.Value, error) {
+	return memory.UndefinedValue(), nil
+}
+
+func (realm *Realm) intersectionObserverTakeRecords(context *browserruntime.TaskContext, _ memory.Value, _ []memory.Value) (memory.Value, error) {
+	records, err := context.NewArray(0)
+	return memory.RefValue(records), err
 }
 
 func (realm *Realm) mutationObserverConstructor(context *browserruntime.TaskContext, this memory.Value, arguments []memory.Value) (memory.Value, error) {

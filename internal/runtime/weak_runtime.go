@@ -13,11 +13,72 @@ func (intrinsics *Intrinsics) installWeakCollectionBuiltins(context *TaskContext
 	}); err != nil {
 		return err
 	}
-	return installMethods(intrinsics, context, intrinsics.WeakSetPrototype, []builtinMethod{
+	if err := installMethods(intrinsics, context, intrinsics.WeakSetPrototype, []builtinMethod{
 		{"add", 1, nativeWeakSetAdd},
 		{"has", 1, nativeWeakSetHas},
 		{"delete", 1, nativeWeakSetDelete},
-	})
+	}); err != nil {
+		return err
+	}
+	name, err := context.NewString("FinalizationRegistry")
+	if err != nil {
+		return err
+	}
+	constructor, err := context.NewNativeConstructor(memory.RefValue(name), memory.NullValue(), 1, nativeFinalizationRegistryConstructor)
+	if err != nil {
+		return err
+	}
+	prototypeName, err := context.NewString("prototype")
+	if err != nil {
+		return err
+	}
+	prototype, found, err := context.GetOwnProperty(constructor, prototypeName)
+	if err != nil || !found || !prototype.IsRef() {
+		if err != nil {
+			return err
+		}
+		return ErrOperandType
+	}
+	if err := installMethods(intrinsics, context, prototype.Ref(), []builtinMethod{
+		{"register", 2, nativeFinalizationRegistryRegister},
+		{"unregister", 1, nativeFinalizationRegistryUnregister},
+	}); err != nil {
+		return err
+	}
+	return intrinsics.defineGlobal(context, "FinalizationRegistry", memory.RefValue(constructor))
+}
+
+func builtinFinalizationRegistryConstructor(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+	if !this.IsRef() {
+		return memory.Value{}, ErrNotConstructor
+	}
+	if _, err := requireCallable(execution.context, argument(arguments, 0)); err != nil {
+		return memory.Value{}, err
+	}
+	// RegionStore lifetimes are deterministic. The compatibility constructor
+	// deliberately retains no cleanup callback and schedules no nondeterministic
+	// finalizer jobs.
+	return this, nil
+}
+
+func builtinFinalizationRegistryRegister(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+	if _, err := requireObjectLike(execution.context, this, "FinalizationRegistry receiver"); err != nil {
+		return memory.Value{}, err
+	}
+	if _, object, err := weakKey(execution.context, argument(arguments, 0)); err != nil || !object {
+		if err != nil {
+			return memory.Value{}, err
+		}
+		return memory.Value{}, ErrOperandType
+	}
+	return memory.UndefinedValue(), nil
+}
+
+func builtinFinalizationRegistryUnregister(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, _ []memory.Value) (memory.Value, error) {
+	if _, err := requireObjectLike(execution.context, this, "FinalizationRegistry receiver"); err != nil {
+		return memory.Value{}, err
+	}
+	return memory.BoolValue(false), nil
 }
 
 func builtinWeakMapConstructor(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, arguments []memory.Value) (memory.Value, error) {

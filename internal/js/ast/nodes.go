@@ -119,6 +119,7 @@ type VariableDeclarator struct {
 	Name          *Identifier
 	ArrayPattern  []*Identifier
 	ObjectPattern []*ObjectBindingProperty
+	Pattern       *BindingPattern
 	Init          Expression
 }
 
@@ -129,12 +130,61 @@ type ObjectBindingProperty struct {
 	Default Expression
 }
 
+// BindingPattern represents an identifier or recursively nested array/object
+// binding pattern. ArrayPattern and ObjectPattern above remain populated for
+// simple patterns so existing AST consumers can continue to inspect them.
+type BindingPattern struct {
+	Base
+	Name   *Identifier
+	Array  []*BindingElement
+	Object []*ObjectBindingElement
+}
+
+type BindingElement struct {
+	Base
+	Pattern *BindingPattern
+	Default Expression
+	Rest    bool
+}
+
+type ObjectBindingElement struct {
+	Base
+	Key     string
+	Pattern *BindingPattern
+	Default Expression
+	Rest    bool
+}
+
+func (pattern *BindingPattern) BindingIdentifiers() []*Identifier {
+	if pattern == nil {
+		return nil
+	}
+	if pattern.Name != nil {
+		return []*Identifier{pattern.Name}
+	}
+	bindings := make([]*Identifier, 0)
+	for _, element := range pattern.Array {
+		if element != nil {
+			bindings = append(bindings, element.Pattern.BindingIdentifiers()...)
+		}
+	}
+	for _, element := range pattern.Object {
+		if element != nil {
+			bindings = append(bindings, element.Pattern.BindingIdentifiers()...)
+		}
+	}
+	return bindings
+}
+
 func (declarator *VariableDeclarator) BindingIdentifiers() []*Identifier {
 	if declarator == nil {
 		return nil
 	}
 	if declarator.Name != nil {
 		return []*Identifier{declarator.Name}
+	}
+	if declarator.Pattern != nil {
+		return declarator.Pattern.BindingIdentifiers()
 	}
 	if declarator.ObjectPattern != nil {
 		bindings := make([]*Identifier, 0, len(declarator.ObjectPattern))
@@ -172,6 +222,41 @@ type FunctionDeclaration struct {
 }
 
 func (*FunctionDeclaration) statementNode() {}
+
+type ClassElementKind uint8
+
+const (
+	ClassField ClassElementKind = iota + 1
+	ClassMethod
+	ClassGetter
+	ClassSetter
+	ClassConstructor
+)
+
+// ClassElement retains the source order required by field initialization and
+// static installation. Private keys are already mapped by the parser to a
+// class-unique, non-source property name; they never become public strings.
+type ClassElement struct {
+	Base
+	Kind          ClassElementKind
+	Key           string
+	KeyExpression Expression
+	Value         Expression
+	Function      *FunctionExpression
+	Computed      bool
+	Private       bool
+	Static        bool
+}
+
+type ClassDeclaration struct {
+	Base
+	Name         *Identifier
+	SuperClass   Expression
+	SuperBinding string
+	Elements     []*ClassElement
+}
+
+func (*ClassDeclaration) statementNode() {}
 
 type ReturnStatement struct {
 	Base
@@ -298,6 +383,15 @@ type NumberLiteral struct {
 }
 
 func (*NumberLiteral) expressionNode() {}
+
+// BigIntLiteral stores the source integer without its trailing n. Radix
+// prefixes are preserved so the portable program loader can parse it exactly.
+type BigIntLiteral struct {
+	Base
+	Text string
+}
+
+func (*BigIntLiteral) expressionNode() {}
 
 type StringLiteral struct {
 	Base
@@ -498,6 +592,16 @@ type FunctionExpression struct {
 
 func (*FunctionExpression) expressionNode() {}
 
+type ClassExpression struct {
+	Base
+	Name         *Identifier
+	SuperClass   Expression
+	SuperBinding string
+	Elements     []*ClassElement
+}
+
+func (*ClassExpression) expressionNode() {}
+
 type ArrowFunctionExpression struct {
 	Base
 	Parameters []*Identifier
@@ -514,6 +618,36 @@ func IsAssignmentTarget(expression Expression) bool {
 		return true
 	case *MemberExpression:
 		return !memberContainsOptionalChain(expression)
+	case *ArrayLiteral:
+		for _, element := range expression.Elements {
+			if element == nil {
+				continue
+			}
+			if spread, ok := element.(*SpreadElement); ok {
+				element = spread.Argument
+			}
+			if assignment, ok := element.(*AssignmentExpression); ok && assignment.Operator == lexer.Assign {
+				element = assignment.Left
+			}
+			if !IsAssignmentTarget(element) {
+				return false
+			}
+		}
+		return true
+	case *ObjectLiteral:
+		for _, property := range expression.Properties {
+			if property == nil || property.Accessor != ObjectPropertyData {
+				return false
+			}
+			target := property.Value
+			if assignment, ok := target.(*AssignmentExpression); ok && assignment.Operator == lexer.Assign {
+				target = assignment.Left
+			}
+			if !IsAssignmentTarget(target) {
+				return false
+			}
+		}
+		return true
 	default:
 		return false
 	}

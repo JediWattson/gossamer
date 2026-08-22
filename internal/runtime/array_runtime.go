@@ -2,9 +2,102 @@ package runtime
 
 import (
 	"math"
+	"strconv"
 
 	"github.com/JediWattson/gossamer/internal/runtime/memory"
 )
+
+func builtinArrayFill(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+	arrayRef, err := execution.arrayReceiver(this)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	array, err := execution.context.DerefArray(arrayRef)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	start, err := relativeIndex(execution, argument(arguments, 1), array.Length, 0)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	end, err := relativeIndex(execution, argument(arguments, 2), array.Length, array.Length)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	for index := start; index < end; index++ {
+		key, err := execution.context.NewString(strconv.FormatUint(uint64(index), 10))
+		if err != nil {
+			return memory.Value{}, err
+		}
+		if err := execution.setPropertyValue(this, memory.RefValue(key), argument(arguments, 0)); err != nil {
+			return memory.Value{}, err
+		}
+	}
+	return this, nil
+}
+
+func builtinArrayReverse(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, _ []memory.Value) (memory.Value, error) {
+	arrayRef, err := execution.arrayReceiver(this)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	array, err := execution.context.DerefArray(arrayRef)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	for lower := uint32(0); lower < array.Length/2; lower++ {
+		upper := array.Length - lower - 1
+		lowerKey, err := execution.context.NewString(strconv.FormatUint(uint64(lower), 10))
+		if err != nil {
+			return memory.Value{}, err
+		}
+		upperKey, err := execution.context.NewString(strconv.FormatUint(uint64(upper), 10))
+		if err != nil {
+			return memory.Value{}, err
+		}
+		lowerValue, lowerExists, err := arrayProperty(execution, this, memory.RefValue(lowerKey))
+		if err != nil {
+			return memory.Value{}, err
+		}
+		upperValue, upperExists, err := arrayProperty(execution, this, memory.RefValue(upperKey))
+		if err != nil {
+			return memory.Value{}, err
+		}
+		switch {
+		case lowerExists && upperExists:
+			if err := execution.setPropertyValue(this, memory.RefValue(lowerKey), upperValue); err != nil {
+				return memory.Value{}, err
+			}
+			if err := execution.setPropertyValue(this, memory.RefValue(upperKey), lowerValue); err != nil {
+				return memory.Value{}, err
+			}
+		case upperExists:
+			if err := execution.setPropertyValue(this, memory.RefValue(lowerKey), upperValue); err != nil {
+				return memory.Value{}, err
+			}
+			if _, err := execution.deletePropertyValue(this, memory.RefValue(upperKey)); err != nil {
+				return memory.Value{}, err
+			}
+		case lowerExists:
+			if _, err := execution.deletePropertyValue(this, memory.RefValue(lowerKey)); err != nil {
+				return memory.Value{}, err
+			}
+			if err := execution.setPropertyValue(this, memory.RefValue(upperKey), lowerValue); err != nil {
+				return memory.Value{}, err
+			}
+		}
+	}
+	return this, nil
+}
+
+func arrayProperty(execution *execution, receiver, key memory.Value) (memory.Value, bool, error) {
+	found, err := execution.hasProperty(receiver, key)
+	if err != nil || !found {
+		return memory.Value{}, found, err
+	}
+	value, _, err := execution.getProperty(receiver, key)
+	return value, true, err
+}
 
 func builtinArrayConcat(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, arguments []memory.Value) (memory.Value, error) {
 	receiver, err := requireArray(execution.context, this)

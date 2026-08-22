@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"errors"
+	"fmt"
 
 	"github.com/JediWattson/gossamer/internal/runtime/memory"
 )
@@ -16,6 +17,22 @@ func (execution *execution) routeFrameError(frame *Frame, err error) (bool, erro
 		if !languageError {
 			return false, err
 		}
+		instruction := uint32(0)
+		if frame != nil && frame.ip > 0 {
+			instruction = frame.ip - 1
+		}
+		name := "<anonymous>"
+		if frame != nil && frame.function.Name.IsRef() {
+			if text, nameErr := execution.context.DerefString(frame.function.Name.Ref()); nameErr == nil && text != "" {
+				name = text
+			}
+		}
+		location := ""
+		if frame != nil && uint64(instruction) < uint64(len(frame.function.Locations)) {
+			span := frame.function.Locations[instruction]
+			location = fmt.Sprintf(" source %d..%d", span.Start, span.End)
+		}
+		err = fmt.Errorf("%w (in %s at bytecode %d%s)", err, name, instruction, location)
 		message, allocErr := execution.context.NewString(err.Error())
 		if allocErr != nil {
 			return false, allocErr

@@ -153,7 +153,7 @@ func instructionStackEffect(instruction Instruction) (required, delta int, termi
 	case OpInitializeBinding, OpStoreBinding,
 		OpNegate, OpIncrement, OpDecrement, OpLogicalNot, OpTypeOf, OpToNumber:
 		return 1, 0, false, nil
-	case OpAdd, OpSubtract, OpMultiply, OpDivide, OpRemainder,
+	case OpAdd, OpSubtract, OpMultiply, OpExponentiate, OpDivide, OpRemainder,
 		OpBitwiseAnd, OpBitwiseOr, OpBitwiseXor,
 		OpShiftLeft, OpShiftRight, OpUnsignedShiftRight,
 		OpStrictEqual, OpStrictNotEqual, OpEqual, OpNotEqual,

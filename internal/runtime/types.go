@@ -275,10 +275,17 @@ func (context *TaskContext) ResolveBinding(contextRef, name memory.Ref) (memory.
 }
 
 func (context *TaskContext) NewBytecodeFunction(name, environment memory.Value, arity uint32, code []byte, constants []memory.Value) (memory.Ref, error) {
+	return context.NewBytecodeFunctionWithLocations(name, environment, arity, code, constants, nil)
+}
+
+func (context *TaskContext) NewBytecodeFunctionWithLocations(name, environment memory.Value, arity uint32, code []byte, constants []memory.Value, locations []memory.SourceSpan) (memory.Ref, error) {
 	if context == nil || context.Realm == nil {
 		return memory.Ref{}, fmt.Errorf("runtime: nil task context")
 	}
 	ref, err := context.Realm.store.AllocBytecodeFunction(context.Owner, context.MemoryRegion, name, environment, arity, code, constants)
+	if err == nil && len(locations) != 0 {
+		err = context.Realm.store.SetFunctionLocations(context.Owner, ref, locations)
+	}
 	if err != nil || context.intrinsics == nil {
 		return ref, err
 	}

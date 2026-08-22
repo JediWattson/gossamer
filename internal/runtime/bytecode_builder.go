@@ -20,8 +20,8 @@ type SourceSpan struct {
 }
 
 // BytecodeChunk is the checked output of BytecodeBuilder. Locations are
-// parallel to decoded instructions and are intentionally kept outside the
-// runtime Function payload for now.
+// parallel to decoded instructions and may be carried into Function payloads
+// as diagnostic metadata.
 type BytecodeChunk struct {
 	Code      []byte
 	Constants []memory.Value

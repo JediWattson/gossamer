@@ -154,6 +154,21 @@ func TestParseObjectConciseMethods(t *testing.T) {
 	}
 }
 
+func TestParseAsyncAndGeneratorObjectMethods(t *testing.T) {
+	t.Parallel()
+
+	script, err := parser.Parse(`const stream = { async pull(value) { await value; }, *items() { yield 1; } };`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	object := script.Body[0].(*ast.VariableDeclaration).Declarations[0].Init.(*ast.ObjectLiteral)
+	asyncMethod := object.Properties[0].Value.(*ast.FunctionExpression)
+	generator := object.Properties[1].Value.(*ast.FunctionExpression)
+	if object.Properties[0].Key != "pull" || !asyncMethod.Async || object.Properties[1].Key != "items" || !generator.Generator {
+		t.Fatalf("object methods = %#v", object.Properties)
+	}
+}
+
 func TestParseArrayBindingPatterns(t *testing.T) {
 	t.Parallel()
 
@@ -168,6 +183,34 @@ func TestParseArrayBindingPatterns(t *testing.T) {
 	second := script.Body[1].(*ast.VariableDeclaration).Declarations[0]
 	if len(second.BindingIdentifiers()) != 2 || second.BindingIdentifiers()[1].Name != "right" {
 		t.Fatalf("second pattern = %#v", second)
+	}
+}
+
+func TestParseRecursiveBindingPatternsAndAsyncArrow(t *testing.T) {
+	t.Parallel()
+
+	script, err := parser.Parse(`
+const read = async ({signal: [first, second], options: {retry = true}, ...rest} = {}) => {
+  const [head = "", ...tail] = rest.items;
+  return [first, second, retry, head, tail];
+};
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	declaration := script.Body[0].(*ast.VariableDeclaration).Declarations[0]
+	arrow := declaration.Init.(*ast.ArrowFunctionExpression)
+	if !arrow.Async || len(arrow.Parameters) != 1 || len(arrow.Body.Body) != 4 {
+		t.Fatalf("async arrow = %#v", arrow)
+	}
+	parameter := arrow.Body.Body[1].(*ast.VariableDeclaration).Declarations[0]
+	names := parameter.BindingIdentifiers()
+	if len(names) != 4 || names[0].Name != "first" || names[1].Name != "second" || names[2].Name != "retry" || names[3].Name != "rest" {
+		t.Fatalf("recursive bindings = %#v", names)
+	}
+	local := arrow.Body.Body[2].(*ast.VariableDeclaration).Declarations[0]
+	if len(local.BindingIdentifiers()) != 2 || local.BindingIdentifiers()[1].Name != "tail" {
+		t.Fatalf("array rest bindings = %#v", local.BindingIdentifiers())
 	}
 }
 
@@ -522,6 +565,7 @@ func TestParseGeneratorFunctionYieldExpressions(t *testing.T) {
 function* matching(values) {
   for (let value of values) value > 1 && (yield value);
 }
+
 const expression = function* () { for (let value of [1]) yield value; };
 `)
 	if err != nil {
@@ -539,6 +583,22 @@ const expression = function* () { for (let value of [1]) yield value; };
 	expression := script.Body[1].(*ast.VariableDeclaration).Declarations[0].Init.(*ast.FunctionExpression)
 	if !expression.Generator {
 		t.Fatal("generator Function expression lost its flag")
+	}
+}
+
+func TestParseConstForOfBindingWithoutInitializer(t *testing.T) {
+	t.Parallel()
+
+	script, err := parser.Parse(`for (const value of values) value;`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loop := script.Body[0].(*ast.ForInStatement)
+	if !loop.Of || loop.LeftDeclaration == nil || loop.LeftDeclaration.Kind != ast.VariableConst {
+		t.Fatalf("for-of loop = %#v", loop)
+	}
+	if got := loop.LeftDeclaration.Declarations[0].Name.Name; got != "value" {
+		t.Fatalf("binding = %q, want value", got)
 	}
 }
 

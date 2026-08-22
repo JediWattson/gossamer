@@ -1,6 +1,7 @@
 package nativeengine
 
 import (
+	"crypto/rand"
 	"fmt"
 
 	"github.com/JediWattson/gossamer/internal/browser"
@@ -13,7 +14,33 @@ const (
 	nativeMatchMedia uint64 = 20_000 + iota
 	nativeMediaQueryNoop
 	nativeMediaQueryDispatch
+	nativeCryptoRandomUUID
 )
+
+func (realm *Realm) newCrypto(context *browserruntime.TaskContext) (memory.Ref, error) {
+	cryptoObject, err := context.NewHeapObject()
+	if err != nil {
+		return memory.Ref{}, err
+	}
+	randomUUID, err := realm.newNativeFunction(context, "randomUUID", 0, nativeCryptoRandomUUID)
+	if err != nil {
+		return memory.Ref{}, err
+	}
+	if err := defineData(context, cryptoObject, "randomUUID", memory.RefValue(randomUUID), true, false, true); err != nil {
+		return memory.Ref{}, err
+	}
+	return cryptoObject, nil
+}
+
+func (realm *Realm) cryptoRandomUUID(context *browserruntime.TaskContext, _ memory.Value, _ []memory.Value) (memory.Value, error) {
+	var bytes [16]byte
+	if _, err := rand.Read(bytes[:]); err != nil {
+		return memory.Value{}, fmt.Errorf("nativeengine: randomUUID: %w", err)
+	}
+	bytes[6] = bytes[6]&0x0f | 0x40
+	bytes[8] = bytes[8]&0x3f | 0x80
+	return newString(context, fmt.Sprintf("%x-%x-%x-%x-%x", bytes[0:4], bytes[4:6], bytes[6:8], bytes[8:10], bytes[10:16]))
+}
 
 func (realm *Realm) newNavigator(context *browserruntime.TaskContext) (memory.Ref, error) {
 	navigator, err := context.NewHeapObject()

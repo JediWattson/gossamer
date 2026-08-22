@@ -10,6 +10,11 @@ import (
 
 func (execution *execution) getProperty(base, key memory.Value) (memory.Value, bool, error) {
 	context := execution.context
+	if target, handler, proxy, err := execution.proxyRecord(base); err != nil {
+		return memory.Value{}, false, err
+	} else if proxy {
+		return execution.proxyGet(base, target, handler, key)
+	}
 	if base.Kind() == memory.ValueNumber {
 		name, err := execution.propertyName(key)
 		if err != nil {
@@ -19,6 +24,12 @@ func (execution *execution) getProperty(base, key memory.Value) (memory.Value, b
 			return memory.Value{}, false, nil
 		}
 		return execution.getNamedProperty(base, context.intrinsics.NumberPrototype, name)
+	}
+	if base.Kind() == memory.ValueBool {
+		// Boolean primitives have no own properties. Boolean.prototype is still
+		// intentionally minimal, but ordinary missing-property reads must box
+		// rather than reject the primitive receiver.
+		return memory.UndefinedValue(), false, nil
 	}
 	ref, err := requireRef(base, "property base")
 	if err != nil {
@@ -187,6 +198,15 @@ func (execution *execution) getProperty(base, key memory.Value) (memory.Value, b
 			return memory.Value{}, false, nil
 		}
 		return execution.getNamedProperty(base, context.intrinsics.RegExpPrototype, name)
+	case memory.HeapDate:
+		name, err := execution.propertyName(key)
+		if err != nil {
+			return memory.Value{}, false, err
+		}
+		if context.intrinsics == nil {
+			return memory.Value{}, false, nil
+		}
+		return execution.getNamedProperty(base, context.intrinsics.DatePrototype, name)
 	case memory.HeapWeakMap, memory.HeapWeakSet:
 		name, err := execution.propertyName(key)
 		if err != nil {
@@ -206,6 +226,11 @@ func (execution *execution) getProperty(base, key memory.Value) (memory.Value, b
 }
 
 func (execution *execution) hasProperty(base, key memory.Value) (bool, error) {
+	if target, handler, proxy, err := execution.proxyRecord(base); err != nil {
+		return false, err
+	} else if proxy {
+		return execution.proxyHas(target, handler, key)
+	}
 	_, found, err := execution.getProperty(base, key)
 	return found, err
 }
@@ -308,6 +333,11 @@ func (execution *execution) getNamedProperty(base memory.Value, ref, name memory
 
 func (execution *execution) setPropertyValue(base, key, value memory.Value) error {
 	context := execution.context
+	if target, handler, proxy, err := execution.proxyRecord(base); err != nil {
+		return err
+	} else if proxy {
+		return execution.proxySet(base, target, handler, key, value)
+	}
 	ref, err := requireRef(base, "property base")
 	if err != nil {
 		return err
@@ -480,6 +510,11 @@ func resolveObjectProperty(context *TaskContext, object, name memory.Ref) (memor
 
 func (execution *execution) deletePropertyValue(base, key memory.Value) (bool, error) {
 	context := execution.context
+	if target, handler, proxy, err := execution.proxyRecord(base); err != nil {
+		return false, err
+	} else if proxy {
+		return execution.proxyDelete(target, handler, key)
+	}
 	ref, err := requireRef(base, "property base")
 	if err != nil {
 		return false, err
