@@ -114,7 +114,7 @@ func TestGraphiteRootScrollbarPaintsAndDragsThroughPageQueue(t *testing.T) {
 	}, &state); err != nil || !handled {
 		t.Fatalf("scrollbar drag handled=%t err=%v", handled, err)
 	}
-	if err := pumpPageTasks(context.Background(), page); err != nil {
+	if _, err := pumpPageTasks(context.Background(), page); err != nil {
 		t.Fatal(err)
 	}
 	if handled, _, _, err := shell.handleEvent(context.Background(), page, Event{

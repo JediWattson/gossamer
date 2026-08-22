@@ -29,27 +29,30 @@ var (
 )
 
 type Config struct {
-	Interpreter browserruntime.InterpreterConfig
+	Interpreter                  browserruntime.InterpreterConfig
+	CheckpointCollectionInterval uint64
 }
 
 type EngineProfile struct {
-	RealmsCreated      uint64
-	RealmsClosed       uint64
-	LiveRealms         uint64
-	ModuleCompilations uint64
-	Evaluations        uint64
-	Checkpoints        uint64
-	SourceBytes        uint64
+	RealmsCreated         uint64
+	RealmsClosed          uint64
+	LiveRealms            uint64
+	ModuleCompilations    uint64
+	Evaluations           uint64
+	Checkpoints           uint64
+	SourceBytes           uint64
+	CheckpointCollections uint64
 }
 
 type RealmProfile struct {
-	ModuleCompilations uint64
-	Evaluations        uint64
-	Checkpoints        uint64
-	SourceBytes        uint64
-	PersistentRegion   memory.RegionID
-	ActiveTask         browserruntime.TaskID
-	Closed             bool
+	ModuleCompilations    uint64
+	Evaluations           uint64
+	Checkpoints           uint64
+	SourceBytes           uint64
+	PersistentRegion      memory.RegionID
+	ActiveTask            browserruntime.TaskID
+	Closed                bool
+	CheckpointCollections uint64
 }
 
 type Engine struct {
@@ -69,34 +72,37 @@ type Realm struct {
 	interpreter *browserruntime.Interpreter
 	runtime     *browserruntime.Realm
 
-	persistent                *browserruntime.Intrinsics
-	persistentRegion          memory.RegionID
-	persistentWrapperCache    memory.Ref
-	persistentFacadeCache     memory.Ref
-	persistentCollectionCache memory.Ref
-	persistentCallbackCache   memory.Ref
-	persistentObserverCache   memory.Ref
-	persistentModuleCache     memory.Ref
-	active                    *browserruntime.Intrinsics
-	activeRegion              memory.RegionID
-	activeTask                browserruntime.TaskID
-	bindings                  *browserBindings
-	host                      browser.Host
-	nextCallback              browser.ValueHandle
-	timerCallbacks            map[browser.TimerID]browser.ValueHandle
-	intervalCallbacks         map[browser.TimerID]browser.ValueHandle
-	intervalTimers            map[browser.TimerID]browser.TimerID
-	callbackIntervals         map[browser.ValueHandle]browser.TimerID
-	intervalDelays            map[browser.TimerID]time.Duration
-	animationCallbacks        map[browser.AnimationFrameID]browser.ValueHandle
-	mutationObservers         map[uint64]*mutationObserverState
-	nextMutationObserver      uint64
-	collectedWrappers         []browser.NodeHandle
-	listeners                 map[eventListenerKey][]eventListener
-	listenerTargets           map[eventTargetID]uint64
-	activeEvent               *eventState
-	modules                   map[string]*nativeModule
-	moduleResolutions         map[moduleResolutionKey]string
+	persistent                   *browserruntime.Intrinsics
+	persistentRegion             memory.RegionID
+	persistentWrapperCache       memory.Ref
+	persistentFacadeCache        memory.Ref
+	persistentCollectionCache    memory.Ref
+	persistentCallbackCache      memory.Ref
+	persistentObserverCache      memory.Ref
+	persistentModuleCache        memory.Ref
+	active                       *browserruntime.Intrinsics
+	activeRegion                 memory.RegionID
+	activeTask                   browserruntime.TaskID
+	bindings                     *browserBindings
+	host                         browser.Host
+	nextCallback                 browser.ValueHandle
+	timerCallbacks               map[browser.TimerID]browser.ValueHandle
+	intervalCallbacks            map[browser.TimerID]browser.ValueHandle
+	intervalTimers               map[browser.TimerID]browser.TimerID
+	callbackIntervals            map[browser.ValueHandle]browser.TimerID
+	intervalDelays               map[browser.TimerID]time.Duration
+	animationCallbacks           map[browser.AnimationFrameID]browser.ValueHandle
+	mutationObservers            map[uint64]*mutationObserverState
+	nextMutationObserver         uint64
+	collectedWrappers            []browser.NodeHandle
+	listeners                    map[eventListenerKey][]eventListener
+	listenerTargets              map[eventTargetID]uint64
+	activeEvent                  *eventState
+	modules                      map[string]*nativeModule
+	moduleResolutions            map[moduleResolutionKey]string
+	checkpointCollectionInterval uint64
+	lastCheckpointCollection     uint64
+	checkpointCollections        uint64
 
 	evaluations        uint64
 	moduleCompilations uint64
@@ -118,20 +124,25 @@ func (engine *Engine) NewRealm() (browser.JSRealm, error) {
 	if engine.closed {
 		return nil, ErrEngineClosed
 	}
+	collectionInterval := engine.config.CheckpointCollectionInterval
+	if collectionInterval == 0 {
+		collectionInterval = DefaultCheckpointCollectionInterval
+	}
 	realm := &Realm{
-		engine:             engine,
-		interpreter:        browserruntime.NewInterpreter(engine.config.Interpreter),
-		timerCallbacks:     make(map[browser.TimerID]browser.ValueHandle),
-		intervalCallbacks:  make(map[browser.TimerID]browser.ValueHandle),
-		intervalTimers:     make(map[browser.TimerID]browser.TimerID),
-		callbackIntervals:  make(map[browser.ValueHandle]browser.TimerID),
-		intervalDelays:     make(map[browser.TimerID]time.Duration),
-		animationCallbacks: make(map[browser.AnimationFrameID]browser.ValueHandle),
-		mutationObservers:  make(map[uint64]*mutationObserverState),
-		listeners:          make(map[eventListenerKey][]eventListener),
-		listenerTargets:    make(map[eventTargetID]uint64),
-		modules:            make(map[string]*nativeModule),
-		moduleResolutions:  make(map[moduleResolutionKey]string),
+		engine:                       engine,
+		interpreter:                  browserruntime.NewInterpreter(engine.config.Interpreter),
+		timerCallbacks:               make(map[browser.TimerID]browser.ValueHandle),
+		intervalCallbacks:            make(map[browser.TimerID]browser.ValueHandle),
+		intervalTimers:               make(map[browser.TimerID]browser.TimerID),
+		callbackIntervals:            make(map[browser.ValueHandle]browser.TimerID),
+		intervalDelays:               make(map[browser.TimerID]time.Duration),
+		animationCallbacks:           make(map[browser.AnimationFrameID]browser.ValueHandle),
+		mutationObservers:            make(map[uint64]*mutationObserverState),
+		listeners:                    make(map[eventListenerKey][]eventListener),
+		listenerTargets:              make(map[eventTargetID]uint64),
+		modules:                      make(map[string]*nativeModule),
+		moduleResolutions:            make(map[moduleResolutionKey]string),
+		checkpointCollectionInterval: collectionInterval,
 	}
 	if err := realm.installBrowserNatives(); err != nil {
 		return nil, err
@@ -159,13 +170,14 @@ func (engine *Engine) Profile() EngineProfile {
 	engine.mutex.Lock()
 	defer engine.mutex.Unlock()
 	profile := EngineProfile{
-		RealmsCreated:      engine.created,
-		RealmsClosed:       engine.closedCount,
-		LiveRealms:         uint64(len(engine.realms)),
-		ModuleCompilations: engine.closedProfile.ModuleCompilations,
-		Evaluations:        engine.closedProfile.Evaluations,
-		Checkpoints:        engine.closedProfile.Checkpoints,
-		SourceBytes:        engine.closedProfile.SourceBytes,
+		RealmsCreated:         engine.created,
+		RealmsClosed:          engine.closedCount,
+		LiveRealms:            uint64(len(engine.realms)),
+		ModuleCompilations:    engine.closedProfile.ModuleCompilations,
+		Evaluations:           engine.closedProfile.Evaluations,
+		Checkpoints:           engine.closedProfile.Checkpoints,
+		SourceBytes:           engine.closedProfile.SourceBytes,
+		CheckpointCollections: engine.closedProfile.CheckpointCollections,
 	}
 	for realm := range engine.realms {
 		realmProfile := realm.profile()
@@ -173,6 +185,7 @@ func (engine *Engine) Profile() EngineProfile {
 		profile.Evaluations += realmProfile.Evaluations
 		profile.Checkpoints += realmProfile.Checkpoints
 		profile.SourceBytes += realmProfile.SourceBytes
+		profile.CheckpointCollections += realmProfile.CheckpointCollections
 	}
 	return profile
 }
@@ -425,13 +438,14 @@ func (realm *Realm) profile() RealmProfile {
 
 func (realm *Realm) profileLocked() RealmProfile {
 	return RealmProfile{
-		ModuleCompilations: realm.moduleCompilations,
-		Evaluations:        realm.evaluations,
-		Checkpoints:        realm.checkpoints,
-		SourceBytes:        realm.sourceBytes,
-		PersistentRegion:   realm.persistentRegion,
-		ActiveTask:         realm.activeTask,
-		Closed:             realm.closed,
+		ModuleCompilations:    realm.moduleCompilations,
+		Evaluations:           realm.evaluations,
+		Checkpoints:           realm.checkpoints,
+		SourceBytes:           realm.sourceBytes,
+		PersistentRegion:      realm.persistentRegion,
+		ActiveTask:            realm.activeTask,
+		Closed:                realm.closed,
+		CheckpointCollections: realm.checkpointCollections,
 	}
 }
 

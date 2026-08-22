@@ -514,3 +514,58 @@ let pendingTimer = setTimeout(function () { detached.textContent = "timer"; }, 6
 		t.Fatalf("native engine profile after close = %#v", profile)
 	}
 }
+
+func TestCheckpointCollectionReleasesDetachedWeakWrapper(t *testing.T) {
+	t.Parallel()
+
+	scriptEngine := nativeengine.New(nativeengine.Config{CheckpointCollectionInterval: 1})
+	browserRuntime, err := browser.NewWithEngine(scriptEngine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer browserRuntime.Close()
+	page, err := browserRuntime.NewPage(dom.NewDocument(), &url.URL{Scheme: "https", Host: "gossamer.test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	baselineNodes := page.Document().Store().LiveLen()
+	if _, err := page.QueueScript(browser.ScriptSource{URL: "weak-wrapper.js", Source: `
+(() => {
+  const detached = document.createElement("div");
+  detached.textContent = "collect me";
+})();
+`}); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	before := page.Realm.Store().Stats()
+	if page.Document().Store().LiveLen() <= baselineNodes {
+		t.Fatal("detached wrapper did not retain its Go node before collection")
+	}
+	collected, err := page.CollectScriptMemoryAtCheckpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !collected {
+		t.Fatal("allocation threshold did not trigger checkpoint collection")
+	}
+	after := page.Realm.Store().Stats()
+	if after.LiveSlots >= before.LiveSlots || page.Document().Store().LiveLen() != baselineNodes {
+		t.Fatalf("checkpoint collection retained detached graph: before=%#v after=%#v nodes=%d baseline=%d", before, after, page.Document().Store().LiveLen(), baselineNodes)
+	}
+	if collected, err := page.CollectScriptMemoryAtCheckpoint(); err != nil || collected {
+		t.Fatalf("unchanged allocation count recollected: collected=%t err=%v", collected, err)
+	}
+	profile, err := page.ScriptMemoryProfile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.Engine != "strand" || profile.CheckpointCollections != 1 || profile.LiveValues != after.LiveSlots {
+		t.Fatalf("Strand memory profile = %#v, stats=%#v", profile, after)
+	}
+	if err := page.Realm.Store().CheckInvariants(); err != nil {
+		t.Fatal(err)
+	}
+}

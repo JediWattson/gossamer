@@ -161,6 +161,9 @@ func (store *Store) CheckInvariants() error {
 			if slot.object == 0 {
 				return invariantError("R%d occupied slot %d has no ledger object", id, index)
 			}
+			if slot.slotPayload == nil {
+				return invariantError("R%d occupied slot %d has no typed payload", id, index)
+			}
 			if previous, duplicate := objects[slot.object]; duplicate {
 				return invariantError("ledger object %d appears at R%d:%d and R%d:%d", slot.object, previous.region, previous.slot, id, index)
 			}
@@ -708,6 +711,9 @@ func invariantError(format string, arguments ...any) error {
 }
 
 func slotHasOtherPayload(slot *Slot, kind HeapKind) bool {
+	if slot == nil || slot.slotPayload == nil {
+		return false
+	}
 	if kind != HeapCell && len(slot.Cell.Fields) != 0 {
 		return true
 	}

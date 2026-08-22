@@ -95,12 +95,8 @@ func TestDestroyedObjectReleasesAdjacencyStorage(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, id := range []ObjectID{root, target} {
-		record := ledger.objects[id]
-		if record == nil || record.alive {
-			t.Fatalf("destroyed object %d = %#v", id, record)
-		}
-		if record.claims != nil || record.edges != nil || record.incoming != nil {
-			t.Fatalf("destroyed object %d retained adjacency storage", id)
+		if record := ledger.objects[id]; record != nil || ledger.destroyed[id] != region {
+			t.Fatalf("destroyed object %d retained record %#v or lost tombstone %d", id, record, ledger.destroyed[id])
 		}
 	}
 }
@@ -308,8 +304,8 @@ func TestDestroyUnlinksOnlyAdjacentObjectEdges(t *testing.T) {
 	if len(shorterSnapshot.Edges) != 0 {
 		t.Fatalf("destroyed target remained reachable from source: %#v", shorterSnapshot)
 	}
-	if len(ledger.objects[longer].incoming) != 0 {
-		t.Fatalf("destroyed target retained incoming edge index: %#v", ledger.objects[longer].incoming)
+	if _, exists := ledger.objects[longer]; exists || ledger.destroyed[longer] != documentRegion {
+		t.Fatalf("destroyed target retained its full object record: object=%#v tombstone=%d", ledger.objects[longer], ledger.destroyed[longer])
 	}
 }
 
@@ -363,6 +359,37 @@ func TestLongerLivedWriteBarrierRetainsReachableSubgraph(t *testing.T) {
 		if snapshot.Alive {
 			t.Fatalf("object %d survived realm release: %#v", object, snapshot)
 		}
+	}
+}
+
+func TestLedgerBoundsEventsAndCompactsDestroyedObjects(t *testing.T) {
+	ledger := NewLedgerWithEventLimit(3)
+	owner := OwnerID{Kind: OwnerTask, Value: 404}
+	region := mustCreateRegion(t, ledger, owner)
+	object, err := ledger.CreateObject(region)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ledger.Release(object, owner); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := ledger.Object(object)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Alive || snapshot.Region != region || snapshot.References != 0 {
+		t.Fatalf("destroyed object tombstone = %#v", snapshot)
+	}
+	if _, err := ledger.liveObjectLocked(object); !errors.Is(err, ErrObjectDestroyed) {
+		t.Fatalf("live destroyed object error = %v", err)
+	}
+	events := ledger.Events()
+	if len(events) != 3 || events[0].Sequence+1 != events[1].Sequence || events[1].Sequence+1 != events[2].Sequence {
+		t.Fatalf("bounded events = %#v", events)
+	}
+	stats := ledger.Stats()
+	if stats.EventsRecorded != 4 || stats.EventsDropped != 1 || stats.RetainedEvents != 3 {
+		t.Fatalf("event retention stats = %#v", stats)
 	}
 }
 

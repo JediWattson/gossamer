@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -11,9 +12,11 @@ import (
 	"runtime"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/JediWattson/gossamer/internal/browser"
 	"github.com/JediWattson/gossamer/internal/loader"
+	"github.com/JediWattson/gossamer/internal/memoryprofile"
 	"github.com/JediWattson/gossamer/internal/nativeengine"
 	"github.com/JediWattson/gossamer/internal/window"
 )
@@ -27,6 +30,9 @@ func main() {
 	engineName := flag.String("engine", "v8", "JavaScript engine: strand or v8")
 	title := flag.String("title", "", "native window title")
 	sessionFile := flag.String("session-file", "", "optional path for Graphite tab-session restore")
+	memoryProfile := flag.String("memory-profile", "", "optional JSONL browser memory timeline path")
+	heapProfile := flag.String("heap-profile", "", "optional Go heap profile path written when the window closes")
+	memoryProfileInterval := flag.Duration("memory-profile-interval", time.Second, "minimum interval between memory timeline checkpoints")
 	flag.Parse()
 	if flag.NArg() != 1 {
 		fatalf("usage: gossamer-window [flags] <absolute-http-or-https-url>")
@@ -42,14 +48,24 @@ func main() {
 		_ = engine.Close()
 		fatalf("initialize browser runtime: %v", err)
 	}
-	defer browserRuntime.Close()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	documentLoader := loader.New(nil)
 	page, err := browserRuntime.LoadPage(ctx, rawURL, documentLoader)
 	if err != nil {
+		_ = browserRuntime.Close()
 		fatalf("load page: %v", err)
+	}
+	recorder, err := memoryprofile.New(strings.TrimSpace(*memoryProfile), strings.TrimSpace(*heapProfile), *memoryProfileInterval)
+	if err != nil {
+		_ = browserRuntime.Close()
+		fatalf("initialize memory profile: %v", err)
+	}
+	if err := recorder.Record("loaded", page, true); err != nil {
+		_ = recorder.Close()
+		_ = browserRuntime.Close()
+		fatalf("record loaded memory profile: %v", err)
 	}
 	page.SetFormNavigationLoader(documentLoader)
 	windowTitle := strings.TrimSpace(*title)
@@ -60,12 +76,20 @@ func main() {
 	if strings.TrimSpace(*sessionFile) != "" {
 		sessionStore = window.FileSessionStore{Path: *sessionFile}
 	}
-	if err := window.RunBrowser(ctx, page, window.NewNativeBackend(), window.ShellConfig{
+	runErr := window.RunBrowser(ctx, page, window.NewNativeBackend(), window.ShellConfig{
 		Title:   windowTitle,
 		Loader:  documentLoader,
 		OpenTab: browserRuntime.NewBlankPage,
 		Session: sessionStore,
-	}); err != nil {
+		Checkpoint: func(current *browser.Page) error {
+			return recorder.Record("task-checkpoint", current, false)
+		},
+	})
+	finalProfileErr := recorder.Record("window-close", page, true)
+	heapProfileErr := recorder.WriteHeapProfile()
+	recorderCloseErr := recorder.Close()
+	browserCloseErr := browserRuntime.Close()
+	if err := errors.Join(runErr, finalProfileErr, heapProfileErr, recorderCloseErr, browserCloseErr); err != nil {
 		fatalf("run interactive window: %v", err)
 	}
 }

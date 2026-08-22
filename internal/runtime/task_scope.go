@@ -16,7 +16,7 @@ func (context *TaskContext) WithMemoryRegion(region memory.RegionID, intrinsics 
 	if region == 0 {
 		return nil, fmt.Errorf("runtime: invalid memory region 0")
 	}
-	snapshot, err := context.Realm.store.Region(region)
+	snapshot, err := context.Realm.store.RegionMetadata(region)
 	if err != nil {
 		return nil, err
 	}
@@ -45,7 +45,7 @@ func (context *TaskContext) WithBorrowedRealmMemoryRegion(region memory.RegionID
 	if region == 0 {
 		return nil, fmt.Errorf("runtime: invalid memory region 0")
 	}
-	snapshot, err := context.Realm.store.Region(region)
+	snapshot, err := context.Realm.store.RegionMetadata(region)
 	if err != nil {
 		return nil, err
 	}

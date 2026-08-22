@@ -90,11 +90,16 @@ func runSession(ctx context.Context, page *browser.Page, backend Backend, config
 		}
 		compositor.prune(pages)
 		for _, currentPage := range pages {
-			if err := pumpPageTasks(ctx, currentPage); err != nil {
+			if _, err := pumpPageTasks(ctx, currentPage); err != nil {
 				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 					return nil
 				}
 				return err
+			}
+			if shell != nil && shell.checkpoint != nil {
+				if err := shell.checkpoint(currentPage); err != nil {
+					return fmt.Errorf("window: observe page checkpoint: %w", err)
+				}
 			}
 		}
 		if shell != nil {
@@ -258,16 +263,20 @@ type inputState struct {
 	pressed       bool
 }
 
-func pumpPageTasks(ctx context.Context, page *browser.Page) error {
-	for count := 0; page.Realm.Tasks.Len() != 0; count++ {
+func pumpPageTasks(ctx context.Context, page *browser.Page) (int, error) {
+	count := 0
+	for ; page.Realm.Tasks.Len() != 0; count++ {
 		if count >= maximumTasksPerPump {
-			return fmt.Errorf("window: page task pump exceeded %d tasks", maximumTasksPerPump)
+			return count, fmt.Errorf("window: page task pump exceeded %d tasks", maximumTasksPerPump)
 		}
 		if err := page.Realm.RunOne(ctx); err != nil {
-			return err
+			return count, err
 		}
 	}
-	return ctx.Err()
+	if _, err := page.CollectScriptMemoryAtCheckpoint(); err != nil {
+		return count, fmt.Errorf("window: collect script memory at task checkpoint: %w", err)
+	}
+	return count, ctx.Err()
 }
 
 func routeEvent(page *browser.Page, event Event, state *inputState) error {

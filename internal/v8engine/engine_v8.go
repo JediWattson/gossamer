@@ -560,6 +560,21 @@ func (realm *Realm) Profile() (RealmProfile, error) {
 	return profileFromC(native), nil
 }
 
+func (realm *Realm) ScriptMemoryProfile() (browser.ScriptMemoryProfile, error) {
+	profile, err := realm.Profile()
+	if err != nil {
+		return browser.ScriptMemoryProfile{}, err
+	}
+	return browser.ScriptMemoryProfile{
+		Engine:         "v8",
+		HeapBytes:      profile.Heap.UsedHeapSize,
+		LiveWrappers:   profile.LiveWrappers,
+		LiveCallbacks:  profile.LiveCallbacks,
+		EventListeners: profile.EventListeners,
+		Collections:    profile.MinorGCs + profile.MajorGCs,
+	}, nil
+}
+
 func (realm *Realm) BFCacheEligible() bool {
 	if realm == nil {
 		return false
@@ -661,3 +676,4 @@ func profileFromC(native C.gossamer_v8_profile) RealmProfile {
 
 var _ browser.Engine = (*Engine)(nil)
 var _ browser.JSRealm = (*Realm)(nil)
+var _ browser.JSMemoryProfiler = (*Realm)(nil)

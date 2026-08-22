@@ -89,18 +89,21 @@ type Event struct {
 
 // Stats summarizes semantic lifetime activity since the ledger was created.
 type Stats struct {
-	TaskLocalAllocations int `json:"taskLocalAllocations"`
-	ObjectsCreated       int `json:"objectsCreated"`
-	ObjectsDestroyed     int `json:"objectsDestroyed"`
-	LiveObjects          int `json:"liveObjects"`
-	BulkRegionReleases   int `json:"bulkRegionReleases"`
-	PublishOperations    int `json:"publishOperations"`
-	TransferOperations   int `json:"transferOperations"`
-	RetainOperations     int `json:"retainOperations"`
-	ReleaseOperations    int `json:"releaseOperations"`
-	LocalReferences      int `json:"localReferences"`
-	BarrierRetains       int `json:"barrierRetains"`
-	PersistentObjects    int `json:"persistentObjects"`
+	TaskLocalAllocations int    `json:"taskLocalAllocations"`
+	ObjectsCreated       int    `json:"objectsCreated"`
+	ObjectsDestroyed     int    `json:"objectsDestroyed"`
+	LiveObjects          int    `json:"liveObjects"`
+	BulkRegionReleases   int    `json:"bulkRegionReleases"`
+	PublishOperations    int    `json:"publishOperations"`
+	TransferOperations   int    `json:"transferOperations"`
+	RetainOperations     int    `json:"retainOperations"`
+	ReleaseOperations    int    `json:"releaseOperations"`
+	LocalReferences      int    `json:"localReferences"`
+	BarrierRetains       int    `json:"barrierRetains"`
+	PersistentObjects    int    `json:"persistentObjects"`
+	EventsRecorded       uint64 `json:"eventsRecorded"`
+	EventsDropped        uint64 `json:"eventsDropped"`
+	RetainedEvents       int    `json:"retainedEvents"`
 }
 
 // ObjectSnapshot describes the current or final state of one shadow object.

@@ -90,6 +90,22 @@ To use the same Strand path interactively against the live service, launch:
 go run ./cmd/gossamer-window --engine=strand https://efchat.net/global
 ```
 
+Record an engine-neutral JSONL timeline plus a Go heap profile while exercising
+the live page with:
+
+```sh
+go run ./cmd/gossamer-window \
+  --engine=strand \
+  --memory-profile /tmp/efchat-strand-memory.jsonl \
+  --heap-profile /tmp/efchat-strand-heap.pprof \
+  https://efchat.net/global
+go run github.com/google/pprof@latest /tmp/efchat-strand-heap.pprof
+```
+
+The timeline samples Go heap usage, RegionStore physical attribution, ownership
+counters, DOM node counts, and engine cache roots after drained browser task
+checkpoints. `--memory-profile-interval` controls its sampling frequency.
+
 Messages submitted in that window use the real efchat backend and are public;
 the compatibility gate above remains entirely local.
 

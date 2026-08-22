@@ -196,6 +196,37 @@ type JSRealm interface {
 	Close() error
 }
 
+// ScriptMemoryProfile is an engine-neutral view of the roots that can retain
+// script values between browser tasks. Engines may leave fields zero when a
+// category does not apply to their heap implementation.
+type ScriptMemoryProfile struct {
+	Engine                 string `json:"engine"`
+	HeapBytes              uint64 `json:"heapBytes"`
+	LiveValues             uint64 `json:"liveValues"`
+	LiveWrappers           uint64 `json:"liveWrappers"`
+	LiveCallbacks          uint64 `json:"liveCallbacks"`
+	EventListeners         uint64 `json:"eventListeners"`
+	WrapperCacheEntries    uint64 `json:"wrapperCacheEntries"`
+	FacadeCacheEntries     uint64 `json:"facadeCacheEntries"`
+	CollectionCacheEntries uint64 `json:"collectionCacheEntries"`
+	CallbackCacheEntries   uint64 `json:"callbackCacheEntries"`
+	ObserverCacheEntries   uint64 `json:"observerCacheEntries"`
+	ModuleCacheEntries     uint64 `json:"moduleCacheEntries"`
+	Timers                 uint64 `json:"timers"`
+	Intervals              uint64 `json:"intervals"`
+	AnimationFrames        uint64 `json:"animationFrames"`
+	MutationObservers      uint64 `json:"mutationObservers"`
+	Modules                uint64 `json:"modules"`
+	Collections            uint64 `json:"collections"`
+	CheckpointCollections  uint64 `json:"checkpointCollections"`
+}
+
+// JSMemoryProfiler exposes engine-owned retention counters without requiring
+// browser code to know whether values live in V8 or RegionStore.
+type JSMemoryProfiler interface {
+	ScriptMemoryProfile() (ScriptMemoryProfile, error)
+}
+
 // JSBackForwardCacheRealm lets an engine reject suspension when the current
 // realm contains lifecycle state that must be torn down instead.
 type JSBackForwardCacheRealm interface {
@@ -372,6 +403,14 @@ type NodeFacadeHost interface {
 type NodeEventListenerLifetimeHost interface {
 	RetainNodeEventTarget(NodeHandle) error
 	ReleaseNodeEventTarget(NodeHandle) error
+}
+
+// JSCheckpointCollector lets an engine run a deterministic, thresholded
+// collection after the browser has drained a Page's task queue. V8 performs
+// its own adaptive collection; Strand implements this hook for weak canonical
+// caches backed by RegionStore.
+type JSCheckpointCollector interface {
+	CollectCheckpoint(NodeWrapperLifetimeHost) (bool, error)
 }
 
 // NodeRelation identifies one traversal property on a JavaScript Node or

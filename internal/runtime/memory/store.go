@@ -268,6 +268,26 @@ func (store *Store) Region(id RegionID) (Region, error) {
 	return cloneRegion(region), nil
 }
 
+// RegionMetadata returns state and capacity without cloning any Slot payload.
+func (store *Store) RegionMetadata(id RegionID) (RegionMetadata, error) {
+	if store == nil {
+		return RegionMetadata{}, fmt.Errorf("memory: nil store")
+	}
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+	region := store.regions[id]
+	if region == nil {
+		return RegionMetadata{}, fmt.Errorf("%w: R%d", ErrUnknownRegion, id)
+	}
+	return RegionMetadata{
+		ID:           region.ID,
+		Owner:        region.Owner,
+		State:        region.State,
+		Slots:        len(region.Slots),
+		SlotCapacity: cap(region.Slots),
+	}, nil
+}
+
 func (store *Store) Alloc(owner ownership.OwnerID, regionID RegionID) (Ref, error) {
 	return store.AllocCell(owner, regionID)
 }

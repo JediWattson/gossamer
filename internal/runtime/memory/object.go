@@ -59,7 +59,7 @@ func cloneObject(object Object) Object {
 }
 
 func objectHeaderForSlot(slot *Slot) (*ObjectHeader, bool) {
-	if slot == nil {
+	if slot == nil || slot.slotPayload == nil {
 		return nil, false
 	}
 	switch slot.Kind {

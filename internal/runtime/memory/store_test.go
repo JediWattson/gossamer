@@ -45,6 +45,25 @@ func TestStaleRefNeverResolvesAfterSlotOrRegionReuse(t *testing.T) {
 	}
 }
 
+func TestRegionMetadataDoesNotExposeOrCloneSlots(t *testing.T) {
+	store := memory.NewStore(nil)
+	owner := ownership.OwnerID{Kind: ownership.OwnerRealm, Value: 99}
+	region, err := store.NewRegion(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AllocCell(owner, region); err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := store.RegionMetadata(region)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if metadata.ID != region || metadata.Owner != owner || metadata.State != memory.RegionPrivate || metadata.Slots != 1 || metadata.SlotCapacity < metadata.Slots {
+		t.Fatalf("region metadata = %#v", metadata)
+	}
+}
+
 func TestNativeStringHasTypedLifetimeAndPromotion(t *testing.T) {
 	t.Parallel()
 

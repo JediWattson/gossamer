@@ -298,6 +298,43 @@ func (page *Page) ReleaseNodeWrappers(handles []NodeHandle) error {
 	return page.nodeLifetimes.releaseWrappers(handles)
 }
 
+// CollectScriptMemoryAtCheckpoint asks the active script engine to perform a
+// deterministic thresholded collection. It is safe only between Page tasks;
+// callers normally use the window/session queue-drain checkpoint.
+func (page *Page) CollectScriptMemoryAtCheckpoint() (bool, error) {
+	if page == nil {
+		return false, fmt.Errorf("browser: nil page")
+	}
+	page.mutex.RLock()
+	if page.closed {
+		page.mutex.RUnlock()
+		return false, ErrPageClosed
+	}
+	script := page.script
+	page.mutex.RUnlock()
+	collector, ok := script.(JSCheckpointCollector)
+	if !ok {
+		return false, nil
+	}
+	return collector.CollectCheckpoint(page)
+}
+
+// ScriptMemoryProfile returns engine-specific retention counters in the
+// shared browser schema. Engines without profiling support report zero values.
+func (page *Page) ScriptMemoryProfile() (ScriptMemoryProfile, error) {
+	if page == nil {
+		return ScriptMemoryProfile{}, fmt.Errorf("browser: nil page")
+	}
+	page.mutex.RLock()
+	script := page.script
+	page.mutex.RUnlock()
+	profiler, ok := script.(JSMemoryProfiler)
+	if !ok {
+		return ScriptMemoryProfile{}, nil
+	}
+	return profiler.ScriptMemoryProfile()
+}
+
 // RetainNodeEventTarget adds one listener claim for a native EventTarget.
 // Repeated registrations are counted so removing one event type cannot release
 // a target that still owns other listeners.

@@ -37,6 +37,9 @@ type ShellConfig struct {
 	OpenTab  PageOpener
 	Download DownloadHandler
 	Session  SessionStore
+	// Checkpoint observes a Page after its task queue is drained and any
+	// engine-owned deterministic collection has completed.
+	Checkpoint func(*browser.Page) error
 }
 
 type shellLayout struct {
@@ -126,6 +129,7 @@ type graphiteShell struct {
 	closedTabs     []closedGraphiteTab
 	downloader     DownloadHandler
 	sessionStore   SessionStore
+	checkpoint     func(*browser.Page) error
 	pendingSession *SessionSnapshot
 
 	width  int
@@ -163,6 +167,7 @@ func newGraphiteShell(page *browser.Page, config ShellConfig) (*graphiteShell, e
 		opener:         config.OpenTab,
 		downloader:     config.Download,
 		sessionStore:   config.Session,
+		checkpoint:     config.Checkpoint,
 		fonts:          fonts,
 		address:        location,
 		lastPageURL:    location,

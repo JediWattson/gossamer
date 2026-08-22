@@ -7,6 +7,11 @@ import (
 	"time"
 )
 
+// DefaultEventLimit retains enough recent ownership transitions for the
+// inspector and invariant diagnostics without allowing production workloads
+// to turn telemetry into an unbounded heap.
+const DefaultEventLimit = 16 * 1024
+
 // Ledger is a concurrency-safe shadow model of Gossamer object ownership.
 // One region contributes at most one semantic claim to an object; ordinary
 // aliases and graph edges within that region do not affect its claim count.
@@ -21,6 +26,9 @@ type Ledger struct {
 	regions      map[RegionID]*regionRecord
 	ownerRegions map[OwnerID]RegionID
 	events       []Event
+	eventStart   int
+	eventLimit   int
+	destroyed    map[ObjectID]RegionID
 	stats        Stats
 }
 
@@ -44,10 +52,19 @@ type regionRecord struct {
 }
 
 func NewLedger() *Ledger {
+	return NewLedgerWithEventLimit(DefaultEventLimit)
+}
+
+// NewLedgerWithEventLimit configures retained telemetry. A zero limit keeps
+// counters but no Event payloads; a negative limit preserves unbounded history
+// for deliberately small diagnostic workloads.
+func NewLedgerWithEventLimit(eventLimit int) *Ledger {
 	return &Ledger{
 		objects:      make(map[ObjectID]*objectRecord),
 		regions:      make(map[RegionID]*regionRecord),
 		ownerRegions: make(map[OwnerID]RegionID),
+		destroyed:    make(map[ObjectID]RegionID),
+		eventLimit:   eventLimit,
 	}
 }
 
@@ -500,6 +517,9 @@ func (ledger *Ledger) Object(objectID ObjectID) (ObjectSnapshot, error) {
 	defer ledger.mutex.Unlock()
 	object := ledger.objects[objectID]
 	if object == nil {
+		if region, destroyed := ledger.destroyed[objectID]; destroyed {
+			return ObjectSnapshot{ID: objectID, Region: region, Alive: false}, nil
+		}
 		return ObjectSnapshot{}, fmt.Errorf("%w: %d", ErrUnknownObject, objectID)
 	}
 	owners := make(map[OwnerID]int, len(object.claims))
@@ -546,7 +566,13 @@ func (ledger *Ledger) Events() []Event {
 	}
 	ledger.mutex.Lock()
 	defer ledger.mutex.Unlock()
-	return append([]Event(nil), ledger.events...)
+	if ledger.eventStart == 0 || len(ledger.events) == 0 {
+		return append([]Event(nil), ledger.events...)
+	}
+	events := make([]Event, 0, len(ledger.events))
+	events = append(events, ledger.events[ledger.eventStart:]...)
+	events = append(events, ledger.events[:ledger.eventStart]...)
+	return events
 }
 
 func (ledger *Ledger) Stats() Stats {
@@ -762,6 +788,9 @@ func (ledger *Ledger) activeOwnerRegionLocked(owner OwnerID) (*regionRecord, err
 func (ledger *Ledger) liveObjectLocked(objectID ObjectID) (*objectRecord, error) {
 	object := ledger.objects[objectID]
 	if object == nil {
+		if _, destroyed := ledger.destroyed[objectID]; destroyed {
+			return nil, fmt.Errorf("%w: %d", ErrObjectDestroyed, objectID)
+		}
 		return nil, fmt.Errorf("%w: %d", ErrUnknownObject, objectID)
 	}
 	if !object.alive {
@@ -837,13 +866,27 @@ func (ledger *Ledger) destroyLocked(object *objectRecord) {
 		Region:     object.region,
 		References: 0,
 	})
+	ledger.destroyed[object.id] = object.region
+	delete(ledger.objects, object.id)
 }
 
 func (ledger *Ledger) recordLocked(event Event) {
 	ledger.nextEvent++
 	event.Sequence = ledger.nextEvent
+	ledger.stats.EventsRecorded++
+	if ledger.eventLimit == 0 {
+		ledger.stats.EventsDropped++
+		return
+	}
 	event.At = time.Now()
-	ledger.events = append(ledger.events, event)
+	if ledger.eventLimit < 0 || len(ledger.events) < ledger.eventLimit {
+		ledger.events = append(ledger.events, event)
+		ledger.stats.RetainedEvents = len(ledger.events)
+		return
+	}
+	ledger.events[ledger.eventStart] = event
+	ledger.eventStart = (ledger.eventStart + 1) % len(ledger.events)
+	ledger.stats.EventsDropped++
 }
 
 func referenceCount(object *objectRecord) int {

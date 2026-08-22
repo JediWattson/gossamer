@@ -56,10 +56,10 @@ type StringObject struct {
 	Text string
 }
 
-// Slot holds one generation-checked typed heap payload.
-type Slot struct {
-	Generation  uint32
-	Kind        HeapKind
+// slotPayload is allocated only while a slot is occupied. Keeping the stable
+// Ref metadata outside this union lets regions retain generation tombstones
+// without pinning every possible heap representation for every vacant slot.
+type slotPayload struct {
 	Cell        Cell
 	String      StringObject
 	Object      Object
@@ -80,9 +80,17 @@ type Slot struct {
 	WeakSet     WeakSet
 	Iterator    Iterator
 	HostObject  HostObject
-	Occupied    bool
+}
 
+// Slot holds one generation-checked typed heap payload. The payload pointer is
+// deliberately embedded so existing typed access remains direct while vacant
+// slots retain only the stable header needed to reject stale Refs.
+type Slot struct {
 	object ownership.ObjectID
+	*slotPayload
+	Generation uint32
+	Kind       HeapKind
+	Occupied   bool
 }
 
 // Region is a snapshot-compatible physical allocation region. Store methods
@@ -97,6 +105,17 @@ type Region struct {
 	free  []uint32
 }
 
+// RegionMetadata is the allocation-free ownership/state view used by hot
+// execution paths. Region remains the deep snapshot API for diagnostics and
+// tests that explicitly need slot payloads.
+type RegionMetadata struct {
+	ID           RegionID
+	Owner        ownership.OwnerID
+	State        RegionState
+	Slots        int
+	SlotCapacity int
+}
+
 func cloneCell(cell Cell) Cell {
 	return Cell{Fields: append([]Value(nil), cell.Fields...)}
 }
@@ -106,9 +125,15 @@ func cloneString(value StringObject) StringObject {
 }
 
 func cloneSlot(slot Slot) Slot {
-	return Slot{
-		Generation:  slot.Generation,
-		Kind:        slot.Kind,
+	result := Slot{
+		Generation: slot.Generation,
+		Kind:       slot.Kind,
+		Occupied:   slot.Occupied,
+	}
+	if slot.slotPayload == nil {
+		return result
+	}
+	result.slotPayload = &slotPayload{
 		Cell:        cloneCell(slot.Cell),
 		String:      cloneString(slot.String),
 		Object:      cloneObject(slot.Object),
@@ -129,8 +154,8 @@ func cloneSlot(slot Slot) Slot {
 		WeakSet:     cloneWeakSet(slot.WeakSet),
 		Iterator:    cloneIterator(slot.Iterator),
 		HostObject:  slot.HostObject,
-		Occupied:    slot.Occupied,
 	}
+	return result
 }
 
 func slotReferences(slot *Slot) []Value {
@@ -230,7 +255,7 @@ func objectHeaderReferences(slot *Slot) []Value {
 }
 
 func slotStorageEmpty(slot *Slot) bool {
-	return slot != nil && slot.Kind == HeapInvalid && len(slot.Cell.Fields) == 0 && slot.String.Text == "" && objectHeaderStorageEmpty(slot.Object.ObjectHeader) && slot.Array.Length == 0 && len(slot.Array.Elements) == 0 && objectHeaderStorageEmpty(slot.Array.ObjectHeader) && slot.Context.Parent == (Value{}) && len(slot.Context.Bindings) == 0 && slot.Function.Kind == 0 && slot.Function.Name == (Value{}) && slot.Function.Environment == (Value{}) && slot.Function.Arity == 0 && !slot.Function.Constructible && len(slot.Function.Code) == 0 && len(slot.Function.Locations) == 0 && len(slot.Function.Constants) == 0 && len(slot.Function.Captures) == 0 && slot.Function.NativeID == 0 && objectHeaderStorageEmpty(slot.Function.ObjectHeader) && slot.Promise.State == PromisePending && slot.Promise.Result == (Value{}) && len(slot.Promise.Reactions) == 0 && !slot.Promise.Handled && objectHeaderStorageEmpty(slot.Promise.ObjectHeader) && !slot.BigInt.Negative && len(slot.BigInt.Magnitude) == 0 && slot.Symbol.ID == 0 && slot.Symbol.Description == (Value{}) && len(slot.ArrayBuffer.Bytes) == 0 && !slot.ArrayBuffer.Detached && slot.TypedArray == (TypedArray{}) && len(slot.Map.Entries) == 0 && objectHeaderStorageEmpty(slot.Map.ObjectHeader) && len(slot.Set.Values) == 0 && objectHeaderStorageEmpty(slot.Set.ObjectHeader) && slot.Date.Milliseconds == 0 && slot.RegExp == (RegExp{}) && slot.Error.Kind == 0 && slot.Error.Message == (Value{}) && slot.Error.Stack == (Value{}) && slot.Error.Cause == (Value{}) && !slot.Error.HasCause && len(slot.Error.Errors) == 0 && objectHeaderStorageEmpty(slot.Error.ObjectHeader) && len(slot.WeakMap.Entries) == 0 && len(slot.WeakSet.Keys) == 0 && objectHeaderStorageEmpty(slot.Iterator.ObjectHeader) && slot.Iterator.Target == (Ref{}) && slot.Iterator.Kind == 0 && slot.Iterator.Next == 0 && slot.HostObject == (HostObject{})
+	return slot != nil && slot.Kind == HeapInvalid && slot.slotPayload == nil
 }
 
 func objectHeaderStorageEmpty(header ObjectHeader) bool {
@@ -239,30 +264,12 @@ func objectHeaderStorageEmpty(header ObjectHeader) bool {
 
 func clearSlotPayload(slot *Slot) {
 	slot.Kind = HeapInvalid
-	slot.Cell = Cell{}
-	slot.String = StringObject{}
-	slot.Object = Object{}
-	slot.Array = Array{}
-	slot.Context = Context{}
-	slot.Function = Function{}
-	slot.Promise = Promise{}
-	slot.BigInt = BigInt{}
-	slot.Symbol = Symbol{}
-	slot.ArrayBuffer = ArrayBuffer{}
-	slot.TypedArray = TypedArray{}
-	slot.Map = Map{}
-	slot.Set = Set{}
-	slot.Date = Date{}
-	slot.RegExp = RegExp{}
-	slot.Error = ErrorObject{}
-	slot.WeakMap = WeakMap{}
-	slot.WeakSet = WeakSet{}
-	slot.Iterator = Iterator{}
-	slot.HostObject = HostObject{}
+	slot.slotPayload = nil
 }
 
 func initializeSlotPayload(slot *Slot, kind HeapKind) {
 	clearSlotPayload(slot)
+	slot.slotPayload = &slotPayload{}
 	slot.Kind = kind
 	if header, ok := objectHeaderForSlot(slot); ok {
 		header.Prototype = NullValue()

@@ -33,6 +33,24 @@ func (store *Store) DerefMap(owner ownership.OwnerID, ref Ref) (Map, error) {
 	return cloneMap(slot.Map), nil
 }
 
+// MapLen returns the entry count without cloning the map's backing slice. It
+// is primarily used by low-frequency heap profiling and cache telemetry.
+func (store *Store) MapLen(owner ownership.OwnerID, ref Ref) (int, error) {
+	if store == nil {
+		return 0, fmt.Errorf("memory: nil store")
+	}
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+	_, slot, err := store.readSlotLocked(owner, ref)
+	if err != nil {
+		return 0, err
+	}
+	if slot.Kind != HeapMap {
+		return 0, typeError(ref, slot.Kind, HeapMap)
+	}
+	return len(slot.Map.Entries), nil
+}
+
 func (store *Store) MapSet(owner ownership.OwnerID, ref Ref, key, value Value) error {
 	if store == nil {
 		return fmt.Errorf("memory: nil store")
