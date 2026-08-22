@@ -74,25 +74,68 @@ func (frame *Frame) VisitRefs(visit func(memory.Ref) error) error {
 			return err
 		}
 	}
-	values := make([]memory.Value, 0, 2+len(frame.Arguments)+len(frame.Stack)+len(frame.environments))
-	values = append(values, frame.Environment, frame.This)
-	values = append(values, frame.Arguments...)
-	values = append(values, frame.Stack...)
-	values = append(values, frame.environments...)
+	visitValue := func(value memory.Value) error {
+		if value.IsRef() {
+			return visit(value.Ref())
+		}
+		return nil
+	}
+	if err := visitValue(frame.Environment); err != nil {
+		return err
+	}
+	if err := visitValue(frame.This); err != nil {
+		return err
+	}
+	for _, value := range frame.Arguments {
+		if err := visitValue(value); err != nil {
+			return err
+		}
+	}
+	for _, value := range frame.Stack {
+		if err := visitValue(value); err != nil {
+			return err
+		}
+	}
+	for _, value := range frame.environments {
+		if err := visitValue(value); err != nil {
+			return err
+		}
+	}
 	if frame.completion != nil {
-		values = append(values, frame.completion.value)
+		if err := visitValue(frame.completion.value); err != nil {
+			return err
+		}
 	}
 	if frame.current != nil {
-		values = append(values, frame.current.Value)
-	}
-	for _, value := range values {
-		if value.IsRef() {
-			if err := visit(value.Ref()); err != nil {
-				return err
-			}
+		if err := visitValue(frame.current.Value); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// reset releases every borrowed Ref while retaining reusable operand and
+// argument buffers for the next call at this task's stack depth.
+func (frame *Frame) reset() {
+	if frame == nil {
+		return
+	}
+	frame.Function = memory.Ref{}
+	frame.Environment = memory.Value{}
+	frame.This = memory.Value{}
+	clear(frame.Arguments)
+	frame.Arguments = frame.Arguments[:0]
+	clear(frame.Stack)
+	frame.Stack = frame.Stack[:0]
+	frame.function = memory.Function{}
+	frame.instructions = nil
+	frame.ip = 0
+	clear(frame.handlers)
+	frame.handlers = frame.handlers[:0]
+	clear(frame.environments)
+	frame.environments = frame.environments[:0]
+	frame.completion = nil
+	frame.current = nil
 }
 
 func (frame *Frame) push(value memory.Value) {

@@ -31,6 +31,8 @@ func (context *TaskContext) WithMemoryRegion(region memory.RegionID, intrinsics 
 		MemoryRegion: region,
 		Refs:         append([]memory.Ref(nil), context.Refs...),
 		intrinsics:   intrinsics,
+		stack:        context.stack,
+		jobs:         context.jobs,
 	}, nil
 }
 
@@ -60,5 +62,7 @@ func (context *TaskContext) WithBorrowedRealmMemoryRegion(region memory.RegionID
 		MemoryRegion: region,
 		Refs:         append([]memory.Ref(nil), context.Refs...),
 		intrinsics:   intrinsics,
+		stack:        context.stack,
+		jobs:         context.jobs,
 	}, nil
 }

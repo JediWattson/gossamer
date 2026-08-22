@@ -174,7 +174,6 @@ type execution struct {
 	interpreter *Interpreter
 	context     *TaskContext
 	steps       uint64
-	depth       uint32
 }
 
 type callMode uint8
@@ -219,7 +218,14 @@ func (interpreter *Interpreter) DrainJobs(context *TaskContext) error {
 		return fmt.Errorf("runtime: nil interpreter or task context")
 	}
 	execution := &execution{interpreter: interpreter, context: context}
-	return execution.drainJobs()
+	err := execution.drainJobs()
+	if err != nil {
+		// A failed checkpoint cannot leave borrowed task refs behind after the
+		// task owner is released. ExecuteWithoutCheckpoint remains the explicit
+		// API for intentionally pending work before this boundary.
+		interpreter.DiscardJobs(context.TaskID)
+	}
+	return err
 }
 
 // DiscardJobs forgets pending borrowed callbacks for a task that is being
@@ -233,8 +239,15 @@ func (interpreter *Interpreter) DiscardJobs(task TaskID) {
 	interpreter.jobMutex.Unlock()
 }
 
-func (execution *execution) call(function memory.Ref, this memory.Value, arguments []memory.Value, mode callMode) (memory.Value, error) {
-	if execution.depth >= execution.interpreter.config.MaxCallDepth {
+func (execution *execution) call(function memory.Ref, this memory.Value, arguments []memory.Value, mode callMode) (result memory.Value, resultErr error) {
+	stack := execution.context.stack
+	if stack == nil {
+		stack = &Stack{}
+		execution.context.stack = stack
+	}
+	// Stack depth is task-shared, unlike execution, so native re-entry through
+	// a public Interpreter call cannot reset and bypass the call-depth limit.
+	if uint64(stack.Depth()) >= uint64(execution.interpreter.config.MaxCallDepth) {
 		return memory.Value{}, ErrCallDepth
 	}
 	descriptor, err := execution.context.LoadFunction(function)
@@ -244,8 +257,26 @@ func (execution *execution) call(function memory.Ref, this memory.Value, argumen
 	if mode == callNativeOnly && descriptor.Kind != memory.FunctionNative {
 		return memory.Value{}, fmt.Errorf("%w: %s", ErrNotCallable, function)
 	}
-	execution.depth++
-	defer func() { execution.depth-- }()
+	if descriptor.ThisMode == memory.FunctionThisLexical {
+		this = descriptor.LexicalThis
+	}
+	frame := stack.acquireFrame()
+	frame.Function = function
+	frame.Environment = descriptor.Environment
+	frame.This = this
+	frame.Arguments = append(frame.Arguments[:0], arguments...)
+	frame.function = descriptor
+	if err := stack.push(frame); err != nil {
+		stack.recycleFrame(frame)
+		return memory.Value{}, err
+	}
+	defer func() {
+		if err := stack.pop(frame); err != nil {
+			resultErr = errors.Join(resultErr, err)
+			return
+		}
+		stack.recycleFrame(frame)
+	}()
 	if descriptor.Kind == memory.FunctionNative {
 		execution.interpreter.nativeMutex.RLock()
 		native := execution.interpreter.natives[descriptor.NativeID]
@@ -253,7 +284,7 @@ func (execution *execution) call(function memory.Ref, this memory.Value, argumen
 		if native == nil {
 			return memory.Value{}, fmt.Errorf("%w: ID %d", ErrNativeFunction, descriptor.NativeID)
 		}
-		result, err := native(execution, function, descriptor, this, append([]memory.Value(nil), arguments...))
+		result, err := native(execution, function, descriptor, this, frame.Arguments)
 		if err != nil {
 			return memory.Value{}, fmt.Errorf("runtime: native function %s ID %d: %w", function, descriptor.NativeID, err)
 		}
@@ -262,22 +293,12 @@ func (execution *execution) call(function memory.Ref, this memory.Value, argumen
 	if descriptor.Kind != memory.FunctionBytecode {
 		return memory.Value{}, fmt.Errorf("%w: %s", ErrNotCallable, function)
 	}
-	if descriptor.ThisMode == memory.FunctionThisLexical {
-		this = descriptor.LexicalThis
-	}
 	instructions, err := execution.interpreter.decodeProgram(descriptor.Code, len(descriptor.Constants))
 	if err != nil {
 		return memory.Value{}, err
 	}
-	frame := &Frame{
-		Function:     function,
-		Environment:  descriptor.Environment,
-		This:         this,
-		Arguments:    append([]memory.Value(nil), arguments...),
-		function:     descriptor,
-		instructions: instructions,
-	}
-	result, err := execution.runFrame(frame)
+	frame.instructions = instructions
+	result, err = execution.runFrame(frame)
 	if err != nil {
 		detail := execution.thrownSummary(err)
 		if detail != "" {

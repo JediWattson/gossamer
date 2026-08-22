@@ -336,8 +336,16 @@ func (realm *Realm) execute(task Task) (result error) {
 		Region:       task.region,
 		MemoryRegion: task.memoryRegion,
 		Refs:         append([]memory.Ref(nil), task.refs...),
+		stack:        &Stack{},
+		jobs:         &taskJobs{},
 	}
 	defer func() {
+		if stackErr := context.finishStack(); stackErr != nil {
+			result = errors.Join(result, fmt.Errorf("runtime: finish task %d stack: %w", task.ID, stackErr))
+		}
+		if jobsErr := context.finishJobs(); jobsErr != nil {
+			result = errors.Join(result, fmt.Errorf("runtime: finish task %d jobs: %w", task.ID, jobsErr))
+		}
 		if releaseErr := realm.store.ReleaseOwner(task.owner); releaseErr != nil {
 			result = errors.Join(result, fmt.Errorf("runtime: release task %d owner: %w", task.ID, releaseErr))
 		}

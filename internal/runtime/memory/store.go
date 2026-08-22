@@ -98,14 +98,18 @@ type Stats struct {
 	PeakReservedSlotCapacity uint64 `json:"peakReservedSlotCapacity"`
 }
 
-type objectEdge struct {
-	from ownership.ObjectID
-	to   ownership.ObjectID
-}
-
 type promotionKey struct {
 	owner  ownership.OwnerID
 	source Ref
+}
+
+// ownerRecord binds one semantic ledger claim to its live physical regions.
+// The common task owns exactly one region and stays inline; only owners with
+// multiple simultaneous regions allocate overflow adjacency.
+type ownerRecord struct {
+	claim    ownership.RegionID
+	region   RegionID
+	overflow map[RegionID]struct{}
 }
 
 func typeError(ref Ref, got, want HeapKind) error {
@@ -159,25 +163,27 @@ func (kind HeapKind) String() string {
 	}
 }
 
-// Store is a concurrency-safe native heap whose Cells are mirrored by the
-// Phase-0 ownership ledger.
+// Store is a concurrency-safe native heap. Heap payloads are the authoritative
+// object graph; the ownership ledger records semantic owners and claims but
+// does not mirror every physical slot or field reference.
 type Store struct {
 	mutex sync.Mutex
 
 	ledger *ownership.Ledger
 	closed bool
 
-	nextRegion    RegionID
-	regions       map[RegionID]*Region
-	ownerClaims   map[ownership.OwnerID]ownership.RegionID
-	closedOwners  map[ownership.OwnerID]bool
-	barrier       *Barrier
-	objectEdges   map[objectEdge]uint32
-	objectRegions map[ownership.ObjectID]RegionID
-	promotions    map[promotionKey]Ref
-	slotBuffers   [][]Slot
-	payloads      payloadAllocator
-	stats         Stats
+	nextRegion              RegionID
+	regions                 map[RegionID]*Region
+	owners                  map[ownership.OwnerID]ownerRecord
+	barrier                 *Barrier
+	weakTables              map[Ref]struct{}
+	weakTargets             map[Ref][]weakUse
+	promotions              map[promotionKey]Ref
+	promotionsBySource      map[Ref]map[promotionKey]struct{}
+	promotionsByDestination map[Ref]map[promotionKey]struct{}
+	slotBuffers             [][]Slot
+	payloads                payloadAllocator
+	stats                   Stats
 
 	sharedOwner ownership.OwnerID
 	sharedClaim ownership.RegionID
@@ -188,14 +194,15 @@ func NewStore(ledger *ownership.Ledger) *Store {
 		ledger = ownership.NewLedger()
 	}
 	return &Store{
-		ledger:        ledger,
-		regions:       make(map[RegionID]*Region),
-		ownerClaims:   make(map[ownership.OwnerID]ownership.RegionID),
-		closedOwners:  make(map[ownership.OwnerID]bool),
-		barrier:       newBarrier(),
-		objectEdges:   make(map[objectEdge]uint32),
-		objectRegions: make(map[ownership.ObjectID]RegionID),
-		promotions:    make(map[promotionKey]Ref),
+		ledger:                  ledger,
+		regions:                 make(map[RegionID]*Region),
+		owners:                  make(map[ownership.OwnerID]ownerRecord),
+		barrier:                 newBarrier(),
+		weakTables:              make(map[Ref]struct{}),
+		weakTargets:             make(map[Ref][]weakUse),
+		promotions:              make(map[promotionKey]Ref),
+		promotionsBySource:      make(map[Ref]map[promotionKey]struct{}),
+		promotionsByDestination: make(map[Ref]map[promotionKey]struct{}),
 	}
 }
 
@@ -242,6 +249,10 @@ func (store *Store) NewRegion(owner ownership.OwnerID) (RegionID, error) {
 		claim: claim,
 	}
 	store.regions[region.ID] = region
+	if err := store.attachOwnerRegionLocked(owner, region.ID); err != nil {
+		delete(store.regions, region.ID)
+		return 0, err
+	}
 	store.stats.LiveRegions++
 	return region.ID, nil
 }
@@ -264,6 +275,9 @@ func (store *Store) Region(id RegionID) (Region, error) {
 	defer store.mutex.Unlock()
 	region := store.regions[id]
 	if region == nil {
+		if store.assignedRegionIDLocked(id) {
+			return Region{ID: id, State: RegionDestroyed}, nil
+		}
 		return Region{}, fmt.Errorf("%w: R%d", ErrUnknownRegion, id)
 	}
 	return cloneRegion(region), nil
@@ -278,6 +292,9 @@ func (store *Store) RegionMetadata(id RegionID) (RegionMetadata, error) {
 	defer store.mutex.Unlock()
 	region := store.regions[id]
 	if region == nil {
+		if store.assignedRegionIDLocked(id) {
+			return RegionMetadata{ID: id, State: RegionDestroyed}, nil
+		}
 		return RegionMetadata{}, fmt.Errorf("%w: R%d", ErrUnknownRegion, id)
 	}
 	return RegionMetadata{
@@ -316,33 +333,30 @@ func (store *Store) allocKindLocked(owner ownership.OwnerID, regionID RegionID, 
 	if err != nil {
 		return Ref{}, err
 	}
-	object, err := store.ledger.CreateObject(region.claim)
-	if err != nil {
-		return Ref{}, err
-	}
 	var index uint32
 	if len(region.free) != 0 {
 		index = region.free[len(region.free)-1]
 		region.free = region.free[:len(region.free)-1]
 		slot := &region.Slots[index]
 		slot.Occupied = true
-		slot.object = object
 		store.initializeSlotPayloadLocked(slot, kind)
 	} else {
 		if uint64(len(region.Slots)) > math.MaxUint32 {
-			_ = store.ledger.Release(object, owner)
 			return Ref{}, fmt.Errorf("memory: region R%d exhausted slots", regionID)
 		}
 		index = uint32(len(region.Slots))
 		store.ensureRegionSlotCapacityLocked(region, len(region.Slots)+1)
-		region.Slots = append(region.Slots, Slot{Generation: 1, Occupied: true, object: object})
+		region.Slots = append(region.Slots, Slot{Generation: 1, Occupied: true})
 		store.initializeSlotPayloadLocked(&region.Slots[index], kind)
 	}
-	store.objectRegions[object] = region.ID
+	ref := Ref{Region: regionID, Slot: index, Gen: region.Slots[index].Generation}
+	if kind == HeapWeakMap || kind == HeapWeakSet {
+		store.weakTables[ref] = struct{}{}
+	}
 	store.stats.Allocations++
 	store.stats.LiveSlots++
 	store.recordKindAllocationLocked(kind, 0)
-	return Ref{Region: regionID, Slot: index, Gen: region.Slots[index].Generation}, nil
+	return ref, nil
 }
 
 // AllocString clones text into an immutable String slot owned by regionID.
@@ -476,7 +490,7 @@ func (store *Store) replaceValueLocked(owner ownership.OwnerID, region *Region, 
 		if targetRegion.State == RegionPrivate && targetRegion.Owner != region.Owner {
 			return Value{}, fmt.Errorf("%w: R%d owned by %s cannot reference R%d owned by %s", ErrAccessDenied, region.ID, region.Owner, targetRegion.ID, targetRegion.Owner)
 		}
-		if err := store.linkLocked(region.ID, slot.object, targetRegion.ID, targetSlot.object); err != nil {
+		if err := store.linkLocked(region.ID, targetRegion.ID, targetSlot); err != nil {
 			return Value{}, err
 		}
 	}
@@ -484,13 +498,13 @@ func (store *Store) replaceValueLocked(owner ownership.OwnerID, region *Region, 
 		oldRegion, oldSlot, oldErr := store.slotLocked(old.Ref())
 		if oldErr != nil {
 			if value.IsRef() {
-				_ = store.unlinkLocked(region.ID, slot.object, targetRegion.ID, targetSlot.object)
+				_ = store.unlinkLocked(region.ID, targetRegion.ID, targetSlot)
 			}
 			return Value{}, oldErr
 		}
-		if err := store.unlinkLocked(region.ID, slot.object, oldRegion.ID, oldSlot.object); err != nil {
+		if err := store.unlinkLocked(region.ID, oldRegion.ID, oldSlot); err != nil {
 			if value.IsRef() {
-				_ = store.unlinkLocked(region.ID, slot.object, targetRegion.ID, targetSlot.object)
+				_ = store.unlinkLocked(region.ID, targetRegion.ID, targetSlot)
 			}
 			return Value{}, err
 		}
@@ -528,15 +542,58 @@ func (store *Store) prepareEscapingValueLocked(destination *Region, value Value,
 			store.stats.PromotionCacheHits++
 			return RefValue(cached), nil
 		}
-		delete(store.promotions, key)
+		store.deletePromotionLocked(key)
 	}
 	promoted, err := store.copyLocked(source.Owner, destination.Owner, []Ref{value.Ref()})
 	if err != nil {
 		return Value{}, err
 	}
-	store.promotions[key] = promoted[0]
+	store.cachePromotionLocked(key, promoted[0])
 	store.stats.AutomaticPromotions++
 	return RefValue(promoted[0]), nil
+}
+
+func (store *Store) cachePromotionLocked(key promotionKey, promoted Ref) {
+	store.promotions[key] = promoted
+	keys := store.promotionsBySource[key.source]
+	if keys == nil {
+		keys = make(map[promotionKey]struct{})
+		store.promotionsBySource[key.source] = keys
+	}
+	keys[key] = struct{}{}
+	destinations := store.promotionsByDestination[promoted]
+	if destinations == nil {
+		destinations = make(map[promotionKey]struct{})
+		store.promotionsByDestination[promoted] = destinations
+	}
+	destinations[key] = struct{}{}
+}
+
+func (store *Store) deletePromotionLocked(key promotionKey) {
+	promoted := store.promotions[key]
+	delete(store.promotions, key)
+	keys := store.promotionsBySource[key.source]
+	delete(keys, key)
+	if len(keys) == 0 {
+		delete(store.promotionsBySource, key.source)
+	}
+	destinations := store.promotionsByDestination[promoted]
+	delete(destinations, key)
+	if len(destinations) == 0 {
+		delete(store.promotionsByDestination, promoted)
+	}
+}
+
+func (store *Store) forgetPromotionsFromSourceLocked(source Ref) {
+	for key := range store.promotionsBySource[source] {
+		store.deletePromotionLocked(key)
+	}
+}
+
+func (store *Store) forgetPromotionsToDestinationLocked(destination Ref) {
+	for key := range store.promotionsByDestination[destination] {
+		store.deletePromotionLocked(key)
+	}
 }
 
 func (store *Store) Free(owner ownership.OwnerID, ref Ref) error {
@@ -553,23 +610,38 @@ func (store *Store) freeLocked(owner ownership.OwnerID, ref Ref, internal bool) 
 	if err != nil {
 		return err
 	}
-	for edge, count := range store.objectEdges {
-		if count != 0 && edge.to == slot.object && edge.from != slot.object {
-			return fmt.Errorf("%w: %s", ErrCellReferenced, ref)
-		}
+	selfIncoming, err := selfReferenceCount(slot, ref)
+	if err != nil {
+		return err
+	}
+	if slot.incoming < selfIncoming {
+		return fmt.Errorf("%w: %s incoming count %d is below %d self references", ErrInvariantViolation, ref, slot.incoming, selfIncoming)
+	}
+	if slot.incoming != selfIncoming {
+		return fmt.Errorf("%w: %s has %d external incoming references", ErrCellReferenced, ref, slot.incoming-selfIncoming)
 	}
 	if err := store.unlinkSlotLocked(region, slot); err != nil {
 		return err
 	}
-	if err := store.ledger.Release(slot.object, region.Owner); err != nil {
+	if len(store.weakTargets[ref]) != 0 {
+		cleared, err := store.dropWeakTargetUsesLocked(ref, nil, func(table Ref) bool { return table != ref })
+		if err != nil {
+			return err
+		}
+		store.stats.WeakEntriesCleared += cleared
+	}
+	if slot.incoming != 0 {
+		return fmt.Errorf("%w: %s retains %d incoming references after unlink", ErrInvariantViolation, ref, slot.incoming)
+	}
+	store.forgetPromotionsFromSourceLocked(ref)
+	store.forgetPromotionsToDestinationLocked(ref)
+	store.recordKindFreeLocked(slot)
+	if err := store.forgetWeakTableLocked(ref, slot); err != nil {
 		return err
 	}
-	store.recordKindFreeLocked(slot)
 	if err := store.clearSlotPayloadLocked(slot); err != nil {
 		return err
 	}
-	delete(store.objectRegions, slot.object)
-	slot.object = 0
 	slot.Occupied = false
 	if slot.Generation != math.MaxUint32 {
 		slot.Generation++
@@ -578,6 +650,21 @@ func (store *Store) freeLocked(owner ownership.OwnerID, ref Ref, internal bool) 
 	store.stats.Frees++
 	store.stats.LiveSlots--
 	return nil
+}
+
+func selfReferenceCount(slot *Slot, target Ref) (uint32, error) {
+	references := appendSlotReferences(nil, slot)
+	var count uint32
+	for _, value := range references {
+		if !value.IsRef() || value.Ref() != target {
+			continue
+		}
+		if count == math.MaxUint32 {
+			return 0, fmt.Errorf("memory: self-reference count overflow for %s", target)
+		}
+		count++
+	}
+	return count, nil
 }
 
 func (store *Store) Edges() []RegionEdge {
@@ -606,6 +693,9 @@ func (store *Store) DestroyRegion(owner ownership.OwnerID, regionID RegionID) er
 	defer store.mutex.Unlock()
 	region := store.regions[regionID]
 	if region == nil {
+		if store.assignedRegionIDLocked(regionID) {
+			return nil
+		}
 		return fmt.Errorf("%w: R%d", ErrUnknownRegion, regionID)
 	}
 	if region.State == RegionDestroyed {
@@ -632,25 +722,20 @@ func (store *Store) ReleaseOwner(owner ownership.OwnerID) error {
 	}
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
-	if store.closedOwners[owner] {
+	record, exists := store.owners[owner]
+	if !exists {
 		return nil
 	}
-	ids := make(map[RegionID]struct{})
-	for id, region := range store.regions {
-		if region.State != RegionDestroyed && region.State != RegionPublished && region.Owner == owner {
-			ids[id] = struct{}{}
-		}
-	}
+	ids := ownerRegionSet(record)
 	if err := store.destroyRegionsLocked(ids); err != nil {
 		return err
 	}
-	claim := store.ownerClaims[owner]
-	if claim != 0 {
-		if err := store.ledger.CloseRegion(claim); err != nil {
+	if record.claim != 0 {
+		if err := store.ledger.CloseRegion(record.claim); err != nil {
 			return err
 		}
 	}
-	store.closedOwners[owner] = true
+	delete(store.owners, owner)
 	return nil
 }
 
@@ -961,8 +1046,8 @@ func (store *Store) Close() error {
 		return err
 	}
 	store.releaseAllSlotBuffersLocked()
-	owners := make([]ownership.OwnerID, 0, len(store.ownerClaims))
-	for owner := range store.ownerClaims {
+	owners := make([]ownership.OwnerID, 0, len(store.owners))
+	for owner := range store.owners {
 		owners = append(owners, owner)
 	}
 	sort.Slice(owners, func(i, j int) bool {
@@ -972,15 +1057,78 @@ func (store *Store) Close() error {
 		return owners[i].Value < owners[j].Value
 	})
 	for _, owner := range owners {
-		if store.closedOwners[owner] {
-			continue
-		}
-		if err := store.ledger.CloseRegion(store.ownerClaims[owner]); err != nil {
+		record := store.owners[owner]
+		if err := store.ledger.CloseRegion(record.claim); err != nil {
 			return err
 		}
-		store.closedOwners[owner] = true
+		delete(store.owners, owner)
 	}
+	store.sharedOwner = ownership.OwnerID{}
+	store.sharedClaim = 0
 	store.closed = true
+	return nil
+}
+
+func ownerRegionSet(record ownerRecord) map[RegionID]struct{} {
+	ids := make(map[RegionID]struct{}, 1+len(record.overflow))
+	if record.region != 0 {
+		ids[record.region] = struct{}{}
+	}
+	for id := range record.overflow {
+		ids[id] = struct{}{}
+	}
+	return ids
+}
+
+func (store *Store) attachOwnerRegionLocked(owner ownership.OwnerID, id RegionID) error {
+	record, exists := store.owners[owner]
+	if !exists || record.claim == 0 {
+		return fmt.Errorf("%w: %s has no semantic claim", ErrInvariantViolation, owner)
+	}
+	if record.region == id {
+		return fmt.Errorf("%w: R%d is already attached to %s", ErrInvariantViolation, id, owner)
+	}
+	if _, duplicate := record.overflow[id]; duplicate {
+		return fmt.Errorf("%w: R%d is already attached to %s", ErrInvariantViolation, id, owner)
+	}
+	if record.region == 0 {
+		record.region = id
+	} else {
+		if record.overflow == nil {
+			record.overflow = make(map[RegionID]struct{})
+		}
+		record.overflow[id] = struct{}{}
+	}
+	store.owners[owner] = record
+	return nil
+}
+
+func (store *Store) detachOwnerRegionLocked(owner ownership.OwnerID, id RegionID) error {
+	record, exists := store.owners[owner]
+	if !exists {
+		return fmt.Errorf("%w: %s has no semantic claim", ErrInvariantViolation, owner)
+	}
+	if record.region == id {
+		record.region = 0
+		for replacement := range record.overflow {
+			record.region = replacement
+			delete(record.overflow, replacement)
+			break
+		}
+		if len(record.overflow) == 0 {
+			record.overflow = nil
+		}
+		store.owners[owner] = record
+		return nil
+	}
+	if _, attached := record.overflow[id]; !attached {
+		return fmt.Errorf("%w: R%d is not attached to %s", ErrInvariantViolation, id, owner)
+	}
+	delete(record.overflow, id)
+	if len(record.overflow) == 0 {
+		record.overflow = nil
+	}
+	store.owners[owner] = record
 	return nil
 }
 
@@ -988,18 +1136,15 @@ func (store *Store) ensureOwnerLocked(owner ownership.OwnerID) (ownership.Region
 	if store.closed {
 		return 0, ErrStoreClosed
 	}
-	if store.closedOwners[owner] {
-		return 0, fmt.Errorf("%w: %s", ownership.ErrRegionClosed, owner)
-	}
-	if claim := store.ownerClaims[owner]; claim != 0 {
-		snapshot, err := store.ledger.Region(claim)
+	if record, exists := store.owners[owner]; exists {
+		claim, err := store.ledger.OwnerRegion(owner)
 		if err != nil {
 			return 0, err
 		}
-		if snapshot.Closed {
-			return 0, fmt.Errorf("%w: %d", ownership.ErrRegionClosed, claim)
+		if claim != record.claim {
+			return 0, fmt.Errorf("%w: %s physical claim %d does not match ledger claim %d", ErrInvariantViolation, owner, record.claim, claim)
 		}
-		return claim, nil
+		return record.claim, nil
 	}
 	claim, err := store.ledger.OwnerRegion(owner)
 	if errors.Is(err, ownership.ErrOwnerNotRegistered) {
@@ -1008,7 +1153,7 @@ func (store *Store) ensureOwnerLocked(owner ownership.OwnerID) (ownership.Region
 	if err != nil {
 		return 0, err
 	}
-	store.ownerClaims[owner] = claim
+	store.owners[owner] = ownerRecord{claim: claim}
 	return claim, nil
 }
 
@@ -1030,9 +1175,16 @@ func (store *Store) ensureSharedLocked() (ownership.OwnerID, error) {
 	return owner, nil
 }
 
+func (store *Store) assignedRegionIDLocked(id RegionID) bool {
+	return id != 0 && id <= store.nextRegion
+}
+
 func (store *Store) slotLocked(ref Ref) (*Region, *Slot, error) {
 	region := store.regions[ref.Region]
 	if region == nil {
+		if store.assignedRegionIDLocked(ref.Region) {
+			return nil, nil, fmt.Errorf("%w: %s: %w", ErrStaleRef, ref, ErrRegionDestroyed)
+		}
 		return nil, nil, fmt.Errorf("%w: %s", ErrStaleRef, ref)
 	}
 	if region.State == RegionDestroyed {
@@ -1088,6 +1240,9 @@ func (store *Store) writeSlotLocked(owner ownership.OwnerID, ref Ref, internal b
 func (store *Store) mutableRegionLocked(owner ownership.OwnerID, id RegionID, internal bool) (*Region, error) {
 	region := store.regions[id]
 	if region == nil {
+		if store.assignedRegionIDLocked(id) {
+			return nil, fmt.Errorf("%w: R%d", ErrRegionDestroyed, id)
+		}
 		return nil, fmt.Errorf("%w: R%d", ErrUnknownRegion, id)
 	}
 	if region.State == RegionDestroyed {
@@ -1109,42 +1264,28 @@ func (store *Store) accessError(region *Region, owner ownership.OwnerID) error {
 	return fmt.Errorf("%w: private region R%d owned by %s, accessed by %s", ErrAccessDenied, region.ID, region.Owner, owner)
 }
 
-func (store *Store) linkLocked(fromRegion RegionID, fromObject ownership.ObjectID, toRegion RegionID, toObject ownership.ObjectID) error {
-	edge := objectEdge{from: fromObject, to: toObject}
-	if store.objectEdges[edge] == math.MaxUint32 {
-		return fmt.Errorf("memory: object edge count overflow")
+func (store *Store) linkLocked(fromRegion, toRegion RegionID, target *Slot) error {
+	if target == nil {
+		return fmt.Errorf("memory: link to nil target slot")
+	}
+	if target.incoming == math.MaxUint32 {
+		return fmt.Errorf("memory: target incoming reference count overflow")
 	}
 	if err := store.barrier.link(fromRegion, toRegion); err != nil {
 		return err
 	}
-	if store.objectEdges[edge] == 0 {
-		if err := store.ledger.AddReference(fromObject, toObject); err != nil {
-			_ = store.barrier.unlink(fromRegion, toRegion)
-			return err
-		}
-	}
-	store.objectEdges[edge]++
+	target.incoming++
 	return nil
 }
 
-func (store *Store) unlinkLocked(fromRegion RegionID, fromObject ownership.ObjectID, toRegion RegionID, toObject ownership.ObjectID) error {
-	edge := objectEdge{from: fromObject, to: toObject}
-	count := store.objectEdges[edge]
-	if count == 0 {
-		return fmt.Errorf("memory: missing object edge %d -> %d", fromObject, toObject)
+func (store *Store) unlinkLocked(fromRegion, toRegion RegionID, target *Slot) error {
+	if target == nil || target.incoming == 0 {
+		return fmt.Errorf("memory: missing target incoming reference")
 	}
 	if err := store.barrier.unlink(fromRegion, toRegion); err != nil {
 		return err
 	}
-	if count == 1 {
-		if err := store.ledger.RemoveReference(fromObject, toObject); err != nil {
-			_ = store.barrier.link(fromRegion, toRegion)
-			return err
-		}
-		delete(store.objectEdges, edge)
-		return nil
-	}
-	store.objectEdges[edge] = count - 1
+	target.incoming--
 	return nil
 }
 
@@ -1161,9 +1302,9 @@ func (store *Store) unlinkSlotWithScratchLocked(region *Region, slot *Slot, refe
 		}
 		targetRegion, targetSlot, err := store.slotLocked(value.Ref())
 		if err != nil {
-			return references, fmt.Errorf("memory: unlink %s object %d in R%d through %s: %w", slot.Kind, slot.object, region.ID, value.Ref(), err)
+			return references, fmt.Errorf("memory: unlink %s in R%d through %s: %w", slot.Kind, region.ID, value.Ref(), err)
 		}
-		if err := store.unlinkLocked(region.ID, slot.object, targetRegion.ID, targetSlot.object); err != nil {
+		if err := store.unlinkLocked(region.ID, targetRegion.ID, targetSlot); err != nil {
 			return references, err
 		}
 	}
@@ -1174,23 +1315,39 @@ func (store *Store) destroyRegionsLocked(ids map[RegionID]struct{}) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	for edge, count := range store.objectEdges {
-		if count == 0 {
-			continue
-		}
-		fromRegion := store.regionForObjectLocked(edge.from)
-		toRegion := store.regionForObjectLocked(edge.to)
-		if toRegion == 0 {
-			continue
-		}
-		if _, target := ids[toRegion]; !target {
-			continue
-		}
-		if _, source := ids[fromRegion]; !source {
-			return fmt.Errorf("%w: R%d -> R%d (%d refs)", ErrRegionReferenced, fromRegion, toRegion, count)
+	for target := range ids {
+		for source := range store.barrier.incoming[target] {
+			if _, released := ids[source]; !released {
+				count := store.barrier.count(source, target)
+				return fmt.Errorf("%w: R%d -> R%d (%d refs)", ErrRegionReferenced, source, target, count)
+			}
 		}
 	}
 	ordered := sortedRegionSet(ids)
+	// Weak entries are non-retaining. Follow exact target-side reverse uses for
+	// refs in the release set; unrelated persistent weak tables are never
+	// scanned at a task boundary. Entries in tables being destroyed are removed
+	// too but do not count as cleared surviving entries.
+	var cleared uint64
+	for _, id := range ordered {
+		region := store.regions[id]
+		for index := range region.Slots {
+			slot := &region.Slots[index]
+			if !slot.Occupied {
+				continue
+			}
+			ref := Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}
+			removed, err := store.dropWeakTargetUsesLocked(ref, nil, func(table Ref) bool {
+				_, tableDestroyed := ids[table.Region]
+				return !tableDestroyed
+			})
+			if err != nil {
+				return err
+			}
+			cleared += removed
+		}
+	}
+	store.stats.WeakEntriesCleared += cleared
 	references := make([]Value, 0, 16)
 	for _, id := range ordered {
 		region := store.regions[id]
@@ -1212,15 +1369,19 @@ func (store *Store) destroyRegionsLocked(ids map[RegionID]struct{}) error {
 			if !slot.Occupied {
 				continue
 			}
-			if err := store.ledger.Release(slot.object, region.Owner); err != nil {
+			if slot.incoming != 0 {
+				ref := Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}
+				return fmt.Errorf("%w: destroyed %s retains %d incoming references", ErrInvariantViolation, ref, slot.incoming)
+			}
+			store.forgetPromotionsFromSourceLocked(Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
+			store.forgetPromotionsToDestinationLocked(Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
+			store.recordKindFreeLocked(slot)
+			if err := store.forgetWeakTableLocked(Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot); err != nil {
 				return err
 			}
-			store.recordKindFreeLocked(slot)
 			if err := store.clearSlotPayloadLocked(slot); err != nil {
 				return err
 			}
-			delete(store.objectRegions, slot.object)
-			slot.object = 0
 			slot.Occupied = false
 			if slot.Generation != math.MaxUint32 {
 				slot.Generation++
@@ -1231,15 +1392,14 @@ func (store *Store) destroyRegionsLocked(ids map[RegionID]struct{}) error {
 		region.free = nil
 		store.releaseSlotBufferLocked(region.Slots)
 		region.Slots = nil
-		region.State = RegionDestroyed
+		if err := store.detachOwnerRegionLocked(region.Owner, id); err != nil {
+			return err
+		}
+		delete(store.regions, id)
 		store.stats.LiveRegions--
 		store.stats.BulkRegionReleases++
 	}
 	return nil
-}
-
-func (store *Store) regionForObjectLocked(object ownership.ObjectID) RegionID {
-	return store.objectRegions[object]
 }
 
 func (store *Store) privateComponentLocked(owner ownership.OwnerID, refs []Ref, includeIncoming bool) (map[RegionID]struct{}, error) {
@@ -1270,46 +1430,45 @@ func (store *Store) privateComponentLocked(owner ownership.OwnerID, refs []Ref, 
 }
 
 func (store *Store) connectedRegionsLocked(seed map[RegionID]struct{}, match func(*Region) bool) map[RegionID]struct{} {
-	result := cloneRegionSet(seed)
-	changed := true
-	for changed {
-		changed = false
-		for key := range store.barrier.edges {
-			_, from := result[key.from]
-			_, to := result[key.to]
-			if from == to {
-				continue
-			}
-			candidate := key.from
-			if from {
-				candidate = key.to
-			}
-			region := store.regions[candidate]
-			if region != nil && match(region) {
-				result[candidate] = struct{}{}
-				changed = true
-			}
-		}
-	}
-	return result
+	return store.regionClosureLocked(seed, match, true)
 }
 
 func (store *Store) outgoingRegionsLocked(seed map[RegionID]struct{}, match func(*Region) bool) map[RegionID]struct{} {
+	return store.regionClosureLocked(seed, match, false)
+}
+
+// regionClosureLocked walks the Barrier's maintained neighbor indexes. Work is
+// proportional to the reached component, independent of unrelated regions.
+func (store *Store) regionClosureLocked(seed map[RegionID]struct{}, match func(*Region) bool, bidirectional bool) map[RegionID]struct{} {
 	result := cloneRegionSet(seed)
-	changed := true
-	for changed {
-		changed = false
-		for key := range store.barrier.edges {
-			if _, exists := result[key.from]; !exists {
+	if len(seed) == 0 || len(store.barrier.edges) == 0 {
+		return result
+	}
+	queue := sortedRegionSet(seed)
+	for cursor := 0; cursor < len(queue); cursor++ {
+		current := queue[cursor]
+		for candidate := range store.barrier.outgoing[current] {
+			if _, exists := result[candidate]; exists {
 				continue
 			}
-			if _, exists := result[key.to]; exists {
+			region := store.regions[candidate]
+			if region == nil || !match(region) {
 				continue
 			}
-			region := store.regions[key.to]
-			if region != nil && match(region) {
-				result[key.to] = struct{}{}
-				changed = true
+			result[candidate] = struct{}{}
+			queue = append(queue, candidate)
+		}
+		if bidirectional {
+			for candidate := range store.barrier.incoming[current] {
+				if _, exists := result[candidate]; exists {
+					continue
+				}
+				region := store.regions[candidate]
+				if region == nil || !match(region) {
+					continue
+				}
+				result[candidate] = struct{}{}
+				queue = append(queue, candidate)
 			}
 		}
 	}
@@ -1331,32 +1490,103 @@ func (store *Store) moveRegionsLocked(ids map[RegionID]struct{}, from, to owners
 		if region == nil || region.State == RegionDestroyed || region.Owner != from {
 			return fmt.Errorf("%w: R%d is not owned by %s", ErrOwnerMismatch, id, from)
 		}
-		objects := store.regionObjectsLocked(region)
-		if err := store.ledger.TransferSet(objects, from, to); err != nil {
-			for index := len(moved) - 1; index >= 0; index-- {
-				rollback := moved[index]
-				_ = store.ledger.TransferSet(store.regionObjectsLocked(rollback), to, from)
-			}
-			return err
-		}
 		moved = append(moved, region)
 	}
+	// Weak edges do not pull regions into a transfer component. Drop only the
+	// entries whose table and private target would be split across owners;
+	// published targets remain globally readable and are safe to keep.
+	shouldDropWeakUse := func(table, target Ref) bool {
+		_, tableMoves := ids[table.Region]
+		_, targetMoves := ids[target.Region]
+		if tableMoves == targetMoves {
+			return false
+		}
+		targetRegion := store.regions[target.Region]
+		if targetRegion != nil && targetRegion.State == RegionPublished {
+			return false
+		}
+		// Publishing a target makes it globally readable, so a private table
+		// that stays behind may safely retain its non-owning entry.
+		if targetMoves && state == RegionPublished {
+			return false
+		}
+		return true
+	}
+	var cleared uint64
+	// First inspect entries in moving tables so stationary targets do not need
+	// a global target scan.
 	for _, region := range moved {
+		for slotIndex := range region.Slots {
+			slot := &region.Slots[slotIndex]
+			if !slot.Occupied {
+				continue
+			}
+			table := Ref{Region: region.ID, Slot: uint32(slotIndex), Gen: slot.Generation}
+			switch slot.Kind {
+			case HeapWeakMap:
+				for entryIndex := 0; entryIndex < len(slot.WeakMap.Entries); {
+					entry := slot.WeakMap.Entries[entryIndex]
+					drop := shouldDropWeakUse(table, entry.Key)
+					if !drop && entry.Value.IsRef() {
+						drop = shouldDropWeakUse(table, entry.Value.Ref())
+					}
+					if !drop {
+						entryIndex++
+						continue
+					}
+					if err := store.removeWeakMapEntryLocked(table, slot, uint32(entryIndex)); err != nil {
+						return err
+					}
+					cleared++
+				}
+			case HeapWeakSet:
+				for entryIndex := 0; entryIndex < len(slot.WeakSet.Keys); {
+					if !shouldDropWeakUse(table, slot.WeakSet.Keys[entryIndex]) {
+						entryIndex++
+						continue
+					}
+					if err := store.removeWeakSetEntryLocked(table, slot, uint32(entryIndex)); err != nil {
+						return err
+					}
+					cleared++
+				}
+			}
+		}
+	}
+	// Then follow moving targets' exact reverse uses to stationary tables.
+	for _, region := range moved {
+		for slotIndex := range region.Slots {
+			slot := &region.Slots[slotIndex]
+			if !slot.Occupied {
+				continue
+			}
+			target := Ref{Region: region.ID, Slot: uint32(slotIndex), Gen: slot.Generation}
+			removed, err := store.dropWeakTargetUsesLocked(target, shouldDropWeakUse, nil)
+			if err != nil {
+				return err
+			}
+			cleared += removed
+		}
+	}
+	store.stats.WeakEntriesCleared += cleared
+	for _, region := range moved {
+		for slotIndex := range region.Slots {
+			slot := &region.Slots[slotIndex]
+			if slot.Occupied {
+				store.forgetPromotionsToDestinationLocked(Ref{Region: region.ID, Slot: uint32(slotIndex), Gen: slot.Generation})
+			}
+		}
+		if err := store.detachOwnerRegionLocked(from, region.ID); err != nil {
+			return err
+		}
+		if err := store.attachOwnerRegionLocked(to, region.ID); err != nil {
+			return err
+		}
 		region.Owner = to
 		region.State = state
 		region.claim = claim
 	}
 	return nil
-}
-
-func (store *Store) regionObjectsLocked(region *Region) []ownership.ObjectID {
-	objects := make([]ownership.ObjectID, 0, len(region.Slots))
-	for index := range region.Slots {
-		if region.Slots[index].Occupied {
-			objects = append(objects, region.Slots[index].object)
-		}
-	}
-	return objects
 }
 
 func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, error) {
@@ -1376,11 +1606,11 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 	}
 	seen := make(map[Ref]struct{})
 	order := make([]Ref, 0)
+	pendingEphemerons := make(map[Ref][]copyCandidate)
 	references := make([]Value, 0, 16)
 	drainStrongReferences := func() error {
-		for len(queue) != 0 {
-			candidate := queue[0]
-			queue = queue[1:]
+		for cursor := 0; cursor < len(queue); cursor++ {
+			candidate := queue[cursor]
 			ref := candidate.ref
 			if _, exists := seen[ref]; exists {
 				continue
@@ -1400,6 +1630,23 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 			}
 			seen[ref] = struct{}{}
 			order = append(order, ref)
+			if slot.Kind == HeapWeakMap {
+				for reference, entry := range slot.WeakMap.Entries {
+					if !entry.Value.IsRef() {
+						continue
+					}
+					value := copyCandidate{ref: entry.Value.Ref(), from: ref, fromKind: HeapWeakMap, reference: reference, root: -1}
+					if _, keyLive := seen[entry.Key]; keyLive {
+						queue = append(queue, value)
+					} else {
+						pendingEphemerons[entry.Key] = append(pendingEphemerons[entry.Key], value)
+					}
+				}
+			}
+			if pending := pendingEphemerons[ref]; len(pending) != 0 {
+				queue = append(queue, pending...)
+				delete(pendingEphemerons, ref)
+			}
 			references = appendSlotReferences(references[:0], slot)
 			for reference, value := range references {
 				if value.IsRef() {
@@ -1418,37 +1665,6 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 	if err := drainStrongReferences(); err != nil {
 		return nil, err
 	}
-
-	// WeakMap values are ephemerons: a strongly reachable table retains a
-	// value only when its key is independently strongly reachable. Reach a
-	// fixed point because one live ephemeron value may reveal another key.
-	for {
-		added := false
-		for _, ref := range append([]Ref(nil), order...) {
-			_, slot, _ := store.slotLocked(ref)
-			if slot.Kind != HeapWeakMap {
-				continue
-			}
-			for reference, entry := range slot.WeakMap.Entries {
-				if _, keyLive := seen[entry.Key]; !keyLive || !entry.Value.IsRef() {
-					continue
-				}
-				if _, valueLive := seen[entry.Value.Ref()]; valueLive {
-					continue
-				}
-				queue = append(queue, copyCandidate{
-					ref: entry.Value.Ref(), from: ref, fromKind: HeapWeakMap, reference: reference, root: -1,
-				})
-				added = true
-			}
-		}
-		if !added {
-			break
-		}
-		if err := drainStrongReferences(); err != nil {
-			return nil, err
-		}
-	}
 	claim, err := store.ensureOwnerLocked(to)
 	if err != nil {
 		return nil, err
@@ -1459,6 +1675,10 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 	store.nextRegion++
 	destination := &Region{ID: store.nextRegion, Owner: to, State: stateForOwner(to), claim: claim}
 	store.regions[destination.ID] = destination
+	if err := store.attachOwnerRegionLocked(to, destination.ID); err != nil {
+		delete(store.regions, destination.ID)
+		return nil, err
+	}
 	store.stats.LiveRegions++
 	mapping := make(map[Ref]Ref, len(order))
 	for _, source := range order {
@@ -1640,7 +1860,6 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 				return nil, err
 			}
 		case HeapWeakMap:
-			_, copySlot, _ := store.slotLocked(copyRef)
 			for _, entry := range sourceSlot.WeakMap.Entries {
 				key, keyLive := mapping[entry.Key]
 				if !keyLive {
@@ -1654,15 +1873,18 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 					}
 					value = RefValue(mapped)
 				}
-				copySlot.WeakMap.Entries = append(copySlot.WeakMap.Entries, WeakMapEntry{
-					Key: key, Value: value,
-				})
+				if err := store.weakMapSetLocked(to, copyRef, key, value, true); err != nil {
+					_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
+					return nil, err
+				}
 			}
 		case HeapWeakSet:
-			_, copySlot, _ := store.slotLocked(copyRef)
 			for _, key := range sourceSlot.WeakSet.Keys {
 				if mapped, live := mapping[key]; live {
-					copySlot.WeakSet.Keys = append(copySlot.WeakSet.Keys, mapped)
+					if err := store.weakSetAddLocked(to, copyRef, mapped, true); err != nil {
+						_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
+						return nil, err
+					}
 				}
 			}
 		case HeapIterator:

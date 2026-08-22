@@ -260,7 +260,30 @@ func (intrinsics *Intrinsics) Roots() []memory.Ref {
 	if intrinsics == nil {
 		return nil
 	}
-	return []memory.Ref{
+	roots := intrinsics.rootArray()
+	return append([]memory.Ref(nil), roots[:]...)
+}
+
+// VisitRefs exposes intrinsic heap handles as borrowed roots without allocating
+// the transport slice returned by Roots.
+func (intrinsics *Intrinsics) VisitRefs(visit func(memory.Ref) error) error {
+	if intrinsics == nil || visit == nil {
+		return nil
+	}
+	roots := intrinsics.rootArray()
+	for _, ref := range roots {
+		if ref == (memory.Ref{}) {
+			continue
+		}
+		if err := visit(ref); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (intrinsics *Intrinsics) rootArray() [intrinsicRootCount]memory.Ref {
+	return [intrinsicRootCount]memory.Ref{
 		intrinsics.Global,
 		intrinsics.ObjectPrototype,
 		intrinsics.FunctionPrototype,

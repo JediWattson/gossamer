@@ -30,6 +30,7 @@ func TestHostObjectStoresOpaqueImmutableIdentity(t *testing.T) {
 	}
 
 	want := memory.HostObject{Class: 9, Scope: 27, Identity: 81}
+	ledgerBefore := store.Ledger().Stats()
 	ref, err := store.AllocHostObject(owner, region, want)
 	if err != nil {
 		t.Fatal(err)
@@ -37,8 +38,8 @@ func TestHostObjectStoresOpaqueImmutableIdentity(t *testing.T) {
 	if got, err := store.DerefHostObject(owner, ref); err != nil || got != want {
 		t.Fatalf("DerefHostObject() = %#v, %v", got, err)
 	}
-	if object, err := store.ObjectID(owner, ref); err != nil || object == 0 {
-		t.Fatalf("ObjectID() = %d, %v", object, err)
+	if ledgerAfter := store.Ledger().Stats(); ledgerAfter != ledgerBefore {
+		t.Fatalf("HostObject allocation changed shadow ledger: before=%#v after=%#v", ledgerBefore, ledgerAfter)
 	}
 	if _, err := store.DerefCell(owner, ref); !errors.Is(err, memory.ErrTypeMismatch) {
 		t.Fatalf("DerefCell(HostObject) error = %v", err)

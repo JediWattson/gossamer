@@ -47,6 +47,9 @@ func (store *Store) CollectRegion(owner ownership.OwnerID, regionID RegionID, ro
 	defer store.mutex.Unlock()
 	region := store.regions[regionID]
 	if region == nil {
+		if store.assignedRegionIDLocked(regionID) {
+			return Collection{}, fmt.Errorf("%w: R%d", ErrRegionDestroyed, regionID)
+		}
 		return Collection{}, fmt.Errorf("%w: R%d", ErrUnknownRegion, regionID)
 	}
 	if region.State != RegionPrivate || region.Owner != owner {
@@ -59,14 +62,15 @@ func (store *Store) collectLocked(owner ownership.OwnerID, regionID RegionID, ro
 	if store.closed {
 		return Collection{}, ErrStoreClosed
 	}
-	if store.closedOwners[owner] {
-		return Collection{}, fmt.Errorf("%w: %s", ownership.ErrRegionClosed, owner)
-	}
-
 	owned := make(map[Ref]struct{})
-	byObject := make(map[ownership.ObjectID]Ref)
-	objects := make([]ownership.ObjectID, 0)
-	for _, id := range sortedRegionIDs(store.regions) {
+	ownedRefs := make([]Ref, 0)
+	var regionIDs []RegionID
+	if regionID != 0 {
+		regionIDs = []RegionID{regionID}
+	} else if record, exists := store.owners[owner]; exists {
+		regionIDs = sortedRegionSet(ownerRegionSet(record))
+	}
+	for _, id := range regionIDs {
 		region := store.regions[id]
 		if region == nil || region.State != RegionPrivate || region.Owner != owner || regionID != 0 && id != regionID {
 			continue
@@ -78,8 +82,7 @@ func (store *Store) collectLocked(owner ownership.OwnerID, regionID RegionID, ro
 			}
 			ref := Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}
 			owned[ref] = struct{}{}
-			byObject[slot.object] = ref
-			objects = append(objects, slot.object)
+			ownedRefs = append(ownedRefs, ref)
 		}
 	}
 
@@ -100,40 +103,98 @@ func (store *Store) collectLocked(owner ownership.OwnerID, regionID RegionID, ro
 		queue = append(queue, root)
 	}
 
-	counts := make([]int, len(objects))
-	if err := store.ledger.ReferenceCounts(objects, counts); err != nil {
+	// A region-local checkpoint treats every real heap reference from outside
+	// the sweep set as a root. The per-slot total incoming count lets us derive
+	// this by scanning only sources in the sweep set, independent of unrelated
+	// regions elsewhere in the Store.
+	internalIncoming, err := store.incomingFromSourcesLocked(ownedRefs, owned)
+	if err != nil {
 		return Collection{}, err
 	}
-	for index, object := range objects {
-		if counts[index] > 1 {
-			ref := byObject[object]
-			if _, exists := rootSet[ref]; !exists {
-				rootSet[ref] = struct{}{}
-				queue = append(queue, ref)
-			}
+	for _, root := range ownedRefs {
+		_, slot, _ := store.slotLocked(root)
+		inside := internalIncoming[root]
+		if slot.incoming < inside {
+			return Collection{}, fmt.Errorf("%w: %s incoming count %d is below %d references from the sweep set", ErrInvariantViolation, root, slot.incoming, inside)
 		}
-	}
-	for edge, count := range store.objectEdges {
-		if count == 0 {
+		if slot.incoming == inside {
 			continue
 		}
-		target, targetOwned := byObject[edge.to]
-		_, sourceOwned := byObject[edge.from]
-		if targetOwned && !sourceOwned {
-			if _, exists := rootSet[target]; !exists {
-				rootSet[target] = struct{}{}
-				queue = append(queue, target)
-			}
+		if _, exists := rootSet[root]; exists {
+			continue
 		}
+		rootSet[root] = struct{}{}
+		queue = append(queue, root)
 	}
 
 	marked := make(map[Ref]struct{})
 	seen := make(map[Ref]struct{})
+	type ephemeronLink struct {
+		table Ref
+		key   Ref
+		value Ref
+	}
+	byTable := make(map[Ref][]ephemeronLink)
+	byKey := make(map[Ref][]ephemeronLink)
+	links := make([]ephemeronLink, 0)
+	// Reverse value uses identify only ephemerons capable of retaining a value
+	// in this sweep. Unrelated weak collections never enter the checkpoint.
+	for _, value := range ownedRefs {
+		for _, use := range store.weakTargets[value] {
+			if use.role != weakMapValueUse {
+				continue
+			}
+			_, tableSlot, err := store.slotLocked(use.table)
+			if err != nil || tableSlot.Kind != HeapWeakMap || uint64(use.entry) >= uint64(len(tableSlot.WeakMap.Entries)) {
+				return Collection{}, fmt.Errorf("%w: invalid ephemeron use for %s", ErrInvariantViolation, value)
+			}
+			entry := tableSlot.WeakMap.Entries[use.entry]
+			link := ephemeronLink{table: use.table, key: entry.Key, value: value}
+			links = append(links, link)
+			byTable[link.table] = append(byTable[link.table], link)
+			byKey[link.key] = append(byKey[link.key], link)
+		}
+	}
+	isLive := func(ref Ref) bool {
+		if _, selected := owned[ref]; selected {
+			_, live := marked[ref]
+			return live
+		}
+		_, _, err := store.slotLocked(ref)
+		return err == nil
+	}
+	ephemeronQueued := make(map[Ref]struct{})
+	enqueueEphemeron := func(link ephemeronLink) {
+		if _, done := seen[link.value]; done {
+			return
+		}
+		if _, queued := ephemeronQueued[link.value]; queued {
+			return
+		}
+		ephemeronQueued[link.value] = struct{}{}
+		queue = append(queue, link.value)
+	}
+	activateEphemerons := func(ref Ref) {
+		for _, link := range byTable[ref] {
+			if isLive(link.key) {
+				enqueueEphemeron(link)
+			}
+		}
+		for _, link := range byKey[ref] {
+			if isLive(link.table) {
+				enqueueEphemeron(link)
+			}
+		}
+	}
+	for _, link := range links {
+		if isLive(link.table) && isLive(link.key) {
+			enqueueEphemeron(link)
+		}
+	}
 	references := make([]Value, 0, 16)
 	drainStrongReferences := func() error {
-		for len(queue) != 0 {
-			ref := queue[0]
-			queue = queue[1:]
+		for cursor := 0; cursor < len(queue); cursor++ {
+			ref := queue[cursor]
 			if _, exists := seen[ref]; exists {
 				continue
 			}
@@ -142,9 +203,14 @@ func (store *Store) collectLocked(owner ownership.OwnerID, regionID RegionID, ro
 			if err != nil {
 				return err
 			}
-			if _, isOwned := owned[ref]; isOwned {
-				marked[ref] = struct{}{}
+			if _, isOwned := owned[ref]; !isOwned {
+				// External sources were already represented by total incoming
+				// counts above. Validate them, but do not traverse a persistent or
+				// sibling graph during this local checkpoint.
+				continue
 			}
+			marked[ref] = struct{}{}
+			activateEphemerons(ref)
 			references = appendSlotReferences(references[:0], slot)
 			for _, value := range references {
 				if value.IsRef() {
@@ -158,75 +224,45 @@ func (store *Store) collectLocked(owner ownership.OwnerID, regionID RegionID, ro
 		return Collection{}, err
 	}
 
-	// Ephemeron values are traced only after both their table and key have
-	// become live through ordinary strong reachability. Repeat to a fixed point
-	// because one ephemeron value may reveal the key of another entry.
-	for {
-		added := false
-		for ref := range marked {
-			_, slot, _ := store.slotLocked(ref)
-			if slot.Kind != HeapWeakMap {
-				continue
-			}
-			for _, entry := range slot.WeakMap.Entries {
-				if !store.weakKeyLiveLocked(entry.Key, owned, marked) || !store.weakValueValidLocked(entry.Value) {
-					continue
-				}
-				if entry.Value.IsRef() {
-					valueRef := entry.Value.Ref()
-					if _, alreadySeen := seen[valueRef]; !alreadySeen {
-						queue = append(queue, valueRef)
-						added = true
-					}
-				}
-			}
-		}
-		if !added {
-			break
-		}
-		if err := drainStrongReferences(); err != nil {
-			return Collection{}, err
-		}
-	}
-
 	result := Collection{Roots: uint64(len(rootSet)), MarkedSlots: uint64(len(marked))}
 	for ref := range marked {
 		_, slot, _ := store.slotLocked(ref)
 		switch slot.Kind {
 		case HeapWeakMap:
-			kept := slot.WeakMap.Entries[:0]
-			for _, entry := range slot.WeakMap.Entries {
+			for index := 0; index < len(slot.WeakMap.Entries); {
+				entry := slot.WeakMap.Entries[index]
 				if store.weakKeyLiveLocked(entry.Key, owned, marked) && store.weakValueValidLocked(entry.Value) {
-					kept = append(kept, entry)
+					index++
 					continue
+				}
+				if err := store.removeWeakMapEntryLocked(ref, slot, uint32(index)); err != nil {
+					return Collection{}, err
 				}
 				result.ClearedWeakEntries++
 			}
-			clear(slot.WeakMap.Entries[len(kept):])
-			slot.WeakMap.Entries = kept
 		case HeapWeakSet:
-			kept := slot.WeakSet.Keys[:0]
-			for _, key := range slot.WeakSet.Keys {
+			for index := 0; index < len(slot.WeakSet.Keys); {
+				key := slot.WeakSet.Keys[index]
 				if store.weakKeyLiveLocked(key, owned, marked) {
-					kept = append(kept, key)
+					index++
 					continue
+				}
+				if err := store.removeWeakSetEntryLocked(ref, slot, uint32(index)); err != nil {
+					return Collection{}, err
 				}
 				result.ClearedWeakEntries++
 			}
-			clear(slot.WeakSet.Keys[len(kept):])
-			slot.WeakSet.Keys = kept
 		}
 	}
 
 	candidates := make([]Ref, 0, len(owned)-len(marked))
-	candidateObjects := make(map[ownership.ObjectID]struct{})
+	candidateSet := make(map[Ref]struct{})
 	for ref := range owned {
 		if _, live := marked[ref]; live {
 			continue
 		}
 		candidates = append(candidates, ref)
-		_, slot, _ := store.slotLocked(ref)
-		candidateObjects[slot.object] = struct{}{}
+		candidateSet[ref] = struct{}{}
 	}
 	sort.Slice(candidates, func(left, right int) bool {
 		if candidates[left].Region != candidates[right].Region {
@@ -234,17 +270,28 @@ func (store *Store) collectLocked(owner ownership.OwnerID, regionID RegionID, ro
 		}
 		return candidates[left].Slot < candidates[right].Slot
 	})
-	for edge, count := range store.objectEdges {
-		if count == 0 {
-			continue
-		}
-		if _, target := candidateObjects[edge.to]; !target {
-			continue
-		}
-		if _, source := candidateObjects[edge.from]; !source {
-			return Collection{}, fmt.Errorf("%w: object %d -> %d", ErrObjectReferenced, edge.from, edge.to)
+	candidateIncoming, err := store.incomingFromSourcesLocked(candidates, candidateSet)
+	if err != nil {
+		return Collection{}, err
+	}
+	for _, candidate := range candidates {
+		_, slot, _ := store.slotLocked(candidate)
+		if slot.incoming != candidateIncoming[candidate] {
+			return Collection{}, fmt.Errorf("%w: %s has %d incoming references, only %d from the collection set", ErrObjectReferenced, candidate, slot.incoming, candidateIncoming[candidate])
 		}
 	}
+	var cleared uint64
+	for _, target := range candidates {
+		removed, err := store.dropWeakTargetUsesLocked(target, nil, func(table Ref) bool {
+			_, tableCollected := candidateSet[table]
+			return !tableCollected
+		})
+		if err != nil {
+			return Collection{}, err
+		}
+		cleared += removed
+	}
+	result.ClearedWeakEntries += cleared
 
 	references = references[:0]
 	for _, ref := range candidates {
@@ -258,15 +305,18 @@ func (store *Store) collectLocked(owner ownership.OwnerID, regionID RegionID, ro
 	for _, ref := range candidates {
 		region, slot, _ := store.slotLocked(ref)
 		bytes := slotLiveBytes(slot)
-		if err := store.ledger.Release(slot.object, region.Owner); err != nil {
+		if slot.incoming != 0 {
+			return Collection{}, fmt.Errorf("%w: collected %s retains %d incoming references", ErrInvariantViolation, ref, slot.incoming)
+		}
+		store.forgetPromotionsFromSourceLocked(ref)
+		store.forgetPromotionsToDestinationLocked(ref)
+		store.recordKindFreeLocked(slot)
+		if err := store.forgetWeakTableLocked(ref, slot); err != nil {
 			return Collection{}, err
 		}
-		store.recordKindFreeLocked(slot)
 		if err := store.clearSlotPayloadLocked(slot); err != nil {
 			return Collection{}, err
 		}
-		delete(store.objectRegions, slot.object)
-		slot.object = 0
 		slot.Occupied = false
 		if slot.Generation != math.MaxUint32 {
 			slot.Generation++
@@ -282,6 +332,38 @@ func (store *Store) collectLocked(owner ownership.OwnerID, regionID RegionID, ro
 	store.stats.CollectedBytes += result.ReclaimedBytes
 	store.stats.WeakEntriesCleared += result.ClearedWeakEntries
 	return result, nil
+}
+
+// incomingFromSourcesLocked counts authoritative strong references from one
+// source set into one target set. Weak keys and ephemeron values are absent
+// from appendSlotReferences and remain governed by the fixed point above.
+func (store *Store) incomingFromSourcesLocked(sources []Ref, targets map[Ref]struct{}) (map[Ref]uint32, error) {
+	counts := make(map[Ref]uint32)
+	references := make([]Value, 0, 16)
+	for _, source := range sources {
+		_, slot, err := store.slotLocked(source)
+		if err != nil {
+			return nil, err
+		}
+		references = appendSlotReferences(references[:0], slot)
+		for _, value := range references {
+			if !value.IsRef() {
+				continue
+			}
+			target := value.Ref()
+			if _, _, err := store.slotLocked(target); err != nil {
+				return nil, fmt.Errorf("memory: %s contains %s: %w", source, target, err)
+			}
+			if _, selected := targets[target]; !selected {
+				continue
+			}
+			if counts[target] == math.MaxUint32 {
+				return nil, fmt.Errorf("memory: incoming reference count overflows for %s", target)
+			}
+			counts[target]++
+		}
+	}
+	return counts, nil
 }
 
 func (store *Store) weakKeyLiveLocked(key Ref, owned, marked map[Ref]struct{}) bool {

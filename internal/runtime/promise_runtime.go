@@ -500,9 +500,82 @@ func (execution *execution) enqueuePromiseReactions(promise memory.Ref) error {
 
 func (execution *execution) enqueueJob(job microtaskJob) {
 	interpreter := execution.interpreter
+	execution.context.trackJobs(interpreter)
 	interpreter.jobMutex.Lock()
 	interpreter.jobs[execution.context.TaskID] = append(interpreter.jobs[execution.context.TaskID], job)
 	interpreter.jobMutex.Unlock()
+}
+
+func (interpreter *Interpreter) hasTaskJobs(task TaskID) bool {
+	if interpreter == nil || task == 0 {
+		return false
+	}
+	interpreter.jobMutex.Lock()
+	hasJobs := len(interpreter.jobs[task]) != 0
+	interpreter.jobMutex.Unlock()
+	return hasJobs
+}
+
+func (interpreter *Interpreter) visitJobRefs(task TaskID, visit func(memory.Ref) error) error {
+	if interpreter == nil || task == 0 || visit == nil {
+		return nil
+	}
+	interpreter.jobMutex.Lock()
+	refs := make([]memory.Ref, 0, len(interpreter.jobs[task])*5)
+	for _, job := range interpreter.jobs[task] {
+		refs = appendMicrotaskJobRefs(refs, &job)
+	}
+	interpreter.jobMutex.Unlock()
+	for _, ref := range refs {
+		if err := visit(ref); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func appendMicrotaskJobRefs(refs []memory.Ref, job *microtaskJob) []memory.Ref {
+	if job == nil {
+		return refs
+	}
+	if job.callback != (memory.Ref{}) {
+		refs = append(refs, job.callback)
+	}
+	for _, value := range [...]memory.Value{
+		job.result,
+		job.reaction.OnFulfilled,
+		job.reaction.OnRejected,
+		job.reaction.Downstream,
+	} {
+		if value.IsRef() {
+			refs = append(refs, value.Ref())
+		}
+	}
+	return refs
+}
+
+func visitMicrotaskJobRefs(job *microtaskJob, visit func(memory.Ref) error) error {
+	if job == nil || visit == nil {
+		return nil
+	}
+	if job.callback != (memory.Ref{}) {
+		if err := visit(job.callback); err != nil {
+			return err
+		}
+	}
+	for _, value := range [...]memory.Value{
+		job.result,
+		job.reaction.OnFulfilled,
+		job.reaction.OnRejected,
+		job.reaction.Downstream,
+	} {
+		if value.IsRef() {
+			if err := visit(value.Ref()); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (execution *execution) popJob() (microtaskJob, bool) {
@@ -548,6 +621,7 @@ func (execution *execution) drainJobs() error {
 		}
 		processed++
 		execution.steps = 0
+		execution.context.beginJob(job)
 		var err error
 		switch job.kind {
 		case microtaskCallback:
@@ -567,7 +641,7 @@ func (execution *execution) drainJobs() error {
 		default:
 			err = fmt.Errorf("runtime: unknown microtask job %d", job.kind)
 		}
-		result = errors.Join(result, err)
+		result = errors.Join(result, err, execution.context.finishJob())
 	}
 }
 

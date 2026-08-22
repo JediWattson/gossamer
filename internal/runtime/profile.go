@@ -10,10 +10,11 @@ import (
 // deliberately contains no wall-clock timestamp: callers provide their own
 // sequence labels so repeated workloads remain directly comparable.
 type RealmProfile struct {
-	Memory         memory.Stats    `json:"memory"`
-	Ownership      ownership.Stats `json:"ownership"`
-	TaskDepth      int             `json:"taskDepth"`
-	MicrotaskDepth int             `json:"microtaskDepth"`
+	Memory            memory.Stats            `json:"memory"`
+	Ownership         ownership.Stats         `json:"ownership"`
+	OwnershipPhysical ownership.PhysicalStats `json:"ownershipPhysical"`
+	TaskDepth         int                     `json:"taskDepth"`
+	MicrotaskDepth    int                     `json:"microtaskDepth"`
 }
 
 // Profile returns a point-in-time snapshot of the Go side of a Realm. Store,
@@ -25,9 +26,10 @@ func (realm *Realm) Profile() RealmProfile {
 		return RealmProfile{}
 	}
 	return RealmProfile{
-		Memory:         realm.store.Stats(),
-		Ownership:      realm.ledger.Stats(),
-		TaskDepth:      realm.Tasks.Len(),
-		MicrotaskDepth: realm.Microtasks.Len(),
+		Memory:            realm.store.Stats(),
+		Ownership:         realm.ledger.Stats(),
+		OwnershipPhysical: realm.ledger.PhysicalStats(),
+		TaskDepth:         realm.Tasks.Len(),
+		MicrotaskDepth:    realm.Microtasks.Len(),
 	}
 }

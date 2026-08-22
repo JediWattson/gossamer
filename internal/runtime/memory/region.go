@@ -87,9 +87,9 @@ type slotPayload struct {
 // deliberately embedded so existing typed access remains direct while vacant
 // slots retain only the stable header needed to reject stale Refs.
 type Slot struct {
-	object ownership.ObjectID
 	*slotPayload
 	Generation uint32
+	incoming   uint32
 	Kind       HeapKind
 	Occupied   bool
 }

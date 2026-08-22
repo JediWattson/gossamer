@@ -217,24 +217,13 @@ func (state *nodeLifetimeState) sync(task *browserruntime.TaskContext) error {
 	}
 	var documentDestroyed []ownership.ObjectID
 	if graphRemoved || documentDirty {
-		documentRoots := make([]ownership.ObjectID, 0, len(state.facades)+1)
+		documentRoots := make([]ownership.ObjectID, 0, 1)
 		documentRoots = append(documentRoots, state.documentRoot)
 		for _, record := range records {
 			facade := state.facades[record.ID]
 			if facade == (memory.Ref{}) {
 				return fmt.Errorf("browser: node %d has no facade record", record.ID)
 			}
-		}
-		// Keep every facade rooted through this reconciliation, including records
-		// whose DOM identities were just retired by a cross-document adoption.
-		// reclaim frees those physical slots after the semantic node graph reports
-		// its destroyed set; the next reconciliation then drops the facade claim.
-		for _, facade := range state.facades {
-			object, objectErr := state.store.ObjectID(state.documentOwner, facade)
-			if objectErr != nil {
-				return objectErr
-			}
-			documentRoots = append(documentRoots, object)
 		}
 		documentDestroyed, err = state.ledger.ReconcileRegion(state.documentOwner, documentRoots)
 		if err != nil {

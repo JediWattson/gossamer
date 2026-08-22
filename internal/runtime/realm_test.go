@@ -99,7 +99,7 @@ func TestRealmProfileTracksQueuedNativeGraphLifetime(t *testing.T) {
 		t.Fatal(err)
 	}
 	inTransit := realm.Profile()
-	if inTransit.TaskDepth != 1 || inTransit.Memory.LiveCells != 1 || inTransit.Memory.LiveStrings != 1 || inTransit.Memory.LiveSlots != 2 || inTransit.Ownership.LiveObjects != 2 {
+	if inTransit.TaskDepth != 1 || inTransit.Memory.LiveCells != 1 || inTransit.Memory.LiveStrings != 1 || inTransit.Memory.LiveSlots != 2 || inTransit.Ownership.LiveObjects != 0 {
 		t.Fatalf("in-transit profile = %#v", inTransit)
 	}
 	if err := realm.Store().CheckInvariants(); err != nil {

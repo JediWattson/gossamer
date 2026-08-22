@@ -110,7 +110,7 @@ func TestDetachedWrapperGraphOutlivesTaskThenReclaims(t *testing.T) {
 	}
 	afterTask := browserRuntime.Ledger().Stats()
 	if afterTask.TaskLocalAllocations-baselineOwnership.TaskLocalAllocations != 2 ||
-		afterTask.LiveObjects-baselineOwnership.LiveObjects != 4 ||
+		afterTask.LiveObjects-baselineOwnership.LiveObjects != 2 ||
 		document.Store().LiveLen()-baselineNodes != 2 {
 		t.Fatalf("construction region after task = nodes:%d ownership:%#v baseline:%#v",
 			document.Store().LiveLen()-baselineNodes, afterTask, baselineOwnership)
@@ -130,7 +130,7 @@ func TestDetachedWrapperGraphOutlivesTaskThenReclaims(t *testing.T) {
 	}
 	afterCollection := browserRuntime.Ledger().Stats()
 	if afterCollection.LiveObjects != baselineOwnership.LiveObjects ||
-		afterCollection.ObjectsDestroyed-baselineOwnership.ObjectsDestroyed != 4 ||
+		afterCollection.ObjectsDestroyed-baselineOwnership.ObjectsDestroyed != 2 ||
 		document.Store().LiveLen() != baselineNodes {
 		t.Fatalf("wrapper collection = liveNodes:%d ownership:%#v baseline:%#v",
 			document.Store().LiveLen(), afterCollection, baselineOwnership)
@@ -257,7 +257,7 @@ func TestDetachedEventTargetOutlivesWrapperUntilFinalListenerRelease(t *testing.
 	}
 	after := browserRuntime.Ledger().Stats()
 	if after.LiveObjects != baseline.LiveObjects ||
-		after.ObjectsDestroyed-baseline.ObjectsDestroyed != 2 {
+		after.ObjectsDestroyed-baseline.ObjectsDestroyed != 1 {
 		t.Fatalf("listener lifetime ownership = before:%#v after:%#v", baseline, after)
 	}
 }

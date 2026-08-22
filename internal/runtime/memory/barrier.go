@@ -21,11 +21,17 @@ type edgeKey struct {
 // Barrier maintains counted region-to-region references. Store serializes all
 // access to it, so Barrier itself intentionally has no second mutex.
 type Barrier struct {
-	edges map[edgeKey]uint32
+	edges    map[edgeKey]uint32
+	outgoing map[RegionID]map[RegionID]struct{}
+	incoming map[RegionID]map[RegionID]struct{}
 }
 
 func newBarrier() *Barrier {
-	return &Barrier{edges: make(map[edgeKey]uint32)}
+	return &Barrier{
+		edges:    make(map[edgeKey]uint32),
+		outgoing: make(map[RegionID]map[RegionID]struct{}),
+		incoming: make(map[RegionID]map[RegionID]struct{}),
+	}
 }
 
 func (barrier *Barrier) link(from, to RegionID) error {
@@ -33,10 +39,21 @@ func (barrier *Barrier) link(from, to RegionID) error {
 		return nil
 	}
 	key := edgeKey{from: from, to: to}
-	if barrier.edges[key] == math.MaxUint32 {
+	count := barrier.edges[key]
+	if count == math.MaxUint32 {
 		return fmt.Errorf("memory: region edge R%d -> R%d count overflow", from, to)
 	}
-	barrier.edges[key]++
+	if count == 0 {
+		if barrier.outgoing[from] == nil {
+			barrier.outgoing[from] = make(map[RegionID]struct{})
+		}
+		if barrier.incoming[to] == nil {
+			barrier.incoming[to] = make(map[RegionID]struct{})
+		}
+		barrier.outgoing[from][to] = struct{}{}
+		barrier.incoming[to][from] = struct{}{}
+	}
+	barrier.edges[key] = count + 1
 	return nil
 }
 
@@ -51,6 +68,14 @@ func (barrier *Barrier) unlink(from, to RegionID) error {
 	}
 	if count == 1 {
 		delete(barrier.edges, key)
+		delete(barrier.outgoing[from], to)
+		if len(barrier.outgoing[from]) == 0 {
+			delete(barrier.outgoing, from)
+		}
+		delete(barrier.incoming[to], from)
+		if len(barrier.incoming[to]) == 0 {
+			delete(barrier.incoming, to)
+		}
 		return nil
 	}
 	barrier.edges[key] = count - 1

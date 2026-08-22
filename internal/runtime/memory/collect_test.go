@@ -121,3 +121,41 @@ func TestCollectRegionPreservesSiblingOwnerRegionsAndTheirIncomingEdges(t *testi
 	}
 	assertStoreInvariants(t, store, "region-scoped collection")
 }
+
+func TestCollectRegionPreservesValueFromLiveSiblingEphemeron(t *testing.T) {
+	t.Parallel()
+
+	store := memory.NewStore(nil)
+	defer store.Close()
+	owner := realmOwner(953)
+	tableRegion := mustRegion(t, store, owner)
+	valueRegion := mustRegion(t, store, owner)
+	table, err := store.AllocWeakMap(owner, tableRegion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := mustAlloc(t, store, owner, tableRegion)
+	value := mustAlloc(t, store, owner, valueRegion)
+	if err := store.WeakMapSet(owner, table, key, memory.RefValue(value)); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := store.CollectRegion(owner, valueRegion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.MarkedSlots != 1 || result.ReclaimedSlots != 0 || result.ClearedWeakEntries != 0 {
+		t.Fatalf("region collection = %#v", result)
+	}
+	if _, err := store.Deref(owner, value); err != nil {
+		t.Fatalf("live sibling ephemeron value was collected: %v", err)
+	}
+	snapshot, err := store.DerefWeakMap(owner, table)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Entries) != 1 || !snapshot.Entries[0].Value.IsRef() || snapshot.Entries[0].Value.Ref() != value {
+		t.Fatalf("WeakMap after collection = %#v", snapshot)
+	}
+	assertStoreInvariants(t, store, "sibling ephemeron collection")
+}

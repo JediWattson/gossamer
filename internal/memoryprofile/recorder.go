@@ -120,9 +120,6 @@ func Capture(page *browser.Page, sequence uint64, label string, elapsed time.Dur
 		liveNodes = document.Store().LiveLen()
 	}
 	physical := page.Realm.Store().PhysicalStats()
-	if script.Engine == "strand" {
-		script.HeapBytes = physical.AttributedBytes
-	}
 	return Snapshot{
 		Sequence:      sequence,
 		Label:         label,

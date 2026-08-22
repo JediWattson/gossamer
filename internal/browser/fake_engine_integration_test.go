@@ -107,8 +107,8 @@ func TestFakeEngineClickQueuesCallbackMutationAndRender(t *testing.T) {
 		t.Fatal("render task did not publish the fake-engine mutation")
 	}
 	final := engine.Ledger().Stats()
-	if final.ObjectsCreated-baseline.ObjectsCreated < 3 ||
-		final.ObjectsDestroyed-baseline.ObjectsDestroyed < 3 ||
+	if final.ObjectsCreated-baseline.ObjectsCreated < 2 ||
+		final.ObjectsDestroyed-baseline.ObjectsDestroyed < 2 ||
 		final.LiveObjects != baseline.LiveObjects {
 		t.Fatalf("click ownership delta: before=%#v after=%#v", baseline, final)
 	}

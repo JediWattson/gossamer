@@ -22,10 +22,24 @@ type PhysicalStats struct {
 	RegionRecords             uint64 `json:"regionRecords"`
 	PooledSlotBuffers         uint64 `json:"pooledSlotBuffers"`
 	RegionEdgeEntries         uint64 `json:"regionEdgeEntries"`
-	ObjectEdgeEntries         uint64 `json:"objectEdgeEntries"`
-	ObjectRegionEntries       uint64 `json:"objectRegionEntries"`
-	PromotionEntries          uint64 `json:"promotionEntries"`
-	OwnerClaimEntries         uint64 `json:"ownerClaimEntries"`
+	RegionOutgoingIndexes     uint64 `json:"regionOutgoingIndexes"`
+	RegionIncomingIndexes     uint64 `json:"regionIncomingIndexes"`
+	WeakTableEntries          uint64 `json:"weakTableEntries"`
+	WeakTargetEntries         uint64 `json:"weakTargetEntries"`
+	WeakTargetReferences      uint64 `json:"weakTargetReferences"`
+	WeakTargetUseBytes        uint64 `json:"weakTargetUseBytes"`
+	// ObjectEdge and ObjectRegion fields are retained in the profile schema so
+	// old baselines remain comparable. They stay zero now that typed payloads,
+	// rather than a shadow ledger graph, own the complete heap topology.
+	ObjectEdgeEntries           uint64 `json:"objectEdgeEntries"`
+	ObjectEdgeReservedEntries   uint64 `json:"objectEdgeReservedEntries"`
+	ObjectEdgeOccupiedBytes     uint64 `json:"objectEdgeOccupiedBytes"`
+	ObjectEdgeReservedBytes     uint64 `json:"objectEdgeReservedBytes"`
+	ObjectRegionEntries         uint64 `json:"objectRegionEntries"`
+	PromotionEntries            uint64 `json:"promotionEntries"`
+	PromotionSourceEntries      uint64 `json:"promotionSourceEntries"`
+	PromotionDestinationEntries uint64 `json:"promotionDestinationEntries"`
+	OwnerClaimEntries           uint64 `json:"ownerClaimEntries"`
 }
 
 // PhysicalStats scans the Store at a profiling checkpoint. Ordinary runtime
@@ -38,18 +52,26 @@ func (store *Store) PhysicalStats() PhysicalStats {
 	defer store.mutex.Unlock()
 
 	result := PhysicalStats{
-		SlotSizeBytes:        uint64(unsafe.Sizeof(Slot{})),
-		SlotPayloadSizeBytes: uint64(unsafe.Sizeof(slotPayload{})),
-		RefSizeBytes:         uint64(unsafe.Sizeof(Ref{})),
-		ValueSizeBytes:       uint64(unsafe.Sizeof(Value{})),
-		RegionRecords:        uint64(len(store.regions)),
-		ObjectEdgeEntries:    uint64(len(store.objectEdges)),
-		ObjectRegionEntries:  uint64(len(store.objectRegions)),
-		PromotionEntries:     uint64(len(store.promotions)),
-		OwnerClaimEntries:    uint64(len(store.ownerClaims)),
+		SlotSizeBytes:               uint64(unsafe.Sizeof(Slot{})),
+		SlotPayloadSizeBytes:        uint64(unsafe.Sizeof(slotPayload{})),
+		RefSizeBytes:                uint64(unsafe.Sizeof(Ref{})),
+		ValueSizeBytes:              uint64(unsafe.Sizeof(Value{})),
+		RegionRecords:               uint64(len(store.regions)),
+		WeakTableEntries:            uint64(len(store.weakTables)),
+		WeakTargetEntries:           uint64(len(store.weakTargets)),
+		PromotionEntries:            uint64(len(store.promotions)),
+		PromotionSourceEntries:      uint64(len(store.promotionsBySource)),
+		PromotionDestinationEntries: uint64(len(store.promotionsByDestination)),
+		OwnerClaimEntries:           uint64(len(store.owners)),
 	}
 	if store.barrier != nil {
 		result.RegionEdgeEntries = uint64(len(store.barrier.edges))
+		result.RegionOutgoingIndexes = uint64(len(store.barrier.outgoing))
+		result.RegionIncomingIndexes = uint64(len(store.barrier.incoming))
+	}
+	for _, uses := range store.weakTargets {
+		result.WeakTargetReferences += uint64(len(uses))
+		result.WeakTargetUseBytes += uint64(cap(uses)) * uint64(unsafe.Sizeof(weakUse{}))
 	}
 	functionStorage := make(map[unsafe.Pointer]struct{})
 	for _, region := range store.regions {
@@ -76,7 +98,7 @@ func (store *Store) PhysicalStats() PhysicalStats {
 	result.ReservedTypedPayloadBytes = typedPayloads.reservedBytes
 	result.OccupiedTypedPayloadBytes = typedPayloads.occupiedBytes
 	result.PayloadBytes += typedPayloads.reservedBytes
-	result.AttributedBytes = result.ReservedSlotBytes + result.PayloadBytes + result.FreeListBytes
+	result.AttributedBytes = result.ReservedSlotBytes + result.PayloadBytes + result.FreeListBytes + result.WeakTargetUseBytes
 	return result
 }
 
@@ -115,6 +137,7 @@ func slotPayloadCapacityBytes(slot *Slot, functionStorage map[unsafe.Pointer]str
 		bytes += sliceCapacityBytes(slot.WeakMap.Entries)
 	case HeapWeakSet:
 		bytes += sliceCapacityBytes(slot.WeakSet.Keys)
+		bytes += sliceCapacityBytes(slot.WeakSet.uses)
 	}
 	return bytes
 }

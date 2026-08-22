@@ -42,19 +42,3 @@ func (store *Store) DerefHostObject(owner ownership.OwnerID, ref Ref) (HostObjec
 	}
 	return *slot.HostObject, nil
 }
-
-// ObjectID returns the semantic ledger identity behind one physical Ref. It is
-// the narrow bridge used when a non-Store ownership root must retain a typed
-// native object without exposing Slot storage.
-func (store *Store) ObjectID(owner ownership.OwnerID, ref Ref) (ownership.ObjectID, error) {
-	if store == nil {
-		return 0, fmt.Errorf("memory: nil store")
-	}
-	store.mutex.Lock()
-	defer store.mutex.Unlock()
-	_, slot, err := store.readSlotLocked(owner, ref)
-	if err != nil {
-		return 0, err
-	}
-	return slot.object, nil
-}

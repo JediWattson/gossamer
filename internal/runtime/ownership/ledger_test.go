@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"math"
+	"math/rand"
 	"reflect"
 	"strings"
 	"testing"
+	"unsafe"
 )
 
 func TestTaskQueueTaskOwnershipLifecycle(t *testing.T) {
@@ -290,7 +293,7 @@ func TestDestroyUnlinksOnlyAdjacentObjectEdges(t *testing.T) {
 	if err := ledger.AddReference(shorter, longer); err != nil {
 		t.Fatal(err)
 	}
-	if _, exists := ledger.objects[longer].incoming[shorter]; !exists {
+	if ledger.objects[longer].incoming == 0 || ledger.edges.record(ledger.objects[longer].incoming).from != shorter {
 		t.Fatal("incoming edge index does not contain source")
 	}
 
@@ -404,7 +407,7 @@ func TestLedgerCompactsCommonClaimsAndAllocatesEdgesLazily(t *testing.T) {
 		t.Fatal(err)
 	}
 	record := ledger.objects[object]
-	if record.claim != taskRegion || record.claims != nil || record.edges != nil || record.incoming != nil {
+	if record.claim != taskRegion || record.claims != nil || record.outgoing != 0 || record.incoming != 0 || record.edgeLookup != nil {
 		t.Fatalf("fresh object record is not compact: %#v", record)
 	}
 	if err := ledger.Publish(object, task, realm); err != nil {
@@ -529,6 +532,122 @@ func TestPublishPromotesOnlyTowardLongerLivedRegions(t *testing.T) {
 	}
 }
 
+func TestCloseRegionRelocatesStorageAndRetiresOwnerMetadata(t *testing.T) {
+	ledger := NewLedgerWithEventLimit(0)
+	realm := OwnerID{Kind: OwnerRealm, Value: 41}
+	task := OwnerID{Kind: OwnerTask, Value: 41}
+	realmRegion := mustCreateRegion(t, ledger, realm)
+	taskRegion := mustCreateRegion(t, ledger, task)
+	object, err := ledger.CreateObject(realmRegion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ledger.Transfer(object, realm, task); err != nil {
+		t.Fatal(err)
+	}
+	if err := ledger.CloseRegion(realmRegion); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := ledger.Object(object)
+	if err != nil || !snapshot.Alive || snapshot.Region != taskRegion {
+		t.Fatalf("relocated object = %#v, %v", snapshot, err)
+	}
+	if _, exists := ledger.regions[realmRegion]; exists {
+		t.Fatal("closed realm region was retained")
+	}
+	if _, exists := ledger.ownerRegions[realm]; exists {
+		t.Fatal("closed realm owner was retained")
+	}
+	if _, err := ledger.CreateObject(realmRegion); !errors.Is(err, ErrRegionClosed) {
+		t.Fatalf("CreateObject(closed region) = %v, want ErrRegionClosed", err)
+	}
+	if err := ledger.CloseRegion(realmRegion); err != nil {
+		t.Fatalf("second CloseRegion() = %v", err)
+	}
+	if stats := ledger.Stats(); stats.PersistentObjects != 0 {
+		t.Fatalf("PersistentObjects after relocation = %d", stats.PersistentObjects)
+	}
+	if err := ledger.CloseRegion(taskRegion); err != nil {
+		t.Fatal(err)
+	}
+	if len(ledger.regions) != 0 || len(ledger.ownerRegions) != 0 {
+		t.Fatalf("ledger retained regions=%d owners=%d", len(ledger.regions), len(ledger.ownerRegions))
+	}
+	snapshot, err = ledger.Object(object)
+	if err != nil || snapshot.Alive || snapshot.Region != taskRegion {
+		t.Fatalf("destroyed object snapshot = %#v, %v", snapshot, err)
+	}
+}
+
+func TestEdgeArenaPhysicalStatsReleaseWholeSlabs(t *testing.T) {
+	ledger := NewLedgerWithEventLimit(0)
+	owner := OwnerID{Kind: OwnerRealm, Value: 88_001}
+	region, err := ledger.CreateRegion(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub, err := ledger.CreateObject(region)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const edges = 257
+	targets := make([]ObjectID, edges)
+	for index := range targets {
+		targets[index], err = ledger.CreateObject(region)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := ledger.AddReference(hub, targets[index]); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	twoSlabs := ledger.PhysicalStats()
+	if twoSlabs.LiveEdgeEntries != edges || twoSlabs.EdgeArenaSlabs != 2 ||
+		twoSlabs.EdgeArenaOccupiedBytes != edges*twoSlabs.EdgeRecordSizeBytes ||
+		twoSlabs.EdgeArenaReservedBytes <= twoSlabs.EdgeArenaOccupiedBytes {
+		t.Fatalf("two-slab physical stats = %#v", twoSlabs)
+	}
+	for _, target := range targets[:256] {
+		if err := ledger.RemoveReference(hub, target); err != nil {
+			t.Fatal(err)
+		}
+	}
+	oneSlab := ledger.PhysicalStats()
+	if oneSlab.LiveEdgeEntries != 1 || oneSlab.EdgeArenaSlabs != 1 ||
+		oneSlab.EdgeArenaReservedBytes >= twoSlabs.EdgeArenaReservedBytes {
+		t.Fatalf("one-slab physical stats = %#v; before=%#v", oneSlab, twoSlabs)
+	}
+	if err := ledger.RemoveReference(hub, targets[256]); err != nil {
+		t.Fatal(err)
+	}
+	if empty := ledger.PhysicalStats(); empty.LiveEdgeEntries != 0 || empty.EdgeArenaSlabs != 0 ||
+		empty.EdgeArenaOccupiedBytes != 0 || empty.EdgeArenaReservedBytes != 0 {
+		t.Fatalf("empty edge arena physical stats = %#v", empty)
+	}
+}
+
+func TestMonotonicIDsFailBeforeOverflow(t *testing.T) {
+	ledger := NewLedger()
+	ledger.nextRegion = RegionID(math.MaxUint64)
+	if _, err := ledger.CreateRegion(OwnerID{Kind: OwnerRealm, Value: 89_001}); err == nil || !strings.Contains(err.Error(), "exhausted region IDs") {
+		t.Fatalf("CreateRegion() at ID exhaustion = %v", err)
+	}
+	if len(ledger.regions) != 0 || len(ledger.ownerRegions) != 0 {
+		t.Fatal("exhausted CreateRegion mutated ledger metadata")
+	}
+
+	ledger = NewLedger()
+	region := mustCreateRegion(t, ledger, OwnerID{Kind: OwnerRealm, Value: 89_002})
+	ledger.nextObject = ObjectID(math.MaxUint64)
+	if _, err := ledger.CreateObject(region); err == nil || !strings.Contains(err.Error(), "exhausted object IDs") {
+		t.Fatalf("CreateObject() at ID exhaustion = %v", err)
+	}
+	if len(ledger.objects) != 0 || len(ledger.regions[region].objects) != 0 || len(ledger.regions[region].claims) != 0 {
+		t.Fatal("exhausted CreateObject mutated ledger metadata")
+	}
+}
+
 func TestOwnershipOperationsRejectInvalidTransitionsAtomically(t *testing.T) {
 	t.Parallel()
 
@@ -635,37 +754,138 @@ func TestReconcileShorterRegionClaimsLongerLivedRoot(t *testing.T) {
 	assertObject(t, ledger, node, true, wrapperRegion, map[OwnerID]int{wrapper: 1})
 }
 
-func TestAllocationFreeObjectStateReads(t *testing.T) {
+func TestEdgeArenaIndexesOnlyHighDegreeObjectsAndReusesRecords(t *testing.T) {
 	ledger := NewLedgerWithEventLimit(0)
-	owner := OwnerID{Kind: OwnerTask, Value: 1}
+	owner := OwnerID{Kind: OwnerTask, Value: 92}
 	region := mustCreateRegion(t, ledger, owner)
-	parent, err := ledger.CreateObject(region)
+	root, err := ledger.CreateObject(region)
 	if err != nil {
 		t.Fatal(err)
 	}
-	child, err := ledger.CreateObject(region)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := ledger.AddReference(parent, child); err != nil {
-		t.Fatal(err)
-	}
-
-	objects := []ObjectID{parent, child}
-	counts := make([]int, len(objects))
-	targets := map[ObjectID]struct{}{child: {}}
-	if allocations := testing.AllocsPerRun(100, func() {
-		if err := ledger.ReferenceCounts(objects, counts); err != nil {
+	targets := make([]ObjectID, edgeLookupThreshold+4)
+	for index := range targets {
+		targets[index], err = ledger.CreateObject(region)
+		if err != nil {
 			t.Fatal(err)
 		}
-		if err := ledger.ValidateObjectState(parent, owner, targets); err != nil {
+		if err := ledger.AddReference(root, targets[index]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(ledger.objects[root].edgeLookup) != len(targets) {
+		t.Fatalf("high-degree lookup has %d entries, want %d", len(ledger.objects[root].edgeLookup), len(targets))
+	}
+	for index := 1; index < len(targets); index += 2 {
+		if err := ledger.RemoveReference(root, targets[index]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := make([]ObjectID, 0, (len(targets)+1)/2)
+	for index := 0; index < len(targets); index += 2 {
+		want = append(want, targets[index])
+	}
+	if ledger.objects[root].edgeLookup != nil {
+		t.Fatalf("low-degree object retained high-degree lookup with %d entries", len(ledger.objects[root].edgeLookup))
+	}
+	if snapshot, err := ledger.Object(root); err != nil || !reflect.DeepEqual(snapshot.Edges, want) {
+		t.Fatalf("remaining high-degree edges = %#v, want %v, err=%v", snapshot.Edges, want, err)
+	}
+
+	keeper, err := ledger.CreateObject(region)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ledger.AddReference(keeper, root); err != nil {
+		t.Fatal(err)
+	}
+	source, err := ledger.CreateObject(region)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := ledger.CreateObject(region)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ledger.AddReference(source, target); err != nil {
+		t.Fatal(err)
+	}
+	if err := ledger.RemoveReference(source, target); err != nil {
+		t.Fatal(err)
+	}
+	if allocations := testing.AllocsPerRun(100, func() {
+		if err := ledger.AddReference(source, target); err != nil {
+			t.Fatal(err)
+		}
+		if err := ledger.RemoveReference(source, target); err != nil {
 			t.Fatal(err)
 		}
 	}); allocations != 0 {
-		t.Fatalf("allocation-free state reads allocated %.2f objects per run", allocations)
+		t.Fatalf("reused low-degree edge allocated %.2f objects per cycle", allocations)
 	}
-	if counts[0] != 1 || counts[1] != 1 {
-		t.Fatalf("ReferenceCounts() = %v, want [1 1]", counts)
+	if unsafe.Sizeof(edgeRecord{}) > 32 {
+		t.Fatalf("edge record grew to %d bytes", unsafe.Sizeof(edgeRecord{}))
+	}
+	if err := ledger.CloseRegion(region); err != nil {
+		t.Fatal(err)
+	}
+	if ledger.edges.live != 0 || len(ledger.edges.slabs) != 0 {
+		t.Fatalf("region release retained edge arena: live=%d slabs=%d", ledger.edges.live, len(ledger.edges.slabs))
+	}
+}
+
+func TestEdgeArenaRandomizedAgainstReferenceModel(t *testing.T) {
+	ledger := NewLedgerWithEventLimit(0)
+	owner := OwnerID{Kind: OwnerTask, Value: 93}
+	region := mustCreateRegion(t, ledger, owner)
+	objects := make([]ObjectID, 64)
+	for index := range objects {
+		var err error
+		objects[index], err = ledger.CreateObject(region)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	type pair struct{ from, to ObjectID }
+	want := make(map[pair]bool)
+	random := rand.New(rand.NewSource(93))
+	for operation := 0; operation < 10_000; operation++ {
+		edge := pair{
+			from: objects[random.Intn(len(objects))],
+			to:   objects[random.Intn(len(objects))],
+		}
+		if !want[edge] || random.Intn(3) != 0 {
+			if err := ledger.AddReference(edge.from, edge.to); err != nil {
+				t.Fatal(err)
+			}
+			want[edge] = true
+		} else {
+			if err := ledger.RemoveReference(edge.from, edge.to); err != nil {
+				t.Fatal(err)
+			}
+			delete(want, edge)
+		}
+	}
+	if int(ledger.edges.live) != len(want) {
+		t.Fatalf("arena has %d live edges, want %d", ledger.edges.live, len(want))
+	}
+	for _, object := range objects {
+		targets := make([]ObjectID, 0)
+		for edge := range want {
+			if edge.from == object {
+				targets = append(targets, edge.to)
+			}
+		}
+		sortObjectIDs(targets)
+		snapshot, err := ledger.Object(object)
+		if err != nil || !reflect.DeepEqual(snapshot.Edges, targets) {
+			t.Fatalf("Object(%d).Edges = %v, want %v, err=%v", object, snapshot.Edges, targets, err)
+		}
+	}
+	if err := ledger.CloseRegion(region); err != nil {
+		t.Fatal(err)
+	}
+	if ledger.edges.live != 0 || len(ledger.edges.slabs) != 0 {
+		t.Fatalf("randomized teardown retained edge arena: live=%d slabs=%d", ledger.edges.live, len(ledger.edges.slabs))
 	}
 }
 

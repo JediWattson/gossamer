@@ -10,15 +10,9 @@ import (
 
 var ErrInvariantViolation = errors.New("memory: invariant violation")
 
-type slotLocation struct {
-	region RegionID
-	slot   uint32
-}
-
-// CheckInvariants independently derives the Store's live slot, object-edge,
-// region-edge, owner, and ledger state from typed heap contents. Tests and debug
-// builds can call it after arbitrary operation sequences without mutating the
-// heap.
+// CheckInvariants independently derives the Store's live slot, region-edge,
+// owner, and ledger claim state from typed heap contents. Tests and debug builds
+// can call it after arbitrary operation sequences without mutating the heap.
 func (store *Store) CheckInvariants() error {
 	if store == nil {
 		return fmt.Errorf("%w: nil store", ErrInvariantViolation)
@@ -26,7 +20,6 @@ func (store *Store) CheckInvariants() error {
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
 
-	objects := make(map[ownership.ObjectID]slotLocation)
 	liveSlots := uint64(0)
 	liveCells := uint64(0)
 	liveStrings := uint64(0)
@@ -51,19 +44,50 @@ func (store *Store) CheckInvariants() error {
 	liveBytes := uint64(0)
 	liveRegions := uint64(0)
 	reservedSlotCapacity := uint64(0)
-	for owner, claim := range store.ownerClaims {
-		if claim == 0 {
+	expectedWeakTables := make(map[Ref]struct{})
+	expectedWeakTargets := make(map[Ref]map[weakUse]struct{})
+	addWeakTarget := func(target Ref, back uint32, use weakUse) error {
+		if err := store.validateWeakUseLocked(target, back, use); err != nil {
+			return err
+		}
+		uses := expectedWeakTargets[target]
+		if uses == nil {
+			uses = make(map[weakUse]struct{})
+			expectedWeakTargets[target] = uses
+		}
+		if _, duplicate := uses[use]; duplicate {
+			return invariantError("weak target %s contains duplicate use %#v", target, use)
+		}
+		uses[use] = struct{}{}
+		return nil
+	}
+	checkWeakTarget := func(table *Region, tableRef, target Ref) error {
+		targetRegion, _, err := store.slotLocked(target)
+		if err != nil {
+			return invariantError("weak table %s contains stale target %s: %v", tableRef, target, err)
+		}
+		if targetRegion.State == RegionPublished {
+			return nil
+		}
+		if targetRegion.Owner != table.Owner || targetRegion.State != table.State {
+			return invariantError("weak table %s in R%d (%s, %d) targets %s in R%d (%s, %d)", tableRef, table.ID, table.Owner, table.State, target, targetRegion.ID, targetRegion.Owner, targetRegion.State)
+		}
+		return nil
+	}
+	expectedOwnerRegions := make(map[ownership.OwnerID]map[RegionID]struct{})
+	for owner, record := range store.owners {
+		if record.claim == 0 {
 			return invariantError("%s has claim 0", owner)
 		}
-		snapshot, err := store.ledger.Region(claim)
+		snapshot, err := store.ledger.Region(record.claim)
 		if err != nil {
-			return invariantError("%s claim %d: %v", owner, claim, err)
+			return invariantError("%s claim %d: %v", owner, record.claim, err)
 		}
 		if snapshot.Owner != owner {
-			return invariantError("%s claim %d belongs to %s", owner, claim, snapshot.Owner)
+			return invariantError("%s claim %d belongs to %s", owner, record.claim, snapshot.Owner)
 		}
-		if snapshot.Closed != store.closedOwners[owner] {
-			return invariantError("%s claim closed=%t, Store records closed=%t", owner, snapshot.Closed, store.closedOwners[owner])
+		if snapshot.Closed {
+			return invariantError("%s retains closed claim %d", owner, record.claim)
 		}
 	}
 	for id, region := range store.regions {
@@ -73,22 +97,8 @@ func (store *Store) CheckInvariants() error {
 		if id == 0 || region.ID != id {
 			return invariantError("region map key R%d contains ID R%d", id, region.ID)
 		}
-		if region.State > RegionDestroyed {
+		if region.State >= RegionDestroyed {
 			return invariantError("R%d has unknown state %d", id, region.State)
-		}
-		if region.State == RegionDestroyed {
-			if cap(region.Slots) != 0 {
-				return invariantError("destroyed R%d retains slot capacity %d", id, cap(region.Slots))
-			}
-			for index, slot := range region.Slots {
-				if slot.Occupied || slot.object != 0 || !slotStorageEmpty(&slot) {
-					return invariantError("destroyed R%d slot %d still owns storage", id, index)
-				}
-				if slot.Generation == 0 {
-					return invariantError("destroyed R%d slot %d has generation 0", id, index)
-				}
-			}
-			continue
 		}
 		reservedSlotCapacity += uint64(cap(region.Slots))
 
@@ -110,20 +120,23 @@ func (store *Store) CheckInvariants() error {
 				return invariantError("published R%d is owned by %s, shared owner is %s", id, region.Owner, store.sharedOwner)
 			}
 		}
-		if store.closedOwners[region.Owner] {
-			return invariantError("live R%d is owned by closed %s", id, region.Owner)
+		record, exists := store.owners[region.Owner]
+		if !exists || record.claim == 0 || region.claim != record.claim {
+			return invariantError("R%d claim %d does not match %s owner record %#v", id, region.claim, region.Owner, record)
 		}
-		claim := store.ownerClaims[region.Owner]
-		if claim == 0 || region.claim != claim {
-			return invariantError("R%d claim %d does not match %s claim %d", id, region.claim, region.Owner, claim)
-		}
-		claimSnapshot, err := store.ledger.Region(claim)
+		claimSnapshot, err := store.ledger.Region(record.claim)
 		if err != nil {
-			return invariantError("R%d claim %d: %v", id, claim, err)
+			return invariantError("R%d claim %d: %v", id, record.claim, err)
 		}
 		if claimSnapshot.Closed || claimSnapshot.Owner != region.Owner {
 			return invariantError("R%d has invalid claim snapshot %#v", id, claimSnapshot)
 		}
+		regions := expectedOwnerRegions[region.Owner]
+		if regions == nil {
+			regions = make(map[RegionID]struct{})
+			expectedOwnerRegions[region.Owner] = regions
+		}
+		regions[id] = struct{}{}
 
 		free := make(map[uint32]struct{}, len(region.free))
 		for _, index := range region.free {
@@ -135,7 +148,7 @@ func (store *Store) CheckInvariants() error {
 			}
 			free[index] = struct{}{}
 			slot := region.Slots[index]
-			if slot.Occupied || slot.object != 0 || !slotStorageEmpty(&slot) || slot.Generation == math.MaxUint32 {
+			if slot.Occupied || slot.incoming != 0 || !slotStorageEmpty(&slot) || slot.Generation == math.MaxUint32 {
 				return invariantError("R%d free slot %d has live or retired state", id, index)
 			}
 		}
@@ -146,7 +159,7 @@ func (store *Store) CheckInvariants() error {
 			}
 			_, onFreeList := free[uint32(index)]
 			if !slot.Occupied {
-				if slot.object != 0 || !slotStorageEmpty(slot) {
+				if slot.incoming != 0 || !slotStorageEmpty(slot) {
 					return invariantError("R%d vacant slot %d retains storage", id, index)
 				}
 				if slot.Generation != math.MaxUint32 && !onFreeList {
@@ -157,19 +170,12 @@ func (store *Store) CheckInvariants() error {
 			if onFreeList {
 				return invariantError("R%d occupied slot %d is on free list", id, index)
 			}
-			if slot.object == 0 {
-				return invariantError("R%d occupied slot %d has no ledger object", id, index)
-			}
 			if slot.slotPayload == nil {
 				return invariantError("R%d occupied slot %d has no typed payload", id, index)
 			}
 			if err := store.payloads.checkSlot(slot.Kind, slot.slotPayload); err != nil {
 				return invariantError("R%d occupied slot %d: %v", id, index, err)
 			}
-			if previous, duplicate := objects[slot.object]; duplicate {
-				return invariantError("ledger object %d appears at R%d:%d and R%d:%d", slot.object, previous.region, previous.slot, id, index)
-			}
-			objects[slot.object] = slotLocation{region: id, slot: uint32(index)}
 			liveSlots++
 			switch slot.Kind {
 			case HeapCell:
@@ -495,31 +501,58 @@ func (store *Store) CheckInvariants() error {
 				}
 			case HeapWeakMap:
 				liveWeakMaps++
+				tableRef := Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}
+				expectedWeakTables[tableRef] = struct{}{}
 				if slotHasOtherPayload(slot, HeapWeakMap) {
-					return invariantError("WeakMap %s retains another typed payload", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
+					return invariantError("WeakMap %s retains another typed payload", tableRef)
 				}
 				keys := make(map[Ref]int, len(slot.WeakMap.Entries))
 				for entryIndex, entry := range slot.WeakMap.Entries {
 					if entry.Key == (Ref{}) {
-						return invariantError("WeakMap %s entry %d has a zero key", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, entryIndex)
+						return invariantError("WeakMap %s entry %d has a zero key", tableRef, entryIndex)
+					}
+					if err := checkWeakTarget(region, tableRef, entry.Key); err != nil {
+						return err
+					}
+					if err := addWeakTarget(entry.Key, entry.keyUse, weakUse{table: tableRef, entry: uint32(entryIndex), role: weakMapKeyUse}); err != nil {
+						return err
+					}
+					if entry.Value.IsRef() {
+						if err := checkWeakTarget(region, tableRef, entry.Value.Ref()); err != nil {
+							return err
+						}
+						if err := addWeakTarget(entry.Value.Ref(), entry.valueUse, weakUse{table: tableRef, entry: uint32(entryIndex), role: weakMapValueUse}); err != nil {
+							return err
+						}
 					}
 					if previous, duplicate := keys[entry.Key]; duplicate {
-						return invariantError("WeakMap %s has duplicate key at entries %d and %d", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, previous, entryIndex)
+						return invariantError("WeakMap %s has duplicate key at entries %d and %d", tableRef, previous, entryIndex)
 					}
 					keys[entry.Key] = entryIndex
 				}
 			case HeapWeakSet:
 				liveWeakSets++
+				tableRef := Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}
+				expectedWeakTables[tableRef] = struct{}{}
 				if slotHasOtherPayload(slot, HeapWeakSet) {
-					return invariantError("WeakSet %s retains another typed payload", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
+					return invariantError("WeakSet %s retains another typed payload", tableRef)
+				}
+				if len(slot.WeakSet.Keys) != len(slot.WeakSet.uses) {
+					return invariantError("WeakSet %s has %d keys and %d reverse uses", tableRef, len(slot.WeakSet.Keys), len(slot.WeakSet.uses))
 				}
 				keys := make(map[Ref]int, len(slot.WeakSet.Keys))
 				for keyIndex, key := range slot.WeakSet.Keys {
 					if key == (Ref{}) {
-						return invariantError("WeakSet %s key %d is zero", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, keyIndex)
+						return invariantError("WeakSet %s key %d is zero", tableRef, keyIndex)
+					}
+					if err := checkWeakTarget(region, tableRef, key); err != nil {
+						return err
+					}
+					if err := addWeakTarget(key, slot.WeakSet.uses[keyIndex], weakUse{table: tableRef, entry: uint32(keyIndex), role: weakSetKeyUse}); err != nil {
+						return err
 					}
 					if previous, duplicate := keys[key]; duplicate {
-						return invariantError("WeakSet %s has duplicate key at entries %d and %d", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, previous, keyIndex)
+						return invariantError("WeakSet %s has duplicate key at entries %d and %d", tableRef, previous, keyIndex)
 					}
 					keys[key] = keyIndex
 				}
@@ -556,12 +589,85 @@ func (store *Store) CheckInvariants() error {
 			}
 		}
 	}
-	if len(store.objectRegions) != len(objects) {
-		return invariantError("object-region index has %d entries, want %d", len(store.objectRegions), len(objects))
+	if len(store.weakTables) != len(expectedWeakTables) {
+		return invariantError("weak table index has %d entries, want %d", len(store.weakTables), len(expectedWeakTables))
 	}
-	for object, location := range objects {
-		if indexed := store.objectRegions[object]; indexed != location.region {
-			return invariantError("ledger object %d indexes R%d, want R%d", object, indexed, location.region)
+	for table := range expectedWeakTables {
+		if _, indexed := store.weakTables[table]; !indexed {
+			return invariantError("weak table index is missing %s", table)
+		}
+	}
+	if len(store.weakTargets) != len(expectedWeakTargets) {
+		return invariantError("weak target index has %d entries, want %d", len(store.weakTargets), len(expectedWeakTargets))
+	}
+	for target, expected := range expectedWeakTargets {
+		actual := store.weakTargets[target]
+		if len(actual) != len(expected) {
+			return invariantError("weak target %s has %d uses, want %d", target, len(actual), len(expected))
+		}
+		seen := make(map[weakUse]struct{}, len(actual))
+		for _, use := range actual {
+			if _, exists := expected[use]; !exists {
+				return invariantError("weak target %s has unexpected use %#v", target, use)
+			}
+			if _, duplicate := seen[use]; duplicate {
+				return invariantError("weak target %s repeats use %#v", target, use)
+			}
+			seen[use] = struct{}{}
+		}
+	}
+	expectedPromotionSources := make(map[Ref]map[promotionKey]struct{})
+	expectedPromotionDestinations := make(map[Ref]map[promotionKey]struct{})
+	for key, promoted := range store.promotions {
+		if _, _, err := store.slotLocked(key.source); err != nil {
+			return invariantError("promotion source %s is stale: %v", key.source, err)
+		}
+		promotedRegion, _, err := store.slotLocked(promoted)
+		if err != nil {
+			return invariantError("promotion destination %s for %s is stale: %v", promoted, key.source, err)
+		}
+		if promotedRegion.Owner != key.owner {
+			return invariantError("promotion %s -> %s belongs to %s, want %s", key.source, promoted, promotedRegion.Owner, key.owner)
+		}
+		keys := expectedPromotionSources[key.source]
+		if keys == nil {
+			keys = make(map[promotionKey]struct{})
+			expectedPromotionSources[key.source] = keys
+		}
+		keys[key] = struct{}{}
+		destinations := expectedPromotionDestinations[promoted]
+		if destinations == nil {
+			destinations = make(map[promotionKey]struct{})
+			expectedPromotionDestinations[promoted] = destinations
+		}
+		destinations[key] = struct{}{}
+	}
+	if len(store.promotionsBySource) != len(expectedPromotionSources) {
+		return invariantError("promotion source index has %d entries, want %d", len(store.promotionsBySource), len(expectedPromotionSources))
+	}
+	for source, expected := range expectedPromotionSources {
+		actual := store.promotionsBySource[source]
+		if len(actual) != len(expected) {
+			return invariantError("promotion source %s has %d keys, want %d", source, len(actual), len(expected))
+		}
+		for key := range expected {
+			if _, exists := actual[key]; !exists {
+				return invariantError("promotion source %s is missing key %#v", source, key)
+			}
+		}
+	}
+	if len(store.promotionsByDestination) != len(expectedPromotionDestinations) {
+		return invariantError("promotion destination index has %d entries, want %d", len(store.promotionsByDestination), len(expectedPromotionDestinations))
+	}
+	for destination, expected := range expectedPromotionDestinations {
+		actual := store.promotionsByDestination[destination]
+		if len(actual) != len(expected) {
+			return invariantError("promotion destination %s has %d keys, want %d", destination, len(actual), len(expected))
+		}
+		for key := range expected {
+			if _, exists := actual[key]; !exists {
+				return invariantError("promotion destination %s is missing key %#v", destination, key)
+			}
 		}
 	}
 	pooledSlotCapacity := uint64(0)
@@ -571,16 +677,15 @@ func (store *Store) CheckInvariants() error {
 		}
 		pooledSlotCapacity += uint64(cap(buffer))
 		for slotIndex, slot := range buffer[:cap(buffer)] {
-			if slot.Occupied || slot.object != 0 || !slotStorageEmpty(&slot) || slot.Generation != 0 {
+			if slot.Occupied || slot.incoming != 0 || !slotStorageEmpty(&slot) || slot.Generation != 0 {
 				return invariantError("pooled slot buffer %d slot %d retains state", bufferIndex, slotIndex)
 			}
 		}
 	}
 	reservedSlotCapacity += pooledSlotCapacity
 
-	expectedObjectEdges := make(map[objectEdge]uint32)
 	expectedRegionEdges := make(map[edgeKey]uint32)
-	expectedLedgerEdges := make(map[ownership.ObjectID]map[ownership.ObjectID]struct{})
+	expectedIncoming := make(map[Ref]uint32)
 	references := make([]Value, 0, 16)
 	for id, region := range store.regions {
 		if region == nil || region.State == RegionDestroyed {
@@ -604,15 +709,10 @@ func (store *Store) CheckInvariants() error {
 				if !targetSlot.Occupied || targetSlot.Generation != value.Ref().Gen {
 					return invariantError("R%d slot %d field %d contains stale %s", id, index, field, value.Ref())
 				}
-				objectKey := objectEdge{from: slot.object, to: targetSlot.object}
-				if expectedObjectEdges[objectKey] == math.MaxUint32 {
-					return invariantError("object edge %d -> %d overflows", slot.object, targetSlot.object)
+				if expectedIncoming[value.Ref()] == math.MaxUint32 {
+					return invariantError("incoming reference count for %s overflows", value.Ref())
 				}
-				expectedObjectEdges[objectKey]++
-				if expectedLedgerEdges[slot.object] == nil {
-					expectedLedgerEdges[slot.object] = make(map[ownership.ObjectID]struct{})
-				}
-				expectedLedgerEdges[slot.object][targetSlot.object] = struct{}{}
+				expectedIncoming[value.Ref()]++
 				if id != targetRegion.ID {
 					regionKey := edgeKey{from: id, to: targetRegion.ID}
 					if expectedRegionEdges[regionKey] == math.MaxUint32 {
@@ -624,16 +724,25 @@ func (store *Store) CheckInvariants() error {
 		}
 	}
 
-	if err := compareObjectEdges(store.objectEdges, expectedObjectEdges); err != nil {
-		return err
-	}
 	if err := compareRegionEdges(store.barrier.edges, expectedRegionEdges); err != nil {
 		return err
 	}
-	for object, location := range objects {
-		region := store.regions[location.region]
-		if err := store.ledger.ValidateObjectState(object, region.Owner, expectedLedgerEdges[object]); err != nil {
-			return invariantError("R%d slot %d ledger object %d: %v", location.region, location.slot, object, err)
+	if err := checkBarrierAdjacency(store.barrier, expectedRegionEdges); err != nil {
+		return err
+	}
+	for id, region := range store.regions {
+		if region == nil || region.State == RegionDestroyed {
+			continue
+		}
+		for index := range region.Slots {
+			slot := &region.Slots[index]
+			if !slot.Occupied {
+				continue
+			}
+			ref := Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}
+			if slot.incoming != expectedIncoming[ref] {
+				return invariantError("%s incoming count %d, want %d", ref, slot.incoming, expectedIncoming[ref])
+			}
 		}
 	}
 	if store.stats.LiveSlots != liveSlots || store.stats.LiveCells != liveCells || store.stats.LiveStrings != liveStrings || store.stats.LiveObjects != liveObjects || store.stats.LiveArrays != liveArrays || store.stats.LiveContexts != liveContexts || store.stats.LiveFunctions != liveFunctions || store.stats.LivePromises != livePromises || store.stats.LiveBigInts != liveBigInts || store.stats.LiveSymbols != liveSymbols || store.stats.LiveArrayBuffers != liveArrayBuffers || store.stats.LiveTypedArrays != liveTypedArrays || store.stats.LiveMaps != liveMaps || store.stats.LiveSets != liveSets || store.stats.LiveDates != liveDates || store.stats.LiveRegExps != liveRegExps || store.stats.LiveErrors != liveErrors || store.stats.LiveBytes != liveBytes || store.stats.LiveRegions != liveRegions {
@@ -657,6 +766,18 @@ func (store *Store) CheckInvariants() error {
 	if store.stats.PeakReservedSlotCapacity < store.stats.ReservedSlotCapacity {
 		return invariantError("peak reserved slot capacity %d is below current %d", store.stats.PeakReservedSlotCapacity, store.stats.ReservedSlotCapacity)
 	}
+	for owner, record := range store.owners {
+		actual := ownerRegionSet(record)
+		expected := expectedOwnerRegions[owner]
+		if len(actual) != len(expected) {
+			return invariantError("%s has %d indexed regions, want %d", owner, len(actual), len(expected))
+		}
+		for id := range expected {
+			if _, exists := actual[id]; !exists {
+				return invariantError("%s is missing indexed R%d", owner, id)
+			}
+		}
+	}
 	if store.closed && (liveSlots != 0 || liveRegions != 0) {
 		return invariantError("closed store retains %d slots in %d regions", liveSlots, liveRegions)
 	}
@@ -664,20 +785,8 @@ func (store *Store) CheckInvariants() error {
 		if store.sharedClaim != 0 {
 			return invariantError("shared claim %d exists without a shared owner", store.sharedClaim)
 		}
-	} else if store.sharedOwner.Kind != ownership.OwnerShared || store.ownerClaims[store.sharedOwner] != store.sharedClaim {
+	} else if record, exists := store.owners[store.sharedOwner]; store.sharedOwner.Kind != ownership.OwnerShared || !exists || record.claim != store.sharedClaim {
 		return invariantError("shared owner %s and claim %d are inconsistent", store.sharedOwner, store.sharedClaim)
-	}
-	return nil
-}
-
-func compareObjectEdges(got, want map[objectEdge]uint32) error {
-	if len(got) != len(want) {
-		return invariantError("object edge map has %d entries, want %d", len(got), len(want))
-	}
-	for edge, count := range want {
-		if got[edge] != count {
-			return invariantError("object edge %d -> %d count %d, want %d", edge.from, edge.to, got[edge], count)
-		}
 	}
 	return nil
 }
@@ -692,6 +801,42 @@ func compareRegionEdges(got, want map[edgeKey]uint32) error {
 		}
 	}
 	return nil
+}
+
+func checkBarrierAdjacency(barrier *Barrier, edges map[edgeKey]uint32) error {
+	expectedOutgoing := make(map[RegionID]map[RegionID]struct{})
+	expectedIncoming := make(map[RegionID]map[RegionID]struct{})
+	for edge := range edges {
+		if expectedOutgoing[edge.from] == nil {
+			expectedOutgoing[edge.from] = make(map[RegionID]struct{})
+		}
+		if expectedIncoming[edge.to] == nil {
+			expectedIncoming[edge.to] = make(map[RegionID]struct{})
+		}
+		expectedOutgoing[edge.from][edge.to] = struct{}{}
+		expectedIncoming[edge.to][edge.from] = struct{}{}
+	}
+	check := func(label string, got, want map[RegionID]map[RegionID]struct{}) error {
+		if len(got) != len(want) {
+			return invariantError("barrier %s adjacency has %d regions, want %d", label, len(got), len(want))
+		}
+		for region, expected := range want {
+			actual := got[region]
+			if len(actual) != len(expected) {
+				return invariantError("barrier %s R%d has %d neighbors, want %d", label, region, len(actual), len(expected))
+			}
+			for neighbor := range expected {
+				if _, exists := actual[neighbor]; !exists {
+					return invariantError("barrier %s R%d is missing R%d", label, region, neighbor)
+				}
+			}
+		}
+		return nil
+	}
+	if err := check("outgoing", barrier.outgoing, expectedOutgoing); err != nil {
+		return err
+	}
+	return check("incoming", barrier.incoming, expectedIncoming)
 }
 
 func invariantError(format string, arguments ...any) error {

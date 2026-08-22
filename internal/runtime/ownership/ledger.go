@@ -2,6 +2,7 @@ package ownership
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"sync"
 	"time"
@@ -37,6 +38,7 @@ type Ledger struct {
 	destroyed    map[ObjectID]RegionID
 	destroyedIDs []ObjectID
 	destroyedAt  int
+	edges        edgeArena
 	stats        Stats
 }
 
@@ -45,13 +47,12 @@ type objectRecord struct {
 	region RegionID
 	// The overwhelmingly common object has exactly one semantic claim. Keep it
 	// inline and allocate claims only when an object is genuinely shared.
-	claim  RegionID
-	claims map[RegionID]struct{}
-	edges  map[ObjectID]struct{}
-	// incoming is a non-owning adjacency index used only for direct unlinking.
-	// It never contributes an ARC claim.
-	incoming map[ObjectID]struct{}
-	alive    bool
+	claim      RegionID
+	claims     map[RegionID]struct{}
+	outgoing   edgeHandle
+	incoming   edgeHandle
+	edgeLookup map[ObjectID]edgeHandle
+	alive      bool
 }
 
 type regionRecord struct {
@@ -93,6 +94,9 @@ func (ledger *Ledger) CreateRegion(owner OwnerID) (RegionID, error) {
 	if _, exists := ledger.ownerRegions[owner]; exists {
 		return 0, fmt.Errorf("%w: %s", ErrOwnerRegistered, owner)
 	}
+	if ledger.nextRegion == RegionID(math.MaxUint64) {
+		return 0, fmt.Errorf("ownership: exhausted region IDs")
+	}
 	ledger.nextRegion++
 	region := &regionRecord{
 		id:      ledger.nextRegion,
@@ -118,6 +122,9 @@ func (ledger *Ledger) CreateObject(regionID RegionID) (ObjectID, error) {
 	if err != nil {
 		return 0, err
 	}
+	if ledger.nextObject == ObjectID(math.MaxUint64) {
+		return 0, fmt.Errorf("ownership: exhausted object IDs")
+	}
 
 	ledger.nextObject++
 	object := &objectRecord{
@@ -133,6 +140,8 @@ func (ledger *Ledger) CreateObject(regionID RegionID) (ObjectID, error) {
 	ledger.stats.LiveObjects++
 	if region.owner.Kind == OwnerTask {
 		ledger.stats.TaskLocalAllocations++
+	} else {
+		ledger.stats.PersistentObjects++
 	}
 	ledger.recordLocked(Event{
 		Kind:       ObjectCreated,
@@ -154,6 +163,10 @@ func (ledger *Ledger) AddReference(fromID, toID ObjectID) error {
 	}
 	ledger.mutex.Lock()
 	defer ledger.mutex.Unlock()
+	return ledger.addReferenceLocked(fromID, toID)
+}
+
+func (ledger *Ledger) addReferenceLocked(fromID, toID ObjectID) error {
 	from, err := ledger.liveObjectLocked(fromID)
 	if err != nil {
 		return err
@@ -162,8 +175,13 @@ func (ledger *Ledger) AddReference(fromID, toID ObjectID) error {
 	if err != nil {
 		return err
 	}
-	if _, exists := from.edges[toID]; exists {
+	handle, degree := ledger.findEdgeLocked(from, toID)
+	if handle != 0 {
 		return nil
+	}
+	handle, err = ledger.edges.allocate(fromID, toID)
+	if err != nil {
+		return err
 	}
 
 	claimRegions := sortedClaimRegionIDs(from)
@@ -175,17 +193,11 @@ func (ledger *Ledger) AddReference(fromID, toID ObjectID) error {
 			continue
 		}
 		if err := ledger.barrierRetainLocked(toID, regionID, fromID); err != nil {
+			ledger.edges.release(handle)
 			return err
 		}
 	}
-	if from.edges == nil {
-		from.edges = make(map[ObjectID]struct{})
-	}
-	if to.incoming == nil {
-		to.incoming = make(map[ObjectID]struct{})
-	}
-	from.edges[toID] = struct{}{}
-	to.incoming[fromID] = struct{}{}
+	ledger.attachEdgeLocked(from, to, handle, degree)
 	ledger.stats.LocalReferences++
 	ledger.recordLocked(Event{Kind: ObjectLinked, Object: fromID, Target: toID, References: referenceCount(from)})
 	return nil
@@ -200,17 +212,23 @@ func (ledger *Ledger) RemoveReference(fromID, toID ObjectID) error {
 	}
 	ledger.mutex.Lock()
 	defer ledger.mutex.Unlock()
+	return ledger.removeReferenceLocked(fromID, toID)
+}
+
+func (ledger *Ledger) removeReferenceLocked(fromID, toID ObjectID) error {
 	from, err := ledger.liveObjectLocked(fromID)
 	if err != nil {
 		return err
 	}
-	if _, exists := from.edges[toID]; !exists {
+	handle, _ := ledger.findEdgeLocked(from, toID)
+	if handle == 0 {
 		return nil
 	}
-	delete(from.edges, toID)
-	if to := ledger.objects[toID]; to != nil {
-		delete(to.incoming, fromID)
+	to := ledger.objects[toID]
+	if to == nil {
+		return fmt.Errorf("%w: %d", ErrObjectDestroyed, toID)
 	}
+	ledger.detachEdgeLocked(handle, from, to)
 	ledger.recordLocked(Event{Kind: ObjectUnlinked, Object: fromID, Target: toID, References: referenceCount(from)})
 	return nil
 }
@@ -484,6 +502,9 @@ func (ledger *Ledger) CloseRegion(regionID RegionID) error {
 	defer ledger.mutex.Unlock()
 	region := ledger.regions[regionID]
 	if region == nil {
+		if ledger.assignedRegionIDLocked(regionID) {
+			return nil
+		}
 		return fmt.Errorf("%w: %d", ErrUnknownRegion, regionID)
 	}
 	if region.closed {
@@ -505,6 +526,27 @@ func (ledger *Ledger) CloseRegion(regionID RegionID) error {
 			ledger.moveToLongestLivedClaimLocked(object)
 		}
 	}
+	// Storage and claims are intentionally separate. A transfer toward a
+	// shorter-lived owner can remove this region's claim while leaving the
+	// object's storage here. Relocate those objects to their longest remaining
+	// claim before retiring the region record.
+	for _, objectID := range sortedObjectIDs(region.objects) {
+		object := ledger.objects[objectID]
+		if object == nil || !object.alive {
+			delete(region.objects, objectID)
+			continue
+		}
+		if object.region == region.id {
+			ledger.moveToLongestLivedClaimLocked(object)
+		}
+	}
+	if len(region.claims) != 0 || len(region.objects) != 0 {
+		return fmt.Errorf("ownership: closed region %d retains %d claims and %d objects", region.id, len(region.claims), len(region.objects))
+	}
+	delete(ledger.ownerRegions, region.owner)
+	delete(ledger.regions, region.id)
+	region.claims = nil
+	region.objects = nil
 	return nil
 }
 
@@ -544,7 +586,7 @@ func (ledger *Ledger) Object(objectID ObjectID) (ObjectSnapshot, error) {
 			owners[region.owner] = 1
 		}
 	}
-	edges := sortedObjectIDs(object.edges)
+	edges := ledger.sortedOutgoingTargetsLocked(object)
 	return ObjectSnapshot{
 		ID:         object.id,
 		Region:     object.region,
@@ -556,71 +598,6 @@ func (ledger *Ledger) Object(objectID ObjectID) (ObjectSnapshot, error) {
 	}, nil
 }
 
-// ReferenceCounts fills counts with the semantic claim count for each live
-// object. It is the allocation-free bulk read used by physical heap
-// collection, which only needs to distinguish exclusively owned objects from
-// objects retained by another semantic owner.
-func (ledger *Ledger) ReferenceCounts(objects []ObjectID, counts []int) error {
-	if ledger == nil {
-		return fmt.Errorf("ownership: nil ledger")
-	}
-	if len(objects) != len(counts) {
-		return fmt.Errorf("ownership: %d objects require %d reference counts, got %d", len(objects), len(objects), len(counts))
-	}
-	ledger.mutex.Lock()
-	defer ledger.mutex.Unlock()
-	for index, objectID := range objects {
-		object, err := ledger.liveObjectLocked(objectID)
-		if err != nil {
-			return err
-		}
-		counts[index] = referenceCount(object)
-	}
-	return nil
-}
-
-// ValidateObjectState checks the ownership and outgoing-edge state needed by
-// the physical heap invariant suite without constructing a diagnostic
-// ObjectSnapshot. It allocates only when reporting an invariant failure.
-func (ledger *Ledger) ValidateObjectState(objectID ObjectID, owner OwnerID, targets map[ObjectID]struct{}) error {
-	if ledger == nil {
-		return fmt.Errorf("ownership: nil ledger")
-	}
-	ledger.mutex.Lock()
-	defer ledger.mutex.Unlock()
-	object, err := ledger.liveObjectLocked(objectID)
-	if err != nil {
-		return err
-	}
-	if references := referenceCount(object); references != 1 {
-		return fmt.Errorf("ownership: object %d has %d claims, want exactly one", objectID, references)
-	}
-	claim := object.claim
-	if claim == 0 {
-		for regionID := range object.claims {
-			claim = regionID
-			break
-		}
-	}
-	region := ledger.regions[claim]
-	if region == nil || region.owner != owner {
-		var got OwnerID
-		if region != nil {
-			got = region.owner
-		}
-		return fmt.Errorf("ownership: object %d owner is %s, want %s", objectID, got, owner)
-	}
-	if len(object.edges) != len(targets) {
-		return fmt.Errorf("ownership: object %d has %d outgoing edges, want %d", objectID, len(object.edges), len(targets))
-	}
-	for target := range targets {
-		if _, exists := object.edges[target]; !exists {
-			return fmt.Errorf("ownership: object %d is missing outgoing edge to %d", objectID, target)
-		}
-	}
-	return nil
-}
-
 func (ledger *Ledger) Region(regionID RegionID) (RegionSnapshot, error) {
 	if ledger == nil {
 		return RegionSnapshot{}, fmt.Errorf("ownership: nil ledger")
@@ -629,6 +606,9 @@ func (ledger *Ledger) Region(regionID RegionID) (RegionSnapshot, error) {
 	defer ledger.mutex.Unlock()
 	region := ledger.regions[regionID]
 	if region == nil {
+		if ledger.assignedRegionIDLocked(regionID) {
+			return RegionSnapshot{ID: regionID, Closed: true}, nil
+		}
 		return RegionSnapshot{}, fmt.Errorf("%w: %d", ErrUnknownRegion, regionID)
 	}
 	return RegionSnapshot{
@@ -661,17 +641,7 @@ func (ledger *Ledger) Stats() Stats {
 	}
 	ledger.mutex.Lock()
 	defer ledger.mutex.Unlock()
-	stats := ledger.stats
-	for _, object := range ledger.objects {
-		if !object.alive {
-			continue
-		}
-		region := ledger.regions[object.region]
-		if region != nil && region.owner.Kind > OwnerTask {
-			stats.PersistentObjects++
-		}
-	}
-	return stats
+	return ledger.stats
 }
 
 func (ledger *Ledger) barrierRetainLocked(root ObjectID, claimRegionID RegionID, parent ObjectID) error {
@@ -808,9 +778,8 @@ func (ledger *Ledger) reachableLocked(roots []ObjectID) ([]ObjectID, error) {
 	queue := uniqueObjectIDs(roots)
 	visited := make(map[ObjectID]struct{}, len(queue))
 	result := make([]ObjectID, 0, len(queue))
-	for len(queue) != 0 {
-		objectID := queue[0]
-		queue = queue[1:]
+	for cursor := 0; cursor < len(queue); cursor++ {
+		objectID := queue[cursor]
 		if _, seen := visited[objectID]; seen {
 			continue
 		}
@@ -820,7 +789,8 @@ func (ledger *Ledger) reachableLocked(roots []ObjectID) ([]ObjectID, error) {
 		}
 		visited[objectID] = struct{}{}
 		result = append(result, objectID)
-		for _, child := range sortedObjectIDs(object.edges) {
+		for handle := object.outgoing; handle != 0; handle = ledger.edges.record(handle).nextOut {
+			child := ledger.edges.record(handle).to
 			if _, seen := visited[child]; !seen {
 				queue = append(queue, child)
 			}
@@ -853,12 +823,19 @@ func (ledger *Ledger) requireClaimsLocked(objects []ObjectID, regionID RegionID)
 func (ledger *Ledger) activeRegionLocked(regionID RegionID) (*regionRecord, error) {
 	region := ledger.regions[regionID]
 	if region == nil {
+		if ledger.assignedRegionIDLocked(regionID) {
+			return nil, fmt.Errorf("%w: %d", ErrRegionClosed, regionID)
+		}
 		return nil, fmt.Errorf("%w: %d", ErrUnknownRegion, regionID)
 	}
 	if region.closed {
 		return nil, fmt.Errorf("%w: %d", ErrRegionClosed, regionID)
 	}
 	return region, nil
+}
+
+func (ledger *Ledger) assignedRegionIDLocked(regionID RegionID) bool {
+	return regionID != 0 && regionID <= ledger.nextRegion
 }
 
 func (ledger *Ledger) ownerRegionLocked(owner OwnerID) (*regionRecord, error) {
@@ -903,9 +880,7 @@ func (ledger *Ledger) promoteStorageLocked(object *objectRecord, target *regionR
 	if target == nil || current == nil || target.owner.Kind <= current.owner.Kind {
 		return
 	}
-	delete(current.objects, object.id)
-	target.objects[object.id] = struct{}{}
-	object.region = target.id
+	ledger.relocateStorageLocked(object, target)
 }
 
 func (ledger *Ledger) moveToLongestLivedClaimLocked(object *objectRecord) {
@@ -924,8 +899,21 @@ func (ledger *Ledger) moveToLongestLivedClaimLocked(object *objectRecord) {
 		ledger.destroyLocked(object)
 		return
 	}
-	if current := ledger.regions[object.region]; current != nil {
+	ledger.relocateStorageLocked(object, target)
+}
+
+func (ledger *Ledger) relocateStorageLocked(object *objectRecord, target *regionRecord) {
+	if object == nil || target == nil || object.region == target.id {
+		return
+	}
+	current := ledger.regions[object.region]
+	if current != nil {
 		delete(current.objects, object.id)
+		if current.owner.Kind == OwnerTask && target.owner.Kind > OwnerTask {
+			ledger.stats.PersistentObjects++
+		} else if current.owner.Kind > OwnerTask && target.owner.Kind == OwnerTask {
+			ledger.stats.PersistentObjects--
+		}
 	}
 	target.objects[object.id] = struct{}{}
 	object.region = target.id
@@ -936,6 +924,9 @@ func (ledger *Ledger) destroyLocked(object *objectRecord) {
 		return
 	}
 	if region := ledger.regions[object.region]; region != nil {
+		if region.owner.Kind > OwnerTask {
+			ledger.stats.PersistentObjects--
+		}
 		delete(region.objects, object.id)
 	}
 	for _, regionID := range sortedClaimRegionIDs(object) {
@@ -945,18 +936,17 @@ func (ledger *Ledger) destroyLocked(object *objectRecord) {
 	}
 	object.claim = 0
 	object.claims = nil
-	for targetID := range object.edges {
-		if target := ledger.objects[targetID]; target != nil {
-			delete(target.incoming, object.id)
-		}
+	for object.outgoing != 0 {
+		handle := object.outgoing
+		targetID := ledger.edges.record(handle).to
+		ledger.detachEdgeLocked(handle, object, ledger.objects[targetID])
 	}
-	for sourceID := range object.incoming {
-		if source := ledger.objects[sourceID]; source != nil {
-			delete(source.edges, object.id)
-		}
+	for object.incoming != 0 {
+		handle := object.incoming
+		sourceID := ledger.edges.record(handle).from
+		ledger.detachEdgeLocked(handle, ledger.objects[sourceID], object)
 	}
-	object.edges = nil
-	object.incoming = nil
+	object.edgeLookup = nil
 	object.alive = false
 	ledger.stats.ObjectsDestroyed++
 	ledger.stats.LiveObjects--

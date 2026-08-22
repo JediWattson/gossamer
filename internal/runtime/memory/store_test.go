@@ -276,7 +276,7 @@ func TestBulkOwnerReleaseDestroysAnInternalGraph(t *testing.T) {
 		t.Fatalf("Store Stats() = %#v", stats)
 	}
 	ledgerStats := ledger.Stats()
-	if ledgerStats.ObjectsDestroyed != 3 || ledgerStats.LiveObjects != 0 || ledgerStats.BulkRegionReleases != 1 {
+	if ledgerStats.ObjectsCreated != 0 || ledgerStats.ObjectsDestroyed != 0 || ledgerStats.LiveObjects != 0 || ledgerStats.BulkRegionReleases != 1 {
 		t.Fatalf("Ledger Stats() = %#v", ledgerStats)
 	}
 }

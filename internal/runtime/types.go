@@ -40,6 +40,8 @@ type TaskContext struct {
 	Refs         []memory.Ref
 
 	intrinsics *Intrinsics
+	stack      *Stack
+	jobs       *taskJobs
 }
 
 func (context *TaskContext) NewObject() (ownership.ObjectID, error) {

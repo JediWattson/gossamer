@@ -43,8 +43,34 @@ func TestPhysicalStatsAttributeSlotAndPayloadStorage(t *testing.T) {
 		t.Fatalf("occupied slot bytes = %d", physical.OccupiedSlotBytes)
 	}
 	minimumPayload := 2*physical.SlotPayloadSizeBytes + uint64(len("profiled")) + uint64(4)*uint64(unsafe.Sizeof(Value{}))
-	if physical.PayloadBytes < minimumPayload || physical.AttributedBytes != physical.ReservedSlotBytes+physical.PayloadBytes+physical.FreeListBytes {
+	if physical.PayloadBytes < minimumPayload || physical.AttributedBytes != physical.ReservedSlotBytes+physical.PayloadBytes+physical.FreeListBytes+physical.WeakTargetUseBytes {
 		t.Fatalf("physical payload attribution = %#v, want at least %d payload bytes", physical, minimumPayload)
+	}
+}
+
+func TestPhysicalStatsAttributeWeakReverseUses(t *testing.T) {
+	store := NewStore(nil)
+	defer store.Close()
+	owner := ownership.OwnerID{Kind: ownership.OwnerRealm, Value: 74}
+	region, _ := store.NewRegion(owner)
+	weakMap, _ := store.AllocWeakMap(owner, region)
+	weakSet, _ := store.AllocWeakSet(owner, region)
+	key, _ := store.AllocCell(owner, region)
+	if err := store.WeakMapSet(owner, weakMap, key, RefValue(key)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WeakSetAdd(owner, weakSet, key); err != nil {
+		t.Fatal(err)
+	}
+	physical := store.PhysicalStats()
+	if physical.WeakTargetEntries != 1 || physical.WeakTargetReferences != 3 {
+		t.Fatalf("weak reverse counts = %#v", physical)
+	}
+	if physical.WeakTargetUseBytes < 3*uint64(unsafe.Sizeof(weakUse{})) {
+		t.Fatalf("weak reverse bytes = %d", physical.WeakTargetUseBytes)
+	}
+	if physical.AttributedBytes != physical.ReservedSlotBytes+physical.PayloadBytes+physical.FreeListBytes+physical.WeakTargetUseBytes {
+		t.Fatalf("weak attributed bytes = %#v", physical)
 	}
 }
 
