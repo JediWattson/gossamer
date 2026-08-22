@@ -191,6 +191,11 @@ const (
 	nativeDateGetUTCMonth
 	nativeDateGetUTCDate
 	nativeArrayReverse
+	nativeStringCharCodeAt
+	nativeStringFromCharCode
+	nativeStringFromCodePoint
+	nativeIntlDisplayNamesConstructor
+	nativeIntlDisplayNamesOf
 )
 
 // Intrinsics is one task-local instantiation of the native ECMAScript
@@ -504,6 +509,10 @@ func (interpreter *Interpreter) Bootstrap(context *TaskContext) (*Intrinsics, er
 		context.intrinsics = nil
 		return nil, err
 	}
+	if err := intrinsics.installIntlBuiltins(context); err != nil {
+		context.intrinsics = nil
+		return nil, err
+	}
 	for _, global := range []struct {
 		name  string
 		value memory.Value
@@ -579,6 +588,11 @@ func (interpreter *Interpreter) registerBuiltinCallbacks() error {
 		nativeStringToString:                  builtinStringToString,
 		nativeStringValueOf:                   builtinStringToString,
 		nativeStringCharAt:                    builtinStringCharAt,
+		nativeStringCharCodeAt:                builtinStringCharCodeAt,
+		nativeStringFromCharCode:              builtinStringFromCharCode,
+		nativeStringFromCodePoint:             builtinStringFromCodePoint,
+		nativeIntlDisplayNamesConstructor:     builtinIntlDisplayNamesConstructor,
+		nativeIntlDisplayNamesOf:              builtinIntlDisplayNamesOf,
 		nativeStringIncludes:                  builtinStringIncludes,
 		nativeStringEndsWith:                  builtinStringEndsWith,
 		nativeStringIndexOf:                   builtinStringIndexOf,

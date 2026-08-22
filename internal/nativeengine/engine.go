@@ -299,21 +299,36 @@ func (realm *Realm) DrainMicrotasks(host browser.Host) error {
 	if task.TaskID != realm.activeTask {
 		return fmt.Errorf("%w: active task %d, checkpoint task %d", ErrCheckpointRequired, realm.activeTask, task.TaskID)
 	}
-	scope, err := task.WithMemoryRegion(realm.activeRegion, realm.active)
+	scope, err := realm.activeScopeLocked(task)
 	if err != nil {
 		realm.interpreter.DiscardJobs(realm.activeTask)
 		realm.clearActiveLocked()
 		return err
 	}
 	observerErr := realm.deliverMutationObserversLocked(scope)
+	if observerErr != nil {
+		observerErr = fmt.Errorf("nativeengine: deliver initial mutation observers in task %d: %w", task.TaskID, observerErr)
+	}
 	jobErr := realm.interpreter.DrainJobs(scope)
+	if jobErr != nil {
+		jobErr = fmt.Errorf("nativeengine: drain initial jobs in task %d: %w", task.TaskID, jobErr)
+	}
 	if observerErr == nil && jobErr == nil {
 		observerErr = realm.deliverMutationObserversLocked(scope)
+		if observerErr != nil {
+			observerErr = fmt.Errorf("nativeengine: deliver follow-up mutation observers in task %d: %w", task.TaskID, observerErr)
+		}
 	}
 	if observerErr == nil && jobErr == nil {
 		jobErr = realm.interpreter.DrainJobs(scope)
+		if jobErr != nil {
+			jobErr = fmt.Errorf("nativeengine: drain follow-up jobs in task %d: %w", task.TaskID, jobErr)
+		}
 	}
 	persistErr := realm.persistLocked(task)
+	if persistErr != nil {
+		persistErr = fmt.Errorf("nativeengine: persist task %d: %w", task.TaskID, persistErr)
+	}
 	return errors.Join(jobErr, observerErr, persistErr)
 }
 
@@ -356,9 +371,12 @@ func (realm *Realm) Invoke(host browser.Host, handle browser.ValueHandle) error 
 	}
 	scope, err := realm.beginTaskLocked(task)
 	if err != nil {
-		return err
+		return fmt.Errorf("nativeengine: begin callback %d in task %d: %w", handle, task.TaskID, err)
 	}
-	return realm.invokeCallbackLocked(scope, handle)
+	if err := realm.invokeCallbackLocked(scope, handle); err != nil {
+		return fmt.Errorf("nativeengine: invoke callback %d in task %d: %w", handle, task.TaskID, err)
+	}
+	return nil
 }
 
 func (realm *Realm) InvokeAnimationFrame(host browser.Host, handle browser.ValueHandle, timestamp float64) error {
@@ -378,7 +396,7 @@ func (realm *Realm) InvokeAnimationFrame(host browser.Host, handle browser.Value
 	}
 	scope, err := realm.beginTaskLocked(task)
 	if err != nil {
-		return err
+		return fmt.Errorf("nativeengine: begin animation callback %d in task %d: %w", handle, task.TaskID, err)
 	}
 	for frame, callbackHandle := range realm.animationCallbacks {
 		if callbackHandle == handle {
@@ -386,7 +404,10 @@ func (realm *Realm) InvokeAnimationFrame(host browser.Host, handle browser.Value
 			break
 		}
 	}
-	return realm.invokeCallbackArgumentsLocked(scope, handle, true, memory.UndefinedValue(), memory.NumberValue(timestamp))
+	if err := realm.invokeCallbackArgumentsLocked(scope, handle, true, memory.UndefinedValue(), memory.NumberValue(timestamp)); err != nil {
+		return fmt.Errorf("nativeengine: invoke animation callback %d in task %d: %w", handle, task.TaskID, err)
+	}
+	return nil
 }
 
 func (realm *Realm) Profile() RealmProfile {
@@ -478,7 +499,7 @@ func (realm *Realm) beginTaskLocked(task *browserruntime.TaskContext) (*browserr
 		if realm.activeTask != task.TaskID {
 			return nil, fmt.Errorf("%w: active task %d, new task %d", ErrCheckpointRequired, realm.activeTask, task.TaskID)
 		}
-		return task.WithMemoryRegion(realm.activeRegion, realm.active)
+		return realm.activeScopeLocked(task)
 	}
 
 	if realm.persistent == nil {
@@ -495,22 +516,12 @@ func (realm *Realm) beginTaskLocked(task *browserruntime.TaskContext) (*browserr
 		return task, nil
 	}
 
-	roots, err := task.Realm.Store().Copy(task.Realm.Owner(), task.Owner, realm.persistent.Roots()...)
+	scope, err := task.WithBorrowedRealmMemoryRegion(realm.persistentRegion, realm.persistent)
 	if err != nil {
 		return nil, err
 	}
-	intrinsics, err := browserruntime.RestoreIntrinsics(roots)
-	if err != nil {
-		_ = task.Realm.Store().DestroyRegion(task.Owner, roots[0].Region)
-		return nil, err
-	}
-	scope, err := task.WithMemoryRegion(roots[0].Region, intrinsics)
-	if err != nil {
-		_ = task.Realm.Store().DestroyRegion(task.Owner, roots[0].Region)
-		return nil, err
-	}
-	realm.active = intrinsics
-	realm.activeRegion = roots[0].Region
+	realm.active = realm.persistent
+	realm.activeRegion = realm.persistentRegion
 	realm.activeTask = task.TaskID
 	if err := realm.prepareBrowserBindingsLocked(scope); err != nil {
 		return nil, err
@@ -521,6 +532,14 @@ func (realm *Realm) beginTaskLocked(task *browserruntime.TaskContext) (*browserr
 func (realm *Realm) persistLocked(task *browserruntime.TaskContext) (result error) {
 	defer realm.clearActiveLocked()
 	if realm.active == nil || realm.runtime == nil {
+		return nil
+	}
+	if realm.persistentRegion != 0 && realm.activeRegion == realm.persistentRegion {
+		_, err := task.Realm.Store().CollectRegion(realm.runtime.Owner(), realm.persistentRegion, realm.active.Roots()...)
+		if err != nil {
+			return fmt.Errorf("nativeengine: collect persistent realm region R%d: %w", realm.persistentRegion, err)
+		}
+		realm.persistent = realm.active
 		return nil
 	}
 	roots, err := task.Realm.Store().Copy(task.Owner, realm.runtime.Owner(), realm.active.Roots()...)
@@ -577,7 +596,14 @@ func (realm *Realm) persistLocked(task *browserruntime.TaskContext) (result erro
 	realm.persistentCallbackCache = newCallbackCache
 	realm.persistentObserverCache = newObserverCache
 	realm.persistentModuleCache = newModuleCache
-	return task.Realm.Store().CheckInvariants()
+	return nil
+}
+
+func (realm *Realm) activeScopeLocked(task *browserruntime.TaskContext) (*browserruntime.TaskContext, error) {
+	if realm.persistentRegion != 0 && realm.activeRegion == realm.persistentRegion {
+		return task.WithBorrowedRealmMemoryRegion(realm.activeRegion, realm.active)
+	}
+	return task.WithMemoryRegion(realm.activeRegion, realm.active)
 }
 
 func persistentBindingRef(store *memory.Store, owner ownership.OwnerID, region memory.RegionID, global memory.Ref, name string) (memory.Ref, error) {

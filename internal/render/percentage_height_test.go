@@ -101,6 +101,29 @@ func TestLayoutPropagatesDefiniteHeightThroughFormattingContexts(t *testing.T) {
 	assertPercentageHeightGeometry(t, document, layout, "absolute", 110, true)
 }
 
+func TestPercentageHeightResolvesInsideGrownColumnFlexItem(t *testing.T) {
+	t.Parallel()
+
+	document, layout := percentageHeightLayout(t, `
+		<html><body style="margin:0">
+			<section id="container" style="display:flex;flex-direction:column;height:200px">
+				<div id="item" style="flex:1;min-height:0">
+					<div id="fill" style="display:flex;flex-direction:column;height:100%;min-height:0">
+						<div id="main" style="flex:1;min-height:0"></div>
+						<div id="footer" style="flex:none;height:40px"></div>
+					</div>
+				</div>
+			</section>
+		</body></html>
+	`, render.Viewport{Width: 400, Height: 400}, render.Resources{})
+
+	assertPercentageHeightGeometry(t, document, layout, "container", 200, false)
+	assertPercentageHeightGeometry(t, document, layout, "item", 200, false)
+	assertPercentageHeightGeometry(t, document, layout, "fill", 200, true)
+	assertPercentageHeightGeometry(t, document, layout, "main", 160, false)
+	assertPercentageHeightGeometry(t, document, layout, "footer", 40, false)
+}
+
 func TestRootPercentageHeightRequiresDefiniteRootElementHeight(t *testing.T) {
 	t.Parallel()
 

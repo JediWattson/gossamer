@@ -492,7 +492,7 @@ func (page *Page) renderLocked(onlyIfDirty bool) error {
 	if _, err := page.syncStylesheetsLocked(); err != nil {
 		return err
 	}
-	resources := page.resources.rendererResources(page.document)
+	resources := page.resources.rendererResources(page.document, page.script != nil)
 	var frame *render.Frame
 	var renderedVersion uint64
 	err := page.document.WithReadView(func(view dom.ReadView) error {
@@ -541,7 +541,7 @@ func (page *Page) ComputedStyle(handle NodeHandle) (computed.ComputedStyle, erro
 	if _, err := page.syncStylesheetsLocked(); err != nil {
 		return computed.ComputedStyle{}, err
 	}
-	resources := page.resources.rendererResources(page.document)
+	resources := page.resources.rendererResources(page.document, page.script != nil)
 	var result computed.ComputedStyle
 	err := page.document.WithReadView(func(view dom.ReadView) error {
 		node, ok := view.Resolve(handle.Node)
@@ -586,7 +586,7 @@ func (page *Page) ComputedPseudoStyle(handle NodeHandle, pseudo computed.PseudoE
 	if _, err := page.syncStylesheetsLocked(); err != nil {
 		return computed.ComputedStyle{}, err
 	}
-	resources := page.resources.rendererResources(page.document)
+	resources := page.resources.rendererResources(page.document, page.script != nil)
 	var result computed.ComputedStyle
 	err := page.document.WithReadView(func(view dom.ReadView) error {
 		node, ok := view.Resolve(handle.Node)
@@ -630,7 +630,7 @@ func (page *Page) ComputedStyleProperty(handle NodeHandle, property string) (str
 	if _, err := page.syncStylesheetsLocked(); err != nil {
 		return "", false, err
 	}
-	resources := page.resources.rendererResources(page.document)
+	resources := page.resources.rendererResources(page.document, page.script != nil)
 	var value string
 	var found bool
 	err := page.document.WithReadView(func(view dom.ReadView) error {
@@ -737,7 +737,7 @@ func (page *Page) ComputedPseudoStyleProperty(handle NodeHandle, pseudo computed
 	if _, err := page.syncStylesheetsLocked(); err != nil {
 		return "", false, err
 	}
-	resources := page.resources.rendererResources(page.document)
+	resources := page.resources.rendererResources(page.document, page.script != nil)
 	var value string
 	var found bool
 	err := page.document.WithReadView(func(view dom.ReadView) error {

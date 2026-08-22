@@ -38,6 +38,23 @@ func (intrinsics *Intrinsics) installNumericBuiltins(context *TaskContext) error
 	}); err != nil {
 		return err
 	}
+	for _, constant := range []struct {
+		name  string
+		value float64
+	}{
+		{"EPSILON", math.Pow(2, -52)},
+		{"MAX_SAFE_INTEGER", 1<<53 - 1},
+		{"MAX_VALUE", math.MaxFloat64},
+		{"MIN_SAFE_INTEGER", -(1<<53 - 1)},
+		{"MIN_VALUE", math.SmallestNonzeroFloat64},
+		{"NaN", math.NaN()},
+		{"NEGATIVE_INFINITY", math.Inf(-1)},
+		{"POSITIVE_INFINITY", math.Inf(1)},
+	} {
+		if err := defineData(context, numberConstructor, constant.name, memory.NumberValue(constant.value), false, false, false); err != nil {
+			return err
+		}
+	}
 
 	mathObject, err := context.NewHeapObject()
 	if err != nil {

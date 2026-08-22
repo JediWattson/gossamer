@@ -62,15 +62,15 @@ if (counter !== 47) { throw new Error("Promise checkpoint was not retained"); }
 counter;
 `)
 	thirdStats := page.Realm.Store().Stats()
-	if firstProfile.PersistentRegion == 0 || secondProfile.PersistentRegion == firstProfile.PersistentRegion {
-		t.Fatalf("persistent region did not rotate: first=%#v second=%#v", firstProfile, secondProfile)
+	if firstProfile.PersistentRegion == 0 || secondProfile.PersistentRegion != firstProfile.PersistentRegion {
+		t.Fatalf("persistent region identity changed: first=%#v second=%#v", firstProfile, secondProfile)
 	}
-	released, err := page.Realm.Store().Region(firstProfile.PersistentRegion)
+	persistent, err := page.Realm.Store().Region(firstProfile.PersistentRegion)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if released.State != memory.RegionDestroyed {
-		t.Fatalf("replaced persistent region state = %v, want destroyed", released.State)
+	if persistent.State != memory.RegionPrivate || persistent.Owner != page.Realm.Owner() {
+		t.Fatalf("persistent region = %#v, want private Realm ownership", persistent)
 	}
 
 	profile := scriptRealm.Profile()
@@ -82,6 +82,9 @@ counter;
 	}
 	if secondStats.LiveSlots != thirdStats.LiveSlots {
 		t.Fatalf("unreachable script graph survived checkpoint: second=%#v third=%#v", secondStats, thirdStats)
+	}
+	if delta := thirdStats.Allocations - secondStats.Allocations; delta >= 512 {
+		t.Fatalf("no-op task allocated %d slots; persistent graph appears to have been cloned", delta)
 	}
 	if err := page.Realm.Store().CheckInvariants(); err != nil {
 		t.Fatal(err)

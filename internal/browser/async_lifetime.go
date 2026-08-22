@@ -33,7 +33,7 @@ func (page *Page) invokeAsyncScript(
 	}
 	record, err := context.DerefHostObject(context.Refs[0])
 	if err != nil {
-		return err
+		return fmt.Errorf("browser: dereference async class %d identity %d callback %d record %s: %w", class, identity, callback, context.Refs[0], err)
 	}
 	want := memory.HostObject{
 		Class:    class,
@@ -43,5 +43,8 @@ func (page *Page) invokeAsyncScript(
 	if record != want {
 		return fmt.Errorf("browser: invalid async host record: got %#v, want %#v", record, want)
 	}
-	return page.invokeScript(context, generation, callback, autoRender)
+	if err := page.invokeScript(context, generation, callback, autoRender); err != nil {
+		return fmt.Errorf("browser: invoke async class %d identity %d callback %d: %w", class, identity, callback, err)
+	}
+	return nil
 }

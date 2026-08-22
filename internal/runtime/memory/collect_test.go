@@ -87,3 +87,37 @@ func TestCollectWithoutRootsReclaimsWholePrivateHeap(t *testing.T) {
 	}
 	assertStoreInvariants(t, store, "rootless collection")
 }
+
+func TestCollectRegionPreservesSiblingOwnerRegionsAndTheirIncomingEdges(t *testing.T) {
+	t.Parallel()
+
+	store := memory.NewStore(nil)
+	defer store.Close()
+	owner := realmOwner(952)
+	persistent := mustRegion(t, store, owner)
+	envelope := mustRegion(t, store, owner)
+	root := mustAlloc(t, store, owner, persistent)
+	retainedByEnvelope := mustAlloc(t, store, owner, persistent)
+	unreachable := mustAlloc(t, store, owner, persistent)
+	envelopeRoot := mustAlloc(t, store, owner, envelope)
+	if err := store.Set(owner, envelopeRoot, 0, memory.RefValue(retainedByEnvelope)); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := store.CollectRegion(owner, persistent, root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.MarkedSlots != 2 || result.ReclaimedSlots != 1 {
+		t.Fatalf("region collection = %#v", result)
+	}
+	if _, err := store.Deref(owner, unreachable); !errors.Is(err, memory.ErrStaleRef) {
+		t.Fatalf("unreachable persistent ref = %v, want stale", err)
+	}
+	for _, ref := range []memory.Ref{root, retainedByEnvelope, envelopeRoot} {
+		if _, err := store.Deref(owner, ref); err != nil {
+			t.Fatalf("preserved %s: %v", ref, err)
+		}
+	}
+	assertStoreInvariants(t, store, "region-scoped collection")
+}

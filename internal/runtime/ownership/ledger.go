@@ -815,7 +815,7 @@ func (ledger *Ledger) destroyLocked(object *objectRecord) {
 			delete(region.claims, object.id)
 		}
 	}
-	clear(object.claims)
+	object.claims = nil
 	for targetID := range object.edges {
 		if target := ledger.objects[targetID]; target != nil {
 			delete(target.incoming, object.id)
@@ -826,8 +826,8 @@ func (ledger *Ledger) destroyLocked(object *objectRecord) {
 			delete(source.edges, object.id)
 		}
 	}
-	clear(object.edges)
-	clear(object.incoming)
+	object.edges = nil
+	object.incoming = nil
 	object.alive = false
 	ledger.stats.ObjectsDestroyed++
 	ledger.stats.LiveObjects--

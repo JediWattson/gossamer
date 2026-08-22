@@ -120,14 +120,17 @@ type SelectorCandidateKey struct {
 	Value string
 }
 
-// PseudoElement identifies the generated subject selected after the final
-// compound of a complex selector. Zero selects the originating element.
+// PseudoElement identifies the pseudo-element subject selected after the final
+// compound of a complex selector. Zero selects the originating element. Some
+// recognized subjects, such as ::backdrop, remain non-matching until their
+// owning browser surface exists.
 type PseudoElement uint8
 
 const (
 	PseudoElementNone PseudoElement = iota
 	PseudoElementBefore
 	PseudoElementAfter
+	PseudoElementBackdrop
 )
 
 // String returns the canonical pseudo-element selector spelling.
@@ -137,19 +140,23 @@ func (pseudo PseudoElement) String() string {
 		return "::before"
 	case PseudoElementAfter:
 		return "::after"
+	case PseudoElementBackdrop:
+		return "::backdrop"
 	default:
 		return ""
 	}
 }
 
-// ParsePseudoElement recognizes the generated pseudo-elements implemented by
-// the engine, including their legacy single-colon spellings.
+// ParsePseudoElement recognizes pseudo-elements accepted by the selector
+// grammar, including the legacy single-colon spellings for generated content.
 func ParsePseudoElement(source string) (PseudoElement, bool) {
 	switch lowerASCII(source) {
 	case "::before", ":before":
 		return PseudoElementBefore, true
 	case "::after", ":after":
 		return PseudoElementAfter, true
+	case "::backdrop":
+		return PseudoElementBackdrop, true
 	default:
 		return PseudoElementNone, false
 	}

@@ -12,6 +12,7 @@ import (
 
 var (
 	ErrInstructionLimit = errors.New("runtime: instruction limit exceeded")
+	ErrMicrotaskLimit   = errors.New("runtime: microtask checkpoint limit exceeded")
 	ErrCallDepth        = errors.New("runtime: call depth limit exceeded")
 	ErrNotCallable      = errors.New("runtime: value is not a callable Function")
 	ErrNotConstructor   = errors.New("runtime: Function is not a constructor")
@@ -20,10 +21,16 @@ var (
 	ErrExceptionState   = errors.New("runtime: invalid exception state")
 )
 
-const defaultMaxInstructions uint64 = 1_000_000
+const (
+	defaultMaxInstructions uint64 = 10_000_000
+	defaultMaxMicrotasks   uint64 = 100_000
+)
 
 type InterpreterConfig struct {
+	// MaxInstructions applies independently to a top-level call and to each
+	// microtask job. MaxMicrotasks bounds the complete checkpoint.
 	MaxInstructions uint64
+	MaxMicrotasks   uint64
 	MaxCallDepth    uint32
 }
 
@@ -89,6 +96,9 @@ type Interpreter struct {
 func NewInterpreter(config InterpreterConfig) *Interpreter {
 	if config.MaxInstructions == 0 {
 		config.MaxInstructions = defaultMaxInstructions
+	}
+	if config.MaxMicrotasks == 0 {
+		config.MaxMicrotasks = defaultMaxMicrotasks
 	}
 	if config.MaxCallDepth == 0 {
 		config.MaxCallDepth = 256
@@ -233,7 +243,11 @@ func (execution *execution) call(function memory.Ref, this memory.Value, argumen
 		if native == nil {
 			return memory.Value{}, fmt.Errorf("%w: ID %d", ErrNativeFunction, descriptor.NativeID)
 		}
-		return native(execution, function, descriptor, this, append([]memory.Value(nil), arguments...))
+		result, err := native(execution, function, descriptor, this, append([]memory.Value(nil), arguments...))
+		if err != nil {
+			return memory.Value{}, fmt.Errorf("runtime: native function %s ID %d: %w", function, descriptor.NativeID, err)
+		}
+		return result, nil
 	}
 	if descriptor.Kind != memory.FunctionBytecode {
 		return memory.Value{}, fmt.Errorf("%w: %s", ErrNotCallable, function)
@@ -253,7 +267,46 @@ func (execution *execution) call(function memory.Ref, this memory.Value, argumen
 	if err := validateFrameProgram(frame); err != nil {
 		return memory.Value{}, err
 	}
-	return execution.runFrame(frame)
+	result, err := execution.runFrame(frame)
+	if err != nil {
+		detail := execution.thrownSummary(err)
+		if detail != "" {
+			err = fmt.Errorf("%s: %w", detail, err)
+		}
+		instruction := uint32(0)
+		if frame.ip != 0 {
+			instruction = frame.ip - 1
+		}
+		if uint64(instruction) < uint64(len(descriptor.Locations)) {
+			location := descriptor.Locations[instruction]
+			return memory.Value{}, fmt.Errorf("runtime: bytecode function %s instruction %d source %d:%d: %w", function, instruction, location.Start, location.End, err)
+		}
+		return memory.Value{}, fmt.Errorf("runtime: bytecode function %s instruction %d: %w", function, instruction, err)
+	}
+	return result, nil
+}
+
+func (execution *execution) thrownSummary(err error) string {
+	value, ok := ThrownValue(err)
+	if !ok || !value.IsRef() {
+		return ""
+	}
+	kind, kindErr := execution.context.HeapKind(value.Ref())
+	if kindErr != nil || kind != memory.HeapError {
+		return ""
+	}
+	object, objectErr := execution.context.DerefError(value.Ref())
+	if objectErr != nil {
+		return ""
+	}
+	message := ""
+	if object.Message.IsRef() {
+		message, _ = execution.context.DerefString(object.Message.Ref())
+	}
+	if message == "" {
+		return object.Kind.Name()
+	}
+	return object.Kind.Name() + ": " + message
 }
 
 func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {

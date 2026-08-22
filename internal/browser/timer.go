@@ -18,6 +18,8 @@ type pageTimer struct {
 	generation DocumentGeneration
 	clock      *time.Timer
 	done       chan struct{}
+	queued     bool
+	canceled   bool
 }
 
 func (page *Page) setTimeoutFromTask(
@@ -96,11 +98,18 @@ func (page *Page) clearTimeout(id TimerID) error {
 	timer := page.timers[id]
 	if timer != nil {
 		delete(page.timers, id)
+		timer.canceled = true
 		timer.clock.Stop()
 		close(timer.done)
 	}
 	page.mutex.Unlock()
 	if timer == nil {
+		return nil
+	}
+	if timer.queued {
+		// fireTimer already transferred the timer record to the task queue.
+		// The queued task observes canceled and releases that record without
+		// invoking the script callback.
 		return nil
 	}
 	return page.releaseAsyncRef(timer.ref)
@@ -109,12 +118,16 @@ func (page *Page) clearTimeout(id TimerID) error {
 func (page *Page) fireTimer(id TimerID) {
 	page.mutex.Lock()
 	timer := page.timers[id]
-	if timer == nil {
+	if timer == nil || timer.queued {
 		page.mutex.Unlock()
 		return
 	}
-	delete(page.timers, id)
 	current := !page.closed && timer.generation == page.documentGeneration && page.script != nil
+	if current {
+		timer.queued = true
+	} else {
+		delete(page.timers, id)
+	}
 	page.mutex.Unlock()
 
 	if !current {
@@ -122,9 +135,23 @@ func (page *Page) fireTimer(id TimerID) {
 		return
 	}
 	_, err := page.Realm.EnqueueRealmRefTask(func(task *browserruntime.TaskContext) error {
+		page.mutex.Lock()
+		if page.timers[id] == timer {
+			delete(page.timers, id)
+		}
+		current := !timer.canceled && !page.closed && timer.generation == page.documentGeneration && page.script != nil
+		page.mutex.Unlock()
+		if !current {
+			return nil
+		}
 		return page.invokeAsyncScript(task, browserTimerHostClass, timer.generation, uint64(timer.id), timer.callback, true)
 	}, timer.ref)
 	if err != nil {
+		page.mutex.Lock()
+		if page.timers[id] == timer {
+			delete(page.timers, id)
+		}
+		page.mutex.Unlock()
 		_ = page.releaseAsyncRef(timer.ref)
 	}
 }
@@ -133,6 +160,7 @@ func (page *Page) takeTimersLocked() []*pageTimer {
 	timers := make([]*pageTimer, 0, len(page.timers))
 	for id, timer := range page.timers {
 		delete(page.timers, id)
+		timer.canceled = true
 		timer.clock.Stop()
 		close(timer.done)
 		timers = append(timers, timer)
@@ -143,6 +171,11 @@ func (page *Page) takeTimersLocked() []*pageTimer {
 func (page *Page) releaseTimers(timers []*pageTimer) error {
 	var result error
 	for _, timer := range timers {
+		if timer.queued {
+			// A firing timer's record belongs to its queued task. That task will
+			// release the record even when navigation or Page.Close cancels it.
+			continue
+		}
 		result = errors.Join(result, page.releaseAsyncRef(timer.ref))
 	}
 	return result

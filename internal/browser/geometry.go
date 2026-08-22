@@ -159,7 +159,7 @@ func (page *Page) elementGeometryLocked(handle NodeHandle) (DOMElementGeometry, 
 		return DOMElementGeometry{}, err
 	}
 
-	resources := page.resources.rendererResources(page.document)
+	resources := page.resources.rendererResources(page.document, page.script != nil)
 	rootID, _, _ := page.document.RelatedNode(page.document.RootID(), dom.DocumentElement)
 	var result DOMElementGeometry
 	err := page.document.WithReadView(func(view dom.ReadView) error {
@@ -475,22 +475,30 @@ func (page *Page) visualTransformForNodeLocked(node *dom.Node, layout *render.La
 	for left, right := 0, len(ancestors)-1; left < right; left, right = left+1, right-1 {
 		ancestors[left], ancestors[right] = ancestors[right], ancestors[left]
 	}
+	stickyContainer := render.Rect{Width: float64(layout.Viewport().Width), Height: float64(layout.Viewport().Height)}
 	for _, ancestor := range ancestors {
 		id, ok := page.document.ID(ancestor)
 		if !ok {
 			continue
 		}
 		style, ok := styles.LookupID(id)
-		if !ok || (!overflowClips(style.OverflowX()) && !overflowClips(style.OverflowY())) {
+		if !ok {
 			continue
 		}
 		geometry, ok := layout.GeometryID(id)
 		if !ok {
 			continue
 		}
+		if style.Position() == computed.PositionSticky {
+			transform = stickyVisualTransform(transform, geometry.Bounds, stickyContainer, style, layout.Viewport())
+		}
+		if !overflowClips(style.OverflowX()) && !overflowClips(style.OverflowY()) {
+			continue
+		}
 		clip := geometry.ClientBounds
 		clip.X -= transform.OffsetX
 		clip.Y -= transform.OffsetY
+		stickyContainer = clip
 		if transform.HasClip {
 			clip = intersectRenderRect(transform.Clip, clip)
 		}
@@ -504,7 +512,37 @@ func (page *Page) visualTransformForNodeLocked(node *dom.Node, layout *render.La
 			transform.OffsetY += offset.y
 		}
 	}
+	if id, ok := page.document.ID(node); ok {
+		if style, found := styles.LookupID(id); found && style.Position() == computed.PositionSticky {
+			if geometry, available := layout.GeometryID(id); available {
+				transform = stickyVisualTransform(transform, geometry.Bounds, stickyContainer, style, layout.Viewport())
+			}
+		}
+	}
 	return transform
+}
+
+func stickyVisualTransform(transform render.VisualTransform, bounds, container render.Rect, style computed.ComputedStyle, viewport render.Viewport) render.VisualTransform {
+	viewportWidth := float64(viewport.Width)
+	viewportHeight := float64(viewport.Height)
+	visualX := bounds.X - transform.OffsetX
+	visualY := bounds.Y - transform.OffsetY
+	targetX := stickyAxisPosition(visualX, bounds.Width, container.X, container.Width, style.Left(), style.Right(), viewportWidth, viewportHeight)
+	targetY := stickyAxisPosition(visualY, bounds.Height, container.Y, container.Height, style.Top(), style.Bottom(), viewportWidth, viewportHeight)
+	transform.OffsetX -= targetX - visualX
+	transform.OffsetY -= targetY - visualY
+	return transform
+}
+
+func stickyAxisPosition(position, size, containerStart, containerSize float64, start, end computed.Length, viewportWidth, viewportHeight float64) float64 {
+	target := position
+	if inset, ok := start.Resolve(containerSize, viewportWidth, viewportHeight); ok {
+		target = math.Max(target, containerStart+inset)
+	}
+	if inset, ok := end.Resolve(containerSize, viewportWidth, viewportHeight); ok {
+		target = math.Min(target, containerStart+containerSize-inset-size)
+	}
+	return target
 }
 
 func intersectRenderRect(left, right render.Rect) render.Rect {

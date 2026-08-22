@@ -32,6 +32,11 @@ let numericAfter = Date.now();
 if (Math.clz32(0) !== 32 || Math.clz32(1) !== 31 ||
     Math.floor(-1.2) !== -2 || Math.log(1) !== 0 ||
     Math.min(4, -2, 9) !== -2 || Math.min() !== Infinity ||
+    Number.POSITIVE_INFINITY !== Infinity || Number.NEGATIVE_INFINITY !== -Infinity ||
+    !Number.isNaN(Number.NaN) || Number.EPSILON !== Math.pow(2, -52) ||
+    Number.MAX_SAFE_INTEGER !== 9007199254740991 ||
+    Number.MIN_SAFE_INTEGER !== -9007199254740991 ||
+    Number.MAX_VALUE !== 1.7976931348623157e+308 || Number.MIN_VALUE !== 5e-324 ||
     Math.LN2 <= 0.69 || Math.LN2 >= 0.70 ||
     numericRandom < 0 || numericRandom >= 1 || numericBefore > numericAfter ||
     !isNaN("not-a-number") || isNaN("42") || Number("42") !== 42 ||

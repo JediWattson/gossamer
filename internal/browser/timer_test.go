@@ -148,6 +148,63 @@ func TestClearTimeoutDestroysRealmOwnedNativeRecord(t *testing.T) {
 	}
 }
 
+func TestClearTimeoutCancelsFiredButQueuedTimer(t *testing.T) {
+	t.Parallel()
+
+	script := &timerTestRealm{}
+	engine, err := NewWithEngine(&timerTestEngine{realm: script})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close()
+	location, _ := url.Parse("https://example.test/")
+	page, err := engine.NewPage(dom.NewDocument(), location)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var timerID TimerID
+	if _, err := page.Realm.EnqueueTask(func(task *browserruntime.TaskContext) error {
+		var timerErr error
+		timerID, timerErr = page.setTimeoutFromTask(task, 10, time.Hour)
+		return timerErr
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	page.mutex.RLock()
+	ref := page.timers[timerID].ref
+	page.mutex.RUnlock()
+
+	page.fireTimer(timerID)
+	if err := page.clearTimeout(timerID); err != nil {
+		t.Fatal(err)
+	}
+	queued, err := page.Realm.Store().Region(ref.Region)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queued.State != memory.RegionInTransit || queued.Owner != page.Realm.Tasks.Owner() {
+		t.Fatalf("canceled queued timer record = %#v", queued)
+	}
+
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if script.invoked != 0 {
+		t.Fatalf("canceled queued timer invoked callback %d", script.invoked)
+	}
+	completed, err := page.Realm.Store().Region(ref.Region)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed.State != memory.RegionDestroyed {
+		t.Fatalf("completed canceled timer record = %#v", completed)
+	}
+}
+
 func TestQueuedCallbacksUseQueueOwnedNativeRecords(t *testing.T) {
 	t.Parallel()
 

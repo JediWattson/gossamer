@@ -244,7 +244,17 @@ func (page *Page) dispatchWebSocket(task *browserruntime.TaskContext, generation
 	host := &taskHost{page: page, task: task, generation: generation, autoRender: true, styleChanged: pendingStyle}
 	dispatchErr := realm.DispatchWebSocket(host, id, event)
 	microtaskErr := script.DrainMicrotasks(host)
-	return errors.Join(dispatchErr, microtaskErr, host.finish())
+	finishErr := host.finish()
+	if dispatchErr != nil {
+		dispatchErr = fmt.Errorf("browser: dispatch websocket %d event %d: %w", id, event.Type, dispatchErr)
+	}
+	if microtaskErr != nil {
+		microtaskErr = fmt.Errorf("browser: drain websocket %d event %d microtasks: %w", id, event.Type, microtaskErr)
+	}
+	if finishErr != nil {
+		finishErr = fmt.Errorf("browser: finish websocket %d event %d: %w", id, event.Type, finishErr)
+	}
+	return errors.Join(dispatchErr, microtaskErr, finishErr)
 }
 
 func (page *Page) takeWebSocketsLocked() []*pageWebSocket {

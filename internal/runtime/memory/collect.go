@@ -32,6 +32,30 @@ func (store *Store) Collect(owner ownership.OwnerID, roots ...Ref) (Collection, 
 	}
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
+	return store.collectLocked(owner, 0, roots...)
+}
+
+// CollectRegion reclaims unreachable slots from one private physical region.
+// Other regions owned by the same semantic owner remain outside the sweep and
+// their incoming references are treated as roots. This is the checkpoint used
+// by a Realm whose browser-owned async envelopes share its OwnerID.
+func (store *Store) CollectRegion(owner ownership.OwnerID, regionID RegionID, roots ...Ref) (Collection, error) {
+	if store == nil {
+		return Collection{}, fmt.Errorf("memory: nil store")
+	}
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+	region := store.regions[regionID]
+	if region == nil {
+		return Collection{}, fmt.Errorf("%w: R%d", ErrUnknownRegion, regionID)
+	}
+	if region.State != RegionPrivate || region.Owner != owner {
+		return Collection{}, store.accessError(region, owner)
+	}
+	return store.collectLocked(owner, regionID, roots...)
+}
+
+func (store *Store) collectLocked(owner ownership.OwnerID, regionID RegionID, roots ...Ref) (Collection, error) {
 	if store.closed {
 		return Collection{}, ErrStoreClosed
 	}
@@ -43,7 +67,7 @@ func (store *Store) Collect(owner ownership.OwnerID, roots ...Ref) (Collection, 
 	byObject := make(map[ownership.ObjectID]Ref)
 	for _, id := range sortedRegionIDs(store.regions) {
 		region := store.regions[id]
-		if region == nil || region.State != RegionPrivate || region.Owner != owner {
+		if region == nil || region.State != RegionPrivate || region.Owner != owner || regionID != 0 && id != regionID {
 			continue
 		}
 		for index := range region.Slots {

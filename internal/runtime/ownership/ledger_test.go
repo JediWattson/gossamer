@@ -74,6 +74,37 @@ func TestTaskQueueTaskOwnershipLifecycle(t *testing.T) {
 	}
 }
 
+func TestDestroyedObjectReleasesAdjacencyStorage(t *testing.T) {
+	t.Parallel()
+
+	ledger := NewLedger()
+	owner := OwnerID{Kind: OwnerTask, Value: 99}
+	region := mustCreateRegion(t, ledger, owner)
+	root, err := ledger.CreateObject(region)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := ledger.CreateObject(region)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ledger.AddReference(root, target); err != nil {
+		t.Fatal(err)
+	}
+	if err := ledger.CloseRegion(region); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []ObjectID{root, target} {
+		record := ledger.objects[id]
+		if record == nil || record.alive {
+			t.Fatalf("destroyed object %d = %#v", id, record)
+		}
+		if record.claims != nil || record.edges != nil || record.incoming != nil {
+			t.Fatalf("destroyed object %d retained adjacency storage", id)
+		}
+	}
+}
+
 func TestTelemetryFormatsLifecycleAndSummary(t *testing.T) {
 	t.Parallel()
 

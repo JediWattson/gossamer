@@ -36,6 +36,23 @@ let parityUnmatchedCapture = "/global".replace(/^\/+|(\/)\/+$/g, "$1");
 let parityCaptures = "abc".replace(/(a)(b)(c)/, "$3$2$1");
 let parityTwoDigitFallback = "ab".replace(/(a)(b)/, "$12");
 let parityContextReplacement = "abc".replace(/(b)/, "<$&-$'");
+let parityLookaheadExpression = /(^|\n)BEGIN(?:[^\n]*)?\n([\s\S]*?)\nEND(?=\n|$)/;
+let parityLookaheadMatch = parityLookaheadExpression.exec("before\nBEGIN js\nconst x = 1;\nEND\nafter");
+let parityLookaheadReplace = "ab".replace(/a(?=b)/, "x");
+let parityLookaheadGlobal = "abab".match(/a(?=b)/g);
+let parityNegativeLookahead = /a(?!b)/.test("ac") && !/a(?!b)/.test("ab");
+let parityUnicodeIndexExpression = /https:/g;
+let parityUnicodeIndexMatch = parityUnicodeIndexExpression.exec("éhttps:");
+let parityScanText = "@abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-";
+let parityScanIndex = 1;
+let parityScanIterations = 0;
+for (; parityScanIndex < parityScanText.length && /[A-Za-z0-9_.-]/.test(parityScanText[parityScanIndex] ?? "");) {
+  parityScanIndex += 1;
+  parityScanIterations += 1;
+  if (parityScanIterations > parityScanText.length) {
+    throw new Error("RegExp for-condition did not terminate");
+  }
+}
 if (!parityExpression.test("GOO") || parityExpression.test("stop") ||
     parityExpression.source !== "^go+$" || parityExpression.flags !== "i" ||
     parityExpression.toString() !== "/^go+$/i" || !parityFirstMatch ||
@@ -43,7 +60,14 @@ if (!parityExpression.test("GOO") || parityExpression.test("stop") ||
     !parityUnicodeExpression.test("ÀÖ") || parityUnicodeExpression.test("AZ") ||
     parityUnicodeExpression.source !== "^[\\u00C0-\\u00D6]+$" ||
     parityUnmatchedCapture !== "global" || parityCaptures !== "cba" ||
-    parityTwoDigitFallback !== "a2" || parityContextReplacement !== "a<b-cc") {
+    parityTwoDigitFallback !== "a2" || parityContextReplacement !== "a<b-cc" ||
+    parityLookaheadMatch[0] !== "\nBEGIN js\nconst x = 1;\nEND" ||
+    parityLookaheadMatch[1] !== "\n" || parityLookaheadMatch[2] !== "const x = 1;" ||
+    parityLookaheadMatch.index !== 6 || parityLookaheadReplace !== "xb" ||
+    parityLookaheadGlobal.join(",") !== "a,a" || !parityNegativeLookahead ||
+    parityUnicodeIndexMatch.index !== 1 || parityUnicodeIndexExpression.lastIndex !== 7 ||
+    parityScanIndex !== 66 || parityScanIterations !== 65 ||
+    "éhttps:".slice(parityUnicodeIndexMatch.index, parityUnicodeIndexExpression.lastIndex) !== "https:") {
   throw new Error("RegExp builtin parity failed");
 }
 `}); err != nil {

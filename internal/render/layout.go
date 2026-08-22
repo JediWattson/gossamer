@@ -834,6 +834,7 @@ type flexLayoutItem struct {
 	node          *styledNode
 	box           *Box
 	originalIndex int
+	crossSize     float64
 	mainSize      float64
 	outerMain     float64
 	marginBefore  float64
@@ -883,15 +884,21 @@ func (context *layoutContext) layoutFlexRow(node *styledNode, box *Box, contentW
 		border := context.resolveBorder(style, contentWidth)
 		item.marginBefore = resolveLength(style.MarginLeft(), contentWidth, context.viewport, 0)
 		item.marginAfter = resolveLength(style.MarginRight(), contentWidth, context.viewport, 0)
+		decoration := padding.Left + padding.Right + border.Left + border.Right + item.marginBefore + item.marginAfter
 		basis := 0.0
 		switch {
 		case style.FlexBasis().Unit() != lengthAuto:
 			basis = resolveLength(style.FlexBasis(), contentWidth, context.viewport, 0)
 		case style.Width().Unit() != lengthAuto:
 			basis = resolveLength(style.Width(), contentWidth, context.viewport, 0)
+		default:
+			intrinsic, err := context.intrinsicOuterWidths(item.node, contentWidth)
+			if err != nil {
+				return 0, err
+			}
+			basis = math.Max(0, intrinsic.preferred-decoration)
 		}
 		item.mainSize = math.Max(0, basis)
-		decoration := padding.Left + padding.Right + border.Left + border.Right + item.marginBefore + item.marginAfter
 		item.outerMain = item.mainSize + decoration
 		totalOuter += item.outerMain
 		totalGrow += style.FlexGrow()
@@ -986,6 +993,7 @@ func (context *layoutContext) layoutFlexColumn(node *styledNode, box *Box, conte
 			}
 			itemWidth = math.Min(contentWidth, intrinsic.preferred)
 		}
+		item.crossSize = itemWidth
 		childBox, err := context.layoutBlockSized(item.node, box.ContentBounds.X, box.ContentBounds.Y, itemWidth, definiteHeight, nil, true)
 		if err != nil {
 			return 0, err
@@ -1030,6 +1038,28 @@ func (context *layoutContext) layoutFlexColumn(node *styledNode, box *Box, conte
 	cursorY := box.ContentBounds.Y + start
 	for index := range items {
 		item := &items[index]
+		if item.box != nil && item.mainSize != item.box.Bounds.Height {
+			// Flexing establishes a definite used main size. Re-layout the item
+			// with that size so percentage-height descendants resolve against the
+			// final flexed content box rather than its intrinsic first pass.
+			decoration := item.box.Bounds.Height - item.box.ContentBounds.Height
+			forcedContentHeight := math.Max(0, item.mainSize-decoration)
+			relaid, err := context.layoutBlockSizedWithSubgrid(
+				item.node,
+				box.ContentBounds.X,
+				box.ContentBounds.Y,
+				item.crossSize,
+				definiteHeight,
+				nil,
+				true,
+				nil,
+				blockLayoutOverrides{forceContentHeight: &forcedContentHeight},
+			)
+			if err != nil {
+				return 0, err
+			}
+			item.box = relaid
+		}
 		marginTop := resolveLength(item.node.style.MarginTop(), contentWidth, context.viewport, 0)
 		marginBottom := resolveLength(item.node.style.MarginBottom(), contentWidth, context.viewport, 0)
 		marginLeft := resolveLength(item.node.style.MarginLeft(), contentWidth, context.viewport, 0)

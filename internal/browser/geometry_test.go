@@ -5,6 +5,7 @@ import (
 
 	"github.com/JediWattson/gossamer/internal/dom"
 	"github.com/JediWattson/gossamer/internal/render"
+	computed "github.com/JediWattson/gossamer/internal/style"
 )
 
 func TestPageGeometryAndRootScrollReuseLayoutAndTranslateHitTesting(t *testing.T) {
@@ -174,5 +175,37 @@ func TestElementOverflowScrollTranslatesClipsAndHitTestsWithoutRelayout(t *testi
 	}
 	if hit, ok := page.HitTest(10, 45); ok && hit == buttonHandle {
 		t.Fatal("hit testing escaped the overflow clip")
+	}
+}
+
+func TestStickyBottomProjectsIntoNearestScrollport(t *testing.T) {
+	engine, page, stickyID := computedStyleTestPage(t, `<!doctype html><html><body style="margin:0">
+		<div id="scroller" style="height:100px;overflow:auto">
+			<div style="height:100px"></div>
+			<button id="target" style="display:block;position:sticky;bottom:0;height:20px">target</button>
+		</div>
+	</body></html>`)
+	defer engine.Close()
+
+	handle := NodeHandle{Document: page.DocumentGeneration(), Node: stickyID}
+	stickyStyle, err := page.ComputedStyle(handle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stickyStyle.Position() != computed.PositionSticky || stickyStyle.Bottom().IsAuto() {
+		t.Fatalf("sticky computed position/bottom = %v/%v", stickyStyle.Position(), stickyStyle.Bottom())
+	}
+	geometry, err := page.ElementGeometry(handle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if geometry.Rect.Y != 80 || geometry.Rect.Height != 20 {
+		t.Fatalf("sticky geometry = %#v, want y=80 height=20", geometry.Rect)
+	}
+	if err := page.Render(); err != nil {
+		t.Fatal(err)
+	}
+	if hit, ok := page.HitTest(10, 90); !ok || hit != handle {
+		t.Fatalf("sticky HitTest = %#v, %t; want %#v", hit, ok, handle)
 	}
 }

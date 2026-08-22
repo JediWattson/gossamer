@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
+	"runtime"
 	"sync/atomic"
 
 	"github.com/JediWattson/gossamer/internal/runtime/memory"
@@ -336,9 +338,18 @@ func (realm *Realm) execute(task Task) (result error) {
 		Refs:         append([]memory.Ref(nil), task.refs...),
 	}
 	defer func() {
-		result = errors.Join(result, realm.store.ReleaseOwner(task.owner))
+		if releaseErr := realm.store.ReleaseOwner(task.owner); releaseErr != nil {
+			result = errors.Join(result, fmt.Errorf("runtime: release task %d owner: %w", task.ID, releaseErr))
+		}
 	}()
-	return task.Run(context)
+	if err := task.Run(context); err != nil {
+		name := "unknown"
+		if function := runtime.FuncForPC(reflect.ValueOf(task.Run).Pointer()); function != nil {
+			name = function.Name()
+		}
+		return fmt.Errorf("runtime: execute task %d (%s): %w", task.ID, name, err)
+	}
+	return nil
 }
 
 func (realm *Realm) beginExecution() error {

@@ -28,6 +28,8 @@ func runStringEndsWithParity(t *testing.T, engine browser.Engine) {
 	if _, err := page.QueueScript(browser.ScriptSource{URL: location.String(), Source: `
 let regexpRejected = false;
 try { "chunk.js".endsWith(/\.js/); } catch (error) { regexpRejected = error instanceof TypeError; }
+let invalidCodePointRejected = false;
+try { String.fromCodePoint(0x110000); } catch (error) { invalidCodePointRejected = error instanceof RangeError; }
 if (!"chunk.js".endsWith(".js") ||
     "chunk.js".endsWith("chunk", 5) !== true ||
     "chunk.js".endsWith("chunk", -1) !== false ||
@@ -37,6 +39,12 @@ if (!"chunk.js".endsWith(".js") ||
     "strand".substring(4, 1) !== "tra" ||
     "strand".substring(-5, 2) !== "st" ||
     "strand".substring(2) !== "rand" ||
+    "strand".charCodeAt(0) !== 115 ||
+    "😀".charCodeAt(0) !== 55357 || "😀".charCodeAt(1) !== 56832 ||
+    !Number.isNaN("strand".charCodeAt(99)) ||
+    String.fromCharCode(65, 66) !== "AB" ||
+    String.fromCodePoint(0x1F1FA, 0x1F1F8) !== "🇺🇸" ||
+    invalidCodePointRejected !== true ||
     "ababa".lastIndexOf("ba") !== 3 ||
     "ababa".lastIndexOf("ba", 2) !== 1 ||
     "ababa".lastIndexOf("z") !== -1 ||

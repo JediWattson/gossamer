@@ -424,6 +424,10 @@ func matchesPseudoClass(pseudo pseudoClassSelector, node *dom.Node, context Matc
 	switch pseudo.name {
 	case "root":
 		return isDocumentElement(node)
+	case "host":
+		// :host is syntactically valid in document stylesheets but only matches
+		// inside a shadow tree. Strand does not expose shadow roots yet.
+		return false
 	case "empty":
 		return isEmptyElement(node)
 	case "first-child":
@@ -526,7 +530,7 @@ func matchesPseudoClass(pseudo pseudoClassSelector, node *dom.Node, context Matc
 
 func supportedSimplePseudoClass(name string) bool {
 	switch name {
-	case "root", "empty",
+	case "root", "host", "empty",
 		"first-child", "last-child", "only-child",
 		"first-of-type", "last-of-type", "only-of-type",
 		"link", "any-link", "visited",

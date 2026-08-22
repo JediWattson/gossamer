@@ -37,10 +37,14 @@ const outer = document.getElementById("outer");
 const target = document.getElementById("target");
 let order = "";
 outer.addEventListener("strand-ready", event => {
-  if (event.eventPhase !== Event.CAPTURING_PHASE || event.currentTarget !== outer) {
-    throw new Error("constructed Event capture state");
-  }
-  order += "c";
+	if (event.eventPhase !== Event.CAPTURING_PHASE || event.currentTarget !== outer) {
+		throw new Error("constructed Event capture state");
+	}
+	const path = event.composedPath();
+	if (path[0] !== target || path[path.length - 1] !== window || path.indexOf(outer) < 0) {
+		throw new Error("constructed Event composed path");
+	}
+	order += "c";
 }, true);
 target.addEventListener("strand-ready", event => {
   if (event.eventPhase !== Event.AT_TARGET || event.target !== target || event.currentTarget !== target) {
@@ -62,7 +66,8 @@ if (!(event instanceof Event) || event.type !== "strand-ready" || event.target !
   throw new Error("constructed Event initialization");
 }
 if (target.dispatchEvent(event) !== false || order !== "ctbw" || !event.defaultPrevented ||
-    event.target !== target || event.currentTarget !== null || event.eventPhase !== Event.NONE) {
+	event.target !== target || event.currentTarget !== null || event.eventPhase !== Event.NONE ||
+	event.composedPath().length !== 0) {
   throw new Error("constructed Event completion: " + order);
 }
 

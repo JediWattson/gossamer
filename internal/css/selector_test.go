@@ -84,6 +84,42 @@ func TestUnsupportedPseudoClassInvalidatesSelectorList(t *testing.T) {
 	}
 }
 
+func TestShadowSurfaceSelectorsRemainValidOutsideShadowAndTopLayerContexts(t *testing.T) {
+	t.Parallel()
+
+	document := dom.NewDocument()
+	html := dom.NewElement("html")
+	body := dom.NewElement("body")
+	document.AppendChild(html)
+	html.AppendChild(body)
+
+	stylesheet, err := css.Parse(`
+		:root, :host { --theme: dark }
+		*, :before, :after, ::backdrop { margin: 0 }
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(stylesheet.Rules); got != 2 {
+		t.Fatalf("len(Rules) = %d, want 2", got)
+	}
+	if _, matched := stylesheet.Rules[0].Match(html); !matched {
+		t.Fatal(":root branch stopped matching when paired with :host")
+	}
+	if _, matched := stylesheet.Rules[1].Match(body); !matched {
+		t.Fatal("universal branch stopped matching when paired with ::backdrop")
+	}
+
+	host := parseOneSelector(t, ":host")
+	if host.Matches(html) {
+		t.Fatal(":host matched outside a shadow tree")
+	}
+	backdrop := parseOneSelector(t, "::backdrop")
+	if backdrop.Matches(html) {
+		t.Fatal("::backdrop matched an ordinary document element")
+	}
+}
+
 func TestSelectorOnlyMatchesElements(t *testing.T) {
 	t.Parallel()
 

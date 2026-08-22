@@ -171,3 +171,66 @@ func TestWeakOwnershipRejectsShorterLivedKeysAndPromotesValues(t *testing.T) {
 	}
 	assertStoreInvariants(t, store, "promoted weak value")
 }
+
+func TestCopyPreservesLiveWeakMapEphemeronAndDropsDeadWeakEntries(t *testing.T) {
+	t.Parallel()
+
+	store := memory.NewStore(nil)
+	defer store.Close()
+	source := realmOwner(964)
+	destination := realmOwner(965)
+	region := mustRegion(t, store, source)
+	weakMap, _ := store.AllocWeakMap(source, region)
+	weakSet, _ := store.AllocWeakSet(source, region)
+	liveKey := mustAlloc(t, store, source, region)
+	deadKey := mustAlloc(t, store, source, region)
+	value := mustAlloc(t, store, source, region)
+	leaf := mustAlloc(t, store, source, region)
+	if err := store.Set(source, value, 0, memory.RefValue(leaf)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WeakMapSet(source, weakMap, liveKey, memory.RefValue(value)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WeakMapSet(source, weakMap, deadKey, memory.NumberValue(9)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WeakSetAdd(source, weakSet, liveKey); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.WeakSetAdd(source, weakSet, deadKey); err != nil {
+		t.Fatal(err)
+	}
+
+	copied, err := store.Copy(source, destination, weakMap, weakSet, liveKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(copied) != 3 {
+		t.Fatalf("copied roots = %v", copied)
+	}
+	copiedMap, copiedSet, copiedKey := copied[0], copied[1], copied[2]
+	copiedValue, found, err := store.WeakMapGet(destination, copiedMap, copiedKey)
+	if err != nil || !found || !copiedValue.IsRef() {
+		t.Fatalf("copied live ephemeron = %v, %t, %v", copiedValue, found, err)
+	}
+	cell, err := store.Deref(destination, copiedValue.Ref())
+	if err != nil || len(cell.Fields) != 1 || !cell.Fields[0].IsRef() {
+		t.Fatalf("copied ephemeron value = %#v, %v", cell, err)
+	}
+	if _, err := store.Deref(destination, cell.Fields[0].Ref()); err != nil {
+		t.Fatalf("copied ephemeron leaf: %v", err)
+	}
+	mapSnapshot, err := store.DerefWeakMap(destination, copiedMap)
+	if err != nil || len(mapSnapshot.Entries) != 1 {
+		t.Fatalf("copied WeakMap = %#v, %v", mapSnapshot, err)
+	}
+	setSnapshot, err := store.DerefWeakSet(destination, copiedSet)
+	if err != nil || len(setSnapshot.Keys) != 1 || setSnapshot.Keys[0] != copiedKey {
+		t.Fatalf("copied WeakSet = %#v, %v", setSnapshot, err)
+	}
+	if err := store.ReleaseOwner(source); err != nil {
+		t.Fatal(err)
+	}
+	assertStoreInvariants(t, store, "copied weak ephemeron")
+}

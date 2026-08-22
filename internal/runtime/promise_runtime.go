@@ -503,24 +503,58 @@ func (execution *execution) popJob() (microtaskJob, bool) {
 	return job, true
 }
 
+func (execution *execution) hasJobs() bool {
+	interpreter := execution.interpreter
+	interpreter.jobMutex.Lock()
+	hasJobs := len(interpreter.jobs[execution.context.TaskID]) != 0
+	interpreter.jobMutex.Unlock()
+	return hasJobs
+}
+
 func (execution *execution) drainJobs() error {
 	var result error
+	var processed uint64
 	for {
+		if processed >= execution.interpreter.config.MaxMicrotasks {
+			if execution.hasJobs() {
+				return errors.Join(result, ErrMicrotaskLimit)
+			}
+			return result
+		}
 		job, ok := execution.popJob()
 		if !ok {
 			return result
 		}
+		processed++
+		execution.steps = 0
 		var err error
 		switch job.kind {
 		case microtaskCallback:
 			_, err = execution.call(job.callback, memory.UndefinedValue(), nil, callAny)
+			if err != nil {
+				err = fmt.Errorf("runtime: run queueMicrotask callback %s: %w", job.callback, err)
+			}
 		case microtaskPromiseReaction:
 			err = execution.runPromiseReaction(job)
+			if err != nil {
+				err = fmt.Errorf(
+					"runtime: run promise reaction fulfilled=%s rejected=%s downstream=%s result=%s: %w",
+					microtaskValueLabel(job.reaction.OnFulfilled), microtaskValueLabel(job.reaction.OnRejected),
+					microtaskValueLabel(job.reaction.Downstream), microtaskValueLabel(job.result), err,
+				)
+			}
 		default:
 			err = fmt.Errorf("runtime: unknown microtask job %d", job.kind)
 		}
 		result = errors.Join(result, err)
 	}
+}
+
+func microtaskValueLabel(value memory.Value) string {
+	if value.IsRef() {
+		return value.Ref().String()
+	}
+	return fmt.Sprintf("Value(%d)", value.Kind())
 }
 
 func (execution *execution) runPromiseReaction(job microtaskJob) error {

@@ -5,6 +5,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"unicode/utf16"
 	"unicode/utf8"
 
 	"github.com/JediWattson/gossamer/internal/runtime/memory"
@@ -20,6 +21,12 @@ func (intrinsics *Intrinsics) installCollectionBuiltins(context *TaskContext) er
 		return err
 	}
 	if err := defineData(context, intrinsics.StringPrototype, "constructor", memory.RefValue(stringConstructor), true, false, true); err != nil {
+		return err
+	}
+	if err := installMethods(intrinsics, context, stringConstructor, []builtinMethod{
+		{"fromCharCode", 1, nativeStringFromCharCode},
+		{"fromCodePoint", 1, nativeStringFromCodePoint},
+	}); err != nil {
 		return err
 	}
 
@@ -48,7 +55,8 @@ func (intrinsics *Intrinsics) installCollectionBuiltins(context *TaskContext) er
 
 	if err := installMethods(intrinsics, context, intrinsics.StringPrototype, []builtinMethod{
 		{"toString", 0, nativeStringToString}, {"valueOf", 0, nativeStringValueOf},
-		{"charAt", 1, nativeStringCharAt}, {"includes", 1, nativeStringIncludes},
+		{"charAt", 1, nativeStringCharAt}, {"charCodeAt", 1, nativeStringCharCodeAt},
+		{"includes", 1, nativeStringIncludes},
 		{"endsWith", 1, nativeStringEndsWith},
 		{"startsWith", 1, nativeStringStartsWith}, {"replace", 2, nativeStringReplace},
 		{"padStart", 1, nativeStringPadStart}, {"padEnd", 1, nativeStringPadEnd},
@@ -167,6 +175,33 @@ func builtinStringConstructor(execution *execution, _ memory.Ref, _ memory.Funct
 	return memory.RefValue(ref), err
 }
 
+func builtinStringFromCharCode(execution *execution, _ memory.Ref, _ memory.Function, _ memory.Value, arguments []memory.Value) (memory.Value, error) {
+	codeUnits := make([]uint16, len(arguments))
+	for index, argument := range arguments {
+		number, err := execution.toNumber(argument)
+		if err != nil {
+			return memory.Value{}, err
+		}
+		codeUnits[index] = uint16(toUint32(number))
+	}
+	return newStringValue(execution.context, string(utf16.Decode(codeUnits)))
+}
+
+func builtinStringFromCodePoint(execution *execution, _ memory.Ref, _ memory.Function, _ memory.Value, arguments []memory.Value) (memory.Value, error) {
+	codePoints := make([]rune, len(arguments))
+	for index, argument := range arguments {
+		number, err := execution.toNumber(argument)
+		if err != nil {
+			return memory.Value{}, err
+		}
+		if math.IsNaN(number) || math.IsInf(number, 0) || number != math.Trunc(number) || number < 0 || number > utf8.MaxRune {
+			return memory.Value{}, fmt.Errorf("%w: String.fromCodePoint code point %v", memory.ErrInvalidIndex, number)
+		}
+		codePoints[index] = rune(number)
+	}
+	return newStringValue(execution.context, string(codePoints))
+}
+
 func builtinStringToString(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, _ []memory.Value) (memory.Value, error) {
 	if _, err := requireString(execution.context, this); err != nil {
 		return memory.Value{}, err
@@ -190,6 +225,22 @@ func builtinStringCharAt(execution *execution, _ memory.Ref, _ memory.Function, 
 	}
 	ref, err := execution.context.NewString(result)
 	return memory.RefValue(ref), err
+}
+
+func builtinStringCharCodeAt(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+	text, err := requireString(execution.context, this)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	index, err := integerArgument(execution, arguments, 0, 0)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	codeUnits := utf16.Encode([]rune(text))
+	if index < 0 || index >= int64(len(codeUnits)) {
+		return memory.NumberValue(math.NaN()), nil
+	}
+	return memory.NumberValue(float64(codeUnits[index])), nil
 }
 
 func builtinStringAt(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, arguments []memory.Value) (memory.Value, error) {
@@ -358,8 +409,13 @@ func builtinStringReplace(execution *execution, _ memory.Ref, _ memory.Function,
 			}
 			global = expression.Flags&memory.RegExpGlobal != 0
 			if global {
-				matches = compiled.FindAllStringSubmatchIndex(text, -1)
-			} else if match := compiled.FindStringSubmatchIndex(text); match != nil {
+				matches, compileErr = compiled.FindAllStringSubmatchIndex(text, -1)
+				if compileErr != nil {
+					return memory.Value{}, compileErr
+				}
+			} else if match, matchErr := compiled.FindStringSubmatchIndex(text); matchErr != nil {
+				return memory.Value{}, matchErr
+			} else if match != nil {
 				matches = [][]int{match}
 			}
 		}
@@ -405,7 +461,8 @@ func builtinStringReplace(execution *execution, _ memory.Ref, _ memory.Function,
 				}
 				callbackArguments = append(callbackArguments, value)
 			}
-			callbackArguments = append(callbackArguments, memory.NumberValue(float64(match[0])), this)
+			callbackIndex := regexpByteOffsetToRuneIndex(text, match[0])
+			callbackArguments = append(callbackArguments, memory.NumberValue(float64(callbackIndex)), this)
 			value, callErr := execution.call(callable, memory.UndefinedValue(), callbackArguments, callAny)
 			if callErr != nil {
 				return memory.Value{}, callErr
@@ -472,7 +529,10 @@ func builtinStringMatch(execution *execution, _ memory.Ref, _ memory.Function, t
 	if err != nil {
 		return memory.Value{}, err
 	}
-	matches := compiled.FindAllStringIndex(text, -1)
+	matches, err := compiled.FindAllStringIndex(text, -1)
+	if err != nil {
+		return memory.Value{}, err
+	}
 	if err := execution.context.SetRegExpLastIndex(expressionRef, 0); err != nil {
 		return memory.Value{}, err
 	}

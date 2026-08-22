@@ -22,6 +22,7 @@ const (
 	nativeEventStopImmediatePropagation
 	nativeKeyboardEventConstructor
 	nativeKeyboardEventGetModifierState
+	nativeEventComposedPath
 )
 
 const eventBrandProperty = "\x00gossamer.event"
@@ -65,6 +66,7 @@ type eventListener struct {
 
 type eventState struct {
 	object             memory.Ref
+	path               []eventTargetID
 	defaultPrevented   bool
 	propagationStopped bool
 	immediateStopped   bool
@@ -453,6 +455,31 @@ func (realm *Realm) eventStopImmediatePropagation(context *browserruntime.TaskCo
 	return memory.UndefinedValue(), nil
 }
 
+func (realm *Realm) eventComposedPath(context *browserruntime.TaskContext, this memory.Value, _ []memory.Value) (memory.Value, error) {
+	event, err := realm.requireEventObject(context, this)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	var path []eventTargetID
+	if state := realm.activeEvent; state != nil && state.object == event {
+		path = state.path
+	}
+	result, err := context.NewArray(uint32(len(path)))
+	if err != nil {
+		return memory.Value{}, err
+	}
+	for index, target := range path {
+		value, err := realm.eventTargetValue(context, target)
+		if err != nil {
+			return memory.Value{}, err
+		}
+		if err := context.SetArrayElement(result, uint32(index), value); err != nil {
+			return memory.Value{}, err
+		}
+	}
+	return memory.RefValue(result), nil
+}
+
 func (realm *Realm) requireEventObject(context *browserruntime.TaskContext, value memory.Value) (memory.Ref, error) {
 	if !value.IsRef() {
 		return memory.Ref{}, fmt.Errorf("%w: Event method called with an invalid receiver", browserruntime.ErrOperandType)
@@ -546,7 +573,7 @@ func (realm *Realm) dispatchEventObjectLocked(
 	if err != nil {
 		return false, err
 	}
-	state := &eventState{object: event, cancelable: cancelable, defaultPrevented: defaultPrevented}
+	state := &eventState{object: event, path: append([]eventTargetID(nil), path...), cancelable: cancelable, defaultPrevented: defaultPrevented}
 	previous := realm.activeEvent
 	realm.activeEvent = state
 	defer func() { realm.activeEvent = previous }()

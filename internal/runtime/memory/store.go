@@ -1132,7 +1132,7 @@ func (store *Store) unlinkSlotLocked(region *Region, slot *Slot) error {
 		}
 		targetRegion, targetSlot, err := store.slotLocked(value.Ref())
 		if err != nil {
-			return err
+			return fmt.Errorf("memory: unlink %s object %d in R%d through %s: %w", slot.Kind, slot.object, region.ID, value.Ref(), err)
 		}
 		if err := store.unlinkLocked(region.ID, slot.object, targetRegion.ID, targetSlot.object); err != nil {
 			return err
@@ -1329,31 +1329,88 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 	if len(roots) == 0 {
 		return nil, nil
 	}
-	queue := append([]Ref(nil), roots...)
+	type copyCandidate struct {
+		ref       Ref
+		from      Ref
+		fromKind  HeapKind
+		reference int
+		root      int
+	}
+	queue := make([]copyCandidate, len(roots))
+	for index, root := range roots {
+		queue[index] = copyCandidate{ref: root, reference: -1, root: index}
+	}
 	seen := make(map[Ref]struct{})
 	order := make([]Ref, 0)
-	for len(queue) != 0 {
-		ref := queue[0]
-		queue = queue[1:]
-		if _, exists := seen[ref]; exists {
-			continue
-		}
-		region, slot, err := store.slotLocked(ref)
-		if err != nil {
-			return nil, err
-		}
-		if region.State == RegionInTransit {
-			return nil, fmt.Errorf("%w: R%d", ErrRegionInTransit, region.ID)
-		}
-		if region.State == RegionPrivate && region.Owner != from {
-			return nil, store.accessError(region, from)
-		}
-		seen[ref] = struct{}{}
-		order = append(order, ref)
-		for _, value := range slotReferences(slot) {
-			if value.IsRef() {
-				queue = append(queue, value.Ref())
+	drainStrongReferences := func() error {
+		for len(queue) != 0 {
+			candidate := queue[0]
+			queue = queue[1:]
+			ref := candidate.ref
+			if _, exists := seen[ref]; exists {
+				continue
 			}
+			region, slot, err := store.slotLocked(ref)
+			if err != nil {
+				if candidate.from != (Ref{}) {
+					return fmt.Errorf("memory: copy reached %s from %s %s reference %d: %w", ref, candidate.from, candidate.fromKind, candidate.reference, err)
+				}
+				return fmt.Errorf("memory: copy root %d %s: %w", candidate.root, ref, err)
+			}
+			if region.State == RegionInTransit {
+				return fmt.Errorf("%w: R%d", ErrRegionInTransit, region.ID)
+			}
+			if region.State == RegionPrivate && region.Owner != from {
+				return store.accessError(region, from)
+			}
+			seen[ref] = struct{}{}
+			order = append(order, ref)
+			for reference, value := range slotReferences(slot) {
+				if value.IsRef() {
+					queue = append(queue, copyCandidate{
+						ref:       value.Ref(),
+						from:      ref,
+						fromKind:  slot.Kind,
+						reference: reference,
+						root:      -1,
+					})
+				}
+			}
+		}
+		return nil
+	}
+	if err := drainStrongReferences(); err != nil {
+		return nil, err
+	}
+
+	// WeakMap values are ephemerons: a strongly reachable table retains a
+	// value only when its key is independently strongly reachable. Reach a
+	// fixed point because one live ephemeron value may reveal another key.
+	for {
+		added := false
+		for _, ref := range append([]Ref(nil), order...) {
+			_, slot, _ := store.slotLocked(ref)
+			if slot.Kind != HeapWeakMap {
+				continue
+			}
+			for reference, entry := range slot.WeakMap.Entries {
+				if _, keyLive := seen[entry.Key]; !keyLive || !entry.Value.IsRef() {
+					continue
+				}
+				if _, valueLive := seen[entry.Value.Ref()]; valueLive {
+					continue
+				}
+				queue = append(queue, copyCandidate{
+					ref: entry.Value.Ref(), from: ref, fromKind: HeapWeakMap, reference: reference, root: -1,
+				})
+				added = true
+			}
+		}
+		if !added {
+			break
+		}
+		if err := drainStrongReferences(); err != nil {
+			return nil, err
 		}
 	}
 	claim, err := store.ensureOwnerLocked(to)
@@ -1548,15 +1605,28 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 		case HeapWeakMap:
 			_, copySlot, _ := store.slotLocked(copyRef)
 			for _, entry := range sourceSlot.WeakMap.Entries {
+				key, keyLive := mapping[entry.Key]
+				if !keyLive {
+					continue
+				}
+				value := entry.Value
+				if value.IsRef() {
+					mapped, valueLive := mapping[value.Ref()]
+					if !valueLive {
+						continue
+					}
+					value = RefValue(mapped)
+				}
 				copySlot.WeakMap.Entries = append(copySlot.WeakMap.Entries, WeakMapEntry{
-					Key:   remapWeakRef(entry.Key, mapping),
-					Value: remapWeakValue(entry.Value, mapping),
+					Key: key, Value: value,
 				})
 			}
 		case HeapWeakSet:
 			_, copySlot, _ := store.slotLocked(copyRef)
 			for _, key := range sourceSlot.WeakSet.Keys {
-				copySlot.WeakSet.Keys = append(copySlot.WeakSet.Keys, remapWeakRef(key, mapping))
+				if mapped, live := mapping[key]; live {
+					copySlot.WeakSet.Keys = append(copySlot.WeakSet.Keys, mapped)
+				}
 			}
 		case HeapIterator:
 			copyRegion, copySlot, _ := store.slotLocked(copyRef)
@@ -1617,20 +1687,6 @@ func (store *Store) copyObjectHeaderLocked(to ownership.OwnerID, copyRef Ref, so
 func remapValue(value Value, mapping map[Ref]Ref) Value {
 	if value.IsRef() {
 		return RefValue(mapping[value.Ref()])
-	}
-	return value
-}
-
-func remapWeakRef(ref Ref, mapping map[Ref]Ref) Ref {
-	if mapped, exists := mapping[ref]; exists {
-		return mapped
-	}
-	return ref
-}
-
-func remapWeakValue(value Value, mapping map[Ref]Ref) Value {
-	if value.IsRef() {
-		return RefValue(remapWeakRef(value.Ref(), mapping))
 	}
 	return value
 }

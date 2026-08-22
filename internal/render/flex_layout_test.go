@@ -89,6 +89,29 @@ func TestInlineFlexUsesAtomicInlineOuterDisplay(t *testing.T) {
 	}
 }
 
+func TestRowFlexAutoBasisUsesMaxContentContribution(t *testing.T) {
+	t.Parallel()
+
+	document, err := htmlparser.Parse(strings.NewReader(`<!doctype html><html><body style="margin:0">
+		<section style="display:flex;width:200px">
+			<span id="item" style="display:flex;overflow:hidden"><span>visible label</span></span>
+			<span style="display:block;width:20px"></span>
+		</section>
+	</body></html>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame, err := render.Render(document, render.Viewport{Width: 240, Height: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := findStaticPageElementByID(document, "item")
+	geometry, ok := frame.Layout.Geometry(item)
+	if !ok || geometry.Bounds.Width <= 0 {
+		t.Fatalf("auto-basis flex item geometry = %#v, %t; want positive max-content width", geometry.Bounds, ok)
+	}
+}
+
 func TestFlexItemsHonorAlignSelfOverrides(t *testing.T) {
 	t.Parallel()
 

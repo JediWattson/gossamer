@@ -583,8 +583,8 @@ const (
 )
 
 // PositionMode is the computed positioning scheme used by layout. Relative
-// boxes remain in normal flow, absolute boxes use their nearest positioned
-// ancestor, and fixed boxes use the viewport.
+// and sticky boxes remain in normal flow, absolute boxes use their nearest
+// positioned ancestor, and fixed boxes use the viewport.
 type PositionMode uint8
 
 const (
@@ -592,6 +592,7 @@ const (
 	PositionRelative
 	PositionAbsolute
 	PositionFixed
+	PositionSticky
 )
 
 // ZIndex preserves the distinction between the initial auto value and an

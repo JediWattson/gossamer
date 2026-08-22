@@ -134,6 +134,7 @@ const (
 	positionRelative = computed.PositionRelative
 	positionAbsolute = computed.PositionAbsolute
 	positionFixed    = computed.PositionFixed
+	positionSticky   = computed.PositionSticky
 )
 
 type lengthUnit = computed.LengthUnit

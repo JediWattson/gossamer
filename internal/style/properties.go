@@ -593,7 +593,7 @@ func (definition propertyDefinition) valid(source string, viewport Viewport) boo
 		return ok && parsed.unit != lengthAuto && nonNegativeLength(parsed)
 	case propertyPosition:
 		keyword, ok := singleCSSKeyword(source)
-		return ok && (keyword == "static" || keyword == "relative" || keyword == "absolute" || keyword == "fixed")
+		return ok && (keyword == "static" || keyword == "relative" || keyword == "absolute" || keyword == "fixed" || keyword == "sticky")
 	case propertyGap:
 		_, ok := parseGapValue(source, 1, viewport)
 		return ok
@@ -985,6 +985,8 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 			style.position = PositionAbsolute
 		case "fixed":
 			style.position = PositionFixed
+		case "sticky":
+			style.position = PositionSticky
 		default:
 			style.position = PositionStatic
 		}
@@ -1266,6 +1268,8 @@ func (definition propertyDefinition) serialize(computed ComputedStyle) string {
 			return "absolute"
 		case PositionFixed:
 			return "fixed"
+		case PositionSticky:
+			return "sticky"
 		default:
 			return "static"
 		}

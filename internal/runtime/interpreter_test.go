@@ -306,6 +306,145 @@ func TestExecuteWithoutCheckpointDefersNativeJobs(t *testing.T) {
 	}
 }
 
+func TestDrainJobsAppliesInstructionLimitPerMicrotask(t *testing.T) {
+	t.Parallel()
+
+	realm, err := browserruntime.NewRealm(1002, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer realm.Close()
+	interpreter := browserruntime.NewInterpreter(browserruntime.InterpreterConfig{MaxInstructions: 4, MaxMicrotasks: 10})
+	var calls int
+	if err := interpreter.RegisterNative(1002, func(*browserruntime.TaskContext, memory.Value, []memory.Value) (memory.Value, error) {
+		calls++
+		return memory.UndefinedValue(), nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = realm.EnqueueTask(func(task *browserruntime.TaskContext) error {
+		intrinsics, err := interpreter.Bootstrap(task)
+		if err != nil {
+			return err
+		}
+		name, err := task.NewString("marker")
+		if err != nil {
+			return err
+		}
+		marker, err := task.NewNativeFunction(memory.RefValue(name), memory.RefValue(intrinsics.Global), 0, 1002)
+		if err != nil {
+			return err
+		}
+		callback, err := task.NewBytecodeFunction(
+			memory.NullValue(), memory.RefValue(intrinsics.Global), 0,
+			browserruntime.Assemble(
+				browserruntime.Instruction{Op: browserruntime.OpConstant, A: 0},
+				browserruntime.Instruction{Op: browserruntime.OpCall},
+				browserruntime.Instruction{Op: browserruntime.OpReturn},
+			),
+			[]memory.Value{memory.RefValue(marker)},
+		)
+		if err != nil {
+			return err
+		}
+		entry, err := task.NewBytecodeFunction(
+			memory.NullValue(), memory.RefValue(intrinsics.Global), 0,
+			browserruntime.Assemble(
+				browserruntime.Instruction{Op: browserruntime.OpConstant, A: 0},
+				browserruntime.Instruction{Op: browserruntime.OpConstant, A: 1},
+				browserruntime.Instruction{Op: browserruntime.OpCall, A: 1},
+				browserruntime.Instruction{Op: browserruntime.OpReturn},
+			),
+			[]memory.Value{memory.RefValue(intrinsics.QueueMicrotask), memory.RefValue(callback)},
+		)
+		if err != nil {
+			return err
+		}
+		if _, err := interpreter.ExecuteWithoutCheckpoint(task, entry); err != nil {
+			return err
+		}
+		if _, err := interpreter.ExecuteWithoutCheckpoint(task, entry); err != nil {
+			return err
+		}
+		return interpreter.DrainJobs(task)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 2 {
+		t.Fatalf("microtask calls = %d, want 2", calls)
+	}
+}
+
+func TestDrainJobsLimitsMicrotaskCheckpointLength(t *testing.T) {
+	t.Parallel()
+
+	realm, err := browserruntime.NewRealm(1003, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer realm.Close()
+	interpreter := browserruntime.NewInterpreter(browserruntime.InterpreterConfig{MaxMicrotasks: 1})
+	var calls int
+	if err := interpreter.RegisterNative(1003, func(*browserruntime.TaskContext, memory.Value, []memory.Value) (memory.Value, error) {
+		calls++
+		return memory.UndefinedValue(), nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = realm.EnqueueTask(func(task *browserruntime.TaskContext) error {
+		intrinsics, err := interpreter.Bootstrap(task)
+		if err != nil {
+			return err
+		}
+		name, err := task.NewString("job")
+		if err != nil {
+			return err
+		}
+		callback, err := task.NewNativeFunction(memory.RefValue(name), memory.RefValue(intrinsics.Global), 0, 1003)
+		if err != nil {
+			return err
+		}
+		entry, err := task.NewBytecodeFunction(
+			memory.NullValue(), memory.RefValue(intrinsics.Global), 0,
+			browserruntime.Assemble(
+				browserruntime.Instruction{Op: browserruntime.OpConstant, A: 0},
+				browserruntime.Instruction{Op: browserruntime.OpConstant, A: 1},
+				browserruntime.Instruction{Op: browserruntime.OpCall, A: 1},
+				browserruntime.Instruction{Op: browserruntime.OpReturn},
+			),
+			[]memory.Value{memory.RefValue(intrinsics.QueueMicrotask), memory.RefValue(callback)},
+		)
+		if err != nil {
+			return err
+		}
+		if _, err := interpreter.ExecuteWithoutCheckpoint(task, entry); err != nil {
+			return err
+		}
+		if _, err := interpreter.ExecuteWithoutCheckpoint(task, entry); err != nil {
+			return err
+		}
+		drainErr := interpreter.DrainJobs(task)
+		interpreter.DiscardJobs(task.TaskID)
+		if !errors.Is(drainErr, browserruntime.ErrMicrotaskLimit) {
+			t.Fatalf("DrainJobs() error = %v, want ErrMicrotaskLimit", drainErr)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("microtask calls = %d, want 1", calls)
+	}
+}
+
 func TestInterpreterBindingVerbsUseCapturedContexts(t *testing.T) {
 	t.Parallel()
 

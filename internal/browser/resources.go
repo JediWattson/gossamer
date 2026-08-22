@@ -17,6 +17,14 @@ import (
 
 const maxNavigationImagePixels int64 = 32_000_000
 
+var scriptingEnabledUserAgentStylesheet = func() css.Stylesheet {
+	stylesheet, err := css.Parse(`noscript { display: none !important }`)
+	if err != nil {
+		panic(fmt.Sprintf("browser: parse scripting user-agent stylesheet: %v", err))
+	}
+	return stylesheet
+}()
+
 type pageResources struct {
 	stylesheets          stylesheetGraph
 	inlineStyles         inlineStyleCache
@@ -66,12 +74,15 @@ func (resources *pageResources) apply(result navigationResourceResult) bool {
 	return false
 }
 
-func (resources pageResources) rendererResources(document *dom.Document) render.Resources {
+func (resources pageResources) rendererResources(document *dom.Document, scriptingEnabled bool) render.Resources {
 	resolved := render.Resources{
 		Stylesheets:          resources.stylesheets.resolvedStylesheets(document),
 		UserStylesheets:      append([]css.Stylesheet(nil), resources.userStylesheets...),
 		UserAgentStylesheets: append([]css.Stylesheet(nil), resources.userAgentStylesheets...),
 		Images:               make(map[*dom.Node]image.Image, len(resources.images)),
+	}
+	if scriptingEnabled {
+		resolved.UserAgentStylesheets = append(resolved.UserAgentStylesheets, scriptingEnabledUserAgentStylesheet)
 	}
 	for id, decoded := range resources.images {
 		if node, ok := document.Resolve(id); ok {
