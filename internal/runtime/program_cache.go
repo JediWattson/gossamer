@@ -21,13 +21,20 @@ type cachedBytecode struct {
 // instances frequently share the same code while carrying different captured
 // environments, so the cache is content-addressed rather than Ref-addressed.
 func (interpreter *Interpreter) decodeProgram(code []byte, constantCount int) ([]Instruction, error) {
+	cached, err := interpreter.loadProgram(code, constantCount)
+	if err != nil {
+		return nil, err
+	}
+	return cached.instructions, nil
+}
+
+func (interpreter *Interpreter) loadProgram(code []byte, constantCount int) (*cachedBytecode, error) {
 	key := bytecodeKey(code, constantCount)
 	interpreter.programMutex.Lock()
 	if cached := interpreter.cachedProgramLocked(key, code); cached != nil {
 		cached.referenced = true
-		instructions := cached.instructions
 		interpreter.programMutex.Unlock()
-		return instructions, nil
+		return cached, nil
 	}
 	interpreter.programMutex.Unlock()
 
@@ -43,7 +50,7 @@ func (interpreter *Interpreter) decodeProgram(code []byte, constantCount int) ([
 	defer interpreter.programMutex.Unlock()
 	if cached := interpreter.cachedProgramLocked(key, code); cached != nil {
 		cached.referenced = true
-		return cached.instructions, nil
+		return cached, nil
 	}
 	cached := &cachedBytecode{
 		key:          key,
@@ -52,7 +59,7 @@ func (interpreter *Interpreter) decodeProgram(code []byte, constantCount int) ([
 		referenced:   true,
 	}
 	interpreter.admitProgramLocked(cached)
-	return cached.instructions, nil
+	return cached, nil
 }
 
 func (interpreter *Interpreter) cachedProgramLocked(key bytecodeCacheKey, code []byte) *cachedBytecode {

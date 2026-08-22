@@ -275,6 +275,18 @@ func (compiler *functionCompiler) compileArrayBindingDeclaration(kind ast.Variab
 }
 
 func (compiler *functionCompiler) compileBlock(block *ast.BlockStatement) error {
+	declarations, err := directLexicalDeclarations(block.Body)
+	if err != nil {
+		return compiler.problem(err.span, err.message)
+	}
+	if len(declarations) == 0 {
+		for _, child := range block.Body {
+			if err := compiler.compileStatement(child); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
 	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpEnterScope}, block.Span()); err != nil {
 		return err
 	}
@@ -1049,10 +1061,7 @@ func (compiler *functionCompiler) compileNestedFunction(name string, parameters 
 		return 0, err
 	}
 	child := newFunctionCompiler(compiler.owner, compiler, true)
-	if err := child.emit(browserruntime.Instruction{Op: browserruntime.OpEnterScope}, span); err != nil {
-		return 0, err
-	}
-	child.environmentDepth++
+	firstParameter := uint32(0)
 	for parameterIndex, parameter := range parameters {
 		if err := child.declareParameter(parameter.Name, parameter.Span()); err != nil {
 			return 0, err
@@ -1061,19 +1070,14 @@ func (compiler *functionCompiler) compileNestedFunction(name string, parameters 
 		if err != nil {
 			return 0, err
 		}
-		if err := child.emit(browserruntime.Instruction{Op: browserruntime.OpDeclareBinding, A: constant, B: 1}, parameter.Span()); err != nil {
-			return 0, err
-		}
-		if err := child.emit(browserruntime.Instruction{Op: browserruntime.OpArgument, A: uint32(parameterIndex)}, parameter.Span()); err != nil {
-			return 0, err
-		}
-		if err := child.emit(browserruntime.Instruction{Op: browserruntime.OpInitializeBinding, A: constant}, parameter.Span()); err != nil {
-			return 0, err
-		}
-		if err := child.emit(browserruntime.Instruction{Op: browserruntime.OpPop}, parameter.Span()); err != nil {
-			return 0, err
+		if parameterIndex == 0 {
+			firstParameter = constant
 		}
 	}
+	if err := child.emit(browserruntime.Instruction{Op: browserruntime.OpEnterFunction, A: firstParameter, B: uint32(len(parameters))}, span); err != nil {
+		return 0, err
+	}
+	child.environmentDepth++
 	if err := child.instantiateFunctionScope(body.Body); err != nil {
 		return 0, err
 	}
@@ -1090,7 +1094,7 @@ func (compiler *functionCompiler) compileNestedFunction(name string, parameters 
 	}
 	template, err := child.finish(name, uint32(len(parameters)))
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("Function %d: %w", index, err)
 	}
 	compiler.owner.functions[index] = template
 	return index, nil

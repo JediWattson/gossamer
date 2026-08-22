@@ -69,6 +69,83 @@ func TestNativeContextResolvesAndMutatesLexicalBindings(t *testing.T) {
 	}
 }
 
+func TestDirectContextBindingResolutionDoesNotAllocate(t *testing.T) {
+	store := memory.NewStore(nil)
+	defer store.Close()
+	owner := realmOwner(40_001)
+	region := mustRegion(t, store, owner)
+	outer, err := store.AllocContext(owner, region, memory.NullValue())
+	if err != nil {
+		t.Fatal(err)
+	}
+	inner, err := store.AllocContext(owner, region, memory.RefValue(outer))
+	if err != nil {
+		t.Fatal(err)
+	}
+	declaredName, err := store.AllocString(owner, region, "value")
+	if err != nil {
+		t.Fatal(err)
+	}
+	lookupName, err := store.AllocString(owner, region, "value")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeclareBinding(owner, outer, declaredName, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.InitializeBinding(owner, outer, declaredName, memory.NumberValue(42)); err != nil {
+		t.Fatal(err)
+	}
+	allocations := testing.AllocsPerRun(100, func() {
+		value, found, resolveErr := store.ResolveBinding(owner, inner, lookupName)
+		if resolveErr != nil || !found || value.Number() != 42 {
+			panic("direct binding resolution failed")
+		}
+	})
+	if allocations != 0 {
+		t.Fatalf("direct ResolveBinding allocated %.2f objects, want zero", allocations)
+	}
+}
+
+func TestBindingLocationReadsWritesAndRejectsAStaleContext(t *testing.T) {
+	t.Parallel()
+
+	store := memory.NewStore(nil)
+	defer store.Close()
+	owner := realmOwner(40_002)
+	region := mustRegion(t, store, owner)
+	contextRef, err := store.AllocContext(owner, region, memory.NullValue())
+	if err != nil {
+		t.Fatal(err)
+	}
+	name, err := store.AllocString(owner, region, "value")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeclareBinding(owner, contextRef, name, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.InitializeBinding(owner, contextRef, name, memory.NumberValue(1)); err != nil {
+		t.Fatal(err)
+	}
+	location, value, found, err := store.ResolveBindingLocation(owner, contextRef, name)
+	if err != nil || !found || value.Number() != 1 {
+		t.Fatalf("ResolveBindingLocation() = %#v, %#v, %t, %v", location, value, found, err)
+	}
+	if err := store.SetBindingAt(owner, location, memory.NumberValue(2)); err != nil {
+		t.Fatal(err)
+	}
+	if value, err := store.ResolveBindingAt(owner, location); err != nil || value.Number() != 2 {
+		t.Fatalf("ResolveBindingAt() = %#v, %v", value, err)
+	}
+	if err := store.ReleaseOwner(owner); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ResolveBindingAt(owner, location); !errors.Is(err, memory.ErrStaleRef) {
+		t.Fatalf("stale ResolveBindingAt() = %v, want ErrStaleRef", err)
+	}
+}
+
 func TestNativeContextPromotionPreservesParentAndBindingState(t *testing.T) {
 	t.Parallel()
 

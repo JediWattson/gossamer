@@ -324,23 +324,10 @@ func (compiler *functionCompiler) compileFixedArray(elements []ast.Expression, s
 		if element == nil {
 			continue
 		}
-		if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpDup}, element.Span()); err != nil {
-			return err
-		}
-		constant, err := compiler.addConstant(program.Number(float64(index)))
-		if err != nil {
-			return err
-		}
-		if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpConstant, A: constant}, element.Span()); err != nil {
-			return err
-		}
 		if err := compiler.compileExpression(element); err != nil {
 			return err
 		}
-		if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpSetElement}, element.Span()); err != nil {
-			return err
-		}
-		if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpPop}, element.Span()); err != nil {
+		if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpSetElementConstant, A: uint32(index)}, element.Span()); err != nil {
 			return err
 		}
 	}
@@ -352,6 +339,19 @@ func (compiler *functionCompiler) compileObject(object *ast.ObjectLiteral) error
 		return err
 	}
 	for _, property := range object.Properties {
+		if !property.Spread && !property.Computed && property.Accessor == ast.ObjectPropertyData {
+			name, err := compiler.stringConstant(property.Key)
+			if err != nil {
+				return err
+			}
+			if err := compiler.compileExpression(property.Value); err != nil {
+				return err
+			}
+			if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpSetOwnPropertyConstant, A: name}, property.Span()); err != nil {
+				return err
+			}
+			continue
+		}
 		if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpDup}, property.Span()); err != nil {
 			return err
 		}
@@ -405,6 +405,37 @@ func (compiler *functionCompiler) compileObject(object *ast.ObjectLiteral) error
 }
 
 func (compiler *functionCompiler) compileMember(member *ast.MemberExpression) error {
+	if !member.Computed {
+		property, ok := member.Property.(*ast.Identifier)
+		if !ok {
+			return compiler.problem(member.Property.Span(), "named property is not an identifier")
+		}
+		propertyConstant, err := compiler.stringConstant(property.Name)
+		if err != nil {
+			return err
+		}
+		switch object := member.Object.(type) {
+		case *ast.Identifier:
+			if object.Name != "arguments" || !compiler.inFunction {
+				if _, exists := compiler.resolve(object.Name); !exists {
+					return compiler.problem(object.Span(), fmt.Sprintf("unknown binding %q", object.Name))
+				}
+				bindingConstant, err := compiler.stringConstant(object.Name)
+				if err != nil {
+					return err
+				}
+				return compiler.emit(browserruntime.Instruction{
+					Op: browserruntime.OpLoadBindingProperty, A: bindingConstant, B: propertyConstant,
+				}, member.Span())
+			}
+		case *ast.ThisExpression:
+			return compiler.emit(browserruntime.Instruction{Op: browserruntime.OpLoadThisProperty, A: propertyConstant}, member.Span())
+		}
+		if err := compiler.compileExpression(member.Object); err != nil {
+			return err
+		}
+		return compiler.emit(browserruntime.Instruction{Op: browserruntime.OpGetPropertyConstant, A: propertyConstant}, member.Span())
+	}
 	if err := compiler.compileExpression(member.Object); err != nil {
 		return err
 	}
@@ -707,28 +738,14 @@ func (compiler *functionCompiler) compileUpdate(update *ast.UpdateExpression) er
 	if err != nil {
 		return err
 	}
-	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpLoadBinding, A: name}, update.Span()); err != nil {
-		return err
-	}
-	if !update.Prefix {
-		if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpDup}, update.Span()); err != nil {
-			return err
-		}
-	}
-	opcode := browserruntime.OpIncrement
+	mode := uint32(0)
 	if update.Operator == lexer.MinusMinus {
-		opcode = browserruntime.OpDecrement
+		mode |= 1
 	}
-	if err := compiler.emit(browserruntime.Instruction{Op: opcode}, update.Span()); err != nil {
-		return err
+	if update.Prefix {
+		mode |= 2
 	}
-	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpStoreBinding, A: name}, update.Span()); err != nil {
-		return err
-	}
-	if !update.Prefix {
-		return compiler.emit(browserruntime.Instruction{Op: browserruntime.OpPop}, update.Span())
-	}
-	return nil
+	return compiler.emit(browserruntime.Instruction{Op: browserruntime.OpUpdateBinding, A: name, B: mode}, update.Span())
 }
 
 func (compiler *functionCompiler) compileUnary(unary *ast.UnaryExpression) error {
@@ -870,32 +887,15 @@ func (compiler *functionCompiler) compileLogical(binary *ast.BinaryExpression) e
 	if err := compiler.compileExpression(binary.Left); err != nil {
 		return err
 	}
-	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpDup}, binary.Left.Span()); err != nil {
-		return err
-	}
 	end := compiler.builder.NewLabel()
-	if binary.Operator == lexer.Nullish {
-		right := compiler.builder.NewLabel()
-		if err := compiler.emitJump(browserruntime.OpJumpIfNullish, right, binary.Left.Span()); err != nil {
-			return err
-		}
-		if err := compiler.emitJump(browserruntime.OpJump, end, binary.Left.Span()); err != nil {
-			return err
-		}
-		if err := compiler.builder.Mark(right); err != nil {
-			return fmt.Errorf("%w: %v", ErrCompile, err)
-		}
-	} else {
-		opcode := browserruntime.OpJumpIfFalse
-		if binary.Operator == lexer.OrOr {
-			opcode = browserruntime.OpJumpIfTrue
-		}
-		if err := compiler.emitJump(opcode, end, binary.Left.Span()); err != nil {
-			return err
-		}
+	opcode := browserruntime.OpLogicalAndValue
+	if binary.Operator == lexer.OrOr {
+		opcode = browserruntime.OpLogicalOrValue
+	} else if binary.Operator == lexer.Nullish {
+		opcode = browserruntime.OpLogicalNullishValue
 	}
-	if err := compiler.emit(browserruntime.Instruction{Op: browserruntime.OpPop}, binary.Left.Span()); err != nil {
-		return err
+	if _, err := compiler.builder.EmitLogicalJump(opcode, end, runtimeSpan(binary.Left.Span())); err != nil {
+		return fmt.Errorf("%w: %v", ErrCompile, err)
 	}
 	if err := compiler.compileExpression(binary.Right); err != nil {
 		return err

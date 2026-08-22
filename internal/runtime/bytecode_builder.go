@@ -33,6 +33,8 @@ type labelFixup struct {
 	label       Label
 }
 
+const bindingBatchMutable = uint32(1 << 31)
+
 // BytecodeBuilder owns symbolic labels, constants, and source locations for a
 // single Function. It is not safe for concurrent use.
 type BytecodeBuilder struct {
@@ -137,9 +139,152 @@ func (builder *BytecodeBuilder) EmitAt(instruction Instruction, location SourceS
 	return index, nil
 }
 
+// EmitDiscardAt emits Pop, or marks the immediately preceding binding write as
+// discard-only when no branch can enter between the write and the Pop. This
+// preserves the observable result of expression bytecode while avoiding a
+// redundant stack round trip for statement-level writes.
+func (builder *BytecodeBuilder) EmitDiscardAt(location SourceSpan) (uint32, error) {
+	if builder == nil {
+		return 0, fmt.Errorf("%w: nil bytecode builder", ErrInvalidBytecode)
+	}
+	position := uint32(len(builder.instructions))
+	for _, target := range builder.labels {
+		if target == position {
+			return builder.EmitAt(Instruction{Op: OpPop}, location)
+		}
+	}
+	if len(builder.instructions) != 0 {
+		index := len(builder.instructions) - 1
+		switch builder.instructions[index].Op {
+		case OpInitializeBinding, OpStoreBinding:
+			if builder.instructions[index].B == 0 {
+				builder.instructions[index].B = 1
+				return uint32(index), nil
+			}
+		case OpUpdateBinding:
+			if builder.instructions[index].B&4 == 0 {
+				builder.instructions[index].B |= 4
+				return uint32(index), nil
+			}
+		}
+	}
+	return builder.EmitAt(Instruction{Op: OpPop}, location)
+}
+
+// EmitBindingDeclaration combines adjacent, same-mutability declaration runs
+// whose interned names occupy a contiguous constant range.
+func (builder *BytecodeBuilder) EmitBindingDeclaration(name uint32, mutable bool, location SourceSpan) (uint32, error) {
+	if builder == nil {
+		return 0, fmt.Errorf("%w: nil bytecode builder", ErrInvalidBytecode)
+	}
+	flag := uint32(0)
+	if mutable {
+		flag = 1
+	}
+	if len(builder.instructions) != 0 && !builder.labelAtCurrentPosition() {
+		index := len(builder.instructions) - 1
+		previous := builder.instructions[index]
+		switch previous.Op {
+		case OpDeclareBinding:
+			if previous.B == flag && previous.A+1 == name {
+				batchFlag := uint32(0)
+				if mutable {
+					batchFlag = bindingBatchMutable
+				}
+				builder.instructions[index] = Instruction{Op: OpDeclareBindings, A: previous.A, B: batchFlag | 2}
+				return uint32(index), nil
+			}
+		case OpDeclareBindings:
+			count := previous.B &^ bindingBatchMutable
+			previousMutable := previous.B&bindingBatchMutable != 0
+			if previousMutable == mutable && count < bindingBatchMutable-1 && previous.A+count == name {
+				builder.instructions[index].B++
+				return uint32(index), nil
+			}
+		}
+	}
+	return builder.EmitAt(Instruction{Op: OpDeclareBinding, A: name, B: flag}, location)
+}
+
 func (builder *BytecodeBuilder) EmitJump(opcode Opcode, label Label, location SourceSpan) (uint32, error) {
 	if opcode != OpJump && opcode != OpJumpIfTrue && opcode != OpJumpIfFalse && opcode != OpJumpIfNullish {
 		return 0, fmt.Errorf("%w: %s is not a jump opcode", ErrInvalidBytecode, opcode)
+	}
+	return builder.emitLabelReference(Instruction{Op: opcode}, label, location)
+}
+
+// EmitConditionalJump fuses a direct binding load into its truthiness branch
+// when no label targets the boundary between them.
+func (builder *BytecodeBuilder) EmitConditionalJump(opcode Opcode, label Label, location SourceSpan) (uint32, error) {
+	if opcode != OpJumpIfTrue && opcode != OpJumpIfFalse {
+		return builder.EmitJump(opcode, label, location)
+	}
+	if builder == nil {
+		return 0, fmt.Errorf("%w: nil bytecode builder", ErrInvalidBytecode)
+	}
+	if label == 0 || label > builder.nextLabel {
+		return 0, fmt.Errorf("%w: unknown label %d", ErrInvalidBytecode, label)
+	}
+	if len(builder.instructions) != 0 && !builder.labelAtCurrentPosition() {
+		index := len(builder.instructions) - 1
+		candidateIndex := index
+		jumpOnTrue := opcode == OpJumpIfTrue
+		if builder.instructions[index].Op == OpLogicalNot && index != 0 && !builder.labelAtPosition(uint32(index)) {
+			candidateIndex--
+			jumpOnTrue = !jumpOnTrue
+		}
+		candidate := builder.instructions[candidateIndex]
+		fused := Opcode(0)
+		operand := uint32(0)
+		switch candidate.Op {
+		case OpLoadBinding:
+			operand = candidate.A
+			fused = OpJumpIfBindingFalse
+			if jumpOnTrue {
+				fused = OpJumpIfBindingTrue
+			}
+		case OpLoadBindingProperty:
+			var ok bool
+			operand, ok = packConstantPair(candidate.A, candidate.B)
+			if !ok {
+				break
+			}
+			fused = OpJumpIfBindingPropertyFalse
+			if jumpOnTrue {
+				fused = OpJumpIfBindingPropertyTrue
+			}
+		case OpLoadThisProperty:
+			operand = candidate.A
+			fused = OpJumpIfThisPropertyFalse
+			if jumpOnTrue {
+				fused = OpJumpIfThisPropertyTrue
+			}
+		case OpGetPropertyConstant:
+			operand = candidate.A
+			fused = OpJumpIfPropertyConstantFalse
+			if jumpOnTrue {
+				fused = OpJumpIfPropertyConstantTrue
+			}
+		}
+		if fused != 0 {
+			builder.instructions[candidateIndex] = Instruction{Op: fused, B: operand}
+			builder.locations[candidateIndex] = location
+			if candidateIndex != index {
+				builder.instructions[index] = Instruction{}
+				builder.instructions = builder.instructions[:index]
+				builder.locations[index] = SourceSpan{}
+				builder.locations = builder.locations[:index]
+			}
+			builder.fixups = append(builder.fixups, labelFixup{instruction: uint32(candidateIndex), label: label})
+			return uint32(candidateIndex), nil
+		}
+	}
+	return builder.EmitJump(opcode, label, location)
+}
+
+func (builder *BytecodeBuilder) EmitLogicalJump(opcode Opcode, label Label, location SourceSpan) (uint32, error) {
+	if opcode != OpLogicalAndValue && opcode != OpLogicalOrValue && opcode != OpLogicalNullishValue {
+		return 0, fmt.Errorf("%w: %s is not a logical jump opcode", ErrInvalidBytecode, opcode)
 	}
 	return builder.emitLabelReference(Instruction{Op: opcode}, label, location)
 }
@@ -193,6 +338,19 @@ func (builder *BytecodeBuilder) emitLabelReference(instruction Instruction, labe
 	}
 	builder.fixups = append(builder.fixups, labelFixup{instruction: index, label: label})
 	return index, nil
+}
+
+func (builder *BytecodeBuilder) labelAtCurrentPosition() bool {
+	return builder.labelAtPosition(uint32(len(builder.instructions)))
+}
+
+func (builder *BytecodeBuilder) labelAtPosition(position uint32) bool {
+	for _, target := range builder.labels {
+		if target == position {
+			return true
+		}
+	}
+	return false
 }
 
 func (builder *BytecodeBuilder) Build() (BytecodeChunk, error) {

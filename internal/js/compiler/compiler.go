@@ -217,7 +217,7 @@ func (compiler *functionCompiler) compileScript(script *ast.Script) error {
 func (compiler *functionCompiler) finish(name string, arity uint32) (program.FunctionTemplate, error) {
 	code, locations, err := compiler.builder.BuildCode(len(compiler.constants))
 	if err != nil {
-		return program.FunctionTemplate{}, fmt.Errorf("%w: %v", ErrCompile, err)
+		return program.FunctionTemplate{}, fmt.Errorf("%w: Function %q: %v", ErrCompile, name, err)
 	}
 	return program.FunctionTemplate{
 		Name: name, Arity: arity, Code: code,
@@ -226,7 +226,14 @@ func (compiler *functionCompiler) finish(name string, arity uint32) (program.Fun
 }
 
 func (compiler *functionCompiler) emit(instruction browserruntime.Instruction, span lexer.Span) error {
-	_, err := compiler.builder.EmitAt(instruction, runtimeSpan(span))
+	var err error
+	if instruction.Op == browserruntime.OpDeclareBinding {
+		_, err = compiler.builder.EmitBindingDeclaration(instruction.A, instruction.B == 1, runtimeSpan(span))
+	} else if instruction.Op == browserruntime.OpPop {
+		_, err = compiler.builder.EmitDiscardAt(runtimeSpan(span))
+	} else {
+		_, err = compiler.builder.EmitAt(instruction, runtimeSpan(span))
+	}
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrCompile, err)
 	}
@@ -234,7 +241,7 @@ func (compiler *functionCompiler) emit(instruction browserruntime.Instruction, s
 }
 
 func (compiler *functionCompiler) emitJump(opcode browserruntime.Opcode, label browserruntime.Label, span lexer.Span) error {
-	_, err := compiler.builder.EmitJump(opcode, label, runtimeSpan(span))
+	_, err := compiler.builder.EmitConditionalJump(opcode, label, runtimeSpan(span))
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrCompile, err)
 	}

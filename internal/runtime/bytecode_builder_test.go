@@ -130,6 +130,48 @@ func TestBytecodeBuilderBuildsAgainstPortableConstantTable(t *testing.T) {
 	}
 }
 
+func TestBytecodeBuilderFusesOnlyOneDiscardIntoABindingWrite(t *testing.T) {
+	t.Parallel()
+
+	builder := browserruntime.NewBytecodeBuilder()
+	for _, instruction := range []browserruntime.Instruction{
+		{Op: browserruntime.OpConstant, A: 0},
+		{Op: browserruntime.OpDup},
+		{Op: browserruntime.OpDeclareBinding, A: 1, B: 1},
+		{Op: browserruntime.OpInitializeBinding, A: 1},
+	} {
+		if _, err := builder.Emit(instruction); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := builder.EmitDiscardAt(browserruntime.SourceSpan{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := builder.EmitDiscardAt(browserruntime.SourceSpan{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := builder.Emit(browserruntime.Instruction{Op: browserruntime.OpUndefined}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := builder.Emit(browserruntime.Instruction{Op: browserruntime.OpReturn}); err != nil {
+		t.Fatal(err)
+	}
+	code, _, err := builder.BuildCode(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	instructions, err := browserruntime.DecodeBytecode(code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if instructions[3] != (browserruntime.Instruction{Op: browserruntime.OpInitializeBinding, A: 1, B: 1}) {
+		t.Fatalf("fused initialize = %#v", instructions[3])
+	}
+	if instructions[4].Op != browserruntime.OpPop {
+		t.Fatalf("second discard = %s, want Pop", instructions[4].Op)
+	}
+}
+
 func TestVerifyBytecodeRejectsStackAndControlFlowErrors(t *testing.T) {
 	t.Parallel()
 

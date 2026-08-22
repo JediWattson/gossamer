@@ -97,6 +97,26 @@ const (
 	OpAppendSpread
 	OpCopyDataProperties
 	OpCreateArrowClosure
+	OpGetPropertyConstant
+	OpLoadBindingProperty
+	OpLoadThisProperty
+	OpBindArgument
+	OpUpdateBinding
+	OpJumpIfBindingTrue
+	OpJumpIfBindingFalse
+	OpLogicalAndValue
+	OpLogicalOrValue
+	OpLogicalNullishValue
+	OpSetOwnPropertyConstant
+	OpSetElementConstant
+	OpEnterFunction
+	OpDeclareBindings
+	OpJumpIfBindingPropertyTrue
+	OpJumpIfBindingPropertyFalse
+	OpJumpIfThisPropertyTrue
+	OpJumpIfThisPropertyFalse
+	OpJumpIfPropertyConstantTrue
+	OpJumpIfPropertyConstantFalse
 )
 
 func (opcode Opcode) String() string {
@@ -281,11 +301,62 @@ func (opcode Opcode) String() string {
 		return "CopyDataProperties"
 	case OpCreateArrowClosure:
 		return "CreateArrowClosure"
+	case OpGetPropertyConstant:
+		return "GetPropertyConstant"
+	case OpLoadBindingProperty:
+		return "LoadBindingProperty"
+	case OpLoadThisProperty:
+		return "LoadThisProperty"
+	case OpBindArgument:
+		return "BindArgument"
+	case OpUpdateBinding:
+		return "UpdateBinding"
+	case OpJumpIfBindingTrue:
+		return "JumpIfBindingTrue"
+	case OpJumpIfBindingFalse:
+		return "JumpIfBindingFalse"
+	case OpLogicalAndValue:
+		return "LogicalAndValue"
+	case OpLogicalOrValue:
+		return "LogicalOrValue"
+	case OpLogicalNullishValue:
+		return "LogicalNullishValue"
+	case OpSetOwnPropertyConstant:
+		return "SetOwnPropertyConstant"
+	case OpSetElementConstant:
+		return "SetElementConstant"
+	case OpEnterFunction:
+		return "EnterFunction"
+	case OpDeclareBindings:
+		return "DeclareBindings"
+	case OpJumpIfBindingPropertyTrue:
+		return "JumpIfBindingPropertyTrue"
+	case OpJumpIfBindingPropertyFalse:
+		return "JumpIfBindingPropertyFalse"
+	case OpJumpIfThisPropertyTrue:
+		return "JumpIfThisPropertyTrue"
+	case OpJumpIfThisPropertyFalse:
+		return "JumpIfThisPropertyFalse"
+	case OpJumpIfPropertyConstantTrue:
+		return "JumpIfPropertyConstantTrue"
+	case OpJumpIfPropertyConstantFalse:
+		return "JumpIfPropertyConstantFalse"
 	default:
 		return fmt.Sprintf("Opcode(%d)", opcode)
 	}
 }
 
 func (opcode Opcode) valid() bool {
-	return opcode >= OpConstant && opcode <= OpCreateArrowClosure
+	return opcode >= OpConstant && opcode <= OpJumpIfPropertyConstantFalse
+}
+
+func packConstantPair(first, second uint32) (uint32, bool) {
+	if first > uint32(^uint16(0)) || second > uint32(^uint16(0)) {
+		return 0, false
+	}
+	return first | second<<16, true
+}
+
+func unpackConstantPair(pair uint32) (uint32, uint32) {
+	return pair & uint32(^uint16(0)), pair >> 16
 }

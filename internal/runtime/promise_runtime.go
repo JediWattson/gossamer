@@ -621,6 +621,9 @@ func (execution *execution) drainJobs() error {
 		}
 		processed++
 		execution.steps = 0
+		if execution.profile != nil {
+			execution.profile.reset()
+		}
 		execution.context.beginJob(job)
 		var err error
 		switch job.kind {

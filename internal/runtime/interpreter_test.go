@@ -3,11 +3,57 @@ package runtime_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	browserruntime "github.com/JediWattson/gossamer/internal/runtime"
 	"github.com/JediWattson/gossamer/internal/runtime/memory"
 )
+
+func TestInstructionLimitProfileAggregatesHotBytecode(t *testing.T) {
+	t.Parallel()
+
+	realm, err := browserruntime.NewRealm(699, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer realm.Close()
+	interpreter := browserruntime.NewInterpreter(browserruntime.InterpreterConfig{
+		MaxInstructions:     8,
+		ProfileInstructions: true,
+	})
+	_, err = realm.EnqueueTask(func(task *browserruntime.TaskContext) error {
+		name, err := task.NewString("hotLoop")
+		if err != nil {
+			return err
+		}
+		function, err := task.NewBytecodeFunction(
+			memory.RefValue(name),
+			memory.NullValue(),
+			0,
+			browserruntime.Assemble(browserruntime.Instruction{Op: browserruntime.OpJump, A: 0}),
+			nil,
+		)
+		if err != nil {
+			return err
+		}
+		_, err = interpreter.Execute(task, function)
+		if !errors.Is(err, browserruntime.ErrInstructionLimit) {
+			t.Fatalf("Execute() error = %v, want ErrInstructionLimit", err)
+		}
+		message := err.Error()
+		if !strings.Contains(message, "top opcodes [Jump=8]") || !strings.Contains(message, "hotLoop(") || !strings.Contains(message, "1 ins,0 const}") || !strings.Contains(message, "=8/1 calls") {
+			t.Fatalf("instruction profile = %q", message)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestInterpreterExecutesCoreFrameAndStackVerbs(t *testing.T) {
 	t.Parallel()

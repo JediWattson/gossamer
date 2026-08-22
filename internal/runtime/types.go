@@ -252,6 +252,27 @@ func (context *TaskContext) SetBinding(contextRef, name memory.Ref, value memory
 	return context.Realm.store.SetBinding(context.Owner, contextRef, name, value)
 }
 
+func (context *TaskContext) SetBindingAt(location memory.BindingLocation, value memory.Value) error {
+	if context == nil || context.Realm == nil {
+		return fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.SetBindingAt(context.Owner, location, value)
+}
+
+func (context *TaskContext) ResolveBindingLocation(contextRef, name memory.Ref) (memory.BindingLocation, memory.Value, bool, error) {
+	if context == nil || context.Realm == nil {
+		return memory.BindingLocation{}, memory.Value{}, false, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.ResolveBindingLocation(context.Owner, contextRef, name)
+}
+
+func (context *TaskContext) ResolveBindingAt(location memory.BindingLocation) (memory.Value, error) {
+	if context == nil || context.Realm == nil {
+		return memory.Value{}, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.ResolveBindingAt(context.Owner, location)
+}
+
 func (context *TaskContext) ResolveBinding(contextRef, name memory.Ref) (memory.Value, bool, error) {
 	if context == nil || context.Realm == nil {
 		return memory.Value{}, false, fmt.Errorf("runtime: nil task context")

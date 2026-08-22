@@ -29,9 +29,10 @@ const (
 type InterpreterConfig struct {
 	// MaxInstructions applies independently to a top-level call and to each
 	// microtask job. MaxMicrotasks bounds the complete checkpoint.
-	MaxInstructions uint64
-	MaxMicrotasks   uint64
-	MaxCallDepth    uint32
+	MaxInstructions     uint64
+	MaxMicrotasks       uint64
+	MaxCallDepth        uint32
+	ProfileInstructions bool
 }
 
 // NativeFunction is an explicitly registered host callback. Native Function
@@ -174,6 +175,7 @@ type execution struct {
 	interpreter *Interpreter
 	context     *TaskContext
 	steps       uint64
+	profile     *instructionProfile
 }
 
 type callMode uint8
@@ -206,7 +208,7 @@ func (interpreter *Interpreter) CallWithoutCheckpoint(context *TaskContext, func
 	if context == nil || context.Realm == nil {
 		return memory.Value{}, fmt.Errorf("runtime: nil task context")
 	}
-	execution := &execution{interpreter: interpreter, context: context}
+	execution := interpreter.newExecution(context)
 	return execution.call(function, this, arguments, callAny)
 }
 
@@ -217,7 +219,7 @@ func (interpreter *Interpreter) DrainJobs(context *TaskContext) error {
 	if interpreter == nil || context == nil || context.Realm == nil {
 		return fmt.Errorf("runtime: nil interpreter or task context")
 	}
-	execution := &execution{interpreter: interpreter, context: context}
+	execution := interpreter.newExecution(context)
 	err := execution.drainJobs()
 	if err != nil {
 		// A failed checkpoint cannot leave borrowed task refs behind after the
@@ -293,11 +295,14 @@ func (execution *execution) call(function memory.Ref, this memory.Value, argumen
 	if descriptor.Kind != memory.FunctionBytecode {
 		return memory.Value{}, fmt.Errorf("%w: %s", ErrNotCallable, function)
 	}
-	instructions, err := execution.interpreter.decodeProgram(descriptor.Code, len(descriptor.Constants))
+	program, err := execution.interpreter.loadProgram(descriptor.Code, len(descriptor.Constants))
 	if err != nil {
 		return memory.Value{}, err
 	}
-	frame.instructions = instructions
+	frame.instructions = program.instructions
+	if execution.profile != nil {
+		execution.profile.bind(frame, program, execution.context)
+	}
 	result, err = execution.runFrame(frame)
 	if err != nil {
 		detail := execution.thrownSummary(err)
@@ -344,12 +349,15 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 	context := execution.context
 	for {
 		if execution.steps >= execution.interpreter.config.MaxInstructions {
-			return memory.Value{}, ErrInstructionLimit
+			return memory.Value{}, execution.instructionLimitError()
 		}
 		execution.steps++
 		instruction, err := frame.next()
 		if err != nil {
 			return memory.Value{}, err
+		}
+		if execution.profile != nil {
+			execution.profile.record(frame, instruction.Op)
 		}
 		switch instruction.Op {
 		case OpConstant:
@@ -451,6 +459,29 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 				return memory.Value{}, err
 			}
 			frame.push(value)
+		case OpSetOwnPropertyConstant:
+			value, err := frame.pop()
+			if err != nil {
+				return memory.Value{}, err
+			}
+			objectValue, err := frame.peek()
+			if err != nil {
+				return memory.Value{}, err
+			}
+			object, err := requireRef(objectValue, "Object")
+			if err != nil {
+				return memory.Value{}, err
+			}
+			if uint64(instruction.A) >= uint64(len(frame.function.Constants)) {
+				return memory.Value{}, fmt.Errorf("%w: %d", ErrConstantBounds, instruction.A)
+			}
+			name, err := requireRef(frame.function.Constants[instruction.A], "property name")
+			if err != nil {
+				return memory.Value{}, err
+			}
+			if err := context.SetProperty(object, name, value); err != nil {
+				return memory.Value{}, err
+			}
 		case OpDefineAccessor:
 			callable, err := frame.pop()
 			if err != nil {
@@ -496,6 +527,66 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 				return memory.Value{}, err
 			}
 			value, present, err := execution.getProperty(base, key)
+			if err != nil {
+				if handled, terminal := execution.routeFrameError(frame, err); handled {
+					continue
+				} else {
+					return memory.Value{}, terminal
+				}
+			}
+			if !present {
+				value = memory.UndefinedValue()
+			}
+			frame.push(value)
+		case OpGetPropertyConstant:
+			base, err := frame.pop()
+			if err != nil {
+				return memory.Value{}, err
+			}
+			if uint64(instruction.A) >= uint64(len(frame.function.Constants)) {
+				return memory.Value{}, fmt.Errorf("%w: %d", ErrConstantBounds, instruction.A)
+			}
+			value, present, err := execution.getProperty(base, frame.function.Constants[instruction.A])
+			if err != nil {
+				if handled, terminal := execution.routeFrameError(frame, err); handled {
+					continue
+				} else {
+					return memory.Value{}, terminal
+				}
+			}
+			if !present {
+				value = memory.UndefinedValue()
+			}
+			frame.push(value)
+		case OpLoadBindingProperty:
+			base, err := execution.resolveBindingOperand(frame, instruction.A)
+			if err != nil {
+				if handled, terminal := execution.routeFrameError(frame, err); handled {
+					continue
+				} else {
+					return memory.Value{}, terminal
+				}
+			}
+			if uint64(instruction.B) >= uint64(len(frame.function.Constants)) {
+				return memory.Value{}, fmt.Errorf("%w: %d", ErrConstantBounds, instruction.B)
+			}
+			value, present, err := execution.getProperty(base, frame.function.Constants[instruction.B])
+			if err != nil {
+				if handled, terminal := execution.routeFrameError(frame, err); handled {
+					continue
+				} else {
+					return memory.Value{}, terminal
+				}
+			}
+			if !present {
+				value = memory.UndefinedValue()
+			}
+			frame.push(value)
+		case OpLoadThisProperty:
+			if uint64(instruction.A) >= uint64(len(frame.function.Constants)) {
+				return memory.Value{}, fmt.Errorf("%w: %d", ErrConstantBounds, instruction.A)
+			}
+			value, present, err := execution.getProperty(frame.This, frame.function.Constants[instruction.A])
 			if err != nil {
 				if handled, terminal := execution.routeFrameError(frame, err); handled {
 					continue
@@ -578,6 +669,22 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 				return memory.Value{}, err
 			}
 			frame.push(value)
+		case OpSetElementConstant:
+			value, err := frame.pop()
+			if err != nil {
+				return memory.Value{}, err
+			}
+			arrayValue, err := frame.peek()
+			if err != nil {
+				return memory.Value{}, err
+			}
+			array, err := requireRef(arrayValue, "Array")
+			if err != nil {
+				return memory.Value{}, err
+			}
+			if err := context.SetArrayElement(array, instruction.A, value); err != nil {
+				return memory.Value{}, err
+			}
 		case OpDeleteElement:
 			index, array, err := popArrayIndex(frame)
 			if err != nil {
@@ -727,24 +834,8 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 			}
 			frame.push(lengthValue)
 		case OpLoadBinding:
-			environment, name, err := bindingOperands(frame, instruction.A)
+			value, err := execution.resolveBindingOperand(frame, instruction.A)
 			if err != nil {
-				return memory.Value{}, err
-			}
-			value, found, err := context.ResolveBinding(environment, name)
-			if err != nil {
-				if handled, terminal := execution.routeFrameError(frame, err); handled {
-					continue
-				} else {
-					return memory.Value{}, terminal
-				}
-			}
-			if !found {
-				nameText, nameErr := context.DerefString(name)
-				if nameErr != nil {
-					return memory.Value{}, nameErr
-				}
-				err := fmt.Errorf("%w: %q", memory.ErrBindingNotFound, nameText)
 				if handled, terminal := execution.routeFrameError(frame, err); handled {
 					continue
 				} else {
@@ -788,6 +879,33 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 			if err := context.DeclareBinding(environment, name, instruction.B == 1); err != nil {
 				return memory.Value{}, err
 			}
+		case OpDeclareBindings:
+			count := instruction.B &^ bindingBatchMutable
+			mutable := instruction.B&bindingBatchMutable != 0
+			for bindingIndex := uint32(0); bindingIndex < count; bindingIndex++ {
+				environment, name, err := bindingOperands(frame, instruction.A+bindingIndex)
+				if err != nil {
+					return memory.Value{}, err
+				}
+				if err := context.DeclareBinding(environment, name, mutable); err != nil {
+					return memory.Value{}, err
+				}
+			}
+		case OpBindArgument:
+			environment, name, err := bindingOperands(frame, instruction.A)
+			if err != nil {
+				return memory.Value{}, err
+			}
+			if err := context.DeclareBinding(environment, name, true); err != nil {
+				return memory.Value{}, err
+			}
+			value := memory.UndefinedValue()
+			if uint64(instruction.B) < uint64(len(frame.Arguments)) {
+				value = frame.Arguments[instruction.B]
+			}
+			if err := context.InitializeBinding(environment, name, value); err != nil {
+				return memory.Value{}, err
+			}
 		case OpInitializeBinding:
 			value, err := frame.pop()
 			if err != nil {
@@ -800,24 +918,60 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 			if err := context.InitializeBinding(environment, name, value); err != nil {
 				return memory.Value{}, err
 			}
-			frame.push(value)
+			if instruction.B == 0 {
+				frame.push(value)
+			}
 		case OpStoreBinding:
 			value, err := frame.pop()
 			if err != nil {
 				return memory.Value{}, err
 			}
-			environment, name, err := bindingOperands(frame, instruction.A)
-			if err != nil {
-				return memory.Value{}, err
-			}
-			if err := context.SetBinding(environment, name, value); err != nil {
+			if err := execution.setBindingOperand(frame, instruction.A, value); err != nil {
 				if handled, terminal := execution.routeFrameError(frame, err); handled {
 					continue
 				} else {
 					return memory.Value{}, terminal
 				}
 			}
-			frame.push(value)
+			if instruction.B == 0 {
+				frame.push(value)
+			}
+		case OpUpdateBinding:
+			old, err := execution.resolveBindingOperand(frame, instruction.A)
+			if err != nil {
+				if handled, terminal := execution.routeFrameError(frame, err); handled {
+					continue
+				} else {
+					return memory.Value{}, terminal
+				}
+			}
+			number, err := execution.toNumber(old)
+			if err != nil {
+				if handled, terminal := execution.routeFrameError(frame, err); handled {
+					continue
+				} else {
+					return memory.Value{}, terminal
+				}
+			}
+			delta := 1.0
+			if instruction.B&1 != 0 {
+				delta = -1
+			}
+			updated := memory.NumberValue(number + delta)
+			if err := execution.setBindingOperand(frame, instruction.A, updated); err != nil {
+				if handled, terminal := execution.routeFrameError(frame, err); handled {
+					continue
+				} else {
+					return memory.Value{}, terminal
+				}
+			}
+			if instruction.B&4 == 0 {
+				if instruction.B&2 != 0 {
+					frame.push(updated)
+				} else {
+					frame.push(old)
+				}
+			}
 		case OpLoadThis:
 			frame.push(frame.This)
 		case OpAdd, OpSubtract, OpMultiply, OpExponentiate, OpDivide, OpRemainder,
@@ -869,6 +1023,77 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 				jump = truthy == (instruction.Op == OpJumpIfTrue)
 			}
 			if jump {
+				frame.ip = instruction.A
+			}
+		case OpJumpIfBindingTrue, OpJumpIfBindingFalse:
+			condition, err := execution.resolveBindingOperand(frame, instruction.B)
+			if err != nil {
+				if handled, terminal := execution.routeFrameError(frame, err); handled {
+					continue
+				} else {
+					return memory.Value{}, terminal
+				}
+			}
+			truthy, err := valueTruthy(context, condition)
+			if err != nil {
+				return memory.Value{}, err
+			}
+			if truthy == (instruction.Op == OpJumpIfBindingTrue) {
+				frame.ip = instruction.A
+			}
+		case OpJumpIfBindingPropertyTrue, OpJumpIfBindingPropertyFalse,
+			OpJumpIfThisPropertyTrue, OpJumpIfThisPropertyFalse,
+			OpJumpIfPropertyConstantTrue, OpJumpIfPropertyConstantFalse:
+			var base memory.Value
+			propertyIndex := instruction.B
+			switch instruction.Op {
+			case OpJumpIfBindingPropertyTrue, OpJumpIfBindingPropertyFalse:
+				bindingIndex, unpackedProperty := unpackConstantPair(instruction.B)
+				propertyIndex = unpackedProperty
+				base, err = execution.resolveBindingOperand(frame, bindingIndex)
+			case OpJumpIfThisPropertyTrue, OpJumpIfThisPropertyFalse:
+				base = frame.This
+			default:
+				base, err = frame.pop()
+			}
+			if err != nil {
+				if handled, terminal := execution.routeFrameError(frame, err); handled {
+					continue
+				} else {
+					return memory.Value{}, terminal
+				}
+			}
+			if uint64(propertyIndex) >= uint64(len(frame.function.Constants)) {
+				return memory.Value{}, fmt.Errorf("%w: %d", ErrConstantBounds, propertyIndex)
+			}
+			truthy, err := execution.propertyTruthy(base, frame.function.Constants[propertyIndex])
+			if err != nil {
+				if handled, terminal := execution.routeFrameError(frame, err); handled {
+					continue
+				} else {
+					return memory.Value{}, terminal
+				}
+			}
+			jumpOnTrue := instruction.Op == OpJumpIfBindingPropertyTrue ||
+				instruction.Op == OpJumpIfThisPropertyTrue || instruction.Op == OpJumpIfPropertyConstantTrue
+			if truthy == jumpOnTrue {
+				frame.ip = instruction.A
+			}
+		case OpLogicalAndValue, OpLogicalOrValue, OpLogicalNullishValue:
+			value, err := frame.pop()
+			if err != nil {
+				return memory.Value{}, err
+			}
+			shortCircuit := value.Kind() != memory.ValueUndefined && value.Kind() != memory.ValueNull
+			if instruction.Op != OpLogicalNullishValue {
+				truthy, truthErr := valueTruthy(context, value)
+				if truthErr != nil {
+					return memory.Value{}, truthErr
+				}
+				shortCircuit = truthy == (instruction.Op == OpLogicalOrValue)
+			}
+			if shortCircuit {
+				frame.push(value)
 				frame.ip = instruction.A
 			}
 		case OpCall, OpCallNative, OpConstruct, OpCallMethod, OpCallSpread, OpCallMethodSpread, OpConstructSpread:
@@ -1155,6 +1380,29 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 			}
 			frame.environments = append(frame.environments, frame.Environment)
 			frame.Environment = memory.RefValue(environment)
+		case OpEnterFunction:
+			environment, err := context.NewContext(frame.Environment)
+			if err != nil {
+				return memory.Value{}, err
+			}
+			frame.environments = append(frame.environments, frame.Environment)
+			frame.Environment = memory.RefValue(environment)
+			for parameterIndex := uint32(0); parameterIndex < instruction.B; parameterIndex++ {
+				_, name, operandErr := bindingOperands(frame, instruction.A+parameterIndex)
+				if operandErr != nil {
+					return memory.Value{}, operandErr
+				}
+				if err := context.DeclareBinding(environment, name, true); err != nil {
+					return memory.Value{}, err
+				}
+				value := memory.UndefinedValue()
+				if uint64(parameterIndex) < uint64(len(frame.Arguments)) {
+					value = frame.Arguments[parameterIndex]
+				}
+				if err := context.InitializeBinding(environment, name, value); err != nil {
+					return memory.Value{}, err
+				}
+			}
 		case OpLeaveScope:
 			if len(frame.environments) == 0 {
 				return memory.Value{}, fmt.Errorf("%w: LeaveScope without EnterScope", ErrExceptionState)
@@ -1174,6 +1422,80 @@ func requireRef(value memory.Value, label string) (memory.Ref, error) {
 		return memory.Ref{}, fmt.Errorf("%w: %s must be a Ref", ErrOperandType, label)
 	}
 	return value.Ref(), nil
+}
+
+func (execution *execution) resolveBindingOperand(frame *Frame, index uint32) (memory.Value, error) {
+	environment, name, err := bindingOperands(frame, index)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	cache := frame.bindingCache(index)
+	if cache.valid && cache.environment == environment {
+		return execution.context.ResolveBindingAt(cache.location)
+	}
+	location, value, found, err := execution.context.ResolveBindingLocation(environment, name)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	if found {
+		cache.environment = environment
+		cache.location = location
+		cache.valid = true
+		return value, nil
+	}
+	value, found, err = execution.context.ResolveBinding(environment, name)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	if found {
+		return value, nil
+	}
+	nameText, err := execution.context.DerefString(name)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	return memory.Value{}, fmt.Errorf("%w: %q", memory.ErrBindingNotFound, nameText)
+}
+
+func (execution *execution) setBindingOperand(frame *Frame, index uint32, value memory.Value) error {
+	environment, name, err := bindingOperands(frame, index)
+	if err != nil {
+		return err
+	}
+	cache := frame.bindingCache(index)
+	if cache.valid && cache.environment == environment {
+		return execution.context.SetBindingAt(cache.location, value)
+	}
+	location, _, found, err := execution.context.ResolveBindingLocation(environment, name)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return execution.context.SetBinding(environment, name, value)
+	}
+	cache.environment = environment
+	cache.location = location
+	cache.valid = true
+	return execution.context.SetBindingAt(location, value)
+}
+
+func (frame *Frame) bindingCache(index uint32) *frameBinding {
+	required := int(index) + 1
+	if required > len(frame.bindings) {
+		frame.bindings = append(frame.bindings, make([]frameBinding, required-len(frame.bindings))...)
+	}
+	return &frame.bindings[index]
+}
+
+func (execution *execution) propertyTruthy(base, key memory.Value) (bool, error) {
+	value, present, err := execution.getProperty(base, key)
+	if err != nil {
+		return false, err
+	}
+	if !present {
+		value = memory.UndefinedValue()
+	}
+	return valueTruthy(execution.context, value)
 }
 
 // popRefPair consumes [... first, second] and returns second, first. Property

@@ -19,6 +19,13 @@ type Context struct {
 	Bindings []Binding
 }
 
+// BindingLocation is a generation-safe resolved lexical slot. It borrows the
+// Context Ref and does not retain or otherwise change ownership.
+type BindingLocation struct {
+	Context Ref
+	Index   uint32
+}
+
 func cloneContext(context Context) Context {
 	return Context{Parent: context.Parent, Bindings: append([]Binding(nil), context.Bindings...)}
 }

@@ -70,7 +70,6 @@ while (i < 10) {
   if (i === 6) { break; }
   sum = sum + i;
 }
-
 (chosen === 10 && fallback === 30) ? sum : 0;
 `)
 	if err != nil {
@@ -79,6 +78,59 @@ while (i < 10) {
 	result := execute(t, 811, image)
 	if result.Kind() != memory.ValueNumber || result.Number() != 12 {
 		t.Fatalf("control result = %#v, want 12", result)
+	}
+}
+
+func TestCompileFusesIdentifierUpdatesAndPreservesTheirResult(t *testing.T) {
+	t.Parallel()
+
+	image, err := compiler.Compile(`
+let value = 4;
+let postfixIncrement = value++;
+let prefixIncrement = ++value;
+let postfixDecrement = value--;
+let prefixDecrement = --value;
+postfixIncrement * 1000 + prefixIncrement * 100 + postfixDecrement * 10 + prefixDecrement;
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, _ := image.Function(image.Entry())
+	disassembly, err := browserruntime.Disassemble(entry.Code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(disassembly, "UpdateBinding"); got != 4 {
+		t.Fatalf("UpdateBinding count = %d, want 4:\n%s", got, disassembly)
+	}
+	if strings.Contains(disassembly, "Increment") || strings.Contains(disassembly, "Decrement") {
+		t.Fatalf("identifier update was not fused:\n%s", disassembly)
+	}
+	result := execute(t, 811_001, image)
+	if result.Kind() != memory.ValueNumber || result.Number() != 4664 {
+		t.Fatalf("update result = %#v, want 4664", result)
+	}
+}
+
+func TestFrameBindingCacheTracksTheActiveLexicalEnvironment(t *testing.T) {
+	t.Parallel()
+
+	image, err := compiler.Compile(`
+let value = 1;
+let inner = 0;
+{
+  let value = 10;
+  value = value + 1;
+  inner = value;
+}
+value * 100 + inner;
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := execute(t, 811_002, image)
+	if result.Kind() != memory.ValueNumber || result.Number() != 111 {
+		t.Fatalf("scoped binding result = %#v, want 111", result)
 	}
 }
 

@@ -63,6 +63,14 @@ type Frame struct {
 	environments []memory.Value
 	completion   *abruptCompletion
 	current      *ThrownError
+	profile      *instructionProgramStats
+	bindings     []frameBinding
+}
+
+type frameBinding struct {
+	environment memory.Ref
+	location    memory.BindingLocation
+	valid       bool
 }
 
 func (frame *Frame) VisitRefs(visit func(memory.Ref) error) error {
@@ -101,6 +109,20 @@ func (frame *Frame) VisitRefs(visit func(memory.Ref) error) error {
 			return err
 		}
 	}
+	for _, binding := range frame.bindings {
+		if binding.valid {
+			if binding.environment != (memory.Ref{}) {
+				if err := visit(binding.environment); err != nil {
+					return err
+				}
+			}
+			if binding.location.Context != (memory.Ref{}) {
+				if err := visit(binding.location.Context); err != nil {
+					return err
+				}
+			}
+		}
+	}
 	if frame.completion != nil {
 		if err := visitValue(frame.completion.value); err != nil {
 			return err
@@ -136,6 +158,9 @@ func (frame *Frame) reset() {
 	frame.environments = frame.environments[:0]
 	frame.completion = nil
 	frame.current = nil
+	frame.profile = nil
+	clear(frame.bindings)
+	frame.bindings = frame.bindings[:0]
 }
 
 func (frame *Frame) push(value memory.Value) {

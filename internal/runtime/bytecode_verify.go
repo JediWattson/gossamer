@@ -25,11 +25,49 @@ func verifyInstructions(instructions []Instruction, constantCount int) error {
 	}
 	for index, instruction := range instructions {
 		switch instruction.Op {
-		case OpConstant, OpLoadBinding, OpTypeOfBinding, OpDeclareBinding, OpInitializeBinding, OpStoreBinding, OpCreateClosure, OpCreateArrowClosure:
+		case OpConstant, OpLoadBinding, OpTypeOfBinding, OpDeclareBinding, OpInitializeBinding, OpStoreBinding, OpCreateClosure, OpCreateArrowClosure,
+			OpGetPropertyConstant, OpLoadThisProperty, OpBindArgument, OpUpdateBinding, OpSetOwnPropertyConstant:
 			if uint64(instruction.A) >= uint64(constantCount) {
 				return fmt.Errorf("%w: instruction %d uses constant %d", ErrConstantBounds, index, instruction.A)
 			}
-		case OpJump, OpJumpIfTrue, OpJumpIfFalse, OpJumpIfNullish, OpEnterTry, OpBreak, OpContinue:
+		case OpLoadBindingProperty:
+			if uint64(instruction.A) >= uint64(constantCount) || uint64(instruction.B) >= uint64(constantCount) {
+				return fmt.Errorf("%w: instruction %d uses constants %d/%d", ErrConstantBounds, index, instruction.A, instruction.B)
+			}
+		case OpJumpIfBindingTrue, OpJumpIfBindingFalse:
+			if uint64(instruction.B) >= uint64(constantCount) {
+				return fmt.Errorf("%w: instruction %d uses constant %d", ErrConstantBounds, index, instruction.B)
+			}
+			if uint64(instruction.A) >= uint64(len(instructions)) {
+				return fmt.Errorf("%w: instruction %d jumps to %d", ErrInvalidBytecode, index, instruction.A)
+			}
+		case OpJumpIfBindingPropertyTrue, OpJumpIfBindingPropertyFalse:
+			binding, property := unpackConstantPair(instruction.B)
+			if uint64(binding) >= uint64(constantCount) || uint64(property) >= uint64(constantCount) {
+				return fmt.Errorf("%w: instruction %d uses constants %d/%d", ErrConstantBounds, index, binding, property)
+			}
+			if uint64(instruction.A) >= uint64(len(instructions)) {
+				return fmt.Errorf("%w: instruction %d jumps to %d", ErrInvalidBytecode, index, instruction.A)
+			}
+		case OpJumpIfThisPropertyTrue, OpJumpIfThisPropertyFalse, OpJumpIfPropertyConstantTrue, OpJumpIfPropertyConstantFalse:
+			if uint64(instruction.B) >= uint64(constantCount) {
+				return fmt.Errorf("%w: instruction %d uses constant %d", ErrConstantBounds, index, instruction.B)
+			}
+			if uint64(instruction.A) >= uint64(len(instructions)) {
+				return fmt.Errorf("%w: instruction %d jumps to %d", ErrInvalidBytecode, index, instruction.A)
+			}
+		case OpEnterFunction:
+			if uint64(instruction.A)+uint64(instruction.B) > uint64(constantCount) {
+				return fmt.Errorf("%w: instruction %d uses constant range %d..%d", ErrConstantBounds, index, instruction.A, uint64(instruction.A)+uint64(instruction.B))
+			}
+		case OpDeclareBindings:
+			count := instruction.B &^ bindingBatchMutable
+			if count == 0 || uint64(instruction.A)+uint64(count) > uint64(constantCount) {
+				return fmt.Errorf("%w: instruction %d uses declaration range %d..%d", ErrConstantBounds, index, instruction.A, uint64(instruction.A)+uint64(count))
+			}
+		case OpJump, OpJumpIfTrue, OpJumpIfFalse, OpJumpIfNullish,
+			OpLogicalAndValue, OpLogicalOrValue, OpLogicalNullishValue,
+			OpEnterTry, OpBreak, OpContinue:
 			if uint64(instruction.A) >= uint64(len(instructions)) {
 				return fmt.Errorf("%w: instruction %d jumps to %d", ErrInvalidBytecode, index, instruction.A)
 			}
@@ -42,6 +80,12 @@ func verifyInstructions(instructions []Instruction, constantCount int) error {
 		}
 		if instruction.Op == OpUpdateProperty && (instruction.A > 1 || instruction.B > 1) {
 			return fmt.Errorf("%w: UpdateProperty mode %d/%d", ErrInvalidBytecode, instruction.A, instruction.B)
+		}
+		if (instruction.Op == OpInitializeBinding || instruction.Op == OpStoreBinding) && instruction.B > 1 {
+			return fmt.Errorf("%w: %s mode %d", ErrInvalidBytecode, instruction.Op, instruction.B)
+		}
+		if instruction.Op == OpUpdateBinding && instruction.B > 7 {
+			return fmt.Errorf("%w: UpdateBinding mode %d", ErrInvalidBytecode, instruction.B)
 		}
 		if instruction.Op == OpDefineAccessor && instruction.A > 1 {
 			return fmt.Errorf("%w: DefineAccessor mode %d", ErrInvalidBytecode, instruction.A)
@@ -69,7 +113,7 @@ func verifyInstructions(instructions []Instruction, constantCount int) error {
 
 		if instruction.Op == OpEnterTry {
 			if err := mergeStackDepth(depths, &queue, int(instruction.A), depth); err != nil {
-				return err
+				return fmt.Errorf("instruction %d %s: %w", index, instruction.Op, err)
 			}
 		}
 		if terminal {
@@ -78,24 +122,38 @@ func verifyInstructions(instructions []Instruction, constantCount int) error {
 		switch instruction.Op {
 		case OpJump, OpBreak, OpContinue:
 			if err := mergeStackDepth(depths, &queue, int(instruction.A), nextDepth); err != nil {
-				return err
+				return fmt.Errorf("instruction %d %s: %w", index, instruction.Op, err)
 			}
-		case OpJumpIfTrue, OpJumpIfFalse, OpJumpIfNullish:
+		case OpJumpIfTrue, OpJumpIfFalse, OpJumpIfNullish,
+			OpJumpIfBindingTrue, OpJumpIfBindingFalse,
+			OpJumpIfBindingPropertyTrue, OpJumpIfBindingPropertyFalse,
+			OpJumpIfThisPropertyTrue, OpJumpIfThisPropertyFalse,
+			OpJumpIfPropertyConstantTrue, OpJumpIfPropertyConstantFalse:
 			if err := mergeStackDepth(depths, &queue, int(instruction.A), nextDepth); err != nil {
-				return err
+				return fmt.Errorf("instruction %d %s: %w", index, instruction.Op, err)
 			}
 			if index+1 >= len(instructions) {
 				return fmt.Errorf("%w: instruction %d can fall off Function", ErrInvalidBytecode, index)
 			}
 			if err := mergeStackDepth(depths, &queue, index+1, nextDepth); err != nil {
-				return err
+				return fmt.Errorf("instruction %d %s: %w", index, instruction.Op, err)
+			}
+		case OpLogicalAndValue, OpLogicalOrValue, OpLogicalNullishValue:
+			if err := mergeStackDepth(depths, &queue, int(instruction.A), depth); err != nil {
+				return fmt.Errorf("instruction %d %s: %w", index, instruction.Op, err)
+			}
+			if index+1 >= len(instructions) {
+				return fmt.Errorf("%w: instruction %d can fall off Function", ErrInvalidBytecode, index)
+			}
+			if err := mergeStackDepth(depths, &queue, index+1, nextDepth); err != nil {
+				return fmt.Errorf("instruction %d %s: %w", index, instruction.Op, err)
 			}
 		default:
 			if index+1 >= len(instructions) {
 				return fmt.Errorf("%w: instruction %d can fall off Function", ErrInvalidBytecode, index)
 			}
 			if err := mergeStackDepth(depths, &queue, index+1, nextDepth); err != nil {
-				return err
+				return fmt.Errorf("instruction %d %s: %w", index, instruction.Op, err)
 			}
 		}
 	}
@@ -117,7 +175,8 @@ func mergeStackDepth(depths map[int]int, queue *[]int, target, depth int) error 
 func instructionStackEffect(instruction Instruction) (required, delta int, terminal bool, err error) {
 	switch instruction.Op {
 	case OpConstant, OpArgument, OpUndefined, OpNull, OpTrue, OpFalse,
-		OpNewObject, OpNewArray, OpLoadBinding, OpTypeOfBinding, OpArguments, OpLoadThis, OpCreateClosure, OpCreateArrowClosure:
+		OpNewObject, OpNewArray, OpLoadBinding, OpTypeOfBinding, OpArguments, OpLoadThis, OpCreateClosure, OpCreateArrowClosure,
+		OpLoadBindingProperty, OpLoadThisProperty:
 		return 0, 1, false, nil
 	case OpPop:
 		return 1, -1, false, nil
@@ -130,8 +189,12 @@ func instructionStackEffect(instruction Instruction) (required, delta int, termi
 	case OpGetOwnProperty, OpDeleteOwnProperty, OpGetElement, OpDeleteElement,
 		OpGetProperty, OpDeleteProperty, OpUpdateProperty:
 		return 2, -1, false, nil
+	case OpGetPropertyConstant:
+		return 1, 0, false, nil
 	case OpSetOwnProperty, OpSetElement, OpSetProperty, OpDefineAccessor:
 		return 3, -2, false, nil
+	case OpSetOwnPropertyConstant, OpSetElementConstant:
+		return 2, -1, false, nil
 	case OpGetLength:
 		return 1, 0, false, nil
 	case OpOwnKeys:
@@ -148,10 +211,29 @@ func instructionStackEffect(instruction Instruction) (required, delta int, termi
 		return 2, -1, false, nil
 	case OpSetLength:
 		return 2, -1, false, nil
-	case OpDeclareBinding, OpEnterTry, OpLeaveTry, OpEnterFinally, OpEndFinally, OpEnterScope, OpLeaveScope:
+	case OpDeclareBinding, OpDeclareBindings, OpEnterTry, OpLeaveTry, OpEnterFinally, OpEndFinally, OpEnterScope, OpEnterFunction, OpLeaveScope:
 		return 0, 0, false, nil
-	case OpInitializeBinding, OpStoreBinding,
-		OpNegate, OpIncrement, OpDecrement, OpLogicalNot, OpTypeOf, OpToNumber:
+	case OpBindArgument:
+		return 0, 0, false, nil
+	case OpUpdateBinding:
+		if instruction.B&4 != 0 {
+			return 0, 0, false, nil
+		}
+		return 0, 1, false, nil
+	case OpJumpIfBindingTrue, OpJumpIfBindingFalse,
+		OpJumpIfBindingPropertyTrue, OpJumpIfBindingPropertyFalse,
+		OpJumpIfThisPropertyTrue, OpJumpIfThisPropertyFalse:
+		return 0, 0, false, nil
+	case OpJumpIfPropertyConstantTrue, OpJumpIfPropertyConstantFalse:
+		return 1, -1, false, nil
+	case OpLogicalAndValue, OpLogicalOrValue, OpLogicalNullishValue:
+		return 1, -1, false, nil
+	case OpInitializeBinding, OpStoreBinding:
+		if instruction.B == 1 {
+			return 1, -1, false, nil
+		}
+		return 1, 0, false, nil
+	case OpNegate, OpIncrement, OpDecrement, OpLogicalNot, OpTypeOf, OpToNumber:
 		return 1, 0, false, nil
 	case OpAdd, OpSubtract, OpMultiply, OpExponentiate, OpDivide, OpRemainder,
 		OpBitwiseAnd, OpBitwiseOr, OpBitwiseXor,

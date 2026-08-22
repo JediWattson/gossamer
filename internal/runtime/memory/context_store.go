@@ -228,22 +228,45 @@ func (store *Store) SetBinding(owner ownership.OwnerID, context, name Ref, value
 	}
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
-	nameText, err := store.stringTextLocked(owner, name, false)
+	contextRef, region, slot, index, err := store.resolveBindingSlotLocked(owner, context, name)
 	if err != nil {
 		return err
 	}
-	_, region, slot, index, err := store.resolveBindingSlotLocked(owner, context, nameText)
+	return store.setBindingLocationLocked(owner, BindingLocation{Context: contextRef, Index: uint32(index)}, region, slot, value)
+}
+
+func (store *Store) SetBindingAt(owner ownership.OwnerID, location BindingLocation, value Value) error {
+	if store == nil {
+		return fmt.Errorf("memory: nil store")
+	}
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+	region, slot, err := store.writeSlotLocked(owner, location.Context, false)
 	if err != nil {
 		return err
 	}
+	if slot.Kind != HeapContext {
+		return typeError(location.Context, slot.Kind, HeapContext)
+	}
+	if uint64(location.Index) >= uint64(len(slot.context().Bindings)) {
+		return fmt.Errorf("%w: Context binding index %d", ErrBindingNotFound, location.Index)
+	}
+	return store.setBindingLocationLocked(owner, location, region, slot, value)
+}
+
+func (store *Store) setBindingLocationLocked(owner ownership.OwnerID, location BindingLocation, region *Region, slot *Slot, value Value) error {
+	index := int(location.Index)
 	binding := &slot.context().Bindings[index]
 	if binding.Indirect {
+		nameText, _ := store.stringTextLocked(owner, binding.Name, false)
 		return fmt.Errorf("%w: %q", ErrImmutableBinding, nameText)
 	}
 	if !binding.Initialized {
+		nameText, _ := store.stringTextLocked(owner, binding.Name, false)
 		return fmt.Errorf("%w: %q", ErrBindingUninitialized, nameText)
 	}
 	if !binding.Mutable {
+		nameText, _ := store.stringTextLocked(owner, binding.Name, false)
 		return fmt.Errorf("%w: %q", ErrImmutableBinding, nameText)
 	}
 	if region.State == RegionPublished {
@@ -252,7 +275,7 @@ func (store *Store) SetBinding(owner ownership.OwnerID, context, name Ref, value
 	if region.Owner != owner {
 		return store.accessError(region, owner)
 	}
-	value, err = store.replaceValueLocked(owner, region, slot, binding.Value, value, false)
+	value, err := store.replaceValueLocked(owner, region, slot, binding.Value, value, false)
 	if err != nil {
 		return err
 	}
@@ -266,19 +289,51 @@ func (store *Store) ResolveBinding(owner ownership.OwnerID, context, name Ref) (
 	}
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
-	nameText, err := store.stringTextLocked(owner, name, false)
-	if err != nil {
-		return Value{}, false, err
-	}
-	contextRef, _, slot, index, err := store.resolveBindingSlotLocked(owner, context, nameText)
+	contextRef, _, slot, index, err := store.resolveBindingSlotLocked(owner, context, name)
 	if errors.Is(err, ErrBindingNotFound) {
 		return Value{}, false, nil
 	}
 	if err != nil {
 		return Value{}, false, err
 	}
-	value, err := store.resolveBindingValueLocked(owner, contextRef, slot, index, make(map[bindingLocation]struct{}))
+	value, err := store.resolveBindingValueLocked(owner, contextRef, slot, index, nil)
 	return value, true, err
+}
+
+func (store *Store) ResolveBindingLocation(owner ownership.OwnerID, context, name Ref) (BindingLocation, Value, bool, error) {
+	if store == nil {
+		return BindingLocation{}, Value{}, false, fmt.Errorf("memory: nil store")
+	}
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+	contextRef, _, slot, index, err := store.resolveBindingSlotLocked(owner, context, name)
+	if errors.Is(err, ErrBindingNotFound) {
+		return BindingLocation{}, Value{}, false, nil
+	}
+	if err != nil {
+		return BindingLocation{}, Value{}, false, err
+	}
+	value, err := store.resolveBindingValueLocked(owner, contextRef, slot, index, nil)
+	return BindingLocation{Context: contextRef, Index: uint32(index)}, value, true, err
+}
+
+func (store *Store) ResolveBindingAt(owner ownership.OwnerID, location BindingLocation) (Value, error) {
+	if store == nil {
+		return Value{}, fmt.Errorf("memory: nil store")
+	}
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+	_, slot, err := store.readSlotLocked(owner, location.Context)
+	if err != nil {
+		return Value{}, err
+	}
+	if slot.Kind != HeapContext {
+		return Value{}, typeError(location.Context, slot.Kind, HeapContext)
+	}
+	if uint64(location.Index) >= uint64(len(slot.context().Bindings)) {
+		return Value{}, fmt.Errorf("%w: Context binding index %d", ErrBindingNotFound, location.Index)
+	}
+	return store.resolveBindingValueLocked(owner, location.Context, slot, int(location.Index), nil)
 }
 
 type bindingLocation struct {
@@ -287,11 +342,6 @@ type bindingLocation struct {
 }
 
 func (store *Store) resolveBindingValueLocked(owner ownership.OwnerID, context Ref, slot *Slot, index int, seen map[bindingLocation]struct{}) (Value, error) {
-	location := bindingLocation{context: context, index: index}
-	if _, duplicate := seen[location]; duplicate {
-		return Value{}, ErrBindingCycle
-	}
-	seen[location] = struct{}{}
 	binding := slot.context().Bindings[index]
 	if !binding.Initialized {
 		name, _ := store.stringTextLocked(owner, binding.Name, false)
@@ -300,25 +350,28 @@ func (store *Store) resolveBindingValueLocked(owner ownership.OwnerID, context R
 	if !binding.Indirect {
 		return binding.Value, nil
 	}
-	targetName, err := store.stringTextLocked(owner, binding.TargetName, false)
-	if err != nil {
-		return Value{}, err
+	if seen == nil {
+		seen = make(map[bindingLocation]struct{})
 	}
-	targetContext, _, targetSlot, targetIndex, err := store.resolveBindingSlotLocked(owner, binding.Target, targetName)
+	location := bindingLocation{context: context, index: index}
+	if _, duplicate := seen[location]; duplicate {
+		return Value{}, ErrBindingCycle
+	}
+	seen[location] = struct{}{}
+	targetContext, _, targetSlot, targetIndex, err := store.resolveBindingSlotLocked(owner, binding.Target, binding.TargetName)
 	if err != nil {
 		return Value{}, err
 	}
 	return store.resolveBindingValueLocked(owner, targetContext, targetSlot, targetIndex, seen)
 }
 
-func (store *Store) resolveBindingSlotLocked(owner ownership.OwnerID, context Ref, name string) (Ref, *Region, *Slot, int, error) {
-	seen := make(map[Ref]struct{})
+func (store *Store) resolveBindingSlotLocked(owner ownership.OwnerID, context Ref, name Ref) (Ref, *Region, *Slot, int, error) {
+	nameText, err := store.stringTextLocked(owner, name, false)
+	if err != nil {
+		return Ref{}, nil, nil, -1, err
+	}
 	current := context
 	for {
-		if _, duplicate := seen[current]; duplicate {
-			return Ref{}, nil, nil, -1, ErrContextCycle
-		}
-		seen[current] = struct{}{}
 		region, slot, err := store.readSlotLocked(owner, current)
 		if err != nil {
 			return Ref{}, nil, nil, -1, err
@@ -326,7 +379,7 @@ func (store *Store) resolveBindingSlotLocked(owner ownership.OwnerID, context Re
 		if slot.Kind != HeapContext {
 			return Ref{}, nil, nil, -1, typeError(current, slot.Kind, HeapContext)
 		}
-		index, err := store.findBindingLocked(slot, name)
+		index, err := store.findBindingRefLocked(slot, name, nameText)
 		if err != nil {
 			return Ref{}, nil, nil, -1, err
 		}
@@ -338,6 +391,25 @@ func (store *Store) resolveBindingSlotLocked(owner ownership.OwnerID, context Re
 		}
 		current = slot.context().Parent.Ref()
 	}
+}
+
+func (store *Store) findBindingRefLocked(slot *Slot, name Ref, nameText string) (int, error) {
+	for index, binding := range slot.context().Bindings {
+		if binding.Name == name {
+			return index, nil
+		}
+		_, nameSlot, err := store.slotLocked(binding.Name)
+		if err != nil {
+			return -1, err
+		}
+		if nameSlot.Kind != HeapString {
+			return -1, typeError(binding.Name, nameSlot.Kind, HeapString)
+		}
+		if nameSlot.stringObject().Text == nameText {
+			return index, nil
+		}
+	}
+	return -1, nil
 }
 
 func (store *Store) rejectContextCycleLocked(context, parent Ref) error {

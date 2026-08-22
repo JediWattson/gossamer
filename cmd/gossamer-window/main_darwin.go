@@ -35,13 +35,19 @@ func main() {
 	heapProfile := flag.String("heap-profile", "", "optional Go heap profile path written when the window closes")
 	memoryProfileInterval := flag.Duration("memory-profile-interval", time.Second, "minimum interval between memory timeline checkpoints")
 	maxInstructions := flag.Uint64("max-instructions", 0, "optional Strand instruction budget per top-level call (zero uses the runtime default)")
+	maxCallDepth := flag.Uint("max-call-depth", 0, "optional Strand synchronous call-depth budget (zero uses the runtime default)")
+	profileInstructions := flag.Bool("strand-instruction-profile", false, "include Strand bytecode hotspots when an instruction budget is exhausted")
 	flag.Parse()
 	if flag.NArg() != 1 {
 		fatalf("usage: gossamer-window [flags] <absolute-http-or-https-url>")
 	}
 	rawURL := flag.Arg(0)
 
-	engine, err := selectEngineWithInterpreter(*engineName, *icuData, browserruntime.InterpreterConfig{MaxInstructions: *maxInstructions})
+	engine, err := selectEngineWithInterpreter(*engineName, *icuData, browserruntime.InterpreterConfig{
+		MaxInstructions:     *maxInstructions,
+		MaxCallDepth:        uint32(*maxCallDepth),
+		ProfileInstructions: *profileInstructions,
+	})
 	if err != nil {
 		fatalf("initialize %s engine: %v", strings.TrimSpace(*engineName), err)
 	}
