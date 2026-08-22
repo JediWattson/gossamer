@@ -98,10 +98,10 @@ func (store *Store) allocBytecodeClosure(owner ownership.OwnerID, regionID Regio
 	if err != nil {
 		return Ref{}, err
 	}
-	if templateSlot.Kind != HeapFunction || templateSlot.Function.Kind != FunctionBytecode {
+	if templateSlot.Kind != HeapFunction || templateSlot.function().Kind != FunctionBytecode {
 		return Ref{}, fmt.Errorf("%w: template %s is not bytecode", ErrInvalidFunction, template)
 	}
-	templateFunction := loadFunction(*templateSlot.Function)
+	templateFunction := loadFunction(*templateSlot.function())
 	function := Function{
 		Kind:          FunctionBytecode,
 		Name:          templateFunction.Name,
@@ -138,7 +138,7 @@ func (store *Store) DerefFunction(owner ownership.OwnerID, ref Ref) (Function, e
 	if slot.Kind != HeapFunction {
 		return Function{}, typeError(ref, slot.Kind, HeapFunction)
 	}
-	return cloneFunction(*slot.Function), nil
+	return cloneFunction(*slot.function()), nil
 }
 
 // LoadFunction returns an immutable execution view backed by Store-owned
@@ -157,7 +157,7 @@ func (store *Store) LoadFunction(owner ownership.OwnerID, ref Ref) (Function, er
 	if slot.Kind != HeapFunction {
 		return Function{}, typeError(ref, slot.Kind, HeapFunction)
 	}
-	return loadFunction(*slot.Function), nil
+	return loadFunction(*slot.function()), nil
 }
 
 func (store *Store) SetFunctionLocations(owner ownership.OwnerID, ref Ref, locations []SourceSpan) error {
@@ -170,12 +170,12 @@ func (store *Store) SetFunctionLocations(owner ownership.OwnerID, ref Ref, locat
 	if err != nil {
 		return err
 	}
-	if slot.Kind != HeapFunction || slot.Function.Kind != FunctionBytecode {
+	if slot.Kind != HeapFunction || slot.function().Kind != FunctionBytecode {
 		return typeError(ref, slot.Kind, HeapFunction)
 	}
-	store.stats.LiveBytes -= uint64(len(slot.Function.Locations)) * 8
-	slot.Function.Locations = append([]SourceSpan(nil), locations...)
-	store.stats.LiveBytes += uint64(len(slot.Function.Locations)) * 8
+	store.stats.LiveBytes -= uint64(len(slot.function().Locations)) * 8
+	slot.function().Locations = append([]SourceSpan(nil), locations...)
+	store.stats.LiveBytes += uint64(len(slot.function().Locations)) * 8
 	return nil
 }
 
@@ -187,7 +187,7 @@ func (store *Store) initializeFunctionLocked(owner ownership.OwnerID, ref Ref, f
 	if slot.Kind != HeapFunction {
 		return typeError(ref, slot.Kind, HeapFunction)
 	}
-	if slot.Function.Kind != 0 {
+	if slot.function().Kind != 0 {
 		return fmt.Errorf("%w: Function slot is already initialized", ErrInvalidFunction)
 	}
 	if function.Kind != FunctionBytecode && function.Kind != FunctionNative {
@@ -251,7 +251,7 @@ func (store *Store) initializeFunctionLocked(owner ownership.OwnerID, ref Ref, f
 	if shareConstants {
 		function.Constants = originalConstants
 	}
-	*slot.Function = storeFunction(function, shareExecutable, shareConstants)
-	store.stats.LiveBytes += uint64(len(slot.Function.Code)) + uint64(len(slot.Function.Locations))*8
+	*slot.function() = storeFunction(function, shareExecutable, shareConstants)
+	store.stats.LiveBytes += uint64(len(slot.function().Code)) + uint64(len(slot.function().Locations))*8
 	return nil
 }

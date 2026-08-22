@@ -40,7 +40,7 @@ func (store *Store) DerefSymbol(owner ownership.OwnerID, ref Ref) (Symbol, error
 	if slot.Kind != HeapSymbol {
 		return Symbol{}, typeError(ref, slot.Kind, HeapSymbol)
 	}
-	return cloneSymbol(*slot.Symbol), nil
+	return cloneSymbol(*slot.symbol()), nil
 }
 
 func (store *Store) SameSymbol(owner ownership.OwnerID, left, right Ref) (bool, error) {
@@ -63,7 +63,7 @@ func (store *Store) SameSymbol(owner ownership.OwnerID, left, right Ref) (bool, 
 	if rightSlot.Kind != HeapSymbol {
 		return false, typeError(right, rightSlot.Kind, HeapSymbol)
 	}
-	return leftSlot.Symbol.ID == rightSlot.Symbol.ID, nil
+	return leftSlot.symbol().ID == rightSlot.symbol().ID, nil
 }
 
 func (store *Store) initializeSymbolLocked(owner ownership.OwnerID, ref Ref, symbol Symbol, internal bool) error {
@@ -74,7 +74,7 @@ func (store *Store) initializeSymbolLocked(owner ownership.OwnerID, ref Ref, sym
 	if slot.Kind != HeapSymbol {
 		return typeError(ref, slot.Kind, HeapSymbol)
 	}
-	if slot.Symbol.ID != 0 || symbol.ID == 0 {
+	if slot.symbol().ID != 0 || symbol.ID == 0 {
 		return fmt.Errorf("%w: zero or repeated identity", ErrInvalidSymbol)
 	}
 	if err := store.validateOptionalTypedValueLocked(owner, symbol.Description, HeapString, "Symbol description", internal); err != nil {
@@ -85,6 +85,6 @@ func (store *Store) initializeSymbolLocked(owner ownership.OwnerID, ref Ref, sym
 		return err
 	}
 	symbol.Description = description
-	*slot.Symbol = cloneSymbol(symbol)
+	*slot.symbol() = cloneSymbol(symbol)
 	return nil
 }

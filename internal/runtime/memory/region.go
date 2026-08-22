@@ -2,6 +2,7 @@ package memory
 
 import (
 	"strings"
+	"unsafe"
 
 	"github.com/JediWattson/gossamer/internal/runtime/ownership"
 )
@@ -56,42 +57,55 @@ type StringObject struct {
 	Text string
 }
 
-// slotPayload is allocated only while a slot is occupied. Keeping the stable
-// Ref metadata outside this union lets regions retain generation tombstones
-// without pinning every possible heap representation for every vacant slot.
+// slotPayload is the compact bridge from stable slot metadata into one typed
+// arena entry. The direct pointer keeps hot payload access to one indirection;
+// the handle proves arena ownership during release and invariant checks.
 type slotPayload struct {
-	handle      payloadHandle
-	Cell        *Cell
-	String      *StringObject
-	Object      *Object
-	Array       *Array
-	Context     *Context
-	Function    *Function
-	Promise     *Promise
-	BigInt      *BigInt
-	Symbol      *Symbol
-	ArrayBuffer *ArrayBuffer
-	TypedArray  *TypedArray
-	Map         *Map
-	Set         *Set
-	Date        *Date
-	RegExp      *RegExp
-	Error       *ErrorObject
-	WeakMap     *WeakMap
-	WeakSet     *WeakSet
-	Iterator    *Iterator
-	HostObject  *HostObject
+	handle  payloadHandle
+	pointer unsafe.Pointer
 }
 
-// Slot holds one generation-checked typed heap payload. The payload pointer is
-// deliberately embedded so existing typed access remains direct while vacant
-// slots retain only the stable header needed to reject stale Refs.
+// Slot holds one generation-checked typed heap payload. Vacant slots retain
+// only this compact stable record, so stale Refs remain invalid without one
+// separately allocated payload facade per live value.
 type Slot struct {
-	*slotPayload
+	payload    slotPayload
 	Generation uint32
 	incoming   uint32
 	Kind       HeapKind
 	Occupied   bool
+}
+
+func payloadPointer[T any](slot *Slot) *T {
+	if slot == nil || slot.payload.pointer == nil {
+		return nil
+	}
+	return (*T)(slot.payload.pointer)
+}
+
+func (slot *Slot) cell() *Cell                 { return payloadPointer[Cell](slot) }
+func (slot *Slot) stringObject() *StringObject { return payloadPointer[StringObject](slot) }
+func (slot *Slot) object() *Object             { return payloadPointer[Object](slot) }
+func (slot *Slot) array() *Array               { return payloadPointer[Array](slot) }
+func (slot *Slot) context() *Context           { return payloadPointer[Context](slot) }
+func (slot *Slot) function() *Function         { return payloadPointer[Function](slot) }
+func (slot *Slot) promise() *Promise           { return payloadPointer[Promise](slot) }
+func (slot *Slot) bigInt() *BigInt             { return payloadPointer[BigInt](slot) }
+func (slot *Slot) symbol() *Symbol             { return payloadPointer[Symbol](slot) }
+func (slot *Slot) arrayBuffer() *ArrayBuffer   { return payloadPointer[ArrayBuffer](slot) }
+func (slot *Slot) typedArray() *TypedArray     { return payloadPointer[TypedArray](slot) }
+func (slot *Slot) nativeMap() *Map             { return payloadPointer[Map](slot) }
+func (slot *Slot) nativeSet() *Set             { return payloadPointer[Set](slot) }
+func (slot *Slot) date() *Date                 { return payloadPointer[Date](slot) }
+func (slot *Slot) regExp() *RegExp             { return payloadPointer[RegExp](slot) }
+func (slot *Slot) errorObject() *ErrorObject   { return payloadPointer[ErrorObject](slot) }
+func (slot *Slot) weakMap() *WeakMap           { return payloadPointer[WeakMap](slot) }
+func (slot *Slot) weakSet() *WeakSet           { return payloadPointer[WeakSet](slot) }
+func (slot *Slot) iterator() *Iterator         { return payloadPointer[Iterator](slot) }
+func (slot *Slot) hostObject() *HostObject     { return payloadPointer[HostObject](slot) }
+
+func clonedPayloadPointer[T any](value T) unsafe.Pointer {
+	return unsafe.Pointer(&value)
 }
 
 // Region is a snapshot-compatible physical allocation region. Store methods
@@ -133,57 +147,52 @@ func cloneSlot(slot Slot) Slot {
 		Kind:       slot.Kind,
 		Occupied:   slot.Occupied,
 	}
-	if slot.slotPayload == nil {
+	if slot.payload.pointer == nil {
 		return result
 	}
-	result.slotPayload = &slotPayload{}
 	switch slot.Kind {
 	case HeapCell:
-		result.Cell = payloadPointer(cloneCell(*slot.Cell))
+		result.payload.pointer = clonedPayloadPointer(cloneCell(*slot.cell()))
 	case HeapString:
-		result.String = payloadPointer(cloneString(*slot.String))
+		result.payload.pointer = clonedPayloadPointer(cloneString(*slot.stringObject()))
 	case HeapObject:
-		result.Object = payloadPointer(cloneObject(*slot.Object))
+		result.payload.pointer = clonedPayloadPointer(cloneObject(*slot.object()))
 	case HeapArray:
-		result.Array = payloadPointer(cloneArray(*slot.Array))
+		result.payload.pointer = clonedPayloadPointer(cloneArray(*slot.array()))
 	case HeapContext:
-		result.Context = payloadPointer(cloneContext(*slot.Context))
+		result.payload.pointer = clonedPayloadPointer(cloneContext(*slot.context()))
 	case HeapFunction:
-		result.Function = payloadPointer(cloneFunction(*slot.Function))
+		result.payload.pointer = clonedPayloadPointer(cloneFunction(*slot.function()))
 	case HeapPromise:
-		result.Promise = payloadPointer(clonePromise(*slot.Promise))
+		result.payload.pointer = clonedPayloadPointer(clonePromise(*slot.promise()))
 	case HeapBigInt:
-		result.BigInt = payloadPointer(cloneBigInt(*slot.BigInt))
+		result.payload.pointer = clonedPayloadPointer(cloneBigInt(*slot.bigInt()))
 	case HeapSymbol:
-		result.Symbol = payloadPointer(cloneSymbol(*slot.Symbol))
+		result.payload.pointer = clonedPayloadPointer(cloneSymbol(*slot.symbol()))
 	case HeapArrayBuffer:
-		result.ArrayBuffer = payloadPointer(cloneArrayBuffer(*slot.ArrayBuffer))
+		result.payload.pointer = clonedPayloadPointer(cloneArrayBuffer(*slot.arrayBuffer()))
 	case HeapTypedArray:
-		result.TypedArray = payloadPointer(cloneTypedArray(*slot.TypedArray))
+		result.payload.pointer = clonedPayloadPointer(cloneTypedArray(*slot.typedArray()))
 	case HeapMap:
-		result.Map = payloadPointer(cloneMap(*slot.Map))
+		result.payload.pointer = clonedPayloadPointer(cloneMap(*slot.nativeMap()))
 	case HeapSet:
-		result.Set = payloadPointer(cloneSet(*slot.Set))
+		result.payload.pointer = clonedPayloadPointer(cloneSet(*slot.nativeSet()))
 	case HeapDate:
-		result.Date = payloadPointer(*slot.Date)
+		result.payload.pointer = clonedPayloadPointer(*slot.date())
 	case HeapRegExp:
-		result.RegExp = payloadPointer(cloneRegExp(*slot.RegExp))
+		result.payload.pointer = clonedPayloadPointer(cloneRegExp(*slot.regExp()))
 	case HeapError:
-		result.Error = payloadPointer(cloneError(*slot.Error))
+		result.payload.pointer = clonedPayloadPointer(cloneError(*slot.errorObject()))
 	case HeapWeakMap:
-		result.WeakMap = payloadPointer(cloneWeakMap(*slot.WeakMap))
+		result.payload.pointer = clonedPayloadPointer(cloneWeakMap(*slot.weakMap()))
 	case HeapWeakSet:
-		result.WeakSet = payloadPointer(cloneWeakSet(*slot.WeakSet))
+		result.payload.pointer = clonedPayloadPointer(cloneWeakSet(*slot.weakSet()))
 	case HeapIterator:
-		result.Iterator = payloadPointer(cloneIterator(*slot.Iterator))
+		result.payload.pointer = clonedPayloadPointer(cloneIterator(*slot.iterator()))
 	case HeapHostObject:
-		result.HostObject = payloadPointer(*slot.HostObject)
+		result.payload.pointer = clonedPayloadPointer(*slot.hostObject())
 	}
 	return result
-}
-
-func payloadPointer[T any](value T) *T {
-	return &value
 }
 
 func appendSlotReferences(values []Value, slot *Slot) []Value {
@@ -191,21 +200,21 @@ func appendSlotReferences(values []Value, slot *Slot) []Value {
 		return values
 	}
 	if slot.Kind == HeapCell {
-		return append(values, slot.Cell.Fields...)
+		return append(values, slot.cell().Fields...)
 	}
 	values = appendObjectHeaderReferences(values, slot)
 	if slot.Kind == HeapObject {
 		return values
 	}
 	if slot.Kind == HeapArray {
-		for _, element := range slot.Array.Elements {
+		for _, element := range slot.array().Elements {
 			values = append(values, element.Value)
 		}
 		return values
 	}
 	if slot.Kind == HeapContext {
-		values = append(values, slot.Context.Parent)
-		for _, binding := range slot.Context.Bindings {
+		values = append(values, slot.context().Parent)
+		for _, binding := range slot.context().Bindings {
 			values = append(values, RefValue(binding.Name))
 			if binding.Indirect {
 				values = append(values, RefValue(binding.Target), RefValue(binding.TargetName))
@@ -216,57 +225,57 @@ func appendSlotReferences(values []Value, slot *Slot) []Value {
 		return values
 	}
 	if slot.Kind == HeapFunction {
-		values = append(values, slot.Function.Name, slot.Function.Environment)
-		if slot.Function.ThisMode == FunctionThisLexical {
-			values = append(values, slot.Function.LexicalThis)
+		values = append(values, slot.function().Name, slot.function().Environment)
+		if slot.function().ThisMode == FunctionThisLexical {
+			values = append(values, slot.function().LexicalThis)
 		}
-		values = append(values, slot.Function.Constants...)
-		values = append(values, slot.Function.Captures...)
+		values = append(values, slot.function().Constants...)
+		values = append(values, slot.function().Captures...)
 		return values
 	}
 	if slot.Kind == HeapPromise {
-		if slot.Promise.State != PromisePending {
-			values = append(values, slot.Promise.Result)
+		if slot.promise().State != PromisePending {
+			values = append(values, slot.promise().Result)
 		}
-		for _, reaction := range slot.Promise.Reactions {
+		for _, reaction := range slot.promise().Reactions {
 			values = append(values, reaction.OnFulfilled, reaction.OnRejected, reaction.Downstream)
 		}
 		return values
 	}
 	if slot.Kind == HeapSymbol {
-		return append(values, slot.Symbol.Description)
+		return append(values, slot.symbol().Description)
 	}
 	if slot.Kind == HeapTypedArray {
-		if slot.TypedArray.Buffer == (Ref{}) {
+		if slot.typedArray().Buffer == (Ref{}) {
 			return values
 		}
-		return append(values, RefValue(slot.TypedArray.Buffer))
+		return append(values, RefValue(slot.typedArray().Buffer))
 	}
 	if slot.Kind == HeapMap {
-		for _, entry := range slot.Map.Entries {
+		for _, entry := range slot.nativeMap().Entries {
 			values = append(values, entry.Key, entry.Value)
 		}
 		return values
 	}
 	if slot.Kind == HeapSet {
-		return append(values, slot.Set.Values...)
+		return append(values, slot.nativeSet().Values...)
 	}
 	if slot.Kind == HeapRegExp {
-		if slot.RegExp.Pattern == (Ref{}) {
+		if slot.regExp().Pattern == (Ref{}) {
 			return values
 		}
-		return append(values, RefValue(slot.RegExp.Pattern))
+		return append(values, RefValue(slot.regExp().Pattern))
 	}
 	if slot.Kind == HeapError {
-		values = append(values, slot.Error.Message, slot.Error.Stack)
-		if slot.Error.HasCause {
-			values = append(values, slot.Error.Cause)
+		values = append(values, slot.errorObject().Message, slot.errorObject().Stack)
+		if slot.errorObject().HasCause {
+			values = append(values, slot.errorObject().Cause)
 		}
-		values = append(values, slot.Error.Errors...)
+		values = append(values, slot.errorObject().Errors...)
 		return values
 	}
 	if slot.Kind == HeapIterator {
-		return append(values, RefValue(slot.Iterator.Target))
+		return append(values, RefValue(slot.iterator().Target))
 	}
 	return values
 }
@@ -313,17 +322,17 @@ func rewriteSlotReferences(slot *Slot, replacements map[Ref]Ref) {
 	}
 	switch slot.Kind {
 	case HeapCell:
-		for index := range slot.Cell.Fields {
-			slot.Cell.Fields[index] = rewriteValue(slot.Cell.Fields[index])
+		for index := range slot.cell().Fields {
+			slot.cell().Fields[index] = rewriteValue(slot.cell().Fields[index])
 		}
 	case HeapArray:
-		for index := range slot.Array.Elements {
-			slot.Array.Elements[index].Value = rewriteValue(slot.Array.Elements[index].Value)
+		for index := range slot.array().Elements {
+			slot.array().Elements[index].Value = rewriteValue(slot.array().Elements[index].Value)
 		}
 	case HeapContext:
-		slot.Context.Parent = rewriteValue(slot.Context.Parent)
-		for index := range slot.Context.Bindings {
-			binding := &slot.Context.Bindings[index]
+		slot.context().Parent = rewriteValue(slot.context().Parent)
+		for index := range slot.context().Bindings {
+			binding := &slot.context().Bindings[index]
 			binding.Name = rewriteRef(binding.Name)
 			if binding.Indirect {
 				binding.Target = rewriteRef(binding.Target)
@@ -333,58 +342,58 @@ func rewriteSlotReferences(slot *Slot, replacements map[Ref]Ref) {
 			}
 		}
 	case HeapFunction:
-		slot.Function.Name = rewriteValue(slot.Function.Name)
-		slot.Function.Environment = rewriteValue(slot.Function.Environment)
-		if slot.Function.ThisMode == FunctionThisLexical {
-			slot.Function.LexicalThis = rewriteValue(slot.Function.LexicalThis)
+		slot.function().Name = rewriteValue(slot.function().Name)
+		slot.function().Environment = rewriteValue(slot.function().Environment)
+		if slot.function().ThisMode == FunctionThisLexical {
+			slot.function().LexicalThis = rewriteValue(slot.function().LexicalThis)
 		}
-		for index := range slot.Function.Constants {
-			slot.Function.Constants[index] = rewriteValue(slot.Function.Constants[index])
+		for index := range slot.function().Constants {
+			slot.function().Constants[index] = rewriteValue(slot.function().Constants[index])
 		}
-		for index := range slot.Function.Captures {
-			slot.Function.Captures[index] = rewriteValue(slot.Function.Captures[index])
+		for index := range slot.function().Captures {
+			slot.function().Captures[index] = rewriteValue(slot.function().Captures[index])
 		}
 	case HeapPromise:
-		if slot.Promise.State != PromisePending {
-			slot.Promise.Result = rewriteValue(slot.Promise.Result)
+		if slot.promise().State != PromisePending {
+			slot.promise().Result = rewriteValue(slot.promise().Result)
 		}
-		for index := range slot.Promise.Reactions {
-			reaction := &slot.Promise.Reactions[index]
+		for index := range slot.promise().Reactions {
+			reaction := &slot.promise().Reactions[index]
 			reaction.OnFulfilled = rewriteValue(reaction.OnFulfilled)
 			reaction.OnRejected = rewriteValue(reaction.OnRejected)
 			reaction.Downstream = rewriteValue(reaction.Downstream)
 		}
 	case HeapSymbol:
-		slot.Symbol.Description = rewriteValue(slot.Symbol.Description)
+		slot.symbol().Description = rewriteValue(slot.symbol().Description)
 	case HeapTypedArray:
-		slot.TypedArray.Buffer = rewriteRef(slot.TypedArray.Buffer)
+		slot.typedArray().Buffer = rewriteRef(slot.typedArray().Buffer)
 	case HeapMap:
-		for index := range slot.Map.Entries {
-			slot.Map.Entries[index].Key = rewriteValue(slot.Map.Entries[index].Key)
-			slot.Map.Entries[index].Value = rewriteValue(slot.Map.Entries[index].Value)
+		for index := range slot.nativeMap().Entries {
+			slot.nativeMap().Entries[index].Key = rewriteValue(slot.nativeMap().Entries[index].Key)
+			slot.nativeMap().Entries[index].Value = rewriteValue(slot.nativeMap().Entries[index].Value)
 		}
 	case HeapSet:
-		for index := range slot.Set.Values {
-			slot.Set.Values[index] = rewriteValue(slot.Set.Values[index])
+		for index := range slot.nativeSet().Values {
+			slot.nativeSet().Values[index] = rewriteValue(slot.nativeSet().Values[index])
 		}
 	case HeapRegExp:
-		slot.RegExp.Pattern = rewriteRef(slot.RegExp.Pattern)
+		slot.regExp().Pattern = rewriteRef(slot.regExp().Pattern)
 	case HeapError:
-		slot.Error.Message = rewriteValue(slot.Error.Message)
-		slot.Error.Stack = rewriteValue(slot.Error.Stack)
-		if slot.Error.HasCause {
-			slot.Error.Cause = rewriteValue(slot.Error.Cause)
+		slot.errorObject().Message = rewriteValue(slot.errorObject().Message)
+		slot.errorObject().Stack = rewriteValue(slot.errorObject().Stack)
+		if slot.errorObject().HasCause {
+			slot.errorObject().Cause = rewriteValue(slot.errorObject().Cause)
 		}
-		for index := range slot.Error.Errors {
-			slot.Error.Errors[index] = rewriteValue(slot.Error.Errors[index])
+		for index := range slot.errorObject().Errors {
+			slot.errorObject().Errors[index] = rewriteValue(slot.errorObject().Errors[index])
 		}
 	case HeapIterator:
-		slot.Iterator.Target = rewriteRef(slot.Iterator.Target)
+		slot.iterator().Target = rewriteRef(slot.iterator().Target)
 	}
 }
 
 func slotStorageEmpty(slot *Slot) bool {
-	return slot != nil && slot.Kind == HeapInvalid && slot.slotPayload == nil
+	return slot != nil && slot.Kind == HeapInvalid && slot.payload == (slotPayload{})
 }
 
 func objectHeaderStorageEmpty(header ObjectHeader) bool {
@@ -392,23 +401,23 @@ func objectHeaderStorageEmpty(header ObjectHeader) bool {
 }
 
 func (store *Store) initializeSlotPayloadLocked(slot *Slot, kind HeapKind) {
-	slot.slotPayload = store.payloads.allocate(kind)
+	slot.payload = store.payloads.allocate(kind)
 	slot.Kind = kind
 	if header, ok := objectHeaderForSlot(slot); ok {
 		header.Prototype = NullValue()
 	}
 	switch kind {
 	case HeapContext:
-		slot.Context.Parent = NullValue()
+		slot.context().Parent = NullValue()
 	}
 }
 
 func (store *Store) clearSlotPayloadLocked(slot *Slot) error {
-	if err := store.payloads.release(slot.Kind, slot.slotPayload); err != nil {
+	if err := store.payloads.release(slot.Kind, &slot.payload); err != nil {
 		return err
 	}
 	slot.Kind = HeapInvalid
-	slot.slotPayload = nil
+	slot.payload = slotPayload{}
 	return nil
 }
 

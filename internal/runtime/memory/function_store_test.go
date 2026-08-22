@@ -89,8 +89,8 @@ func TestBytecodeClosureSharesImmutableExecutableStorage(t *testing.T) {
 		t.Fatal(err)
 	}
 	after := store.PhysicalStats()
-	if delta := after.PayloadBytes - before.PayloadBytes; delta != after.SlotPayloadSizeBytes {
-		t.Fatalf("closure payload grew by %d bytes, want only its %d-byte slot payload", delta, after.SlotPayloadSizeBytes)
+	if delta := after.PayloadBytes - before.PayloadBytes; delta != 0 {
+		t.Fatalf("shared closure payload grew by %d bytes, want no per-slot facade", delta)
 	}
 	if got := store.EdgeCount(functionRegion, valueRegion); got != 2 {
 		t.Fatalf("template and closure edge count = %d, want 2", got)

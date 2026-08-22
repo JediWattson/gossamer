@@ -17,8 +17,8 @@ func (store *Store) AllocArrayBuffer(owner ownership.OwnerID, regionID RegionID,
 		return Ref{}, err
 	}
 	_, slot, _ := store.slotLocked(ref)
-	slot.ArrayBuffer.Bytes = append([]byte(nil), bytes...)
-	store.stats.LiveBytes += uint64(len(slot.ArrayBuffer.Bytes))
+	slot.arrayBuffer().Bytes = append([]byte(nil), bytes...)
+	store.stats.LiveBytes += uint64(len(slot.arrayBuffer().Bytes))
 	return ref, nil
 }
 
@@ -35,7 +35,7 @@ func (store *Store) DerefArrayBuffer(owner ownership.OwnerID, ref Ref) (ArrayBuf
 	if slot.Kind != HeapArrayBuffer {
 		return ArrayBuffer{}, typeError(ref, slot.Kind, HeapArrayBuffer)
 	}
-	return cloneArrayBuffer(*slot.ArrayBuffer), nil
+	return cloneArrayBuffer(*slot.arrayBuffer()), nil
 }
 
 func (store *Store) ReadArrayBuffer(owner ownership.OwnerID, ref Ref, offset, length uint64) ([]byte, error) {
@@ -51,14 +51,14 @@ func (store *Store) ReadArrayBuffer(owner ownership.OwnerID, ref Ref, offset, le
 	if slot.Kind != HeapArrayBuffer {
 		return nil, typeError(ref, slot.Kind, HeapArrayBuffer)
 	}
-	if slot.ArrayBuffer.Detached {
+	if slot.arrayBuffer().Detached {
 		return nil, ErrDetachedBuffer
 	}
-	start, end, err := bufferRange(len(slot.ArrayBuffer.Bytes), offset, length)
+	start, end, err := bufferRange(len(slot.arrayBuffer().Bytes), offset, length)
 	if err != nil {
 		return nil, err
 	}
-	return append([]byte(nil), slot.ArrayBuffer.Bytes[start:end]...), nil
+	return append([]byte(nil), slot.arrayBuffer().Bytes[start:end]...), nil
 }
 
 func (store *Store) WriteArrayBuffer(owner ownership.OwnerID, ref Ref, offset uint64, bytes []byte) error {
@@ -74,14 +74,14 @@ func (store *Store) WriteArrayBuffer(owner ownership.OwnerID, ref Ref, offset ui
 	if slot.Kind != HeapArrayBuffer {
 		return typeError(ref, slot.Kind, HeapArrayBuffer)
 	}
-	if slot.ArrayBuffer.Detached {
+	if slot.arrayBuffer().Detached {
 		return ErrDetachedBuffer
 	}
-	start, end, err := bufferRange(len(slot.ArrayBuffer.Bytes), offset, uint64(len(bytes)))
+	start, end, err := bufferRange(len(slot.arrayBuffer().Bytes), offset, uint64(len(bytes)))
 	if err != nil {
 		return err
 	}
-	copy(slot.ArrayBuffer.Bytes[start:end], bytes)
+	copy(slot.arrayBuffer().Bytes[start:end], bytes)
 	return nil
 }
 
@@ -98,12 +98,12 @@ func (store *Store) DetachArrayBuffer(owner ownership.OwnerID, ref Ref) error {
 	if slot.Kind != HeapArrayBuffer {
 		return typeError(ref, slot.Kind, HeapArrayBuffer)
 	}
-	if slot.ArrayBuffer.Detached {
+	if slot.arrayBuffer().Detached {
 		return nil
 	}
-	store.stats.LiveBytes -= uint64(len(slot.ArrayBuffer.Bytes))
-	slot.ArrayBuffer.Bytes = nil
-	slot.ArrayBuffer.Detached = true
+	store.stats.LiveBytes -= uint64(len(slot.arrayBuffer().Bytes))
+	slot.arrayBuffer().Bytes = nil
+	slot.arrayBuffer().Detached = true
 	return nil
 }
 

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"unsafe"
 
 	"github.com/JediWattson/gossamer/internal/runtime/ownership"
 )
@@ -550,71 +551,32 @@ func TestCheckpointRewriteCoversEveryStrongTypedLocation(t *testing.T) {
 		}
 	}
 	slots := map[string]Slot{
-		"cell": {
-			Kind: HeapCell, Occupied: true,
-			slotPayload: &slotPayload{Cell: &Cell{Fields: []Value{value}}},
-		},
-		"object": {
-			Kind: HeapObject, Occupied: true,
-			slotPayload: &slotPayload{Object: &Object{ObjectHeader: header()}},
-		},
-		"array": {
-			Kind: HeapArray, Occupied: true,
-			slotPayload: &slotPayload{Array: &Array{ObjectHeader: header(), Elements: []ArrayElement{{Value: value}}}},
-		},
-		"context": {
-			Kind: HeapContext, Occupied: true,
-			slotPayload: &slotPayload{Context: &Context{Parent: value, Bindings: []Binding{
-				{Name: old, Value: value, Initialized: true},
-				{Name: old, Indirect: true, Target: old, TargetName: old},
-			}}},
-		},
-		"function": {
-			Kind: HeapFunction, Occupied: true,
-			slotPayload: &slotPayload{Function: &Function{
-				ObjectHeader: header(), Name: value, Environment: value,
-				ThisMode: FunctionThisLexical, LexicalThis: value,
-				Constants: []Value{value}, Captures: []Value{value},
-			}},
-		},
-		"promise": {
-			Kind: HeapPromise, Occupied: true,
-			slotPayload: &slotPayload{Promise: &Promise{
-				ObjectHeader: header(), State: PromiseFulfilled, Result: value,
-				Reactions: []PromiseReaction{{OnFulfilled: value, OnRejected: value, Downstream: value}},
-			}},
-		},
-		"symbol": {
-			Kind: HeapSymbol, Occupied: true,
-			slotPayload: &slotPayload{Symbol: &Symbol{Description: value}},
-		},
-		"typed-array": {
-			Kind: HeapTypedArray, Occupied: true,
-			slotPayload: &slotPayload{TypedArray: &TypedArray{Buffer: old}},
-		},
-		"map": {
-			Kind: HeapMap, Occupied: true,
-			slotPayload: &slotPayload{Map: &Map{ObjectHeader: header(), Entries: []MapEntry{{Key: value, Value: value}}}},
-		},
-		"set": {
-			Kind: HeapSet, Occupied: true,
-			slotPayload: &slotPayload{Set: &Set{ObjectHeader: header(), Values: []Value{value}}},
-		},
-		"regexp": {
-			Kind: HeapRegExp, Occupied: true,
-			slotPayload: &slotPayload{RegExp: &RegExp{Pattern: old}},
-		},
-		"error": {
-			Kind: HeapError, Occupied: true,
-			slotPayload: &slotPayload{Error: &ErrorObject{
-				ObjectHeader: header(), Message: value, Stack: value,
-				Cause: value, HasCause: true, Errors: []Value{value},
-			}},
-		},
-		"iterator": {
-			Kind: HeapIterator, Occupied: true,
-			slotPayload: &slotPayload{Iterator: &Iterator{ObjectHeader: header(), Target: old}},
-		},
+		"cell":   syntheticSlot(HeapCell, Cell{Fields: []Value{value}}),
+		"object": syntheticSlot(HeapObject, Object{ObjectHeader: header()}),
+		"array":  syntheticSlot(HeapArray, Array{ObjectHeader: header(), Elements: []ArrayElement{{Value: value}}}),
+		"context": syntheticSlot(HeapContext, Context{Parent: value, Bindings: []Binding{
+			{Name: old, Value: value, Initialized: true},
+			{Name: old, Indirect: true, Target: old, TargetName: old},
+		}}),
+		"function": syntheticSlot(HeapFunction, Function{
+			ObjectHeader: header(), Name: value, Environment: value,
+			ThisMode: FunctionThisLexical, LexicalThis: value,
+			Constants: []Value{value}, Captures: []Value{value},
+		}),
+		"promise": syntheticSlot(HeapPromise, Promise{
+			ObjectHeader: header(), State: PromiseFulfilled, Result: value,
+			Reactions: []PromiseReaction{{OnFulfilled: value, OnRejected: value, Downstream: value}},
+		}),
+		"symbol":      syntheticSlot(HeapSymbol, Symbol{Description: value}),
+		"typed-array": syntheticSlot(HeapTypedArray, TypedArray{Buffer: old}),
+		"map":         syntheticSlot(HeapMap, Map{ObjectHeader: header(), Entries: []MapEntry{{Key: value, Value: value}}}),
+		"set":         syntheticSlot(HeapSet, Set{ObjectHeader: header(), Values: []Value{value}}),
+		"regexp":      syntheticSlot(HeapRegExp, RegExp{Pattern: old}),
+		"error": syntheticSlot(HeapError, ErrorObject{
+			ObjectHeader: header(), Message: value, Stack: value,
+			Cause: value, HasCause: true, Errors: []Value{value},
+		}),
+		"iterator": syntheticSlot(HeapIterator, Iterator{ObjectHeader: header(), Target: old}),
 	}
 	for name, slot := range slots {
 		t.Run(name, func(t *testing.T) {
@@ -630,4 +592,8 @@ func TestCheckpointRewriteCoversEveryStrongTypedLocation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func syntheticSlot[T any](kind HeapKind, value T) Slot {
+	return Slot{Kind: kind, Occupied: true, payload: slotPayload{pointer: unsafe.Pointer(&value)}}
 }

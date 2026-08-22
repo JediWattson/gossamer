@@ -173,35 +173,26 @@ func (store *Store) CheckInvariants() error {
 			if onFreeList {
 				return invariantError("R%d occupied slot %d is on free list", id, index)
 			}
-			if slot.slotPayload == nil {
+			if slot.payload.pointer == nil {
 				return invariantError("R%d occupied slot %d has no typed payload", id, index)
 			}
-			if err := store.payloads.checkSlot(slot.Kind, slot.slotPayload); err != nil {
+			if err := store.payloads.checkSlot(slot.Kind, &slot.payload); err != nil {
 				return invariantError("R%d occupied slot %d: %v", id, index, err)
 			}
 			liveSlots++
 			switch slot.Kind {
 			case HeapCell:
 				liveCells++
-				if slotHasOtherPayload(slot, HeapCell) {
-					return invariantError("Cell %s retains another typed payload", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
-				}
 			case HeapString:
 				liveStrings++
-				liveBytes += uint64(len(slot.String.Text))
-				if slotHasOtherPayload(slot, HeapString) {
-					return invariantError("String %s retains another typed payload", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
-				}
+				liveBytes += uint64(len(slot.stringObject().Text))
 			case HeapObject:
 				liveObjects++
-				if slotHasOtherPayload(slot, HeapObject) {
-					return invariantError("Object %s retains another typed payload", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
+				if slot.object().Prototype.Kind() != ValueNull && !slot.object().Prototype.IsRef() {
+					return invariantError("Object %s has invalid prototype kind %d", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot.object().Prototype.Kind())
 				}
-				if slot.Object.Prototype.Kind() != ValueNull && !slot.Object.Prototype.IsRef() {
-					return invariantError("Object %s has invalid prototype kind %d", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot.Object.Prototype.Kind())
-				}
-				if slot.Object.Prototype.IsRef() {
-					prototype := slot.Object.Prototype.Ref()
+				if slot.object().Prototype.IsRef() {
+					prototype := slot.object().Prototype.Ref()
 					prototypeRegion := store.regions[prototype.Region]
 					if prototypeRegion == nil || prototypeRegion.State == RegionDestroyed || uint64(prototype.Slot) >= uint64(len(prototypeRegion.Slots)) {
 						return invariantError("Object %s has stale prototype %s", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, prototype)
@@ -212,8 +203,8 @@ func (store *Store) CheckInvariants() error {
 						return invariantError("Object %s has non-Object prototype %s", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, prototype)
 					}
 				}
-				names := make(map[propertyKey]struct{}, len(slot.Object.Properties))
-				for propertyIndex, property := range slot.Object.Properties {
+				names := make(map[propertyKey]struct{}, len(slot.object().Properties))
+				for propertyIndex, property := range slot.object().Properties {
 					if property.Kind != PropertyData && property.Kind != PropertyAccessor {
 						return invariantError("Object %s property %d has invalid descriptor kind %d", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, propertyIndex, property.Kind)
 					}
@@ -257,13 +248,10 @@ func (store *Store) CheckInvariants() error {
 				}
 			case HeapArray:
 				liveArrays++
-				if slotHasOtherPayload(slot, HeapArray) {
-					return invariantError("Array %s retains another typed payload", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
-				}
 				var previous uint32
-				for elementIndex, element := range slot.Array.Elements {
-					if element.Index >= slot.Array.Length {
-						return invariantError("Array %s element %d index %d is outside length %d", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, elementIndex, element.Index, slot.Array.Length)
+				for elementIndex, element := range slot.array().Elements {
+					if element.Index >= slot.array().Length {
+						return invariantError("Array %s element %d index %d is outside length %d", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, elementIndex, element.Index, slot.array().Length)
 					}
 					if elementIndex != 0 && element.Index <= previous {
 						return invariantError("Array %s elements are not strictly ordered at %d", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, elementIndex)
@@ -272,17 +260,14 @@ func (store *Store) CheckInvariants() error {
 				}
 			case HeapContext:
 				liveContexts++
-				if slotHasOtherPayload(slot, HeapContext) {
-					return invariantError("Context %s retains another typed payload", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
-				}
-				if slot.Context.Parent.Kind() != ValueNull && !slot.Context.Parent.IsRef() {
-					return invariantError("Context %s has invalid parent kind %d", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot.Context.Parent.Kind())
+				if slot.context().Parent.Kind() != ValueNull && !slot.context().Parent.IsRef() {
+					return invariantError("Context %s has invalid parent kind %d", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot.context().Parent.Kind())
 				}
 				if err := store.checkContextChainLocked(Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}); err != nil {
 					return err
 				}
-				seenNames := make(map[string]struct{}, len(slot.Context.Bindings))
-				for bindingIndex, binding := range slot.Context.Bindings {
+				seenNames := make(map[string]struct{}, len(slot.context().Bindings))
+				for bindingIndex, binding := range slot.context().Bindings {
 					nameRegion := store.regions[binding.Name.Region]
 					if nameRegion == nil || nameRegion.State == RegionDestroyed || uint64(binding.Name.Slot) >= uint64(len(nameRegion.Slots)) {
 						return invariantError("Context %s binding %d has stale name %s", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, bindingIndex, binding.Name)
@@ -291,13 +276,13 @@ func (store *Store) CheckInvariants() error {
 					if !nameSlot.Occupied || nameSlot.Generation != binding.Name.Gen || nameSlot.Kind != HeapString {
 						return invariantError("Context %s binding %d has non-String name %s", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, bindingIndex, binding.Name)
 					}
-					if _, duplicate := seenNames[nameSlot.String.Text]; duplicate {
-						return invariantError("Context %s has duplicate binding %q", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, nameSlot.String.Text)
+					if _, duplicate := seenNames[nameSlot.stringObject().Text]; duplicate {
+						return invariantError("Context %s has duplicate binding %q", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, nameSlot.stringObject().Text)
 					}
-					seenNames[nameSlot.String.Text] = struct{}{}
+					seenNames[nameSlot.stringObject().Text] = struct{}{}
 					if binding.Indirect {
 						if !binding.Initialized || binding.Mutable || binding.Value != (Value{}) {
-							return invariantError("Context %s indirect binding %q has invalid local state", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, nameSlot.String.Text)
+							return invariantError("Context %s indirect binding %q has invalid local state", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, nameSlot.stringObject().Text)
 						}
 						if err := store.checkOptionalTypedRefLocked(RefValue(binding.Target), HeapContext, "indirect binding target"); err != nil {
 							return err
@@ -308,55 +293,49 @@ func (store *Store) CheckInvariants() error {
 						continue
 					}
 					if binding.Target != (Ref{}) || binding.TargetName != (Ref{}) {
-						return invariantError("Context %s direct binding %q retains an indirect target", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, nameSlot.String.Text)
+						return invariantError("Context %s direct binding %q retains an indirect target", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, nameSlot.stringObject().Text)
 					}
 					if !binding.Initialized && binding.Value != (Value{}) {
-						return invariantError("Context %s binding %q retains an uninitialized value", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, nameSlot.String.Text)
+						return invariantError("Context %s binding %q retains an uninitialized value", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, nameSlot.stringObject().Text)
 					}
 				}
 			case HeapFunction:
 				liveFunctions++
-				liveBytes += uint64(len(slot.Function.Code)) + uint64(len(slot.Function.Locations))*8
-				if slotHasOtherPayload(slot, HeapFunction) {
-					return invariantError("Function %s retains another typed payload", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
+				liveBytes += uint64(len(slot.function().Code)) + uint64(len(slot.function().Locations))*8
+				if slot.function().Kind != FunctionBytecode && slot.function().Kind != FunctionNative {
+					return invariantError("Function %s has invalid kind %d", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot.function().Kind)
 				}
-				if slot.Function.Kind != FunctionBytecode && slot.Function.Kind != FunctionNative {
-					return invariantError("Function %s has invalid kind %d", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot.Function.Kind)
+				if slot.function().Kind == FunctionBytecode && slot.function().NativeID != 0 {
+					return invariantError("bytecode Function %s has native ID %d", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot.function().NativeID)
 				}
-				if slot.Function.Kind == FunctionBytecode && slot.Function.NativeID != 0 {
-					return invariantError("bytecode Function %s has native ID %d", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot.Function.NativeID)
-				}
-				if slot.Function.Kind == FunctionNative && (slot.Function.NativeID == 0 || len(slot.Function.Code) != 0 || len(slot.Function.Locations) != 0 || len(slot.Function.Constants) != 0) {
+				if slot.function().Kind == FunctionNative && (slot.function().NativeID == 0 || len(slot.function().Code) != 0 || len(slot.function().Locations) != 0 || len(slot.function().Constants) != 0) {
 					return invariantError("native Function %s has an invalid descriptor", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
 				}
-				if slot.Function.ThisMode != FunctionThisDynamic && slot.Function.ThisMode != FunctionThisLexical {
-					return invariantError("Function %s has invalid this mode %d", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot.Function.ThisMode)
+				if slot.function().ThisMode != FunctionThisDynamic && slot.function().ThisMode != FunctionThisLexical {
+					return invariantError("Function %s has invalid this mode %d", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot.function().ThisMode)
 				}
-				if slot.Function.ThisMode == FunctionThisLexical {
-					if slot.Function.Kind != FunctionBytecode || slot.Function.Constructible {
+				if slot.function().ThisMode == FunctionThisLexical {
+					if slot.function().Kind != FunctionBytecode || slot.function().Constructible {
 						return invariantError("Function %s has an invalid lexical receiver", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
 					}
-				} else if slot.Function.LexicalThis != (Value{}) {
+				} else if slot.function().LexicalThis != (Value{}) {
 					return invariantError("Function %s retains a lexical receiver in dynamic mode", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
 				}
-				if err := store.checkOptionalTypedRefLocked(slot.Function.Name, HeapString, "Function name"); err != nil {
+				if err := store.checkOptionalTypedRefLocked(slot.function().Name, HeapString, "Function name"); err != nil {
 					return err
 				}
-				if err := store.checkOptionalTypedRefLocked(slot.Function.Environment, HeapContext, "Function environment"); err != nil {
+				if err := store.checkOptionalTypedRefLocked(slot.function().Environment, HeapContext, "Function environment"); err != nil {
 					return err
 				}
 			case HeapPromise:
 				livePromises++
-				if slotHasOtherPayload(slot, HeapPromise) {
-					return invariantError("Promise %s retains another typed payload", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
+				if slot.promise().State > PromiseRejected {
+					return invariantError("Promise %s has invalid state %d", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot.promise().State)
 				}
-				if slot.Promise.State > PromiseRejected {
-					return invariantError("Promise %s has invalid state %d", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot.Promise.State)
-				}
-				if slot.Promise.State == PromisePending && slot.Promise.Result != (Value{}) {
+				if slot.promise().State == PromisePending && slot.promise().Result != (Value{}) {
 					return invariantError("pending Promise %s retains a result", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
 				}
-				for reactionIndex, reaction := range slot.Promise.Reactions {
+				for reactionIndex, reaction := range slot.promise().Reactions {
 					if err := store.checkOptionalTypedRefLocked(reaction.OnFulfilled, HeapFunction, fmt.Sprintf("Promise reaction %d fulfillment handler", reactionIndex)); err != nil {
 						return err
 					}
@@ -369,70 +348,55 @@ func (store *Store) CheckInvariants() error {
 				}
 			case HeapBigInt:
 				liveBigInts++
-				liveBytes += uint64(len(slot.BigInt.Magnitude))
-				if slotHasOtherPayload(slot, HeapBigInt) {
-					return invariantError("BigInt %s retains another typed payload", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
-				}
-				if len(slot.BigInt.Magnitude) == 0 && slot.BigInt.Negative {
+				liveBytes += uint64(len(slot.bigInt().Magnitude))
+				if len(slot.bigInt().Magnitude) == 0 && slot.bigInt().Negative {
 					return invariantError("BigInt %s stores negative zero", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
 				}
-				if len(slot.BigInt.Magnitude) != 0 && slot.BigInt.Magnitude[0] == 0 {
+				if len(slot.bigInt().Magnitude) != 0 && slot.bigInt().Magnitude[0] == 0 {
 					return invariantError("BigInt %s has a leading zero byte", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
 				}
 			case HeapSymbol:
 				liveSymbols++
-				if slotHasOtherPayload(slot, HeapSymbol) {
-					return invariantError("Symbol %s retains another typed payload", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
-				}
-				if slot.Symbol.ID == 0 {
+				if slot.symbol().ID == 0 {
 					return invariantError("Symbol %s has zero identity", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
 				}
-				if err := store.checkOptionalTypedRefLocked(slot.Symbol.Description, HeapString, "Symbol description"); err != nil {
+				if err := store.checkOptionalTypedRefLocked(slot.symbol().Description, HeapString, "Symbol description"); err != nil {
 					return err
 				}
 			case HeapArrayBuffer:
 				liveArrayBuffers++
-				liveBytes += uint64(len(slot.ArrayBuffer.Bytes))
-				if slotHasOtherPayload(slot, HeapArrayBuffer) {
-					return invariantError("ArrayBuffer %s retains another typed payload", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
-				}
-				if slot.ArrayBuffer.Detached && len(slot.ArrayBuffer.Bytes) != 0 {
-					return invariantError("detached ArrayBuffer %s retains %d bytes", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, len(slot.ArrayBuffer.Bytes))
+				liveBytes += uint64(len(slot.arrayBuffer().Bytes))
+				if slot.arrayBuffer().Detached && len(slot.arrayBuffer().Bytes) != 0 {
+					return invariantError("detached ArrayBuffer %s retains %d bytes", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, len(slot.arrayBuffer().Bytes))
 				}
 			case HeapTypedArray:
 				liveTypedArrays++
-				if slotHasOtherPayload(slot, HeapTypedArray) {
-					return invariantError("TypedArray %s retains another typed payload", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
+				size, valid := elementSize(slot.typedArray().Element)
+				if !valid || slot.typedArray().ByteOffset%size != 0 {
+					return invariantError("TypedArray %s has invalid element %d or offset %d", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot.typedArray().Element, slot.typedArray().ByteOffset)
 				}
-				size, valid := elementSize(slot.TypedArray.Element)
-				if !valid || slot.TypedArray.ByteOffset%size != 0 {
-					return invariantError("TypedArray %s has invalid element %d or offset %d", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot.TypedArray.Element, slot.TypedArray.ByteOffset)
+				bufferRegion := store.regions[slot.typedArray().Buffer.Region]
+				if bufferRegion == nil || bufferRegion.State == RegionDestroyed || uint64(slot.typedArray().Buffer.Slot) >= uint64(len(bufferRegion.Slots)) {
+					return invariantError("TypedArray %s has stale buffer %s", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot.typedArray().Buffer)
 				}
-				bufferRegion := store.regions[slot.TypedArray.Buffer.Region]
-				if bufferRegion == nil || bufferRegion.State == RegionDestroyed || uint64(slot.TypedArray.Buffer.Slot) >= uint64(len(bufferRegion.Slots)) {
-					return invariantError("TypedArray %s has stale buffer %s", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot.TypedArray.Buffer)
+				bufferSlot := &bufferRegion.Slots[slot.typedArray().Buffer.Slot]
+				if !bufferSlot.Occupied || bufferSlot.Generation != slot.typedArray().Buffer.Gen || bufferSlot.Kind != HeapArrayBuffer {
+					return invariantError("TypedArray %s has non-ArrayBuffer target %s", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot.typedArray().Buffer)
 				}
-				bufferSlot := &bufferRegion.Slots[slot.TypedArray.Buffer.Slot]
-				if !bufferSlot.Occupied || bufferSlot.Generation != slot.TypedArray.Buffer.Gen || bufferSlot.Kind != HeapArrayBuffer {
-					return invariantError("TypedArray %s has non-ArrayBuffer target %s", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot.TypedArray.Buffer)
-				}
-				byteLength := slot.TypedArray.Length * size
-				if slot.TypedArray.Length != 0 && byteLength/slot.TypedArray.Length != size {
+				byteLength := slot.typedArray().Length * size
+				if slot.typedArray().Length != 0 && byteLength/slot.typedArray().Length != size {
 					return invariantError("TypedArray %s byte length overflows", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
 				}
-				if !bufferSlot.ArrayBuffer.Detached {
-					if _, _, err := bufferRange(len(bufferSlot.ArrayBuffer.Bytes), slot.TypedArray.ByteOffset, byteLength); err != nil {
+				if !bufferSlot.arrayBuffer().Detached {
+					if _, _, err := bufferRange(len(bufferSlot.arrayBuffer().Bytes), slot.typedArray().ByteOffset, byteLength); err != nil {
 						return invariantError("TypedArray %s range: %v", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, err)
 					}
 				}
 			case HeapMap:
 				liveMaps++
-				if slotHasOtherPayload(slot, HeapMap) {
-					return invariantError("Map %s retains another typed payload", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
-				}
-				for entryIndex, entry := range slot.Map.Entries {
+				for entryIndex, entry := range slot.nativeMap().Entries {
 					for previous := 0; previous < entryIndex; previous++ {
-						equal, err := store.sameValueZeroLocked(slot.Map.Entries[previous].Key, entry.Key)
+						equal, err := store.sameValueZeroLocked(slot.nativeMap().Entries[previous].Key, entry.Key)
 						if err != nil {
 							return invariantError("Map %s key %d: %v", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, entryIndex, err)
 						}
@@ -443,12 +407,9 @@ func (store *Store) CheckInvariants() error {
 				}
 			case HeapSet:
 				liveSets++
-				if slotHasOtherPayload(slot, HeapSet) {
-					return invariantError("Set %s retains another typed payload", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
-				}
-				for valueIndex, value := range slot.Set.Values {
+				for valueIndex, value := range slot.nativeSet().Values {
 					for previous := 0; previous < valueIndex; previous++ {
-						equal, err := store.sameValueZeroLocked(slot.Set.Values[previous], value)
+						equal, err := store.sameValueZeroLocked(slot.nativeSet().Values[previous], value)
 						if err != nil {
 							return invariantError("Set %s value %d: %v", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, valueIndex, err)
 						}
@@ -459,58 +420,46 @@ func (store *Store) CheckInvariants() error {
 				}
 			case HeapDate:
 				liveDates++
-				if slotHasOtherPayload(slot, HeapDate) {
-					return invariantError("Date %s retains another typed payload", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
-				}
-				milliseconds := slot.Date.Milliseconds
+				milliseconds := slot.date().Milliseconds
 				if !math.IsNaN(milliseconds) && (math.IsInf(milliseconds, 0) || math.Abs(milliseconds) > maxDateMilliseconds || milliseconds != math.Trunc(milliseconds)) {
 					return invariantError("Date %s has unclipped milliseconds %v", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, milliseconds)
 				}
 			case HeapRegExp:
 				liveRegExps++
-				if slotHasOtherPayload(slot, HeapRegExp) {
-					return invariantError("RegExp %s retains another typed payload", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
+				if slot.regExp().Flags&^allRegExpFlags != 0 || slot.regExp().Flags&RegExpUnicode != 0 && slot.regExp().Flags&RegExpUnicodeSets != 0 {
+					return invariantError("RegExp %s has invalid flags %x", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot.regExp().Flags)
 				}
-				if slot.RegExp.Flags&^allRegExpFlags != 0 || slot.RegExp.Flags&RegExpUnicode != 0 && slot.RegExp.Flags&RegExpUnicodeSets != 0 {
-					return invariantError("RegExp %s has invalid flags %x", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot.RegExp.Flags)
+				patternRegion := store.regions[slot.regExp().Pattern.Region]
+				if patternRegion == nil || patternRegion.State == RegionDestroyed || uint64(slot.regExp().Pattern.Slot) >= uint64(len(patternRegion.Slots)) {
+					return invariantError("RegExp %s has stale pattern %s", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot.regExp().Pattern)
 				}
-				patternRegion := store.regions[slot.RegExp.Pattern.Region]
-				if patternRegion == nil || patternRegion.State == RegionDestroyed || uint64(slot.RegExp.Pattern.Slot) >= uint64(len(patternRegion.Slots)) {
-					return invariantError("RegExp %s has stale pattern %s", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot.RegExp.Pattern)
-				}
-				patternSlot := &patternRegion.Slots[slot.RegExp.Pattern.Slot]
-				if !patternSlot.Occupied || patternSlot.Generation != slot.RegExp.Pattern.Gen || patternSlot.Kind != HeapString {
-					return invariantError("RegExp %s has non-String pattern %s", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot.RegExp.Pattern)
+				patternSlot := &patternRegion.Slots[slot.regExp().Pattern.Slot]
+				if !patternSlot.Occupied || patternSlot.Generation != slot.regExp().Pattern.Gen || patternSlot.Kind != HeapString {
+					return invariantError("RegExp %s has non-String pattern %s", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot.regExp().Pattern)
 				}
 			case HeapError:
 				liveErrors++
-				if slotHasOtherPayload(slot, HeapError) {
-					return invariantError("Error %s retains another typed payload", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
+				if slot.errorObject().Kind.Name() == "" {
+					return invariantError("Error %s has invalid kind %d", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot.errorObject().Kind)
 				}
-				if slot.Error.Kind.Name() == "" {
-					return invariantError("Error %s has invalid kind %d", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot.Error.Kind)
-				}
-				if err := store.checkOptionalTypedRefLocked(slot.Error.Message, HeapString, "Error message"); err != nil {
+				if err := store.checkOptionalTypedRefLocked(slot.errorObject().Message, HeapString, "Error message"); err != nil {
 					return err
 				}
-				if err := store.checkOptionalTypedRefLocked(slot.Error.Stack, HeapString, "Error stack"); err != nil {
+				if err := store.checkOptionalTypedRefLocked(slot.errorObject().Stack, HeapString, "Error stack"); err != nil {
 					return err
 				}
-				if !slot.Error.HasCause && slot.Error.Cause != (Value{}) {
+				if !slot.errorObject().HasCause && slot.errorObject().Cause != (Value{}) {
 					return invariantError("Error %s retains an absent cause", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
 				}
-				if slot.Error.Kind != ErrorAggregate && len(slot.Error.Errors) != 0 {
-					return invariantError("%s %s retains %d aggregate members", slot.Error.Kind.Name(), Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, len(slot.Error.Errors))
+				if slot.errorObject().Kind != ErrorAggregate && len(slot.errorObject().Errors) != 0 {
+					return invariantError("%s %s retains %d aggregate members", slot.errorObject().Kind.Name(), Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, len(slot.errorObject().Errors))
 				}
 			case HeapWeakMap:
 				liveWeakMaps++
 				tableRef := Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}
 				expectedWeakTables[tableRef] = struct{}{}
-				if slotHasOtherPayload(slot, HeapWeakMap) {
-					return invariantError("WeakMap %s retains another typed payload", tableRef)
-				}
-				keys := make(map[Ref]int, len(slot.WeakMap.Entries))
-				for entryIndex, entry := range slot.WeakMap.Entries {
+				keys := make(map[Ref]int, len(slot.weakMap().Entries))
+				for entryIndex, entry := range slot.weakMap().Entries {
 					if entry.Key == (Ref{}) {
 						return invariantError("WeakMap %s entry %d has a zero key", tableRef, entryIndex)
 					}
@@ -537,21 +486,18 @@ func (store *Store) CheckInvariants() error {
 				liveWeakSets++
 				tableRef := Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}
 				expectedWeakTables[tableRef] = struct{}{}
-				if slotHasOtherPayload(slot, HeapWeakSet) {
-					return invariantError("WeakSet %s retains another typed payload", tableRef)
+				if len(slot.weakSet().Keys) != len(slot.weakSet().uses) {
+					return invariantError("WeakSet %s has %d keys and %d reverse uses", tableRef, len(slot.weakSet().Keys), len(slot.weakSet().uses))
 				}
-				if len(slot.WeakSet.Keys) != len(slot.WeakSet.uses) {
-					return invariantError("WeakSet %s has %d keys and %d reverse uses", tableRef, len(slot.WeakSet.Keys), len(slot.WeakSet.uses))
-				}
-				keys := make(map[Ref]int, len(slot.WeakSet.Keys))
-				for keyIndex, key := range slot.WeakSet.Keys {
+				keys := make(map[Ref]int, len(slot.weakSet().Keys))
+				for keyIndex, key := range slot.weakSet().Keys {
 					if key == (Ref{}) {
 						return invariantError("WeakSet %s key %d is zero", tableRef, keyIndex)
 					}
 					if err := checkWeakTarget(region, tableRef, key); err != nil {
 						return err
 					}
-					if err := addWeakTarget(key, slot.WeakSet.uses[keyIndex], weakUse{table: tableRef, entry: uint32(keyIndex), role: weakSetKeyUse}); err != nil {
+					if err := addWeakTarget(key, slot.weakSet().uses[keyIndex], weakUse{table: tableRef, entry: uint32(keyIndex), role: weakSetKeyUse}); err != nil {
 						return err
 					}
 					if previous, duplicate := keys[key]; duplicate {
@@ -561,24 +507,18 @@ func (store *Store) CheckInvariants() error {
 				}
 			case HeapIterator:
 				liveIterators++
-				if slotHasOtherPayload(slot, HeapIterator) {
-					return invariantError("Iterator %s retains another typed payload", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
+				targetRegion := store.regions[slot.iterator().Target.Region]
+				if targetRegion == nil || targetRegion.State == RegionDestroyed || uint64(slot.iterator().Target.Slot) >= uint64(len(targetRegion.Slots)) {
+					return invariantError("Iterator %s has stale target %s", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot.iterator().Target)
 				}
-				targetRegion := store.regions[slot.Iterator.Target.Region]
-				if targetRegion == nil || targetRegion.State == RegionDestroyed || uint64(slot.Iterator.Target.Slot) >= uint64(len(targetRegion.Slots)) {
-					return invariantError("Iterator %s has stale target %s", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot.Iterator.Target)
-				}
-				targetSlot := &targetRegion.Slots[slot.Iterator.Target.Slot]
-				if !targetSlot.Occupied || targetSlot.Generation != slot.Iterator.Target.Gen || !iteratorTargetMatches(slot.Iterator.Kind, targetSlot.Kind) {
-					return invariantError("Iterator %s has invalid target %s for kind %d", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot.Iterator.Target, slot.Iterator.Kind)
+				targetSlot := &targetRegion.Slots[slot.iterator().Target.Slot]
+				if !targetSlot.Occupied || targetSlot.Generation != slot.iterator().Target.Gen || !iteratorTargetMatches(slot.iterator().Kind, targetSlot.Kind) {
+					return invariantError("Iterator %s has invalid target %s for kind %d", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot.iterator().Target, slot.iterator().Kind)
 				}
 			case HeapHostObject:
 				liveHostObjects++
-				if slotHasOtherPayload(slot, HeapHostObject) {
-					return invariantError("HostObject %s retains another typed payload", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
-				}
-				if slot.HostObject.Class == 0 || slot.HostObject.Scope == 0 || slot.HostObject.Identity == 0 {
-					return invariantError("HostObject %s has invalid identity %#v", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot.HostObject)
+				if slot.hostObject().Class == 0 || slot.hostObject().Scope == 0 || slot.hostObject().Identity == 0 {
+					return invariantError("HostObject %s has invalid identity %#v", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot.hostObject())
 				}
 			default:
 				return invariantError("R%d occupied slot %d has unknown heap kind %d", id, index, slot.Kind)
@@ -846,26 +786,6 @@ func invariantError(format string, arguments ...any) error {
 	return fmt.Errorf("%w: %s", ErrInvariantViolation, fmt.Sprintf(format, arguments...))
 }
 
-func slotHasOtherPayload(slot *Slot, kind HeapKind) bool {
-	if slot == nil || slot.slotPayload == nil {
-		return false
-	}
-	pointers := []bool{
-		slot.Cell != nil, slot.String != nil, slot.Object != nil, slot.Array != nil,
-		slot.Context != nil, slot.Function != nil, slot.Promise != nil, slot.BigInt != nil,
-		slot.Symbol != nil, slot.ArrayBuffer != nil, slot.TypedArray != nil, slot.Map != nil,
-		slot.Set != nil, slot.Date != nil, slot.RegExp != nil, slot.Error != nil,
-		slot.WeakMap != nil, slot.WeakSet != nil, slot.Iterator != nil, slot.HostObject != nil,
-	}
-	active := 0
-	for _, present := range pointers {
-		if present {
-			active++
-		}
-	}
-	return active != 1 || kind < HeapCell || kind > HeapHostObject || !pointers[int(kind-HeapCell)]
-}
-
 func (store *Store) checkObjectHeaderLocked(ref Ref, slot *Slot) error {
 	header, ok := objectHeaderForSlot(slot)
 	if !ok {
@@ -964,12 +884,12 @@ func (store *Store) checkContextChainLocked(start Ref) error {
 		if slot.Kind != HeapContext {
 			return invariantError("Context %s parent chain reaches %s", start, slot.Kind)
 		}
-		if slot.Context.Parent.Kind() == ValueNull {
+		if slot.context().Parent.Kind() == ValueNull {
 			return nil
 		}
-		if !slot.Context.Parent.IsRef() {
-			return invariantError("Context %s parent chain has kind %d", start, slot.Context.Parent.Kind())
+		if !slot.context().Parent.IsRef() {
+			return invariantError("Context %s parent chain has kind %d", start, slot.context().Parent.Kind())
 		}
-		current = slot.Context.Parent.Ref()
+		current = slot.context().Parent.Ref()
 	}
 }

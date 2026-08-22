@@ -39,7 +39,7 @@ func (store *Store) DerefTypedArray(owner ownership.OwnerID, ref Ref) (TypedArra
 	if slot.Kind != HeapTypedArray {
 		return TypedArray{}, typeError(ref, slot.Kind, HeapTypedArray)
 	}
-	return cloneTypedArray(*slot.TypedArray), nil
+	return cloneTypedArray(*slot.typedArray()), nil
 }
 
 func (store *Store) ReadTypedArrayElement(owner ownership.OwnerID, ref Ref, index uint64) (float64, error) {
@@ -55,21 +55,21 @@ func (store *Store) ReadTypedArrayElement(owner ownership.OwnerID, ref Ref, inde
 	if viewSlot.Kind != HeapTypedArray {
 		return 0, typeError(ref, viewSlot.Kind, HeapTypedArray)
 	}
-	_, bufferSlot, err := store.readSlotLocked(owner, viewSlot.TypedArray.Buffer)
+	_, bufferSlot, err := store.readSlotLocked(owner, viewSlot.typedArray().Buffer)
 	if err != nil {
 		return 0, err
 	}
 	if bufferSlot.Kind != HeapArrayBuffer {
-		return 0, typeError(viewSlot.TypedArray.Buffer, bufferSlot.Kind, HeapArrayBuffer)
+		return 0, typeError(viewSlot.typedArray().Buffer, bufferSlot.Kind, HeapArrayBuffer)
 	}
-	if bufferSlot.ArrayBuffer.Detached {
+	if bufferSlot.arrayBuffer().Detached {
 		return 0, ErrDetachedBuffer
 	}
-	start, end, err := typedArrayElementRange(*viewSlot.TypedArray, index)
+	start, end, err := typedArrayElementRange(*viewSlot.typedArray(), index)
 	if err != nil {
 		return 0, err
 	}
-	return decodeTypedNumber(viewSlot.TypedArray.Element, bufferSlot.ArrayBuffer.Bytes[start:end]), nil
+	return decodeTypedNumber(viewSlot.typedArray().Element, bufferSlot.arrayBuffer().Bytes[start:end]), nil
 }
 
 func (store *Store) WriteTypedArrayElement(owner ownership.OwnerID, ref Ref, index uint64, number float64) error {
@@ -85,21 +85,21 @@ func (store *Store) WriteTypedArrayElement(owner ownership.OwnerID, ref Ref, ind
 	if viewSlot.Kind != HeapTypedArray {
 		return typeError(ref, viewSlot.Kind, HeapTypedArray)
 	}
-	_, bufferSlot, err := store.writeSlotLocked(owner, viewSlot.TypedArray.Buffer, false)
+	_, bufferSlot, err := store.writeSlotLocked(owner, viewSlot.typedArray().Buffer, false)
 	if err != nil {
 		return err
 	}
 	if bufferSlot.Kind != HeapArrayBuffer {
-		return typeError(viewSlot.TypedArray.Buffer, bufferSlot.Kind, HeapArrayBuffer)
+		return typeError(viewSlot.typedArray().Buffer, bufferSlot.Kind, HeapArrayBuffer)
 	}
-	if bufferSlot.ArrayBuffer.Detached {
+	if bufferSlot.arrayBuffer().Detached {
 		return ErrDetachedBuffer
 	}
-	start, end, err := typedArrayElementRange(*viewSlot.TypedArray, index)
+	start, end, err := typedArrayElementRange(*viewSlot.typedArray(), index)
 	if err != nil {
 		return err
 	}
-	encodeTypedNumber(viewSlot.TypedArray.Element, bufferSlot.ArrayBuffer.Bytes[start:end], number)
+	encodeTypedNumber(viewSlot.typedArray().Element, bufferSlot.arrayBuffer().Bytes[start:end], number)
 	return nil
 }
 
@@ -111,7 +111,7 @@ func (store *Store) initializeTypedArrayLocked(owner ownership.OwnerID, ref Ref,
 	if slot.Kind != HeapTypedArray {
 		return typeError(ref, slot.Kind, HeapTypedArray)
 	}
-	if *slot.TypedArray != (TypedArray{}) {
+	if *slot.typedArray() != (TypedArray{}) {
 		return fmt.Errorf("%w: view is already initialized", ErrInvalidTypedArray)
 	}
 	size, valid := elementSize(view.Element)
@@ -125,14 +125,14 @@ func (store *Store) initializeTypedArrayLocked(owner ownership.OwnerID, ref Ref,
 	if bufferSlot.Kind != HeapArrayBuffer {
 		return typeError(view.Buffer, bufferSlot.Kind, HeapArrayBuffer)
 	}
-	if bufferSlot.ArrayBuffer.Detached {
+	if bufferSlot.arrayBuffer().Detached {
 		return ErrDetachedBuffer
 	}
 	byteLength := view.Length * size
 	if view.Length != 0 && byteLength/view.Length != size {
 		return fmt.Errorf("%w: byte length overflow", ErrInvalidTypedArray)
 	}
-	if _, _, err := bufferRange(len(bufferSlot.ArrayBuffer.Bytes), view.ByteOffset, byteLength); err != nil {
+	if _, _, err := bufferRange(len(bufferSlot.arrayBuffer().Bytes), view.ByteOffset, byteLength); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidTypedArray, err)
 	}
 	buffer, err := store.replaceValueLocked(owner, region, slot, Value{}, RefValue(view.Buffer), internal)
@@ -140,7 +140,7 @@ func (store *Store) initializeTypedArrayLocked(owner ownership.OwnerID, ref Ref,
 		return err
 	}
 	view.Buffer = buffer.Ref()
-	*slot.TypedArray = view
+	*slot.typedArray() = view
 	return nil
 }
 

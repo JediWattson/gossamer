@@ -28,7 +28,7 @@ func (store *Store) DerefPromise(owner ownership.OwnerID, ref Ref) (Promise, err
 	if slot.Kind != HeapPromise {
 		return Promise{}, typeError(ref, slot.Kind, HeapPromise)
 	}
-	return clonePromise(*slot.Promise), nil
+	return clonePromise(*slot.promise()), nil
 }
 
 func (store *Store) AddPromiseReaction(owner ownership.OwnerID, promise Ref, reaction PromiseReaction) error {
@@ -72,7 +72,7 @@ func (store *Store) addPromiseReactionLocked(owner ownership.OwnerID, promise Re
 	reaction.OnFulfilled = linked[0]
 	reaction.OnRejected = linked[1]
 	reaction.Downstream = linked[2]
-	slot.Promise.Reactions = append(slot.Promise.Reactions, reaction)
+	slot.promise().Reactions = append(slot.promise().Reactions, reaction)
 	return nil
 }
 
@@ -104,7 +104,7 @@ func (store *Store) settlePromiseLocked(owner ownership.OwnerID, promise Ref, st
 	if slot.Kind != HeapPromise {
 		return typeError(promise, slot.Kind, HeapPromise)
 	}
-	if slot.Promise.State != PromisePending {
+	if slot.promise().State != PromisePending {
 		return ErrPromiseSettled
 	}
 	if state == PromiseFulfilled && result.IsRef() && result.Ref() == promise {
@@ -114,8 +114,8 @@ func (store *Store) settlePromiseLocked(owner ownership.OwnerID, promise Ref, st
 	if err != nil {
 		return err
 	}
-	slot.Promise.State = state
-	slot.Promise.Result = result
+	slot.promise().State = state
+	slot.promise().Result = result
 	return nil
 }
 
@@ -136,7 +136,7 @@ func (store *Store) markPromiseHandledLocked(owner ownership.OwnerID, promise Re
 	if slot.Kind != HeapPromise {
 		return typeError(promise, slot.Kind, HeapPromise)
 	}
-	slot.Promise.Handled = true
+	slot.promise().Handled = true
 	return nil
 }
 
@@ -155,11 +155,11 @@ func (store *Store) DrainPromiseReactions(owner ownership.OwnerID, promise Ref) 
 	if slot.Kind != HeapPromise {
 		return PromiseSettlement{}, typeError(promise, slot.Kind, HeapPromise)
 	}
-	if slot.Promise.State == PromisePending {
+	if slot.promise().State == PromisePending {
 		return PromiseSettlement{}, ErrPromisePending
 	}
-	values := make([]Value, 0, len(slot.Promise.Reactions)*3)
-	for _, reaction := range slot.Promise.Reactions {
+	values := make([]Value, 0, len(slot.promise().Reactions)*3)
+	for _, reaction := range slot.promise().Reactions {
 		values = append(values, reaction.OnFulfilled, reaction.OnRejected, reaction.Downstream)
 	}
 	unlinked := make([]Value, 0, len(values))
@@ -173,11 +173,11 @@ func (store *Store) DrainPromiseReactions(owner ownership.OwnerID, promise Ref) 
 		unlinked = append(unlinked, value)
 	}
 	settlement := PromiseSettlement{
-		State:     slot.Promise.State,
-		Result:    slot.Promise.Result,
-		Reactions: append([]PromiseReaction(nil), slot.Promise.Reactions...),
+		State:     slot.promise().State,
+		Result:    slot.promise().Result,
+		Reactions: append([]PromiseReaction(nil), slot.promise().Reactions...),
 	}
-	slot.Promise.Reactions = nil
+	slot.promise().Reactions = nil
 	return settlement, nil
 }
 

@@ -385,8 +385,8 @@ func (store *Store) AllocString(owner ownership.OwnerID, regionID RegionID, text
 		return Ref{}, err
 	}
 	_, slot, _ := store.slotLocked(ref)
-	*slot.String = cloneString(StringObject{Text: text})
-	store.stats.LiveBytes += uint64(len(slot.String.Text))
+	*slot.stringObject() = cloneString(StringObject{Text: text})
+	store.stats.LiveBytes += uint64(len(slot.stringObject().Text))
 	return ref, nil
 }
 
@@ -407,7 +407,7 @@ func (store *Store) DerefCell(owner ownership.OwnerID, ref Ref) (Cell, error) {
 	if slot.Kind != HeapCell {
 		return Cell{}, typeError(ref, slot.Kind, HeapCell)
 	}
-	return cloneCell(*slot.Cell), nil
+	return cloneCell(*slot.cell()), nil
 }
 
 // DerefString returns the immutable native string payload for ref.
@@ -424,7 +424,7 @@ func (store *Store) DerefString(owner ownership.OwnerID, ref Ref) (string, error
 	if slot.Kind != HeapString {
 		return "", typeError(ref, slot.Kind, HeapString)
 	}
-	return slot.String.Text, nil
+	return slot.stringObject().Text, nil
 }
 
 func (store *Store) Get(owner ownership.OwnerID, ref Ref, field int) (Value, error) {
@@ -459,12 +459,12 @@ func (store *Store) setLocked(owner ownership.OwnerID, object Ref, field int, va
 		return typeError(object, slot.Kind, HeapCell)
 	}
 	old := Value{}
-	if field < len(slot.Cell.Fields) {
-		old = slot.Cell.Fields[field]
+	if field < len(slot.cell().Fields) {
+		old = slot.cell().Fields[field]
 	}
 	if old == value {
-		if field >= len(slot.Cell.Fields) {
-			slot.Cell.Fields = append(slot.Cell.Fields, make([]Value, field-len(slot.Cell.Fields)+1)...)
+		if field >= len(slot.cell().Fields) {
+			slot.cell().Fields = append(slot.cell().Fields, make([]Value, field-len(slot.cell().Fields)+1)...)
 		}
 		return nil
 	}
@@ -472,10 +472,10 @@ func (store *Store) setLocked(owner ownership.OwnerID, object Ref, field int, va
 	if err != nil {
 		return err
 	}
-	if field >= len(slot.Cell.Fields) {
-		slot.Cell.Fields = append(slot.Cell.Fields, make([]Value, field-len(slot.Cell.Fields)+1)...)
+	if field >= len(slot.cell().Fields) {
+		slot.cell().Fields = append(slot.cell().Fields, make([]Value, field-len(slot.cell().Fields)+1)...)
 	}
-	slot.Cell.Fields[field] = value
+	slot.cell().Fields[field] = value
 	return nil
 }
 
@@ -1029,7 +1029,7 @@ func (store *Store) StructuredClone(
 		if slot.Kind != HeapArrayBuffer {
 			return nil, nil, typeError(ref, slot.Kind, HeapArrayBuffer)
 		}
-		if slot.ArrayBuffer.Detached {
+		if slot.arrayBuffer().Detached {
 			return nil, nil, ErrDetachedBuffer
 		}
 	}
@@ -1043,9 +1043,9 @@ func (store *Store) StructuredClone(
 	}
 	for _, ref := range transfers {
 		_, slot, _ := store.slotLocked(ref)
-		store.stats.LiveBytes -= uint64(len(slot.ArrayBuffer.Bytes))
-		slot.ArrayBuffer.Bytes = nil
-		slot.ArrayBuffer.Detached = true
+		store.stats.LiveBytes -= uint64(len(slot.arrayBuffer().Bytes))
+		slot.arrayBuffer().Bytes = nil
+		slot.arrayBuffer().Detached = true
 	}
 	return cloned[:len(roots)], cloned[len(roots):], nil
 }
@@ -1146,7 +1146,7 @@ func (store *Store) recordKindFreeLocked(slot *Slot) {
 		store.stats.LiveCells--
 	case HeapString:
 		store.stats.LiveStrings--
-		store.stats.LiveBytes -= uint64(len(slot.String.Text))
+		store.stats.LiveBytes -= uint64(len(slot.stringObject().Text))
 	case HeapObject:
 		store.stats.LiveObjects--
 	case HeapArray:
@@ -1155,17 +1155,17 @@ func (store *Store) recordKindFreeLocked(slot *Slot) {
 		store.stats.LiveContexts--
 	case HeapFunction:
 		store.stats.LiveFunctions--
-		store.stats.LiveBytes -= uint64(len(slot.Function.Code)) + uint64(len(slot.Function.Locations))*8
+		store.stats.LiveBytes -= uint64(len(slot.function().Code)) + uint64(len(slot.function().Locations))*8
 	case HeapPromise:
 		store.stats.LivePromises--
 	case HeapBigInt:
 		store.stats.LiveBigInts--
-		store.stats.LiveBytes -= uint64(len(slot.BigInt.Magnitude))
+		store.stats.LiveBytes -= uint64(len(slot.bigInt().Magnitude))
 	case HeapSymbol:
 		store.stats.LiveSymbols--
 	case HeapArrayBuffer:
 		store.stats.LiveArrayBuffers--
-		store.stats.LiveBytes -= uint64(len(slot.ArrayBuffer.Bytes))
+		store.stats.LiveBytes -= uint64(len(slot.arrayBuffer().Bytes))
 	case HeapTypedArray:
 		store.stats.LiveTypedArrays--
 	case HeapMap:
@@ -1686,8 +1686,8 @@ func (store *Store) moveRegionsLocked(ids map[RegionID]struct{}, from, to owners
 			table := Ref{Region: region.ID, Slot: uint32(slotIndex), Gen: slot.Generation}
 			switch slot.Kind {
 			case HeapWeakMap:
-				for entryIndex := 0; entryIndex < len(slot.WeakMap.Entries); {
-					entry := slot.WeakMap.Entries[entryIndex]
+				for entryIndex := 0; entryIndex < len(slot.weakMap().Entries); {
+					entry := slot.weakMap().Entries[entryIndex]
 					drop := shouldDropWeakUse(table, entry.Key)
 					if !drop && entry.Value.IsRef() {
 						drop = shouldDropWeakUse(table, entry.Value.Ref())
@@ -1702,8 +1702,8 @@ func (store *Store) moveRegionsLocked(ids map[RegionID]struct{}, from, to owners
 					cleared++
 				}
 			case HeapWeakSet:
-				for entryIndex := 0; entryIndex < len(slot.WeakSet.Keys); {
-					if !shouldDropWeakUse(table, slot.WeakSet.Keys[entryIndex]) {
+				for entryIndex := 0; entryIndex < len(slot.weakSet().Keys); {
+					if !shouldDropWeakUse(table, slot.weakSet().Keys[entryIndex]) {
 						entryIndex++
 						continue
 					}
@@ -1817,7 +1817,7 @@ func (store *Store) copyGraphLocked(from, to ownership.OwnerID, lifetime ownersh
 			seen[ref] = struct{}{}
 			order = append(order, ref)
 			if slot.Kind == HeapWeakMap {
-				for reference, entry := range slot.WeakMap.Entries {
+				for reference, entry := range slot.weakMap().Entries {
 					if !entry.Value.IsRef() {
 						continue
 					}
@@ -1881,19 +1881,19 @@ func (store *Store) copyGraphLocked(from, to ownership.OwnerID, lifetime ownersh
 		}
 		if sourceSlot.Kind == HeapString {
 			_, copySlot, _ := store.slotLocked(copyRef)
-			*copySlot.String = cloneString(*sourceSlot.String)
-			store.stats.LiveBytes += uint64(len(copySlot.String.Text))
+			*copySlot.stringObject() = cloneString(*sourceSlot.stringObject())
+			store.stats.LiveBytes += uint64(len(copySlot.stringObject().Text))
 		} else if sourceSlot.Kind == HeapBigInt {
 			_, copySlot, _ := store.slotLocked(copyRef)
-			*copySlot.BigInt = cloneBigInt(*sourceSlot.BigInt)
-			store.stats.LiveBytes += uint64(len(copySlot.BigInt.Magnitude))
+			*copySlot.bigInt() = cloneBigInt(*sourceSlot.bigInt())
+			store.stats.LiveBytes += uint64(len(copySlot.bigInt().Magnitude))
 		} else if sourceSlot.Kind == HeapArrayBuffer {
 			_, copySlot, _ := store.slotLocked(copyRef)
-			*copySlot.ArrayBuffer = cloneArrayBuffer(*sourceSlot.ArrayBuffer)
-			store.stats.LiveBytes += uint64(len(copySlot.ArrayBuffer.Bytes))
+			*copySlot.arrayBuffer() = cloneArrayBuffer(*sourceSlot.arrayBuffer())
+			store.stats.LiveBytes += uint64(len(copySlot.arrayBuffer().Bytes))
 		} else if sourceSlot.Kind == HeapHostObject {
 			_, copySlot, _ := store.slotLocked(copyRef)
-			*copySlot.HostObject = *sourceSlot.HostObject
+			*copySlot.hostObject() = *sourceSlot.hostObject()
 		}
 		mapping[source] = copyRef
 	}
@@ -1902,7 +1902,7 @@ func (store *Store) copyGraphLocked(from, to ownership.OwnerID, lifetime ownersh
 		copyRef := mapping[source]
 		switch sourceSlot.Kind {
 		case HeapCell:
-			for field, value := range sourceSlot.Cell.Fields {
+			for field, value := range sourceSlot.cell().Fields {
 				value = remapValue(value, mapping)
 				if err := store.setLocked(to, copyRef, field, value, true); err != nil {
 					_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
@@ -1914,22 +1914,22 @@ func (store *Store) copyGraphLocked(from, to ownership.OwnerID, lifetime ownersh
 		case HeapObject:
 			// The shared object header is copied after the typed payload.
 		case HeapArray:
-			if err := store.setArrayLengthLocked(to, copyRef, sourceSlot.Array.Length, true); err != nil {
+			if err := store.setArrayLengthLocked(to, copyRef, sourceSlot.array().Length, true); err != nil {
 				_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
 				return nil, err
 			}
-			for _, element := range sourceSlot.Array.Elements {
+			for _, element := range sourceSlot.array().Elements {
 				if err := store.setArrayElementLocked(to, copyRef, element.Index, remapValue(element.Value, mapping), true); err != nil {
 					_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
 					return nil, err
 				}
 			}
 		case HeapContext:
-			if err := store.setContextParentLocked(to, copyRef, remapValue(sourceSlot.Context.Parent, mapping), true); err != nil {
+			if err := store.setContextParentLocked(to, copyRef, remapValue(sourceSlot.context().Parent, mapping), true); err != nil {
 				_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
 				return nil, err
 			}
-			for _, binding := range sourceSlot.Context.Bindings {
+			for _, binding := range sourceSlot.context().Bindings {
 				name := remapRef(binding.Name, mapping)
 				if binding.Indirect {
 					if err := store.declareIndirectBindingLocked(to, copyRef, name, remapRef(binding.Target, mapping), remapRef(binding.TargetName, mapping), true); err != nil {
@@ -1950,7 +1950,7 @@ func (store *Store) copyGraphLocked(from, to ownership.OwnerID, lifetime ownersh
 				}
 			}
 		case HeapFunction:
-			function := cloneFunction(*sourceSlot.Function)
+			function := cloneFunction(*sourceSlot.function())
 			function.ObjectHeader = ObjectHeader{}
 			function.Name = remapValue(function.Name, mapping)
 			function.Environment = remapValue(function.Environment, mapping)
@@ -1966,7 +1966,7 @@ func (store *Store) copyGraphLocked(from, to ownership.OwnerID, lifetime ownersh
 				return nil, err
 			}
 		case HeapPromise:
-			for _, reaction := range sourceSlot.Promise.Reactions {
+			for _, reaction := range sourceSlot.promise().Reactions {
 				copyReaction := PromiseReaction{
 					OnFulfilled: remapValue(reaction.OnFulfilled, mapping),
 					OnRejected:  remapValue(reaction.OnRejected, mapping),
@@ -1977,13 +1977,13 @@ func (store *Store) copyGraphLocked(from, to ownership.OwnerID, lifetime ownersh
 					return nil, err
 				}
 			}
-			if sourceSlot.Promise.State != PromisePending {
-				if err := store.settlePromiseLocked(to, copyRef, sourceSlot.Promise.State, remapValue(sourceSlot.Promise.Result, mapping), true); err != nil {
+			if sourceSlot.promise().State != PromisePending {
+				if err := store.settlePromiseLocked(to, copyRef, sourceSlot.promise().State, remapValue(sourceSlot.promise().Result, mapping), true); err != nil {
 					_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
 					return nil, err
 				}
 			}
-			if sourceSlot.Promise.Handled {
+			if sourceSlot.promise().Handled {
 				if err := store.markPromiseHandledLocked(to, copyRef, true); err != nil {
 					_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
 					return nil, err
@@ -1992,7 +1992,7 @@ func (store *Store) copyGraphLocked(from, to ownership.OwnerID, lifetime ownersh
 		case HeapBigInt:
 			// Immutable payload was cloned during allocation.
 		case HeapSymbol:
-			symbol := cloneSymbol(*sourceSlot.Symbol)
+			symbol := cloneSymbol(*sourceSlot.symbol())
 			symbol.Description = remapValue(symbol.Description, mapping)
 			if err := store.initializeSymbolLocked(to, copyRef, symbol, true); err != nil {
 				_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
@@ -2001,40 +2001,40 @@ func (store *Store) copyGraphLocked(from, to ownership.OwnerID, lifetime ownersh
 		case HeapArrayBuffer:
 			// Mutable bytes were cloned during allocation.
 		case HeapTypedArray:
-			view := cloneTypedArray(*sourceSlot.TypedArray)
+			view := cloneTypedArray(*sourceSlot.typedArray())
 			view.Buffer = remapRef(view.Buffer, mapping)
 			if err := store.initializeTypedArrayLocked(to, copyRef, view, true); err != nil {
 				_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
 				return nil, err
 			}
 		case HeapMap:
-			for _, entry := range sourceSlot.Map.Entries {
+			for _, entry := range sourceSlot.nativeMap().Entries {
 				if err := store.mapSetLocked(to, copyRef, remapValue(entry.Key, mapping), remapValue(entry.Value, mapping), true); err != nil {
 					_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
 					return nil, err
 				}
 			}
 		case HeapSet:
-			for _, value := range sourceSlot.Set.Values {
+			for _, value := range sourceSlot.nativeSet().Values {
 				if err := store.setAddLocked(to, copyRef, remapValue(value, mapping), true); err != nil {
 					_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
 					return nil, err
 				}
 			}
 		case HeapDate:
-			if err := store.setDateTimeLocked(to, copyRef, sourceSlot.Date.Milliseconds, true); err != nil {
+			if err := store.setDateTimeLocked(to, copyRef, sourceSlot.date().Milliseconds, true); err != nil {
 				_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
 				return nil, err
 			}
 		case HeapRegExp:
-			expression := cloneRegExp(*sourceSlot.RegExp)
+			expression := cloneRegExp(*sourceSlot.regExp())
 			expression.Pattern = remapRef(expression.Pattern, mapping)
 			if err := store.initializeRegExpLocked(to, copyRef, expression, true); err != nil {
 				_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
 				return nil, err
 			}
 		case HeapError:
-			value := cloneError(*sourceSlot.Error)
+			value := cloneError(*sourceSlot.errorObject())
 			value.ObjectHeader = ObjectHeader{}
 			value.Message = remapValue(value.Message, mapping)
 			value.Stack = remapValue(value.Stack, mapping)
@@ -2049,7 +2049,7 @@ func (store *Store) copyGraphLocked(from, to ownership.OwnerID, lifetime ownersh
 				return nil, err
 			}
 		case HeapWeakMap:
-			for _, entry := range sourceSlot.WeakMap.Entries {
+			for _, entry := range sourceSlot.weakMap().Entries {
 				key, keyLive := mapping[entry.Key]
 				if !keyLive {
 					_, keyLive = external[entry.Key]
@@ -2076,7 +2076,7 @@ func (store *Store) copyGraphLocked(from, to ownership.OwnerID, lifetime ownersh
 				}
 			}
 		case HeapWeakSet:
-			for _, key := range sourceSlot.WeakSet.Keys {
+			for _, key := range sourceSlot.weakSet().Keys {
 				mapped, live := mapping[key]
 				if !live {
 					_, live = external[key]
@@ -2091,14 +2091,14 @@ func (store *Store) copyGraphLocked(from, to ownership.OwnerID, lifetime ownersh
 			}
 		case HeapIterator:
 			copyRegion, copySlot, _ := store.slotLocked(copyRef)
-			target, err := store.replaceValueLocked(to, copyRegion, copySlot, Value{}, RefValue(remapRef(sourceSlot.Iterator.Target, mapping)), true)
+			target, err := store.replaceValueLocked(to, copyRegion, copySlot, Value{}, RefValue(remapRef(sourceSlot.iterator().Target, mapping)), true)
 			if err != nil {
 				_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
 				return nil, err
 			}
-			copySlot.Iterator.Target = target.Ref()
-			copySlot.Iterator.Kind = sourceSlot.Iterator.Kind
-			copySlot.Iterator.Next = sourceSlot.Iterator.Next
+			copySlot.iterator().Target = target.Ref()
+			copySlot.iterator().Kind = sourceSlot.iterator().Kind
+			copySlot.iterator().Next = sourceSlot.iterator().Next
 		case HeapHostObject:
 			// Immutable scalar identity was cloned during allocation.
 		default:

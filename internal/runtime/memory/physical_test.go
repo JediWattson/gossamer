@@ -30,8 +30,8 @@ func TestPhysicalStatsAttributeSlotAndPayloadStorage(t *testing.T) {
 	if physical.SlotSizeBytes != uint64(unsafe.Sizeof(Slot{})) || physical.RefSizeBytes != uint64(unsafe.Sizeof(Ref{})) || physical.ValueSizeBytes != uint64(unsafe.Sizeof(Value{})) {
 		t.Fatalf("physical scalar sizes = %#v", physical)
 	}
-	if physical.SlotPayloadSizeBytes != uint64(unsafe.Sizeof(slotPayload{})) {
-		t.Fatalf("slot payload size = %d", physical.SlotPayloadSizeBytes)
+	if physical.SlotPayloadSizeBytes != 0 || physical.SlotPayloadHandleSizeBytes != uint64(unsafe.Sizeof(slotPayload{})) {
+		t.Fatalf("compact slot payload sizes = %#v", physical)
 	}
 	if physical.PayloadArenaSlabs != 2 || physical.ReservedTypedPayloadBytes == 0 || physical.OccupiedTypedPayloadBytes == 0 {
 		t.Fatalf("typed payload attribution = %#v", physical)
@@ -42,7 +42,7 @@ func TestPhysicalStatsAttributeSlotAndPayloadStorage(t *testing.T) {
 	if physical.OccupiedSlotBytes != 2*physical.SlotSizeBytes {
 		t.Fatalf("occupied slot bytes = %d", physical.OccupiedSlotBytes)
 	}
-	minimumPayload := 2*physical.SlotPayloadSizeBytes + uint64(len("profiled")) + uint64(4)*uint64(unsafe.Sizeof(Value{}))
+	minimumPayload := uint64(len("profiled")) + uint64(4)*uint64(unsafe.Sizeof(Value{}))
 	if physical.PayloadBytes < minimumPayload || physical.AttributedBytes != physical.ReservedSlotBytes+physical.PayloadBytes+physical.FreeListBytes+physical.WeakTargetUseBytes {
 		t.Fatalf("physical payload attribution = %#v, want at least %d payload bytes", physical, minimumPayload)
 	}
@@ -86,8 +86,8 @@ func TestPhysicalStatsVacantSlotRetainsOnlyStableHeader(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := store.PhysicalStats()
-	if before.SlotSizeBytes >= before.SlotPayloadSizeBytes {
-		t.Fatalf("slot header %d bytes is not smaller than payload union %d bytes", before.SlotSizeBytes, before.SlotPayloadSizeBytes)
+	if before.SlotPayloadSizeBytes != 0 || before.SlotPayloadHandleSizeBytes > 16 || before.SlotSizeBytes > 32 {
+		t.Fatalf("slot did not retain a compact embedded payload handle: %#v", before)
 	}
 	if err := store.Free(owner, ref); err != nil {
 		t.Fatal(err)

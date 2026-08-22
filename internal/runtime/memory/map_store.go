@@ -30,7 +30,7 @@ func (store *Store) DerefMap(owner ownership.OwnerID, ref Ref) (Map, error) {
 	if slot.Kind != HeapMap {
 		return Map{}, typeError(ref, slot.Kind, HeapMap)
 	}
-	return cloneMap(*slot.Map), nil
+	return cloneMap(*slot.nativeMap()), nil
 }
 
 // MapLen returns the entry count without cloning the map's backing slice. It
@@ -48,7 +48,7 @@ func (store *Store) MapLen(owner ownership.OwnerID, ref Ref) (int, error) {
 	if slot.Kind != HeapMap {
 		return 0, typeError(ref, slot.Kind, HeapMap)
 	}
-	return len(slot.Map.Entries), nil
+	return len(slot.nativeMap().Entries), nil
 }
 
 func (store *Store) MapSet(owner ownership.OwnerID, ref Ref, key, value Value) error {
@@ -84,12 +84,12 @@ func (store *Store) mapSetLocked(owner ownership.OwnerID, ref Ref, key, value Va
 		return err
 	}
 	if index >= 0 {
-		old := slot.Map.Entries[index].Value
+		old := slot.nativeMap().Entries[index].Value
 		value, err = store.replaceValueLocked(owner, region, slot, old, value, internal)
 		if err != nil {
 			return err
 		}
-		slot.Map.Entries[index].Value = value
+		slot.nativeMap().Entries[index].Value = value
 		return nil
 	}
 	key, err = store.replaceValueLocked(owner, region, slot, Value{}, key, internal)
@@ -101,7 +101,7 @@ func (store *Store) mapSetLocked(owner ownership.OwnerID, ref Ref, key, value Va
 		_, _ = store.replaceValueLocked(owner, region, slot, key, Value{}, true)
 		return err
 	}
-	slot.Map.Entries = append(slot.Map.Entries, MapEntry{Key: key, Value: value})
+	slot.nativeMap().Entries = append(slot.nativeMap().Entries, MapEntry{Key: key, Value: value})
 	return nil
 }
 
@@ -128,7 +128,7 @@ func (store *Store) MapGet(owner ownership.OwnerID, ref Ref, key Value) (Value, 
 	if index < 0 {
 		return Value{}, false, nil
 	}
-	return slot.Map.Entries[index].Value, true, nil
+	return slot.nativeMap().Entries[index].Value, true, nil
 }
 
 func (store *Store) MapDelete(owner ownership.OwnerID, ref Ref, key Value) (bool, error) {
@@ -151,7 +151,7 @@ func (store *Store) MapDelete(owner ownership.OwnerID, ref Ref, key Value) (bool
 	if err != nil || index < 0 {
 		return false, err
 	}
-	entry := slot.Map.Entries[index]
+	entry := slot.nativeMap().Entries[index]
 	if _, err := store.replaceValueLocked(owner, region, slot, entry.Key, Value{}, false); err != nil {
 		return false, err
 	}
@@ -159,9 +159,9 @@ func (store *Store) MapDelete(owner ownership.OwnerID, ref Ref, key Value) (bool
 		_, _ = store.replaceValueLocked(owner, region, slot, Value{}, entry.Key, true)
 		return false, err
 	}
-	copy(slot.Map.Entries[index:], slot.Map.Entries[index+1:])
-	slot.Map.Entries[len(slot.Map.Entries)-1] = MapEntry{}
-	slot.Map.Entries = slot.Map.Entries[:len(slot.Map.Entries)-1]
+	copy(slot.nativeMap().Entries[index:], slot.nativeMap().Entries[index+1:])
+	slot.nativeMap().Entries[len(slot.nativeMap().Entries)-1] = MapEntry{}
+	slot.nativeMap().Entries = slot.nativeMap().Entries[:len(slot.nativeMap().Entries)-1]
 	return true, nil
 }
 
@@ -178,8 +178,8 @@ func (store *Store) MapClear(owner ownership.OwnerID, ref Ref) error {
 	if slot.Kind != HeapMap {
 		return typeError(ref, slot.Kind, HeapMap)
 	}
-	values := make([]Value, 0, len(slot.Map.Entries)*2)
-	for _, entry := range slot.Map.Entries {
+	values := make([]Value, 0, len(slot.nativeMap().Entries)*2)
+	for _, entry := range slot.nativeMap().Entries {
 		if entry.Key.IsRef() {
 			values = append(values, entry.Key)
 		}
@@ -197,7 +197,7 @@ func (store *Store) MapClear(owner ownership.OwnerID, ref Ref) error {
 		}
 		unlinked = append(unlinked, value)
 	}
-	slot.Map.Entries = nil
+	slot.nativeMap().Entries = nil
 	return nil
 }
 
@@ -213,7 +213,7 @@ func (store *Store) validateValueAccessLocked(owner ownership.OwnerID, value Val
 }
 
 func (store *Store) findMapEntryLocked(slot *Slot, key Value) (int, error) {
-	for index, entry := range slot.Map.Entries {
+	for index, entry := range slot.nativeMap().Entries {
 		equal, err := store.sameValueZeroLocked(entry.Key, key)
 		if err != nil {
 			return -1, err
@@ -253,11 +253,11 @@ func (store *Store) sameValueZeroLocked(left, right Value) (bool, error) {
 		}
 		switch leftSlot.Kind {
 		case HeapString:
-			return leftSlot.String.Text == rightSlot.String.Text, nil
+			return leftSlot.stringObject().Text == rightSlot.stringObject().Text, nil
 		case HeapBigInt:
-			return leftSlot.BigInt.Negative == rightSlot.BigInt.Negative && bytes.Equal(leftSlot.BigInt.Magnitude, rightSlot.BigInt.Magnitude), nil
+			return leftSlot.bigInt().Negative == rightSlot.bigInt().Negative && bytes.Equal(leftSlot.bigInt().Magnitude, rightSlot.bigInt().Magnitude), nil
 		case HeapSymbol:
-			return leftSlot.Symbol.ID == rightSlot.Symbol.ID, nil
+			return leftSlot.symbol().ID == rightSlot.symbol().ID, nil
 		default:
 			return false, nil
 		}

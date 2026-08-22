@@ -37,7 +37,7 @@ func (store *Store) DerefError(owner ownership.OwnerID, ref Ref) (ErrorObject, e
 	if slot.Kind != HeapError {
 		return ErrorObject{}, typeError(ref, slot.Kind, HeapError)
 	}
-	return cloneError(*slot.Error), nil
+	return cloneError(*slot.errorObject()), nil
 }
 
 func (store *Store) SetErrorMessage(owner ownership.OwnerID, ref Ref, message Value) error {
@@ -67,10 +67,10 @@ func (store *Store) setErrorStringLocked(owner ownership.OwnerID, ref Ref, value
 		return typeError(ref, slot.Kind, HeapError)
 	}
 	label := "Error message"
-	old := slot.Error.Message
+	old := slot.errorObject().Message
 	if stack {
 		label = "Error stack"
-		old = slot.Error.Stack
+		old = slot.errorObject().Stack
 	}
 	if err := store.validateOptionalTypedValueLocked(owner, value, HeapString, label, internal); err != nil {
 		return err
@@ -80,9 +80,9 @@ func (store *Store) setErrorStringLocked(owner ownership.OwnerID, ref Ref, value
 		return err
 	}
 	if stack {
-		slot.Error.Stack = value
+		slot.errorObject().Stack = value
 	} else {
-		slot.Error.Message = value
+		slot.errorObject().Message = value
 	}
 	return nil
 }
@@ -101,15 +101,15 @@ func (store *Store) SetErrorCause(owner ownership.OwnerID, ref Ref, cause Value)
 		return typeError(ref, slot.Kind, HeapError)
 	}
 	old := Value{}
-	if slot.Error.HasCause {
-		old = slot.Error.Cause
+	if slot.errorObject().HasCause {
+		old = slot.errorObject().Cause
 	}
 	cause, err = store.replaceValueLocked(owner, region, slot, old, cause, false)
 	if err != nil {
 		return err
 	}
-	slot.Error.Cause = cause
-	slot.Error.HasCause = true
+	slot.errorObject().Cause = cause
+	slot.errorObject().HasCause = true
 	return nil
 }
 
@@ -126,14 +126,14 @@ func (store *Store) ClearErrorCause(owner ownership.OwnerID, ref Ref) error {
 	if slot.Kind != HeapError {
 		return typeError(ref, slot.Kind, HeapError)
 	}
-	if !slot.Error.HasCause {
+	if !slot.errorObject().HasCause {
 		return nil
 	}
-	if _, err := store.replaceValueLocked(owner, region, slot, slot.Error.Cause, Value{}, false); err != nil {
+	if _, err := store.replaceValueLocked(owner, region, slot, slot.errorObject().Cause, Value{}, false); err != nil {
 		return err
 	}
-	slot.Error.Cause = Value{}
-	slot.Error.HasCause = false
+	slot.errorObject().Cause = Value{}
+	slot.errorObject().HasCause = false
 	return nil
 }
 
@@ -154,15 +154,15 @@ func (store *Store) setAggregateErrorsLocked(owner ownership.OwnerID, ref Ref, e
 	if slot.Kind != HeapError {
 		return typeError(ref, slot.Kind, HeapError)
 	}
-	if slot.Error.Kind != ErrorAggregate {
-		return fmt.Errorf("%w: %s is %s", ErrInvalidError, ref, slot.Error.Kind.Name())
+	if slot.errorObject().Kind != ErrorAggregate {
+		return fmt.Errorf("%w: %s is %s", ErrInvalidError, ref, slot.errorObject().Kind.Name())
 	}
 	linked, err := store.linkValuesLocked(owner, region, slot, errors, internal)
 	if err != nil {
 		return err
 	}
-	unlinked := make([]Value, 0, len(slot.Error.Errors))
-	for _, old := range slot.Error.Errors {
+	unlinked := make([]Value, 0, len(slot.errorObject().Errors))
+	for _, old := range slot.errorObject().Errors {
 		if _, err := store.replaceValueLocked(owner, region, slot, old, Value{}, internal); err != nil {
 			for index := len(unlinked) - 1; index >= 0; index-- {
 				_, _ = store.replaceValueLocked(owner, region, slot, Value{}, unlinked[index], true)
@@ -172,7 +172,7 @@ func (store *Store) setAggregateErrorsLocked(owner ownership.OwnerID, ref Ref, e
 		}
 		unlinked = append(unlinked, old)
 	}
-	slot.Error.Errors = append([]Value(nil), linked...)
+	slot.errorObject().Errors = append([]Value(nil), linked...)
 	return nil
 }
 
@@ -184,7 +184,7 @@ func (store *Store) initializeErrorLocked(owner ownership.OwnerID, ref Ref, valu
 	if slot.Kind != HeapError {
 		return typeError(ref, slot.Kind, HeapError)
 	}
-	if slot.Error.Kind != 0 {
+	if slot.errorObject().Kind != 0 {
 		return fmt.Errorf("%w: descriptor already initialized", ErrInvalidError)
 	}
 	if value.Kind.Name() == "" {
@@ -222,7 +222,7 @@ func (store *Store) initializeErrorLocked(owner ownership.OwnerID, ref Ref, valu
 		next++
 	}
 	value.Errors = append([]Value(nil), linked[next:]...)
-	*slot.Error = cloneError(value)
+	*slot.errorObject() = cloneError(value)
 	return nil
 }
 

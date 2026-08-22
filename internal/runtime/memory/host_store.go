@@ -23,7 +23,7 @@ func (store *Store) AllocHostObject(owner ownership.OwnerID, regionID RegionID, 
 		return Ref{}, err
 	}
 	_, slot, _ := store.slotLocked(ref)
-	*slot.HostObject = value
+	*slot.hostObject() = value
 	return ref, nil
 }
 
@@ -40,5 +40,5 @@ func (store *Store) DerefHostObject(owner ownership.OwnerID, ref Ref) (HostObjec
 	if slot.Kind != HeapHostObject {
 		return HostObject{}, typeError(ref, slot.Kind, HeapHostObject)
 	}
-	return *slot.HostObject, nil
+	return *slot.hostObject(), nil
 }

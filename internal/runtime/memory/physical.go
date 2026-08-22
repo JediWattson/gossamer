@@ -7,27 +7,28 @@ import "unsafe"
 // entry counts separately: Go's map bucket overhead is implementation-defined
 // and belongs in the process heap profile rather than an invented byte total.
 type PhysicalStats struct {
-	SlotSizeBytes             uint64 `json:"slotSizeBytes"`
-	SlotPayloadSizeBytes      uint64 `json:"slotPayloadSizeBytes"`
-	RefSizeBytes              uint64 `json:"refSizeBytes"`
-	ValueSizeBytes            uint64 `json:"valueSizeBytes"`
-	ReservedSlotBytes         uint64 `json:"reservedSlotBytes"`
-	OccupiedSlotBytes         uint64 `json:"occupiedSlotBytes"`
-	PayloadBytes              uint64 `json:"payloadBytes"`
-	PayloadArenaSlabs         uint64 `json:"payloadArenaSlabs"`
-	ReservedTypedPayloadBytes uint64 `json:"reservedTypedPayloadBytes"`
-	OccupiedTypedPayloadBytes uint64 `json:"occupiedTypedPayloadBytes"`
-	FreeListBytes             uint64 `json:"freeListBytes"`
-	AttributedBytes           uint64 `json:"attributedBytes"`
-	RegionRecords             uint64 `json:"regionRecords"`
-	PooledSlotBuffers         uint64 `json:"pooledSlotBuffers"`
-	RegionEdgeEntries         uint64 `json:"regionEdgeEntries"`
-	RegionOutgoingIndexes     uint64 `json:"regionOutgoingIndexes"`
-	RegionIncomingIndexes     uint64 `json:"regionIncomingIndexes"`
-	WeakTableEntries          uint64 `json:"weakTableEntries"`
-	WeakTargetEntries         uint64 `json:"weakTargetEntries"`
-	WeakTargetReferences      uint64 `json:"weakTargetReferences"`
-	WeakTargetUseBytes        uint64 `json:"weakTargetUseBytes"`
+	SlotSizeBytes              uint64 `json:"slotSizeBytes"`
+	SlotPayloadSizeBytes       uint64 `json:"slotPayloadSizeBytes"`
+	SlotPayloadHandleSizeBytes uint64 `json:"slotPayloadHandleSizeBytes"`
+	RefSizeBytes               uint64 `json:"refSizeBytes"`
+	ValueSizeBytes             uint64 `json:"valueSizeBytes"`
+	ReservedSlotBytes          uint64 `json:"reservedSlotBytes"`
+	OccupiedSlotBytes          uint64 `json:"occupiedSlotBytes"`
+	PayloadBytes               uint64 `json:"payloadBytes"`
+	PayloadArenaSlabs          uint64 `json:"payloadArenaSlabs"`
+	ReservedTypedPayloadBytes  uint64 `json:"reservedTypedPayloadBytes"`
+	OccupiedTypedPayloadBytes  uint64 `json:"occupiedTypedPayloadBytes"`
+	FreeListBytes              uint64 `json:"freeListBytes"`
+	AttributedBytes            uint64 `json:"attributedBytes"`
+	RegionRecords              uint64 `json:"regionRecords"`
+	PooledSlotBuffers          uint64 `json:"pooledSlotBuffers"`
+	RegionEdgeEntries          uint64 `json:"regionEdgeEntries"`
+	RegionOutgoingIndexes      uint64 `json:"regionOutgoingIndexes"`
+	RegionIncomingIndexes      uint64 `json:"regionIncomingIndexes"`
+	WeakTableEntries           uint64 `json:"weakTableEntries"`
+	WeakTargetEntries          uint64 `json:"weakTargetEntries"`
+	WeakTargetReferences       uint64 `json:"weakTargetReferences"`
+	WeakTargetUseBytes         uint64 `json:"weakTargetUseBytes"`
 	// ObjectEdge and ObjectRegion fields are retained in the profile schema so
 	// old baselines remain comparable. They stay zero now that typed payloads,
 	// rather than a shadow ledger graph, own the complete heap topology.
@@ -53,7 +54,8 @@ func (store *Store) PhysicalStats() PhysicalStats {
 
 	result := PhysicalStats{
 		SlotSizeBytes:               uint64(unsafe.Sizeof(Slot{})),
-		SlotPayloadSizeBytes:        uint64(unsafe.Sizeof(slotPayload{})),
+		SlotPayloadSizeBytes:        0,
+		SlotPayloadHandleSizeBytes:  uint64(unsafe.Sizeof(slotPayload{})),
 		RefSizeBytes:                uint64(unsafe.Sizeof(Ref{})),
 		ValueSizeBytes:              uint64(unsafe.Sizeof(Value{})),
 		RegionRecords:               uint64(len(store.regions)),
@@ -86,7 +88,7 @@ func (store *Store) PhysicalStats() PhysicalStats {
 				continue
 			}
 			result.OccupiedSlotBytes += result.SlotSizeBytes
-			result.PayloadBytes += result.SlotPayloadSizeBytes + slotPayloadCapacityBytes(slot, functionStorage)
+			result.PayloadBytes += slotPayloadCapacityBytes(slot, functionStorage)
 		}
 	}
 	for _, buffer := range store.slotBuffers {
@@ -109,35 +111,35 @@ func slotPayloadCapacityBytes(slot *Slot, functionStorage map[unsafe.Pointer]str
 	bytes := objectHeaderCapacityBytes(slot)
 	switch slot.Kind {
 	case HeapCell:
-		bytes += sliceCapacityBytes(slot.Cell.Fields)
+		bytes += sliceCapacityBytes(slot.cell().Fields)
 	case HeapString:
-		bytes += uint64(len(slot.String.Text))
+		bytes += uint64(len(slot.stringObject().Text))
 	case HeapArray:
-		bytes += sliceCapacityBytes(slot.Array.Elements)
+		bytes += sliceCapacityBytes(slot.array().Elements)
 	case HeapContext:
-		bytes += sliceCapacityBytes(slot.Context.Bindings)
+		bytes += sliceCapacityBytes(slot.context().Bindings)
 	case HeapFunction:
-		bytes += uniqueSliceCapacityBytes(slot.Function.Code, functionStorage)
-		bytes += uniqueSliceCapacityBytes(slot.Function.Locations, functionStorage)
-		bytes += uniqueSliceCapacityBytes(slot.Function.Constants, functionStorage)
-		bytes += sliceCapacityBytes(slot.Function.Captures)
+		bytes += uniqueSliceCapacityBytes(slot.function().Code, functionStorage)
+		bytes += uniqueSliceCapacityBytes(slot.function().Locations, functionStorage)
+		bytes += uniqueSliceCapacityBytes(slot.function().Constants, functionStorage)
+		bytes += sliceCapacityBytes(slot.function().Captures)
 	case HeapPromise:
-		bytes += sliceCapacityBytes(slot.Promise.Reactions)
+		bytes += sliceCapacityBytes(slot.promise().Reactions)
 	case HeapBigInt:
-		bytes += uint64(cap(slot.BigInt.Magnitude))
+		bytes += uint64(cap(slot.bigInt().Magnitude))
 	case HeapArrayBuffer:
-		bytes += uint64(cap(slot.ArrayBuffer.Bytes))
+		bytes += uint64(cap(slot.arrayBuffer().Bytes))
 	case HeapMap:
-		bytes += sliceCapacityBytes(slot.Map.Entries)
+		bytes += sliceCapacityBytes(slot.nativeMap().Entries)
 	case HeapSet:
-		bytes += sliceCapacityBytes(slot.Set.Values)
+		bytes += sliceCapacityBytes(slot.nativeSet().Values)
 	case HeapError:
-		bytes += sliceCapacityBytes(slot.Error.Errors)
+		bytes += sliceCapacityBytes(slot.errorObject().Errors)
 	case HeapWeakMap:
-		bytes += sliceCapacityBytes(slot.WeakMap.Entries)
+		bytes += sliceCapacityBytes(slot.weakMap().Entries)
 	case HeapWeakSet:
-		bytes += sliceCapacityBytes(slot.WeakSet.Keys)
-		bytes += sliceCapacityBytes(slot.WeakSet.uses)
+		bytes += sliceCapacityBytes(slot.weakSet().Keys)
+		bytes += sliceCapacityBytes(slot.weakSet().uses)
 	}
 	return bytes
 }

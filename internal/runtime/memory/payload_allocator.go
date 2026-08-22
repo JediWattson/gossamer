@@ -251,53 +251,80 @@ type payloadAllocator struct {
 	hostObjects  typedPayloadArena[HostObject]
 }
 
-func (allocator *payloadAllocator) allocate(kind HeapKind) *slotPayload {
-	payload := &slotPayload{}
+func (allocator *payloadAllocator) allocate(kind HeapKind) slotPayload {
+	var payload slotPayload
 	switch kind {
 	case HeapCell:
-		payload.Cell, payload.handle = allocator.cells.allocate()
+		value, handle := allocator.cells.allocate()
+		payload = slotPayload{handle: handle, pointer: unsafe.Pointer(value)}
 	case HeapString:
-		payload.String, payload.handle = allocator.strings.allocate()
+		value, handle := allocator.strings.allocate()
+		payload = slotPayload{handle: handle, pointer: unsafe.Pointer(value)}
 	case HeapObject:
-		payload.Object, payload.handle = allocator.objects.allocate()
+		value, handle := allocator.objects.allocate()
+		payload = slotPayload{handle: handle, pointer: unsafe.Pointer(value)}
 	case HeapArray:
-		payload.Array, payload.handle = allocator.arrays.allocate()
+		value, handle := allocator.arrays.allocate()
+		payload = slotPayload{handle: handle, pointer: unsafe.Pointer(value)}
 	case HeapContext:
-		payload.Context, payload.handle = allocator.contexts.allocate()
+		value, handle := allocator.contexts.allocate()
+		payload = slotPayload{handle: handle, pointer: unsafe.Pointer(value)}
 	case HeapFunction:
-		payload.Function, payload.handle = allocator.functions.allocate()
+		value, handle := allocator.functions.allocate()
+		payload = slotPayload{handle: handle, pointer: unsafe.Pointer(value)}
 	case HeapPromise:
-		payload.Promise, payload.handle = allocator.promises.allocate()
+		value, handle := allocator.promises.allocate()
+		payload = slotPayload{handle: handle, pointer: unsafe.Pointer(value)}
 	case HeapBigInt:
-		payload.BigInt, payload.handle = allocator.bigInts.allocate()
+		value, handle := allocator.bigInts.allocate()
+		payload = slotPayload{handle: handle, pointer: unsafe.Pointer(value)}
 	case HeapSymbol:
-		payload.Symbol, payload.handle = allocator.symbols.allocate()
+		value, handle := allocator.symbols.allocate()
+		payload = slotPayload{handle: handle, pointer: unsafe.Pointer(value)}
 	case HeapArrayBuffer:
-		payload.ArrayBuffer, payload.handle = allocator.arrayBuffers.allocate()
+		value, handle := allocator.arrayBuffers.allocate()
+		payload = slotPayload{handle: handle, pointer: unsafe.Pointer(value)}
 	case HeapTypedArray:
-		payload.TypedArray, payload.handle = allocator.typedArrays.allocate()
+		value, handle := allocator.typedArrays.allocate()
+		payload = slotPayload{handle: handle, pointer: unsafe.Pointer(value)}
 	case HeapMap:
-		payload.Map, payload.handle = allocator.maps.allocate()
+		value, handle := allocator.maps.allocate()
+		payload = slotPayload{handle: handle, pointer: unsafe.Pointer(value)}
 	case HeapSet:
-		payload.Set, payload.handle = allocator.sets.allocate()
+		value, handle := allocator.sets.allocate()
+		payload = slotPayload{handle: handle, pointer: unsafe.Pointer(value)}
 	case HeapDate:
-		payload.Date, payload.handle = allocator.dates.allocate()
+		value, handle := allocator.dates.allocate()
+		payload = slotPayload{handle: handle, pointer: unsafe.Pointer(value)}
 	case HeapRegExp:
-		payload.RegExp, payload.handle = allocator.regExps.allocate()
+		value, handle := allocator.regExps.allocate()
+		payload = slotPayload{handle: handle, pointer: unsafe.Pointer(value)}
 	case HeapError:
-		payload.Error, payload.handle = allocator.errors.allocate()
+		value, handle := allocator.errors.allocate()
+		payload = slotPayload{handle: handle, pointer: unsafe.Pointer(value)}
 	case HeapWeakMap:
-		payload.WeakMap, payload.handle = allocator.weakMaps.allocate()
+		value, handle := allocator.weakMaps.allocate()
+		payload = slotPayload{handle: handle, pointer: unsafe.Pointer(value)}
 	case HeapWeakSet:
-		payload.WeakSet, payload.handle = allocator.weakSets.allocate()
+		value, handle := allocator.weakSets.allocate()
+		payload = slotPayload{handle: handle, pointer: unsafe.Pointer(value)}
 	case HeapIterator:
-		payload.Iterator, payload.handle = allocator.iterators.allocate()
+		value, handle := allocator.iterators.allocate()
+		payload = slotPayload{handle: handle, pointer: unsafe.Pointer(value)}
 	case HeapHostObject:
-		payload.HostObject, payload.handle = allocator.hostObjects.allocate()
+		value, handle := allocator.hostObjects.allocate()
+		payload = slotPayload{handle: handle, pointer: unsafe.Pointer(value)}
 	default:
 		panic(fmt.Sprintf("memory: cannot allocate invalid heap kind %d", kind))
 	}
 	return payload
+}
+
+func typedPayloadPointer[T any](payload *slotPayload) *T {
+	if payload == nil || payload.pointer == nil {
+		return nil
+	}
+	return (*T)(payload.pointer)
 }
 
 func (allocator *payloadAllocator) release(kind HeapKind, payload *slotPayload) error {
@@ -306,45 +333,45 @@ func (allocator *payloadAllocator) release(kind HeapKind, payload *slotPayload) 
 	}
 	switch kind {
 	case HeapCell:
-		return allocator.cells.release(payload.handle, payload.Cell)
+		return allocator.cells.release(payload.handle, typedPayloadPointer[Cell](payload))
 	case HeapString:
-		return allocator.strings.release(payload.handle, payload.String)
+		return allocator.strings.release(payload.handle, typedPayloadPointer[StringObject](payload))
 	case HeapObject:
-		return allocator.objects.release(payload.handle, payload.Object)
+		return allocator.objects.release(payload.handle, typedPayloadPointer[Object](payload))
 	case HeapArray:
-		return allocator.arrays.release(payload.handle, payload.Array)
+		return allocator.arrays.release(payload.handle, typedPayloadPointer[Array](payload))
 	case HeapContext:
-		return allocator.contexts.release(payload.handle, payload.Context)
+		return allocator.contexts.release(payload.handle, typedPayloadPointer[Context](payload))
 	case HeapFunction:
-		return allocator.functions.release(payload.handle, payload.Function)
+		return allocator.functions.release(payload.handle, typedPayloadPointer[Function](payload))
 	case HeapPromise:
-		return allocator.promises.release(payload.handle, payload.Promise)
+		return allocator.promises.release(payload.handle, typedPayloadPointer[Promise](payload))
 	case HeapBigInt:
-		return allocator.bigInts.release(payload.handle, payload.BigInt)
+		return allocator.bigInts.release(payload.handle, typedPayloadPointer[BigInt](payload))
 	case HeapSymbol:
-		return allocator.symbols.release(payload.handle, payload.Symbol)
+		return allocator.symbols.release(payload.handle, typedPayloadPointer[Symbol](payload))
 	case HeapArrayBuffer:
-		return allocator.arrayBuffers.release(payload.handle, payload.ArrayBuffer)
+		return allocator.arrayBuffers.release(payload.handle, typedPayloadPointer[ArrayBuffer](payload))
 	case HeapTypedArray:
-		return allocator.typedArrays.release(payload.handle, payload.TypedArray)
+		return allocator.typedArrays.release(payload.handle, typedPayloadPointer[TypedArray](payload))
 	case HeapMap:
-		return allocator.maps.release(payload.handle, payload.Map)
+		return allocator.maps.release(payload.handle, typedPayloadPointer[Map](payload))
 	case HeapSet:
-		return allocator.sets.release(payload.handle, payload.Set)
+		return allocator.sets.release(payload.handle, typedPayloadPointer[Set](payload))
 	case HeapDate:
-		return allocator.dates.release(payload.handle, payload.Date)
+		return allocator.dates.release(payload.handle, typedPayloadPointer[Date](payload))
 	case HeapRegExp:
-		return allocator.regExps.release(payload.handle, payload.RegExp)
+		return allocator.regExps.release(payload.handle, typedPayloadPointer[RegExp](payload))
 	case HeapError:
-		return allocator.errors.release(payload.handle, payload.Error)
+		return allocator.errors.release(payload.handle, typedPayloadPointer[ErrorObject](payload))
 	case HeapWeakMap:
-		return allocator.weakMaps.release(payload.handle, payload.WeakMap)
+		return allocator.weakMaps.release(payload.handle, typedPayloadPointer[WeakMap](payload))
 	case HeapWeakSet:
-		return allocator.weakSets.release(payload.handle, payload.WeakSet)
+		return allocator.weakSets.release(payload.handle, typedPayloadPointer[WeakSet](payload))
 	case HeapIterator:
-		return allocator.iterators.release(payload.handle, payload.Iterator)
+		return allocator.iterators.release(payload.handle, typedPayloadPointer[Iterator](payload))
 	case HeapHostObject:
-		return allocator.hostObjects.release(payload.handle, payload.HostObject)
+		return allocator.hostObjects.release(payload.handle, typedPayloadPointer[HostObject](payload))
 	default:
 		return fmt.Errorf("memory: cannot release invalid heap kind %d", kind)
 	}
@@ -384,45 +411,45 @@ func (allocator *payloadAllocator) checkSlot(kind HeapKind, payload *slotPayload
 	}
 	switch kind {
 	case HeapCell:
-		return checkPayloadPointer(&allocator.cells, payload, payload.Cell)
+		return checkPayloadPointer(&allocator.cells, payload, typedPayloadPointer[Cell](payload))
 	case HeapString:
-		return checkPayloadPointer(&allocator.strings, payload, payload.String)
+		return checkPayloadPointer(&allocator.strings, payload, typedPayloadPointer[StringObject](payload))
 	case HeapObject:
-		return checkPayloadPointer(&allocator.objects, payload, payload.Object)
+		return checkPayloadPointer(&allocator.objects, payload, typedPayloadPointer[Object](payload))
 	case HeapArray:
-		return checkPayloadPointer(&allocator.arrays, payload, payload.Array)
+		return checkPayloadPointer(&allocator.arrays, payload, typedPayloadPointer[Array](payload))
 	case HeapContext:
-		return checkPayloadPointer(&allocator.contexts, payload, payload.Context)
+		return checkPayloadPointer(&allocator.contexts, payload, typedPayloadPointer[Context](payload))
 	case HeapFunction:
-		return checkPayloadPointer(&allocator.functions, payload, payload.Function)
+		return checkPayloadPointer(&allocator.functions, payload, typedPayloadPointer[Function](payload))
 	case HeapPromise:
-		return checkPayloadPointer(&allocator.promises, payload, payload.Promise)
+		return checkPayloadPointer(&allocator.promises, payload, typedPayloadPointer[Promise](payload))
 	case HeapBigInt:
-		return checkPayloadPointer(&allocator.bigInts, payload, payload.BigInt)
+		return checkPayloadPointer(&allocator.bigInts, payload, typedPayloadPointer[BigInt](payload))
 	case HeapSymbol:
-		return checkPayloadPointer(&allocator.symbols, payload, payload.Symbol)
+		return checkPayloadPointer(&allocator.symbols, payload, typedPayloadPointer[Symbol](payload))
 	case HeapArrayBuffer:
-		return checkPayloadPointer(&allocator.arrayBuffers, payload, payload.ArrayBuffer)
+		return checkPayloadPointer(&allocator.arrayBuffers, payload, typedPayloadPointer[ArrayBuffer](payload))
 	case HeapTypedArray:
-		return checkPayloadPointer(&allocator.typedArrays, payload, payload.TypedArray)
+		return checkPayloadPointer(&allocator.typedArrays, payload, typedPayloadPointer[TypedArray](payload))
 	case HeapMap:
-		return checkPayloadPointer(&allocator.maps, payload, payload.Map)
+		return checkPayloadPointer(&allocator.maps, payload, typedPayloadPointer[Map](payload))
 	case HeapSet:
-		return checkPayloadPointer(&allocator.sets, payload, payload.Set)
+		return checkPayloadPointer(&allocator.sets, payload, typedPayloadPointer[Set](payload))
 	case HeapDate:
-		return checkPayloadPointer(&allocator.dates, payload, payload.Date)
+		return checkPayloadPointer(&allocator.dates, payload, typedPayloadPointer[Date](payload))
 	case HeapRegExp:
-		return checkPayloadPointer(&allocator.regExps, payload, payload.RegExp)
+		return checkPayloadPointer(&allocator.regExps, payload, typedPayloadPointer[RegExp](payload))
 	case HeapError:
-		return checkPayloadPointer(&allocator.errors, payload, payload.Error)
+		return checkPayloadPointer(&allocator.errors, payload, typedPayloadPointer[ErrorObject](payload))
 	case HeapWeakMap:
-		return checkPayloadPointer(&allocator.weakMaps, payload, payload.WeakMap)
+		return checkPayloadPointer(&allocator.weakMaps, payload, typedPayloadPointer[WeakMap](payload))
 	case HeapWeakSet:
-		return checkPayloadPointer(&allocator.weakSets, payload, payload.WeakSet)
+		return checkPayloadPointer(&allocator.weakSets, payload, typedPayloadPointer[WeakSet](payload))
 	case HeapIterator:
-		return checkPayloadPointer(&allocator.iterators, payload, payload.Iterator)
+		return checkPayloadPointer(&allocator.iterators, payload, typedPayloadPointer[Iterator](payload))
 	case HeapHostObject:
-		return checkPayloadPointer(&allocator.hostObjects, payload, payload.HostObject)
+		return checkPayloadPointer(&allocator.hostObjects, payload, typedPayloadPointer[HostObject](payload))
 	default:
 		return fmt.Errorf("invalid heap kind %d", kind)
 	}

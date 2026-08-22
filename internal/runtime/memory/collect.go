@@ -145,10 +145,10 @@ func (store *Store) collectLocked(owner ownership.OwnerID, regionID RegionID, ro
 				continue
 			}
 			_, tableSlot, err := store.slotLocked(use.table)
-			if err != nil || tableSlot.Kind != HeapWeakMap || uint64(use.entry) >= uint64(len(tableSlot.WeakMap.Entries)) {
+			if err != nil || tableSlot.Kind != HeapWeakMap || uint64(use.entry) >= uint64(len(tableSlot.weakMap().Entries)) {
 				return Collection{}, fmt.Errorf("%w: invalid ephemeron use for %s", ErrInvariantViolation, value)
 			}
-			entry := tableSlot.WeakMap.Entries[use.entry]
+			entry := tableSlot.weakMap().Entries[use.entry]
 			link := ephemeronLink{table: use.table, key: entry.Key, value: value}
 			links = append(links, link)
 			byTable[link.table] = append(byTable[link.table], link)
@@ -229,8 +229,8 @@ func (store *Store) collectLocked(owner ownership.OwnerID, regionID RegionID, ro
 		_, slot, _ := store.slotLocked(ref)
 		switch slot.Kind {
 		case HeapWeakMap:
-			for index := 0; index < len(slot.WeakMap.Entries); {
-				entry := slot.WeakMap.Entries[index]
+			for index := 0; index < len(slot.weakMap().Entries); {
+				entry := slot.weakMap().Entries[index]
 				if store.weakKeyLiveLocked(entry.Key, owned, marked) && store.weakValueValidLocked(entry.Value) {
 					index++
 					continue
@@ -241,8 +241,8 @@ func (store *Store) collectLocked(owner ownership.OwnerID, regionID RegionID, ro
 				result.ClearedWeakEntries++
 			}
 		case HeapWeakSet:
-			for index := 0; index < len(slot.WeakSet.Keys); {
-				key := slot.WeakSet.Keys[index]
+			for index := 0; index < len(slot.weakSet().Keys); {
+				key := slot.weakSet().Keys[index]
 				if store.weakKeyLiveLocked(key, owned, marked) {
 					index++
 					continue
@@ -414,13 +414,13 @@ func slotLiveBytes(slot *Slot) uint64 {
 	}
 	switch slot.Kind {
 	case HeapString:
-		return uint64(len(slot.String.Text))
+		return uint64(len(slot.stringObject().Text))
 	case HeapFunction:
-		return uint64(len(slot.Function.Code)) + uint64(len(slot.Function.Locations))*8
+		return uint64(len(slot.function().Code)) + uint64(len(slot.function().Locations))*8
 	case HeapBigInt:
-		return uint64(len(slot.BigInt.Magnitude))
+		return uint64(len(slot.bigInt().Magnitude))
 	case HeapArrayBuffer:
-		return uint64(len(slot.ArrayBuffer.Bytes))
+		return uint64(len(slot.arrayBuffer().Bytes))
 	default:
 		return 0
 	}

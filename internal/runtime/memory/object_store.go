@@ -18,7 +18,7 @@ func (store *Store) AllocObject(owner ownership.OwnerID, regionID RegionID) (Ref
 		return Ref{}, err
 	}
 	_, slot, _ := store.slotLocked(ref)
-	slot.Object.Prototype = NullValue()
+	slot.object().Prototype = NullValue()
 	return ref, nil
 }
 
@@ -35,7 +35,7 @@ func (store *Store) DerefObject(owner ownership.OwnerID, ref Ref) (Object, error
 	if slot.Kind != HeapObject {
 		return Object{}, typeError(ref, slot.Kind, HeapObject)
 	}
-	return cloneObject(*slot.Object), nil
+	return cloneObject(*slot.object()), nil
 }
 
 // DerefObjectHeader returns the prototype and named own properties for any
@@ -420,7 +420,7 @@ func (store *Store) stringTextLocked(owner ownership.OwnerID, ref Ref, internal 
 	if slot.Kind != HeapString {
 		return "", typeError(ref, slot.Kind, HeapString)
 	}
-	return slot.String.Text, nil
+	return slot.stringObject().Text, nil
 }
 
 type propertyKey struct {
@@ -443,9 +443,9 @@ func (store *Store) propertyKeyLocked(ref Ref) (propertyKey, error) {
 	}
 	switch slot.Kind {
 	case HeapString:
-		return propertyKey{kind: HeapString, text: slot.String.Text}, nil
+		return propertyKey{kind: HeapString, text: slot.stringObject().Text}, nil
 	case HeapSymbol:
-		return propertyKey{kind: HeapSymbol, symbol: slot.Symbol.ID}, nil
+		return propertyKey{kind: HeapSymbol, symbol: slot.symbol().ID}, nil
 	default:
 		return propertyKey{}, fmt.Errorf("%w: property key %s is a %s, want String or Symbol", ErrTypeMismatch, ref, slot.Kind)
 	}

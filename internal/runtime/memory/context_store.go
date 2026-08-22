@@ -18,7 +18,7 @@ func (store *Store) AllocContext(owner ownership.OwnerID, regionID RegionID, par
 		return Ref{}, err
 	}
 	_, slot, _ := store.slotLocked(ref)
-	slot.Context.Parent = NullValue()
+	slot.context().Parent = NullValue()
 	if parent.Kind() == ValueNull {
 		return ref, nil
 	}
@@ -42,7 +42,7 @@ func (store *Store) DerefContext(owner ownership.OwnerID, ref Ref) (Context, err
 	if slot.Kind != HeapContext {
 		return Context{}, typeError(ref, slot.Kind, HeapContext)
 	}
-	return cloneContext(*slot.Context), nil
+	return cloneContext(*slot.context()), nil
 }
 
 func (store *Store) SetContextParent(owner ownership.OwnerID, context Ref, parent Value) error {
@@ -77,11 +77,11 @@ func (store *Store) setContextParentLocked(owner ownership.OwnerID, context Ref,
 			return err
 		}
 	}
-	parent, err = store.replaceValueLocked(owner, region, slot, slot.Context.Parent, parent, internal)
+	parent, err = store.replaceValueLocked(owner, region, slot, slot.context().Parent, parent, internal)
 	if err != nil {
 		return err
 	}
-	slot.Context.Parent = parent
+	slot.context().Parent = parent
 	return nil
 }
 
@@ -145,7 +145,7 @@ func (store *Store) declareIndirectBindingLocked(owner ownership.OwnerID, contex
 		}
 		prepared = append(prepared, linked)
 	}
-	slot.Context.Bindings = append(slot.Context.Bindings, Binding{
+	slot.context().Bindings = append(slot.context().Bindings, Binding{
 		Name: prepared[0].Ref(), Initialized: true, Indirect: true,
 		Target: prepared[1].Ref(), TargetName: prepared[2].Ref(),
 	})
@@ -173,7 +173,7 @@ func (store *Store) declareBindingLocked(owner ownership.OwnerID, context, name 
 	if err != nil {
 		return err
 	}
-	slot.Context.Bindings = append(slot.Context.Bindings, Binding{Name: preparedName.Ref(), Mutable: mutable})
+	slot.context().Bindings = append(slot.context().Bindings, Binding{Name: preparedName.Ref(), Mutable: mutable})
 	return nil
 }
 
@@ -205,18 +205,18 @@ func (store *Store) initializeBindingLocked(owner ownership.OwnerID, context, na
 	if index < 0 {
 		return fmt.Errorf("%w: %q", ErrBindingNotFound, nameText)
 	}
-	if slot.Context.Bindings[index].Indirect {
+	if slot.context().Bindings[index].Indirect {
 		return fmt.Errorf("%w: %q is an indirect binding", ErrImmutableBinding, nameText)
 	}
-	if slot.Context.Bindings[index].Initialized {
+	if slot.context().Bindings[index].Initialized {
 		return fmt.Errorf("%w: %q is already initialized", ErrBindingExists, nameText)
 	}
 	value, err = store.replaceValueLocked(owner, region, slot, Value{}, value, internal)
 	if err != nil {
 		return err
 	}
-	slot.Context.Bindings[index].Value = value
-	slot.Context.Bindings[index].Initialized = true
+	slot.context().Bindings[index].Value = value
+	slot.context().Bindings[index].Initialized = true
 	return nil
 }
 
@@ -236,7 +236,7 @@ func (store *Store) SetBinding(owner ownership.OwnerID, context, name Ref, value
 	if err != nil {
 		return err
 	}
-	binding := &slot.Context.Bindings[index]
+	binding := &slot.context().Bindings[index]
 	if binding.Indirect {
 		return fmt.Errorf("%w: %q", ErrImmutableBinding, nameText)
 	}
@@ -292,7 +292,7 @@ func (store *Store) resolveBindingValueLocked(owner ownership.OwnerID, context R
 		return Value{}, ErrBindingCycle
 	}
 	seen[location] = struct{}{}
-	binding := slot.Context.Bindings[index]
+	binding := slot.context().Bindings[index]
 	if !binding.Initialized {
 		name, _ := store.stringTextLocked(owner, binding.Name, false)
 		return Value{}, fmt.Errorf("%w: %q", ErrBindingUninitialized, name)
@@ -333,10 +333,10 @@ func (store *Store) resolveBindingSlotLocked(owner ownership.OwnerID, context Re
 		if index >= 0 {
 			return current, region, slot, index, nil
 		}
-		if slot.Context.Parent.Kind() == ValueNull {
+		if slot.context().Parent.Kind() == ValueNull {
 			return Ref{}, nil, nil, -1, fmt.Errorf("%w: %q", ErrBindingNotFound, name)
 		}
-		current = slot.Context.Parent.Ref()
+		current = slot.context().Parent.Ref()
 	}
 }
 
@@ -358,15 +358,15 @@ func (store *Store) rejectContextCycleLocked(context, parent Ref) error {
 		if slot.Kind != HeapContext {
 			return typeError(current, slot.Kind, HeapContext)
 		}
-		if slot.Context.Parent.Kind() == ValueNull {
+		if slot.context().Parent.Kind() == ValueNull {
 			return nil
 		}
-		current = slot.Context.Parent.Ref()
+		current = slot.context().Parent.Ref()
 	}
 }
 
 func (store *Store) findBindingLocked(slot *Slot, name string) (int, error) {
-	for index, binding := range slot.Context.Bindings {
+	for index, binding := range slot.context().Bindings {
 		_, nameSlot, err := store.slotLocked(binding.Name)
 		if err != nil {
 			return -1, err
@@ -374,7 +374,7 @@ func (store *Store) findBindingLocked(slot *Slot, name string) (int, error) {
 		if nameSlot.Kind != HeapString {
 			return -1, typeError(binding.Name, nameSlot.Kind, HeapString)
 		}
-		if nameSlot.String.Text == name {
+		if nameSlot.stringObject().Text == name {
 			return index, nil
 		}
 	}

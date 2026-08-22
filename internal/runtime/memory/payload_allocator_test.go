@@ -1,6 +1,48 @@
 package memory
 
-import "testing"
+import (
+	"testing"
+	"unsafe"
+
+	"github.com/JediWattson/gossamer/internal/runtime/ownership"
+)
+
+func TestSlotEmbedsCompactPayloadHandle(t *testing.T) {
+	if size := unsafe.Sizeof(slotPayload{}); size != 16 {
+		t.Fatalf("compact payload handle is %d bytes, want 16", size)
+	}
+	if size := unsafe.Sizeof(Slot{}); size != 32 {
+		t.Fatalf("slot is %d bytes, want 32", size)
+	}
+}
+
+func TestHotSlotReuseDoesNotAllocatePayloadFacade(t *testing.T) {
+	store := NewStore(nil)
+	defer store.Close()
+	owner := ownership.OwnerID{Kind: ownership.OwnerRealm, Value: 24_001}
+	region, err := store.NewRegion(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AllocCell(owner, region); err != nil {
+		t.Fatal(err)
+	}
+	allocations := testing.AllocsPerRun(100, func() {
+		ref, allocErr := store.AllocCell(owner, region)
+		if allocErr != nil {
+			panic(allocErr)
+		}
+		if freeErr := store.Free(owner, ref); freeErr != nil {
+			panic(freeErr)
+		}
+	})
+	if allocations != 0 {
+		t.Fatalf("hot slot allocate/free used %.2f Go allocations, want zero", allocations)
+	}
+	if err := store.CheckInvariants(); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestTypedPayloadArenaReleasesEmptySlabs(t *testing.T) {
 	var arena typedPayloadArena[StringObject]
@@ -37,23 +79,24 @@ func TestTypedPayloadArenaReleasesEmptySlabs(t *testing.T) {
 
 func TestPayloadAllocatorTagsAndReleasesEveryHeapKind(t *testing.T) {
 	var allocator payloadAllocator
-	payloads := make(map[HeapKind]*slotPayload)
+	payloads := make(map[HeapKind]slotPayload)
 	for kind := HeapCell; kind <= HeapHostObject; kind++ {
 		payload := allocator.allocate(kind)
 		payloads[kind] = payload
-		slot := &Slot{Kind: kind, Occupied: true, slotPayload: payload}
-		if slotHasOtherPayload(slot, kind) {
-			t.Fatalf("%s payload has missing or additional typed pointer", kind)
-		}
-		if err := allocator.checkSlot(kind, payload); err != nil {
+		if err := allocator.checkSlot(kind, &payload); err != nil {
 			t.Fatalf("%s payload: %v", kind, err)
 		}
+	}
+	corrupt := payloads[HeapCell]
+	if err := allocator.checkSlot(HeapString, &corrupt); err == nil {
+		t.Fatal("Cell payload handle resolved through String arena")
 	}
 	if physical := allocator.physical(); physical.live != uint64(HeapHostObject-HeapCell+1) || physical.slabs != uint64(HeapHostObject-HeapCell+1) {
 		t.Fatalf("physical with every heap kind = %#v", physical)
 	}
 	for kind := HeapCell; kind <= HeapHostObject; kind++ {
-		if err := allocator.release(kind, payloads[kind]); err != nil {
+		payload := payloads[kind]
+		if err := allocator.release(kind, &payload); err != nil {
 			t.Fatalf("release %s: %v", kind, err)
 		}
 	}

@@ -17,7 +17,7 @@ func (store *Store) AllocDate(owner ownership.OwnerID, regionID RegionID, millis
 		return Ref{}, err
 	}
 	_, slot, _ := store.slotLocked(ref)
-	slot.Date.Milliseconds = timeClip(milliseconds)
+	slot.date().Milliseconds = timeClip(milliseconds)
 	return ref, nil
 }
 
@@ -34,7 +34,7 @@ func (store *Store) DerefDate(owner ownership.OwnerID, ref Ref) (Date, error) {
 	if slot.Kind != HeapDate {
 		return Date{}, typeError(ref, slot.Kind, HeapDate)
 	}
-	return *slot.Date, nil
+	return *slot.date(), nil
 }
 
 func (store *Store) SetDateTime(owner ownership.OwnerID, ref Ref, milliseconds float64) error {
@@ -54,6 +54,6 @@ func (store *Store) setDateTimeLocked(owner ownership.OwnerID, ref Ref, millisec
 	if slot.Kind != HeapDate {
 		return typeError(ref, slot.Kind, HeapDate)
 	}
-	slot.Date.Milliseconds = timeClip(milliseconds)
+	slot.date().Milliseconds = timeClip(milliseconds)
 	return nil
 }

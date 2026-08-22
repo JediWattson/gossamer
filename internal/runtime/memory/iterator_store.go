@@ -30,8 +30,8 @@ func (store *Store) AllocIterator(owner ownership.OwnerID, regionID RegionID, ta
 		_ = store.freeLocked(owner, ref, true)
 		return Ref{}, err
 	}
-	slot.Iterator.Target = linked.Ref()
-	slot.Iterator.Kind = kind
+	slot.iterator().Target = linked.Ref()
+	slot.iterator().Kind = kind
 	return ref, nil
 }
 
@@ -48,7 +48,7 @@ func (store *Store) DerefIterator(owner ownership.OwnerID, ref Ref) (Iterator, e
 	if slot.Kind != HeapIterator {
 		return Iterator{}, typeError(ref, slot.Kind, HeapIterator)
 	}
-	return cloneIterator(*slot.Iterator), nil
+	return cloneIterator(*slot.iterator()), nil
 }
 
 func (store *Store) AdvanceIterator(owner ownership.OwnerID, ref Ref) (IteratorStep, error) {
@@ -64,34 +64,34 @@ func (store *Store) AdvanceIterator(owner ownership.OwnerID, ref Ref) (IteratorS
 	if slot.Kind != HeapIterator {
 		return IteratorStep{}, typeError(ref, slot.Kind, HeapIterator)
 	}
-	_, target, err := store.readSlotLocked(owner, slot.Iterator.Target)
+	_, target, err := store.readSlotLocked(owner, slot.iterator().Target)
 	if err != nil {
 		return IteratorStep{}, err
 	}
 	step := IteratorStep{}
-	position := slot.Iterator.Next
-	switch slot.Iterator.Kind {
+	position := slot.iterator().Next
+	switch slot.iterator().Kind {
 	case IteratorArrayKeys, IteratorArrayValues, IteratorArrayEntries:
-		if position >= target.Array.Length {
+		if position >= target.array().Length {
 			step.Done = true
 			break
 		}
 		value := UndefinedValue()
-		if index, present := arrayElementPosition(target.Array.Elements, position); present {
-			value = target.Array.Elements[index].Value
+		if index, present := arrayElementPosition(target.array().Elements, position); present {
+			value = target.array().Elements[index].Value
 		}
-		if slot.Iterator.Kind == IteratorArrayKeys {
+		if slot.iterator().Kind == IteratorArrayKeys {
 			step.Value = NumberValue(float64(position))
-		} else if slot.Iterator.Kind == IteratorArrayEntries {
+		} else if slot.iterator().Kind == IteratorArrayEntries {
 			step.Pair = true
 			step.Key = NumberValue(float64(position))
 			step.Value = value
 		} else {
 			step.Value = value
 		}
-		slot.Iterator.Next++
+		slot.iterator().Next++
 	case IteratorStringValues:
-		text := target.String.Text
+		text := target.stringObject().Text
 		if uint64(position) >= uint64(len(text)) {
 			step.Done = true
 			break
@@ -103,37 +103,37 @@ func (store *Store) AdvanceIterator(owner ownership.OwnerID, ref Ref) (IteratorS
 		}
 		step.Textual = true
 		step.Text = text[position : position+uint32(size)]
-		slot.Iterator.Next += uint32(size)
+		slot.iterator().Next += uint32(size)
 	case IteratorMapKeys, IteratorMapValues, IteratorMapEntries:
-		if uint64(position) >= uint64(len(target.Map.Entries)) {
+		if uint64(position) >= uint64(len(target.nativeMap().Entries)) {
 			step.Done = true
 			break
 		}
-		entry := target.Map.Entries[position]
-		if slot.Iterator.Kind == IteratorMapKeys {
+		entry := target.nativeMap().Entries[position]
+		if slot.iterator().Kind == IteratorMapKeys {
 			step.Value = entry.Key
-		} else if slot.Iterator.Kind == IteratorMapEntries {
+		} else if slot.iterator().Kind == IteratorMapEntries {
 			step.Pair = true
 			step.Key = entry.Key
 			step.Value = entry.Value
 		} else {
 			step.Value = entry.Value
 		}
-		slot.Iterator.Next++
+		slot.iterator().Next++
 	case IteratorSetValues, IteratorSetEntries:
-		if uint64(position) >= uint64(len(target.Set.Values)) {
+		if uint64(position) >= uint64(len(target.nativeSet().Values)) {
 			step.Done = true
 			break
 		}
-		value := target.Set.Values[position]
-		if slot.Iterator.Kind == IteratorSetEntries {
+		value := target.nativeSet().Values[position]
+		if slot.iterator().Kind == IteratorSetEntries {
 			step.Pair = true
 			step.Key = value
 		}
 		step.Value = value
-		slot.Iterator.Next++
+		slot.iterator().Next++
 	default:
-		return IteratorStep{}, fmt.Errorf("%w: invalid iterator kind %d", ErrTypeMismatch, slot.Iterator.Kind)
+		return IteratorStep{}, fmt.Errorf("%w: invalid iterator kind %d", ErrTypeMismatch, slot.iterator().Kind)
 	}
 	return step, nil
 }

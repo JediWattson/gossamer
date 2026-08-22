@@ -32,7 +32,7 @@ func (store *Store) DerefWeakMap(owner ownership.OwnerID, ref Ref) (WeakMap, err
 	if slot.Kind != HeapWeakMap {
 		return WeakMap{}, typeError(ref, slot.Kind, HeapWeakMap)
 	}
-	return cloneWeakMap(*slot.WeakMap), nil
+	return cloneWeakMap(*slot.weakMap()), nil
 }
 
 func (store *Store) WeakMapSet(owner ownership.OwnerID, ref, key Ref, value Value) error {
@@ -62,9 +62,9 @@ func (store *Store) weakMapSetLocked(owner ownership.OwnerID, ref, key Ref, valu
 	if err := store.validateValueAccessLocked(owner, value, internal); err != nil {
 		return err
 	}
-	for index := range slot.WeakMap.Entries {
-		if slot.WeakMap.Entries[index].Key == key {
-			old := slot.WeakMap.Entries[index].Value
+	for index := range slot.weakMap().Entries {
+		if slot.weakMap().Entries[index].Key == key {
+			old := slot.weakMap().Entries[index].Value
 			if old == value {
 				return nil
 			}
@@ -74,7 +74,7 @@ func (store *Store) weakMapSetLocked(owner ownership.OwnerID, ref, key Ref, valu
 				}
 			}
 			if old.IsRef() {
-				entry := &slot.WeakMap.Entries[index]
+				entry := &slot.weakMap().Entries[index]
 				if err := store.removeWeakUseLocked(old.Ref(), entry.valueUse, weakUse{table: ref, entry: uint32(index), role: weakMapValueUse}); err != nil {
 					return err
 				}
@@ -86,12 +86,12 @@ func (store *Store) weakMapSetLocked(owner ownership.OwnerID, ref, key Ref, valu
 					return err
 				}
 			}
-			slot.WeakMap.Entries[index].Value = value
-			slot.WeakMap.Entries[index].valueUse = valueUse
+			slot.weakMap().Entries[index].Value = value
+			slot.weakMap().Entries[index].valueUse = valueUse
 			return nil
 		}
 	}
-	if uint64(len(slot.WeakMap.Entries)) > math.MaxUint32 {
+	if uint64(len(slot.weakMap().Entries)) > math.MaxUint32 {
 		return fmt.Errorf("memory: WeakMap %s exhausted entries", ref)
 	}
 	keyUses := uint64(1)
@@ -106,19 +106,19 @@ func (store *Store) weakMapSetLocked(owner ownership.OwnerID, ref, key Ref, valu
 			return err
 		}
 	}
-	entryIndex := uint32(len(slot.WeakMap.Entries))
-	slot.WeakMap.Entries = append(slot.WeakMap.Entries, WeakMapEntry{Key: key, Value: value})
-	entry := &slot.WeakMap.Entries[entryIndex]
+	entryIndex := uint32(len(slot.weakMap().Entries))
+	slot.weakMap().Entries = append(slot.weakMap().Entries, WeakMapEntry{Key: key, Value: value})
+	entry := &slot.weakMap().Entries[entryIndex]
 	entry.keyUse, err = store.addWeakUseLocked(key, weakUse{table: ref, entry: entryIndex, role: weakMapKeyUse})
 	if err != nil {
-		slot.WeakMap.Entries = slot.WeakMap.Entries[:entryIndex]
+		slot.weakMap().Entries = slot.weakMap().Entries[:entryIndex]
 		return err
 	}
 	if value.IsRef() {
 		entry.valueUse, err = store.addWeakUseLocked(value.Ref(), weakUse{table: ref, entry: entryIndex, role: weakMapValueUse})
 		if err != nil {
 			_ = store.removeWeakUseLocked(key, entry.keyUse, weakUse{table: ref, entry: entryIndex, role: weakMapKeyUse})
-			slot.WeakMap.Entries = slot.WeakMap.Entries[:entryIndex]
+			slot.weakMap().Entries = slot.weakMap().Entries[:entryIndex]
 			return err
 		}
 	}
@@ -141,7 +141,7 @@ func (store *Store) WeakMapGet(owner ownership.OwnerID, ref, key Ref) (Value, bo
 	if err := store.validateWeakKeyAccessLocked(owner, key); err != nil {
 		return Value{}, false, err
 	}
-	for _, entry := range slot.WeakMap.Entries {
+	for _, entry := range slot.weakMap().Entries {
 		if entry.Key == key {
 			return entry.Value, true, nil
 		}
@@ -170,7 +170,7 @@ func (store *Store) WeakMapDelete(owner ownership.OwnerID, ref, key Ref) (bool, 
 	if err := store.validateWeakKeyAccessLocked(owner, key); err != nil {
 		return false, err
 	}
-	for index, entry := range slot.WeakMap.Entries {
+	for index, entry := range slot.weakMap().Entries {
 		if entry.Key != key {
 			continue
 		}
@@ -195,12 +195,12 @@ func (store *Store) WeakMapClear(owner ownership.OwnerID, ref Ref) error {
 	if slot.Kind != HeapWeakMap {
 		return typeError(ref, slot.Kind, HeapWeakMap)
 	}
-	for len(slot.WeakMap.Entries) != 0 {
-		if err := store.removeWeakMapEntryLocked(ref, slot, uint32(len(slot.WeakMap.Entries)-1)); err != nil {
+	for len(slot.weakMap().Entries) != 0 {
+		if err := store.removeWeakMapEntryLocked(ref, slot, uint32(len(slot.weakMap().Entries)-1)); err != nil {
 			return err
 		}
 	}
-	slot.WeakMap.Entries = nil
+	slot.weakMap().Entries = nil
 	return nil
 }
 
@@ -226,7 +226,7 @@ func (store *Store) DerefWeakSet(owner ownership.OwnerID, ref Ref) (WeakSet, err
 	if slot.Kind != HeapWeakSet {
 		return WeakSet{}, typeError(ref, slot.Kind, HeapWeakSet)
 	}
-	return cloneWeakSet(*slot.WeakSet), nil
+	return cloneWeakSet(*slot.weakSet()), nil
 }
 
 func (store *Store) WeakSetAdd(owner ownership.OwnerID, ref, key Ref) error {
@@ -249,25 +249,25 @@ func (store *Store) weakSetAddLocked(owner ownership.OwnerID, ref, key Ref, inte
 	if err := store.validateWeakKeyLocked(region, key, internal); err != nil {
 		return err
 	}
-	for _, existing := range slot.WeakSet.Keys {
+	for _, existing := range slot.weakSet().Keys {
 		if existing == key {
 			return nil
 		}
 	}
-	if uint64(len(slot.WeakSet.Keys)) > math.MaxUint32 {
+	if uint64(len(slot.weakSet().Keys)) > math.MaxUint32 {
 		return fmt.Errorf("memory: WeakSet %s exhausted entries", ref)
 	}
 	if err := store.ensureWeakUseCapacityLocked(key, 1); err != nil {
 		return err
 	}
-	entryIndex := uint32(len(slot.WeakSet.Keys))
-	slot.WeakSet.Keys = append(slot.WeakSet.Keys, key)
+	entryIndex := uint32(len(slot.weakSet().Keys))
+	slot.weakSet().Keys = append(slot.weakSet().Keys, key)
 	use, err := store.addWeakUseLocked(key, weakUse{table: ref, entry: entryIndex, role: weakSetKeyUse})
 	if err != nil {
-		slot.WeakSet.Keys = slot.WeakSet.Keys[:entryIndex]
+		slot.weakSet().Keys = slot.weakSet().Keys[:entryIndex]
 		return err
 	}
-	slot.WeakSet.uses = append(slot.WeakSet.uses, use)
+	slot.weakSet().uses = append(slot.weakSet().uses, use)
 	return nil
 }
 
@@ -287,7 +287,7 @@ func (store *Store) WeakSetHas(owner ownership.OwnerID, ref, key Ref) (bool, err
 	if err := store.validateWeakKeyAccessLocked(owner, key); err != nil {
 		return false, err
 	}
-	for _, existing := range slot.WeakSet.Keys {
+	for _, existing := range slot.weakSet().Keys {
 		if existing == key {
 			return true, nil
 		}
@@ -311,7 +311,7 @@ func (store *Store) WeakSetDelete(owner ownership.OwnerID, ref, key Ref) (bool, 
 	if err := store.validateWeakKeyAccessLocked(owner, key); err != nil {
 		return false, err
 	}
-	for index, existing := range slot.WeakSet.Keys {
+	for index, existing := range slot.weakSet().Keys {
 		if existing != key {
 			continue
 		}
@@ -336,13 +336,13 @@ func (store *Store) WeakSetClear(owner ownership.OwnerID, ref Ref) error {
 	if slot.Kind != HeapWeakSet {
 		return typeError(ref, slot.Kind, HeapWeakSet)
 	}
-	for len(slot.WeakSet.Keys) != 0 {
-		if err := store.removeWeakSetEntryLocked(ref, slot, uint32(len(slot.WeakSet.Keys)-1)); err != nil {
+	for len(slot.weakSet().Keys) != 0 {
+		if err := store.removeWeakSetEntryLocked(ref, slot, uint32(len(slot.weakSet().Keys)-1)); err != nil {
 			return err
 		}
 	}
-	slot.WeakSet.Keys = nil
-	slot.WeakSet.uses = nil
+	slot.weakSet().Keys = nil
+	slot.weakSet().uses = nil
 	return nil
 }
 
@@ -398,24 +398,24 @@ func (store *Store) setWeakUseBackLocked(target Ref, use weakUse, back uint32) e
 	}
 	switch use.role {
 	case weakMapKeyUse:
-		if slot.Kind != HeapWeakMap || uint64(use.entry) >= uint64(len(slot.WeakMap.Entries)) || slot.WeakMap.Entries[use.entry].Key != target {
+		if slot.Kind != HeapWeakMap || uint64(use.entry) >= uint64(len(slot.weakMap().Entries)) || slot.weakMap().Entries[use.entry].Key != target {
 			return fmt.Errorf("%w: weak key use for %s does not resolve to %s entry %d", ErrInvariantViolation, target, use.table, use.entry)
 		}
-		slot.WeakMap.Entries[use.entry].keyUse = back
+		slot.weakMap().Entries[use.entry].keyUse = back
 	case weakMapValueUse:
-		if slot.Kind != HeapWeakMap || uint64(use.entry) >= uint64(len(slot.WeakMap.Entries)) {
+		if slot.Kind != HeapWeakMap || uint64(use.entry) >= uint64(len(slot.weakMap().Entries)) {
 			return fmt.Errorf("%w: weak value use for %s does not resolve to %s entry %d", ErrInvariantViolation, target, use.table, use.entry)
 		}
-		entry := &slot.WeakMap.Entries[use.entry]
+		entry := &slot.weakMap().Entries[use.entry]
 		if !entry.Value.IsRef() || entry.Value.Ref() != target {
 			return fmt.Errorf("%w: weak value use for %s does not match %s entry %d", ErrInvariantViolation, target, use.table, use.entry)
 		}
 		entry.valueUse = back
 	case weakSetKeyUse:
-		if slot.Kind != HeapWeakSet || uint64(use.entry) >= uint64(len(slot.WeakSet.Keys)) || len(slot.WeakSet.uses) != len(slot.WeakSet.Keys) || slot.WeakSet.Keys[use.entry] != target {
+		if slot.Kind != HeapWeakSet || uint64(use.entry) >= uint64(len(slot.weakSet().Keys)) || len(slot.weakSet().uses) != len(slot.weakSet().Keys) || slot.weakSet().Keys[use.entry] != target {
 			return fmt.Errorf("%w: weak set use for %s does not resolve to %s entry %d", ErrInvariantViolation, target, use.table, use.entry)
 		}
-		slot.WeakSet.uses[use.entry] = back
+		slot.weakSet().uses[use.entry] = back
 	default:
 		return fmt.Errorf("%w: weak use for %s has invalid role %d", ErrInvariantViolation, target, use.role)
 	}
@@ -445,10 +445,10 @@ func (store *Store) removeWeakUseLocked(target Ref, back uint32, expected weakUs
 }
 
 func (store *Store) removeWeakMapEntryLocked(table Ref, slot *Slot, index uint32) error {
-	if slot == nil || slot.Kind != HeapWeakMap || uint64(index) >= uint64(len(slot.WeakMap.Entries)) {
+	if slot == nil || slot.Kind != HeapWeakMap || uint64(index) >= uint64(len(slot.weakMap().Entries)) {
 		return fmt.Errorf("%w: invalid WeakMap %s entry %d", ErrInvariantViolation, table, index)
 	}
-	entry := &slot.WeakMap.Entries[index]
+	entry := &slot.weakMap().Entries[index]
 	if err := store.removeWeakUseLocked(entry.Key, entry.keyUse, weakUse{table: table, entry: index, role: weakMapKeyUse}); err != nil {
 		return err
 	}
@@ -459,10 +459,10 @@ func (store *Store) removeWeakMapEntryLocked(table Ref, slot *Slot, index uint32
 			return err
 		}
 	}
-	last := len(slot.WeakMap.Entries) - 1
+	last := len(slot.weakMap().Entries) - 1
 	if int(index) != last {
-		moved := slot.WeakMap.Entries[last]
-		slot.WeakMap.Entries[index] = moved
+		moved := slot.weakMap().Entries[last]
+		slot.weakMap().Entries[index] = moved
 		keyUses := store.weakTargets[moved.Key]
 		if uint64(moved.keyUse) >= uint64(len(keyUses)) {
 			return fmt.Errorf("%w: moved WeakMap key %s has invalid use %d", ErrInvariantViolation, moved.Key, moved.keyUse)
@@ -478,27 +478,27 @@ func (store *Store) removeWeakMapEntryLocked(table Ref, slot *Slot, index uint32
 			store.weakTargets[moved.Value.Ref()] = valueUses
 		}
 	}
-	slot.WeakMap.Entries[last] = WeakMapEntry{}
-	slot.WeakMap.Entries = slot.WeakMap.Entries[:last]
+	slot.weakMap().Entries[last] = WeakMapEntry{}
+	slot.weakMap().Entries = slot.weakMap().Entries[:last]
 	return nil
 }
 
 func (store *Store) removeWeakSetEntryLocked(table Ref, slot *Slot, index uint32) error {
-	if slot == nil || slot.Kind != HeapWeakSet || uint64(index) >= uint64(len(slot.WeakSet.Keys)) || len(slot.WeakSet.uses) != len(slot.WeakSet.Keys) {
+	if slot == nil || slot.Kind != HeapWeakSet || uint64(index) >= uint64(len(slot.weakSet().Keys)) || len(slot.weakSet().uses) != len(slot.weakSet().Keys) {
 		return fmt.Errorf("%w: invalid WeakSet %s entry %d", ErrInvariantViolation, table, index)
 	}
-	target := slot.WeakSet.Keys[index]
-	if err := store.removeWeakUseLocked(target, slot.WeakSet.uses[index], weakUse{table: table, entry: index, role: weakSetKeyUse}); err != nil {
+	target := slot.weakSet().Keys[index]
+	if err := store.removeWeakUseLocked(target, slot.weakSet().uses[index], weakUse{table: table, entry: index, role: weakSetKeyUse}); err != nil {
 		return err
 	}
-	last := len(slot.WeakSet.Keys) - 1
+	last := len(slot.weakSet().Keys) - 1
 	if int(index) != last {
 		// Read the moved back pointer after removal because a reverse-index swap
 		// may have updated it.
-		movedTarget := slot.WeakSet.Keys[last]
-		movedBack := slot.WeakSet.uses[last]
-		slot.WeakSet.Keys[index] = movedTarget
-		slot.WeakSet.uses[index] = movedBack
+		movedTarget := slot.weakSet().Keys[last]
+		movedBack := slot.weakSet().uses[last]
+		slot.weakSet().Keys[index] = movedTarget
+		slot.weakSet().uses[index] = movedBack
 		uses := store.weakTargets[movedTarget]
 		if uint64(movedBack) >= uint64(len(uses)) {
 			return fmt.Errorf("%w: moved WeakSet key %s has invalid use %d", ErrInvariantViolation, movedTarget, movedBack)
@@ -506,10 +506,10 @@ func (store *Store) removeWeakSetEntryLocked(table Ref, slot *Slot, index uint32
 		uses[movedBack].entry = index
 		store.weakTargets[movedTarget] = uses
 	}
-	slot.WeakSet.Keys[last] = Ref{}
-	slot.WeakSet.uses[last] = 0
-	slot.WeakSet.Keys = slot.WeakSet.Keys[:last]
-	slot.WeakSet.uses = slot.WeakSet.uses[:last]
+	slot.weakSet().Keys[last] = Ref{}
+	slot.weakSet().uses[last] = 0
+	slot.weakSet().Keys = slot.weakSet().Keys[:last]
+	slot.weakSet().uses = slot.weakSet().uses[:last]
 	return nil
 }
 
@@ -519,14 +519,14 @@ func (store *Store) forgetWeakTableLocked(table Ref, slot *Slot) error {
 	}
 	switch slot.Kind {
 	case HeapWeakMap:
-		for len(slot.WeakMap.Entries) != 0 {
-			if err := store.removeWeakMapEntryLocked(table, slot, uint32(len(slot.WeakMap.Entries)-1)); err != nil {
+		for len(slot.weakMap().Entries) != 0 {
+			if err := store.removeWeakMapEntryLocked(table, slot, uint32(len(slot.weakMap().Entries)-1)); err != nil {
 				return err
 			}
 		}
 	case HeapWeakSet:
-		for len(slot.WeakSet.Keys) != 0 {
-			if err := store.removeWeakSetEntryLocked(table, slot, uint32(len(slot.WeakSet.Keys)-1)); err != nil {
+		for len(slot.weakSet().Keys) != 0 {
+			if err := store.removeWeakSetEntryLocked(table, slot, uint32(len(slot.weakSet().Keys)-1)); err != nil {
 				return err
 			}
 		}

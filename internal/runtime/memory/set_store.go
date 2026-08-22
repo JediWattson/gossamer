@@ -28,7 +28,7 @@ func (store *Store) DerefSet(owner ownership.OwnerID, ref Ref) (Set, error) {
 	if slot.Kind != HeapSet {
 		return Set{}, typeError(ref, slot.Kind, HeapSet)
 	}
-	return cloneSet(*slot.Set), nil
+	return cloneSet(*slot.nativeSet()), nil
 }
 
 func (store *Store) SetAdd(owner ownership.OwnerID, ref Ref, value Value) error {
@@ -63,7 +63,7 @@ func (store *Store) setAddLocked(owner ownership.OwnerID, ref Ref, value Value, 
 	if err != nil {
 		return err
 	}
-	slot.Set.Values = append(slot.Set.Values, value)
+	slot.nativeSet().Values = append(slot.nativeSet().Values, value)
 	return nil
 }
 
@@ -107,13 +107,13 @@ func (store *Store) SetDelete(owner ownership.OwnerID, ref Ref, value Value) (bo
 	if err != nil || index < 0 {
 		return false, err
 	}
-	stored := slot.Set.Values[index]
+	stored := slot.nativeSet().Values[index]
 	if _, err := store.replaceValueLocked(owner, region, slot, stored, Value{}, false); err != nil {
 		return false, err
 	}
-	copy(slot.Set.Values[index:], slot.Set.Values[index+1:])
-	slot.Set.Values[len(slot.Set.Values)-1] = Value{}
-	slot.Set.Values = slot.Set.Values[:len(slot.Set.Values)-1]
+	copy(slot.nativeSet().Values[index:], slot.nativeSet().Values[index+1:])
+	slot.nativeSet().Values[len(slot.nativeSet().Values)-1] = Value{}
+	slot.nativeSet().Values = slot.nativeSet().Values[:len(slot.nativeSet().Values)-1]
 	return true, nil
 }
 
@@ -130,8 +130,8 @@ func (store *Store) SetClear(owner ownership.OwnerID, ref Ref) error {
 	if slot.Kind != HeapSet {
 		return typeError(ref, slot.Kind, HeapSet)
 	}
-	unlinked := make([]Value, 0, len(slot.Set.Values))
-	for _, value := range slot.Set.Values {
+	unlinked := make([]Value, 0, len(slot.nativeSet().Values))
+	for _, value := range slot.nativeSet().Values {
 		if _, err := store.replaceValueLocked(owner, region, slot, value, Value{}, false); err != nil {
 			for index := len(unlinked) - 1; index >= 0; index-- {
 				_, _ = store.replaceValueLocked(owner, region, slot, Value{}, unlinked[index], true)
@@ -140,12 +140,12 @@ func (store *Store) SetClear(owner ownership.OwnerID, ref Ref) error {
 		}
 		unlinked = append(unlinked, value)
 	}
-	slot.Set.Values = nil
+	slot.nativeSet().Values = nil
 	return nil
 }
 
 func (store *Store) findSetValueLocked(slot *Slot, value Value) (int, error) {
-	for index, stored := range slot.Set.Values {
+	for index, stored := range slot.nativeSet().Values {
 		equal, err := store.sameValueZeroLocked(stored, value)
 		if err != nil {
 			return -1, err

@@ -59,26 +59,26 @@ func cloneObject(object Object) Object {
 }
 
 func objectHeaderForSlot(slot *Slot) (*ObjectHeader, bool) {
-	if slot == nil || slot.slotPayload == nil {
+	if slot == nil || slot.payload.pointer == nil {
 		return nil, false
 	}
 	switch slot.Kind {
 	case HeapObject:
-		return &slot.Object.ObjectHeader, true
+		return &slot.object().ObjectHeader, true
 	case HeapArray:
-		return &slot.Array.ObjectHeader, true
+		return &slot.array().ObjectHeader, true
 	case HeapFunction:
-		return &slot.Function.ObjectHeader, true
+		return &slot.function().ObjectHeader, true
 	case HeapPromise:
-		return &slot.Promise.ObjectHeader, true
+		return &slot.promise().ObjectHeader, true
 	case HeapMap:
-		return &slot.Map.ObjectHeader, true
+		return &slot.nativeMap().ObjectHeader, true
 	case HeapSet:
-		return &slot.Set.ObjectHeader, true
+		return &slot.nativeSet().ObjectHeader, true
 	case HeapError:
-		return &slot.Error.ObjectHeader, true
+		return &slot.errorObject().ObjectHeader, true
 	case HeapIterator:
-		return &slot.Iterator.ObjectHeader, true
+		return &slot.iterator().ObjectHeader, true
 	default:
 		return nil, false
 	}

@@ -19,7 +19,7 @@ func (store *Store) AllocArray(owner ownership.OwnerID, regionID RegionID, lengt
 		return Ref{}, err
 	}
 	_, slot, _ := store.slotLocked(ref)
-	slot.Array.Length = length
+	slot.array().Length = length
 	return ref, nil
 }
 
@@ -36,7 +36,7 @@ func (store *Store) DerefArray(owner ownership.OwnerID, ref Ref) (Array, error) 
 	if slot.Kind != HeapArray {
 		return Array{}, typeError(ref, slot.Kind, HeapArray)
 	}
-	return cloneArray(*slot.Array), nil
+	return cloneArray(*slot.array()), nil
 }
 
 func (store *Store) ArrayElement(owner ownership.OwnerID, array Ref, index uint32) (Value, bool, error) {
@@ -52,11 +52,11 @@ func (store *Store) ArrayElement(owner ownership.OwnerID, array Ref, index uint3
 	if slot.Kind != HeapArray {
 		return Value{}, false, typeError(array, slot.Kind, HeapArray)
 	}
-	position, present := arrayElementPosition(slot.Array.Elements, index)
+	position, present := arrayElementPosition(slot.array().Elements, index)
 	if !present {
 		return Value{}, false, nil
 	}
-	return slot.Array.Elements[position].Value, true, nil
+	return slot.array().Elements[position].Value, true, nil
 }
 
 func (store *Store) SetArrayElement(owner ownership.OwnerID, array Ref, index uint32, value Value) error {
@@ -79,24 +79,24 @@ func (store *Store) setArrayElementLocked(owner ownership.OwnerID, array Ref, in
 	if slot.Kind != HeapArray {
 		return typeError(array, slot.Kind, HeapArray)
 	}
-	position, present := arrayElementPosition(slot.Array.Elements, index)
+	position, present := arrayElementPosition(slot.array().Elements, index)
 	old := Value{}
 	if present {
-		old = slot.Array.Elements[position].Value
+		old = slot.array().Elements[position].Value
 	}
 	value, err = store.replaceValueLocked(owner, region, slot, old, value, internal)
 	if err != nil {
 		return err
 	}
 	if present {
-		slot.Array.Elements[position].Value = value
+		slot.array().Elements[position].Value = value
 	} else {
-		slot.Array.Elements = append(slot.Array.Elements, ArrayElement{})
-		copy(slot.Array.Elements[position+1:], slot.Array.Elements[position:])
-		slot.Array.Elements[position] = ArrayElement{Index: index, Value: value}
+		slot.array().Elements = append(slot.array().Elements, ArrayElement{})
+		copy(slot.array().Elements[position+1:], slot.array().Elements[position:])
+		slot.array().Elements[position] = ArrayElement{Index: index, Value: value}
 	}
-	if next := index + 1; next > slot.Array.Length {
-		slot.Array.Length = next
+	if next := index + 1; next > slot.array().Length {
+		slot.array().Length = next
 	}
 	return nil
 }
@@ -118,16 +118,16 @@ func (store *Store) deleteArrayElementLocked(owner ownership.OwnerID, array Ref,
 	if slot.Kind != HeapArray {
 		return false, typeError(array, slot.Kind, HeapArray)
 	}
-	position, present := arrayElementPosition(slot.Array.Elements, index)
+	position, present := arrayElementPosition(slot.array().Elements, index)
 	if !present {
 		return false, nil
 	}
-	if _, err := store.replaceValueLocked(owner, region, slot, slot.Array.Elements[position].Value, Value{}, internal); err != nil {
+	if _, err := store.replaceValueLocked(owner, region, slot, slot.array().Elements[position].Value, Value{}, internal); err != nil {
 		return false, err
 	}
-	copy(slot.Array.Elements[position:], slot.Array.Elements[position+1:])
-	slot.Array.Elements[len(slot.Array.Elements)-1] = ArrayElement{}
-	slot.Array.Elements = slot.Array.Elements[:len(slot.Array.Elements)-1]
+	copy(slot.array().Elements[position:], slot.array().Elements[position+1:])
+	slot.array().Elements[len(slot.array().Elements)-1] = ArrayElement{}
+	slot.array().Elements = slot.array().Elements[:len(slot.array().Elements)-1]
 	return true, nil
 }
 
@@ -148,15 +148,15 @@ func (store *Store) setArrayLengthLocked(owner ownership.OwnerID, array Ref, len
 	if slot.Kind != HeapArray {
 		return typeError(array, slot.Kind, HeapArray)
 	}
-	if length >= slot.Array.Length {
-		slot.Array.Length = length
+	if length >= slot.array().Length {
+		slot.array().Length = length
 		return nil
 	}
-	firstRemoved := sort.Search(len(slot.Array.Elements), func(index int) bool {
-		return slot.Array.Elements[index].Index >= length
+	firstRemoved := sort.Search(len(slot.array().Elements), func(index int) bool {
+		return slot.array().Elements[index].Index >= length
 	})
-	unlinked := make([]Value, 0, len(slot.Array.Elements)-firstRemoved)
-	for _, element := range slot.Array.Elements[firstRemoved:] {
+	unlinked := make([]Value, 0, len(slot.array().Elements)-firstRemoved)
+	for _, element := range slot.array().Elements[firstRemoved:] {
 		if _, err := store.replaceValueLocked(owner, region, slot, element.Value, Value{}, internal); err != nil {
 			for _, value := range unlinked {
 				_, _ = store.replaceValueLocked(owner, region, slot, Value{}, value, true)
@@ -165,11 +165,11 @@ func (store *Store) setArrayLengthLocked(owner ownership.OwnerID, array Ref, len
 		}
 		unlinked = append(unlinked, element.Value)
 	}
-	for index := firstRemoved; index < len(slot.Array.Elements); index++ {
-		slot.Array.Elements[index] = ArrayElement{}
+	for index := firstRemoved; index < len(slot.array().Elements); index++ {
+		slot.array().Elements[index] = ArrayElement{}
 	}
-	slot.Array.Elements = slot.Array.Elements[:firstRemoved]
-	slot.Array.Length = length
+	slot.array().Elements = slot.array().Elements[:firstRemoved]
+	slot.array().Length = length
 	return nil
 }
 

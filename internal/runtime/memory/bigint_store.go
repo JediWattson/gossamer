@@ -18,8 +18,8 @@ func (store *Store) AllocBigInt(owner ownership.OwnerID, regionID RegionID, nega
 		return Ref{}, err
 	}
 	_, slot, _ := store.slotLocked(ref)
-	*slot.BigInt = canonicalBigInt(negative, magnitude)
-	store.stats.LiveBytes += uint64(len(slot.BigInt.Magnitude))
+	*slot.bigInt() = canonicalBigInt(negative, magnitude)
+	store.stats.LiveBytes += uint64(len(slot.bigInt().Magnitude))
 	return ref, nil
 }
 
@@ -48,7 +48,7 @@ func (store *Store) DerefBigInt(owner ownership.OwnerID, ref Ref) (BigInt, error
 	if slot.Kind != HeapBigInt {
 		return BigInt{}, typeError(ref, slot.Kind, HeapBigInt)
 	}
-	return cloneBigInt(*slot.BigInt), nil
+	return cloneBigInt(*slot.bigInt()), nil
 }
 
 func (store *Store) BigIntText(owner ownership.OwnerID, ref Ref, base int) (string, error) {
