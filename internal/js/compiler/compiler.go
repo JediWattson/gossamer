@@ -165,7 +165,6 @@ type functionCompiler struct {
 	moduleFunctions      map[string]uint32
 	moduleUsesImportMeta bool
 	moduleUsesImport     bool
-	createsClosure       bool
 }
 
 type constantKey struct {

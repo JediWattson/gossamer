@@ -382,7 +382,7 @@ add(first(1), second(2)) + factorial(5);
 	}
 }
 
-func TestCompileUsesStackLocalsOnlyForClosureFreeFunctions(t *testing.T) {
+func TestCompileStartsAllFunctionsOnStackLocals(t *testing.T) {
 	t.Parallel()
 
 	image, err := compiler.Compile(`
@@ -415,12 +415,105 @@ scoped(2) + make(3)();
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(makeCode, "EnterFunction") || strings.Contains(makeCode, "EnterStackFunction") {
-		t.Fatalf("capturing function does not retain heap environment:\n%s", makeCode)
+	if !strings.Contains(makeCode, "EnterStackFunction") || strings.Contains(makeCode, "EnterFunction ") {
+		t.Fatalf("capturing function does not start on stack locals:\n%s", makeCode)
 	}
 	result := execute(t, 814_001, image)
 	if result.Kind() != memory.ValueNumber || result.Number() != 17 {
 		t.Fatalf("stack-local result = %#v, want 17", result)
+	}
+}
+
+func TestClosureMaterializationPreservesNestedScopesAndLateInitialization(t *testing.T) {
+	t.Parallel()
+
+	image, err := compiler.Compile(`
+function nested() {
+  let outer = 1;
+  {
+    let inner = 2;
+    let read = () => outer + inner;
+    inner = 3;
+    return read;
+  }
+}
+function late() {
+  let read = () => later;
+  let later = 9;
+  return read;
+}
+nested()() + late()();
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := execute(t, 814_004, image)
+	if result.Kind() != memory.ValueNumber || result.Number() != 13 {
+		t.Fatalf("materialized closure result = %#v, want 13", result)
+	}
+}
+
+func TestUntakenClosurePathDoesNotAllocateLexicalContext(t *testing.T) {
+	t.Parallel()
+
+	image, err := compiler.Compile(`
+function maybe(flag) {
+  let value = 7;
+  if (flag) return () => value;
+  return value;
+}
+undefined;
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	realm, err := browserruntime.NewRealm(814_005, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer realm.Close()
+	interpreter := browserruntime.NewInterpreter(browserruntime.InterpreterConfig{})
+	_, err = realm.EnqueueTask(func(task *browserruntime.TaskContext) error {
+		environment, err := task.NewContext(memory.NullValue())
+		if err != nil {
+			return err
+		}
+		loaded, err := program.Load(task, image, memory.RefValue(environment))
+		if err != nil {
+			return err
+		}
+		before := task.Realm.Store().Stats().LiveContexts
+		value, err := interpreter.Execute(task, loaded.Functions[1], memory.BoolValue(false))
+		if err != nil {
+			return err
+		}
+		if value.Kind() != memory.ValueNumber || value.Number() != 7 {
+			return fmt.Errorf("untaken closure result = %#v, want 7", value)
+		}
+		if after := task.Realm.Store().Stats().LiveContexts; after != before {
+			return fmt.Errorf("untaken closure live Contexts = %d, want %d", after, before)
+		}
+		closure, err := interpreter.Execute(task, loaded.Functions[1], memory.BoolValue(true))
+		if err != nil {
+			return err
+		}
+		if after := task.Realm.Store().Stats().LiveContexts; after != before+1 {
+			return fmt.Errorf("taken closure live Contexts = %d, want %d", after, before+1)
+		}
+		result, err := interpreter.Execute(task, closure.Ref())
+		if err != nil {
+			return err
+		}
+		if result.Kind() != memory.ValueNumber || result.Number() != 7 {
+			return fmt.Errorf("materialized closure call = %#v, want 7", result)
+		}
+		return task.Realm.Store().CheckInvariants()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
 	}
 }
 

@@ -1344,7 +1344,9 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 			return memory.Value{}, errFrameCall
 		case OpCreateClosure, OpCreateArrowClosure:
 			if frame.stackLocals {
-				return memory.Value{}, fmt.Errorf("%w: stack-local function cannot create a closure", ErrInvalidBytecode)
+				if err := execution.materializeFrameEnvironment(frame); err != nil {
+					return memory.Value{}, err
+				}
 			}
 			template, err := constantRef(frame, instruction.A, "Function template")
 			if err != nil {
@@ -1679,6 +1681,69 @@ func (execution *execution) localBindingError(base error, frame *Frame, index ui
 		return fmt.Errorf("%w: %q", base, text)
 	}
 	return fmt.Errorf("%w: %q %s", base, text, suffix)
+}
+
+// materializeFrameEnvironment moves the active lexical scope chain from
+// borrowed Frame slots into RegionStore Contexts immediately before a closure
+// captures it. From this point onward the frame uses those Contexts as the
+// authoritative binding storage, so later mutations remain visible to every
+// closure after the frame returns.
+func (execution *execution) materializeFrameEnvironment(frame *Frame) error {
+	if frame == nil || !frame.stackLocals {
+		return nil
+	}
+	if len(frame.localScopes) == 0 || len(frame.localScopes) != len(frame.environments) || len(frame.localEnvironments) != len(frame.environments) {
+		return fmt.Errorf("%w: stack-local environment shape", ErrExceptionState)
+	}
+	for _, local := range frame.localEnvironments {
+		if !local {
+			return fmt.Errorf("%w: mixed local and heap environments", ErrExceptionState)
+		}
+	}
+
+	parent := frame.environments[0]
+	for scopeIndex, start := range frame.localScopes {
+		end := len(frame.localBindings)
+		if scopeIndex+1 < len(frame.localScopes) {
+			end = frame.localScopes[scopeIndex+1]
+		}
+		if start < 0 || start > end || end > len(frame.localBindings) {
+			return fmt.Errorf("%w: local scope %d bounds %d..%d", ErrExceptionState, scopeIndex, start, end)
+		}
+		frame.environments[scopeIndex] = parent
+		environment, err := execution.context.NewContext(parent)
+		if err != nil {
+			return err
+		}
+		for bindingIndex := start; bindingIndex < end; bindingIndex++ {
+			binding := frame.localBindings[bindingIndex]
+			name, err := constantRef(frame, binding.name, "binding name")
+			if err != nil {
+				return err
+			}
+			if err := execution.context.DeclareBinding(environment, name, binding.mutable); err != nil {
+				return err
+			}
+			if binding.initialized {
+				if err := execution.context.InitializeBinding(environment, name, binding.value); err != nil {
+					return err
+				}
+			}
+		}
+		parent = memory.RefValue(environment)
+	}
+
+	frame.Environment = parent
+	clear(frame.localEnvironments)
+	frame.localEnvironments = append(frame.localEnvironments[:0], make([]bool, len(frame.environments))...)
+	clear(frame.localBindings)
+	frame.localBindings = frame.localBindings[:0]
+	clear(frame.localSlots)
+	frame.localSlots = frame.localSlots[:0]
+	clear(frame.localScopes)
+	frame.localScopes = frame.localScopes[:0]
+	frame.stackLocals = false
+	return nil
 }
 
 func (frame *Frame) enterLocalEnvironment() {
