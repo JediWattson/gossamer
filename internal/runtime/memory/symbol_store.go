@@ -40,7 +40,7 @@ func (store *Store) DerefSymbol(owner ownership.OwnerID, ref Ref) (Symbol, error
 	if slot.Kind != HeapSymbol {
 		return Symbol{}, typeError(ref, slot.Kind, HeapSymbol)
 	}
-	return cloneSymbol(slot.Symbol), nil
+	return cloneSymbol(*slot.Symbol), nil
 }
 
 func (store *Store) SameSymbol(owner ownership.OwnerID, left, right Ref) (bool, error) {
@@ -85,6 +85,6 @@ func (store *Store) initializeSymbolLocked(owner ownership.OwnerID, ref Ref, sym
 		return err
 	}
 	symbol.Description = description
-	slot.Symbol = cloneSymbol(symbol)
+	*slot.Symbol = cloneSymbol(symbol)
 	return nil
 }

@@ -33,6 +33,9 @@ func TestPhysicalStatsAttributeSlotAndPayloadStorage(t *testing.T) {
 	if physical.SlotPayloadSizeBytes != uint64(unsafe.Sizeof(slotPayload{})) {
 		t.Fatalf("slot payload size = %d", physical.SlotPayloadSizeBytes)
 	}
+	if physical.PayloadArenaSlabs != 2 || physical.ReservedTypedPayloadBytes == 0 || physical.OccupiedTypedPayloadBytes == 0 {
+		t.Fatalf("typed payload attribution = %#v", physical)
+	}
 	if physical.ReservedSlotBytes != uint64(profiledRegionSlotCapacity)*physical.SlotSizeBytes {
 		t.Fatalf("reserved slot bytes = %d, want %d", physical.ReservedSlotBytes, uint64(profiledRegionSlotCapacity)*physical.SlotSizeBytes)
 	}
@@ -67,7 +70,7 @@ func TestPhysicalStatsVacantSlotRetainsOnlyStableHeader(t *testing.T) {
 	if after.ReservedSlotBytes != before.ReservedSlotBytes {
 		t.Fatalf("reserved slot headers changed after free: %d -> %d", before.ReservedSlotBytes, after.ReservedSlotBytes)
 	}
-	if after.PayloadBytes != 0 || after.OccupiedSlotBytes != 0 {
+	if after.PayloadBytes != 0 || after.OccupiedSlotBytes != 0 || after.PayloadArenaSlabs != 0 || after.ReservedTypedPayloadBytes != 0 {
 		t.Fatalf("vacant slot retained physical payload: %#v", after)
 	}
 }

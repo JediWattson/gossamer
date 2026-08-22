@@ -254,7 +254,9 @@ func (store *Store) collectLocked(owner ownership.OwnerID, regionID RegionID, ro
 			return Collection{}, err
 		}
 		store.recordKindFreeLocked(slot)
-		clearSlotPayload(slot)
+		if err := store.clearSlotPayloadLocked(slot); err != nil {
+			return Collection{}, err
+		}
 		delete(store.objectRegions, slot.object)
 		slot.object = 0
 		slot.Occupied = false

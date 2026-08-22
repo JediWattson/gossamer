@@ -39,7 +39,7 @@ func (store *Store) DerefTypedArray(owner ownership.OwnerID, ref Ref) (TypedArra
 	if slot.Kind != HeapTypedArray {
 		return TypedArray{}, typeError(ref, slot.Kind, HeapTypedArray)
 	}
-	return cloneTypedArray(slot.TypedArray), nil
+	return cloneTypedArray(*slot.TypedArray), nil
 }
 
 func (store *Store) ReadTypedArrayElement(owner ownership.OwnerID, ref Ref, index uint64) (float64, error) {
@@ -65,7 +65,7 @@ func (store *Store) ReadTypedArrayElement(owner ownership.OwnerID, ref Ref, inde
 	if bufferSlot.ArrayBuffer.Detached {
 		return 0, ErrDetachedBuffer
 	}
-	start, end, err := typedArrayElementRange(viewSlot.TypedArray, index)
+	start, end, err := typedArrayElementRange(*viewSlot.TypedArray, index)
 	if err != nil {
 		return 0, err
 	}
@@ -95,7 +95,7 @@ func (store *Store) WriteTypedArrayElement(owner ownership.OwnerID, ref Ref, ind
 	if bufferSlot.ArrayBuffer.Detached {
 		return ErrDetachedBuffer
 	}
-	start, end, err := typedArrayElementRange(viewSlot.TypedArray, index)
+	start, end, err := typedArrayElementRange(*viewSlot.TypedArray, index)
 	if err != nil {
 		return err
 	}
@@ -111,7 +111,7 @@ func (store *Store) initializeTypedArrayLocked(owner ownership.OwnerID, ref Ref,
 	if slot.Kind != HeapTypedArray {
 		return typeError(ref, slot.Kind, HeapTypedArray)
 	}
-	if slot.TypedArray != (TypedArray{}) {
+	if *slot.TypedArray != (TypedArray{}) {
 		return fmt.Errorf("%w: view is already initialized", ErrInvalidTypedArray)
 	}
 	size, valid := elementSize(view.Element)
@@ -140,7 +140,7 @@ func (store *Store) initializeTypedArrayLocked(owner ownership.OwnerID, ref Ref,
 		return err
 	}
 	view.Buffer = buffer.Ref()
-	slot.TypedArray = view
+	*slot.TypedArray = view
 	return nil
 }
 

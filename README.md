@@ -215,7 +215,9 @@ region edges, and private refs can cross Realm queues only through explicit
 Transfer, Publish, or Copy operations. Task and microtask queues use the same
 Ref boundary. Explicit promotion copies only a reachable subgraph into
 immutable shared storage, allowing the original temporary region to be
-released. The first typed ladder now covers Strings, Objects, Arrays, lexical
+released. Stable slot headers point into type-specific bitmap slabs; freeing
+the last payload in a slab releases that slab without changing `Ref` identity
+or generation checks. The first typed ladder now covers Strings, Objects, Arrays, lexical
 Contexts, Function descriptors, Promises, BigInts, Symbols, ArrayBuffers,
 TypedArrays, Maps, Sets, Dates, RegExps, Errors, weak collections, and opaque
 HostObjects. These remain storage and ownership primitives independent from

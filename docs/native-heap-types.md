@@ -12,6 +12,13 @@ with `ErrTypeMismatch`. Ownership and queue operations remain properties of the
 containing region, so adding a payload type cannot bypass Transfer, Publish,
 Copy, Promote, stale-reference checks, or bulk region release.
 
+Physical payload storage is separate from Ref identity. A compact stable slot
+header retains the object ID, generation, and kind while one tagged handle
+selects a value from that kind's 256-entry bitmap slab. Releasing a slot clears
+the typed value and advances the slot generation; when the slab becomes empty,
+the allocator releases the whole slab. Region snapshots still deep-copy typed
+payloads and cannot mutate allocator-owned storage.
+
 Mutable writes are also lifetime barriers. If an object owned by a longer-lived
 region stores a Ref into a shorter-lived private region, RegionStore copies the
 reachable graph into destination-owned storage and rewrites the stored Ref.

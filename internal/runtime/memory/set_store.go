@@ -28,7 +28,7 @@ func (store *Store) DerefSet(owner ownership.OwnerID, ref Ref) (Set, error) {
 	if slot.Kind != HeapSet {
 		return Set{}, typeError(ref, slot.Kind, HeapSet)
 	}
-	return cloneSet(slot.Set), nil
+	return cloneSet(*slot.Set), nil
 }
 
 func (store *Store) SetAdd(owner ownership.OwnerID, ref Ref, value Value) error {

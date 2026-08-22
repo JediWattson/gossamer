@@ -48,7 +48,7 @@ func (store *Store) DerefIterator(owner ownership.OwnerID, ref Ref) (Iterator, e
 	if slot.Kind != HeapIterator {
 		return Iterator{}, typeError(ref, slot.Kind, HeapIterator)
 	}
-	return cloneIterator(slot.Iterator), nil
+	return cloneIterator(*slot.Iterator), nil
 }
 
 func (store *Store) AdvanceIterator(owner ownership.OwnerID, ref Ref) (IteratorStep, error) {

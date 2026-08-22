@@ -164,6 +164,9 @@ func (store *Store) CheckInvariants() error {
 			if slot.slotPayload == nil {
 				return invariantError("R%d occupied slot %d has no typed payload", id, index)
 			}
+			if err := store.payloads.checkSlot(slot.Kind, slot.slotPayload); err != nil {
+				return invariantError("R%d occupied slot %d: %v", id, index, err)
+			}
 			if previous, duplicate := objects[slot.object]; duplicate {
 				return invariantError("ledger object %d appears at R%d:%d and R%d:%d", slot.object, previous.region, previous.slot, id, index)
 			}
@@ -642,6 +645,9 @@ func (store *Store) CheckInvariants() error {
 	if store.stats.LiveHostObjects != liveHostObjects {
 		return invariantError("stats host objects = %d, derived %d", store.stats.LiveHostObjects, liveHostObjects)
 	}
+	if err := store.payloads.check(store.stats); err != nil {
+		return invariantError("typed payload allocator: %v", err)
+	}
 	if store.stats.PooledSlotBuffers != uint64(len(store.slotBuffers)) || store.stats.PooledSlotCapacity != pooledSlotCapacity || store.stats.ReservedSlotCapacity != reservedSlotCapacity {
 		return invariantError("stats pooled buffers/capacity/reserved = %d/%d/%d, derived %d/%d/%d", store.stats.PooledSlotBuffers, store.stats.PooledSlotCapacity, store.stats.ReservedSlotCapacity, len(store.slotBuffers), pooledSlotCapacity, reservedSlotCapacity)
 	}
@@ -714,67 +720,20 @@ func slotHasOtherPayload(slot *Slot, kind HeapKind) bool {
 	if slot == nil || slot.slotPayload == nil {
 		return false
 	}
-	if kind != HeapCell && len(slot.Cell.Fields) != 0 {
-		return true
+	pointers := []bool{
+		slot.Cell != nil, slot.String != nil, slot.Object != nil, slot.Array != nil,
+		slot.Context != nil, slot.Function != nil, slot.Promise != nil, slot.BigInt != nil,
+		slot.Symbol != nil, slot.ArrayBuffer != nil, slot.TypedArray != nil, slot.Map != nil,
+		slot.Set != nil, slot.Date != nil, slot.RegExp != nil, slot.Error != nil,
+		slot.WeakMap != nil, slot.WeakSet != nil, slot.Iterator != nil, slot.HostObject != nil,
 	}
-	if kind != HeapString && slot.String.Text != "" {
-		return true
+	active := 0
+	for _, present := range pointers {
+		if present {
+			active++
+		}
 	}
-	if kind != HeapObject && !objectHeaderStorageEmpty(slot.Object.ObjectHeader) {
-		return true
-	}
-	if kind != HeapArray && (!objectHeaderStorageEmpty(slot.Array.ObjectHeader) || slot.Array.Length != 0 || len(slot.Array.Elements) != 0) {
-		return true
-	}
-	if kind != HeapContext && (slot.Context.Parent != (Value{}) || len(slot.Context.Bindings) != 0) {
-		return true
-	}
-	if kind != HeapFunction && (!objectHeaderStorageEmpty(slot.Function.ObjectHeader) || slot.Function.Kind != 0 || slot.Function.Name != (Value{}) || slot.Function.Environment != (Value{}) || slot.Function.Arity != 0 || slot.Function.Constructible || len(slot.Function.Code) != 0 || len(slot.Function.Locations) != 0 || len(slot.Function.Constants) != 0 || len(slot.Function.Captures) != 0 || slot.Function.NativeID != 0) {
-		return true
-	}
-	if kind != HeapPromise && (!objectHeaderStorageEmpty(slot.Promise.ObjectHeader) || slot.Promise.State != PromisePending || slot.Promise.Result != (Value{}) || len(slot.Promise.Reactions) != 0 || slot.Promise.Handled) {
-		return true
-	}
-	if kind != HeapBigInt && (slot.BigInt.Negative || len(slot.BigInt.Magnitude) != 0) {
-		return true
-	}
-	if kind != HeapSymbol && (slot.Symbol.ID != 0 || slot.Symbol.Description != (Value{})) {
-		return true
-	}
-	if kind != HeapArrayBuffer && (len(slot.ArrayBuffer.Bytes) != 0 || slot.ArrayBuffer.Detached) {
-		return true
-	}
-	if kind != HeapTypedArray && slot.TypedArray != (TypedArray{}) {
-		return true
-	}
-	if kind != HeapMap && (!objectHeaderStorageEmpty(slot.Map.ObjectHeader) || len(slot.Map.Entries) != 0) {
-		return true
-	}
-	if kind != HeapSet && (!objectHeaderStorageEmpty(slot.Set.ObjectHeader) || len(slot.Set.Values) != 0) {
-		return true
-	}
-	if kind != HeapDate && slot.Date.Milliseconds != 0 {
-		return true
-	}
-	if kind != HeapRegExp && slot.RegExp != (RegExp{}) {
-		return true
-	}
-	if kind != HeapError && (!objectHeaderStorageEmpty(slot.Error.ObjectHeader) || slot.Error.Kind != 0 || slot.Error.Message != (Value{}) || slot.Error.Stack != (Value{}) || slot.Error.Cause != (Value{}) || slot.Error.HasCause || len(slot.Error.Errors) != 0) {
-		return true
-	}
-	if kind != HeapWeakMap && len(slot.WeakMap.Entries) != 0 {
-		return true
-	}
-	if kind != HeapWeakSet && len(slot.WeakSet.Keys) != 0 {
-		return true
-	}
-	if kind != HeapIterator && (!objectHeaderStorageEmpty(slot.Iterator.ObjectHeader) || slot.Iterator.Target != (Ref{}) || slot.Iterator.Kind != 0 || slot.Iterator.Next != 0) {
-		return true
-	}
-	if kind != HeapHostObject && slot.HostObject != (HostObject{}) {
-		return true
-	}
-	return false
+	return active != 1 || kind < HeapCell || kind > HeapHostObject || !pointers[int(kind-HeapCell)]
 }
 
 func (store *Store) checkObjectHeaderLocked(ref Ref, slot *Slot) error {

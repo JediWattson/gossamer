@@ -176,6 +176,7 @@ type Store struct {
 	objectRegions map[ownership.ObjectID]RegionID
 	promotions    map[promotionKey]Ref
 	slotBuffers   [][]Slot
+	payloads      payloadAllocator
 	stats         Stats
 
 	sharedOwner ownership.OwnerID
@@ -326,7 +327,7 @@ func (store *Store) allocKindLocked(owner ownership.OwnerID, regionID RegionID, 
 		slot := &region.Slots[index]
 		slot.Occupied = true
 		slot.object = object
-		initializeSlotPayload(slot, kind)
+		store.initializeSlotPayloadLocked(slot, kind)
 	} else {
 		if uint64(len(region.Slots)) > math.MaxUint32 {
 			_ = store.ledger.Release(object, owner)
@@ -334,8 +335,8 @@ func (store *Store) allocKindLocked(owner ownership.OwnerID, regionID RegionID, 
 		}
 		index = uint32(len(region.Slots))
 		store.ensureRegionSlotCapacityLocked(region, len(region.Slots)+1)
-		region.Slots = append(region.Slots, Slot{Generation: 1, Kind: kind, Occupied: true, object: object})
-		initializeSlotPayload(&region.Slots[index], kind)
+		region.Slots = append(region.Slots, Slot{Generation: 1, Occupied: true, object: object})
+		store.initializeSlotPayloadLocked(&region.Slots[index], kind)
 	}
 	store.objectRegions[object] = region.ID
 	store.stats.Allocations++
@@ -356,7 +357,7 @@ func (store *Store) AllocString(owner ownership.OwnerID, regionID RegionID, text
 		return Ref{}, err
 	}
 	_, slot, _ := store.slotLocked(ref)
-	slot.String = cloneString(StringObject{Text: text})
+	*slot.String = cloneString(StringObject{Text: text})
 	store.stats.LiveBytes += uint64(len(slot.String.Text))
 	return ref, nil
 }
@@ -378,7 +379,7 @@ func (store *Store) DerefCell(owner ownership.OwnerID, ref Ref) (Cell, error) {
 	if slot.Kind != HeapCell {
 		return Cell{}, typeError(ref, slot.Kind, HeapCell)
 	}
-	return cloneCell(slot.Cell), nil
+	return cloneCell(*slot.Cell), nil
 }
 
 // DerefString returns the immutable native string payload for ref.
@@ -564,7 +565,9 @@ func (store *Store) freeLocked(owner ownership.OwnerID, ref Ref, internal bool) 
 		return err
 	}
 	store.recordKindFreeLocked(slot)
-	clearSlotPayload(slot)
+	if err := store.clearSlotPayloadLocked(slot); err != nil {
+		return err
+	}
 	delete(store.objectRegions, slot.object)
 	slot.object = 0
 	slot.Occupied = false
@@ -1204,7 +1207,9 @@ func (store *Store) destroyRegionsLocked(ids map[RegionID]struct{}) error {
 				return err
 			}
 			store.recordKindFreeLocked(slot)
-			clearSlotPayload(slot)
+			if err := store.clearSlotPayloadLocked(slot); err != nil {
+				return err
+			}
 			delete(store.objectRegions, slot.object)
 			slot.object = 0
 			slot.Occupied = false
@@ -1454,19 +1459,19 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 		}
 		if sourceSlot.Kind == HeapString {
 			_, copySlot, _ := store.slotLocked(copyRef)
-			copySlot.String = cloneString(sourceSlot.String)
+			*copySlot.String = cloneString(*sourceSlot.String)
 			store.stats.LiveBytes += uint64(len(copySlot.String.Text))
 		} else if sourceSlot.Kind == HeapBigInt {
 			_, copySlot, _ := store.slotLocked(copyRef)
-			copySlot.BigInt = cloneBigInt(sourceSlot.BigInt)
+			*copySlot.BigInt = cloneBigInt(*sourceSlot.BigInt)
 			store.stats.LiveBytes += uint64(len(copySlot.BigInt.Magnitude))
 		} else if sourceSlot.Kind == HeapArrayBuffer {
 			_, copySlot, _ := store.slotLocked(copyRef)
-			copySlot.ArrayBuffer = cloneArrayBuffer(sourceSlot.ArrayBuffer)
+			*copySlot.ArrayBuffer = cloneArrayBuffer(*sourceSlot.ArrayBuffer)
 			store.stats.LiveBytes += uint64(len(copySlot.ArrayBuffer.Bytes))
 		} else if sourceSlot.Kind == HeapHostObject {
 			_, copySlot, _ := store.slotLocked(copyRef)
-			copySlot.HostObject = sourceSlot.HostObject
+			*copySlot.HostObject = *sourceSlot.HostObject
 		}
 		mapping[source] = copyRef
 	}
@@ -1525,7 +1530,7 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 				}
 			}
 		case HeapFunction:
-			function := cloneFunction(sourceSlot.Function)
+			function := cloneFunction(*sourceSlot.Function)
 			function.ObjectHeader = ObjectHeader{}
 			function.Name = remapValue(function.Name, mapping)
 			function.Environment = remapValue(function.Environment, mapping)
@@ -1566,7 +1571,7 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 		case HeapBigInt:
 			// Immutable payload was cloned during allocation.
 		case HeapSymbol:
-			symbol := cloneSymbol(sourceSlot.Symbol)
+			symbol := cloneSymbol(*sourceSlot.Symbol)
 			symbol.Description = remapValue(symbol.Description, mapping)
 			if err := store.initializeSymbolLocked(to, copyRef, symbol, true); err != nil {
 				_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
@@ -1575,7 +1580,7 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 		case HeapArrayBuffer:
 			// Mutable bytes were cloned during allocation.
 		case HeapTypedArray:
-			view := cloneTypedArray(sourceSlot.TypedArray)
+			view := cloneTypedArray(*sourceSlot.TypedArray)
 			view.Buffer = mapping[view.Buffer]
 			if err := store.initializeTypedArrayLocked(to, copyRef, view, true); err != nil {
 				_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
@@ -1601,14 +1606,14 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 				return nil, err
 			}
 		case HeapRegExp:
-			expression := cloneRegExp(sourceSlot.RegExp)
+			expression := cloneRegExp(*sourceSlot.RegExp)
 			expression.Pattern = mapping[expression.Pattern]
 			if err := store.initializeRegExpLocked(to, copyRef, expression, true); err != nil {
 				_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
 				return nil, err
 			}
 		case HeapError:
-			value := cloneError(sourceSlot.Error)
+			value := cloneError(*sourceSlot.Error)
 			value.ObjectHeader = ObjectHeader{}
 			value.Message = remapValue(value.Message, mapping)
 			value.Stack = remapValue(value.Stack, mapping)

@@ -37,7 +37,7 @@ func (store *Store) DerefError(owner ownership.OwnerID, ref Ref) (ErrorObject, e
 	if slot.Kind != HeapError {
 		return ErrorObject{}, typeError(ref, slot.Kind, HeapError)
 	}
-	return cloneError(slot.Error), nil
+	return cloneError(*slot.Error), nil
 }
 
 func (store *Store) SetErrorMessage(owner ownership.OwnerID, ref Ref, message Value) error {
@@ -222,7 +222,7 @@ func (store *Store) initializeErrorLocked(owner ownership.OwnerID, ref Ref, valu
 		next++
 	}
 	value.Errors = append([]Value(nil), linked[next:]...)
-	slot.Error = cloneError(value)
+	*slot.Error = cloneError(value)
 	return nil
 }
 

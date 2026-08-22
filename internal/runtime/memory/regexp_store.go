@@ -40,7 +40,7 @@ func (store *Store) DerefRegExp(owner ownership.OwnerID, ref Ref) (RegExp, error
 	if slot.Kind != HeapRegExp {
 		return RegExp{}, typeError(ref, slot.Kind, HeapRegExp)
 	}
-	return cloneRegExp(slot.RegExp), nil
+	return cloneRegExp(*slot.RegExp), nil
 }
 
 func (store *Store) SetRegExpLastIndex(owner ownership.OwnerID, ref Ref, index uint64) error {
@@ -72,7 +72,7 @@ func (store *Store) initializeRegExpLocked(owner ownership.OwnerID, ref Ref, exp
 	if slot.Kind != HeapRegExp {
 		return typeError(ref, slot.Kind, HeapRegExp)
 	}
-	if slot.RegExp != (RegExp{}) {
+	if *slot.RegExp != (RegExp{}) {
 		return fmt.Errorf("%w: descriptor already initialized", ErrInvalidRegExp)
 	}
 	if expression.Flags&^allRegExpFlags != 0 || expression.Flags&RegExpUnicode != 0 && expression.Flags&RegExpUnicodeSets != 0 {
@@ -90,6 +90,6 @@ func (store *Store) initializeRegExpLocked(owner ownership.OwnerID, ref Ref, exp
 		return err
 	}
 	expression.Pattern = pattern.Ref()
-	slot.RegExp = cloneRegExp(expression)
+	*slot.RegExp = cloneRegExp(expression)
 	return nil
 }

@@ -36,7 +36,7 @@ func (store *Store) DerefArray(owner ownership.OwnerID, ref Ref) (Array, error) 
 	if slot.Kind != HeapArray {
 		return Array{}, typeError(ref, slot.Kind, HeapArray)
 	}
-	return cloneArray(slot.Array), nil
+	return cloneArray(*slot.Array), nil
 }
 
 func (store *Store) ArrayElement(owner ownership.OwnerID, array Ref, index uint32) (Value, bool, error) {

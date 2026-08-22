@@ -78,7 +78,7 @@ func (store *Store) DerefFunction(owner ownership.OwnerID, ref Ref) (Function, e
 	if slot.Kind != HeapFunction {
 		return Function{}, typeError(ref, slot.Kind, HeapFunction)
 	}
-	return cloneFunction(slot.Function), nil
+	return cloneFunction(*slot.Function), nil
 }
 
 func (store *Store) SetFunctionLocations(owner ownership.OwnerID, ref Ref, locations []SourceSpan) error {
@@ -149,7 +149,7 @@ func (store *Store) initializeFunctionLocked(owner ownership.OwnerID, ref Ref, f
 	constantEnd := 2 + len(function.Constants)
 	function.Constants = append([]Value(nil), linked[2:constantEnd]...)
 	function.Captures = append([]Value(nil), linked[constantEnd:]...)
-	slot.Function = cloneFunction(function)
+	*slot.Function = cloneFunction(function)
 	store.stats.LiveBytes += uint64(len(slot.Function.Code)) + uint64(len(slot.Function.Locations))*8
 	return nil
 }

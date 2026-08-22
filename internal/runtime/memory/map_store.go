@@ -30,7 +30,7 @@ func (store *Store) DerefMap(owner ownership.OwnerID, ref Ref) (Map, error) {
 	if slot.Kind != HeapMap {
 		return Map{}, typeError(ref, slot.Kind, HeapMap)
 	}
-	return cloneMap(slot.Map), nil
+	return cloneMap(*slot.Map), nil
 }
 
 // MapLen returns the entry count without cloning the map's backing slice. It

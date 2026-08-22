@@ -41,7 +41,10 @@ claim(region, object) is either present or absent
 - `internal/runtime/ownership` models task, queue, wrapper, document, realm,
   browser, and immutable shared owners.
 - `internal/runtime/memory` owns typed heap payloads in explicit regions and
-  slots. Synthetic Cells exercise indexed mutation; native Strings, Objects,
+  slots. Stable slot headers retain generation identity while a tagged payload
+  handle resolves through a type-specific 256-entry bitmap slab. Empty slabs
+  are released immediately, so temporary allocation peaks do not pin every
+  possible payload representation. Synthetic Cells exercise indexed mutation; native Strings, Objects,
   sparse Arrays, lexical Contexts, immutable Function descriptors, and
   explicitly drained Promises, and canonical BigInts are the first concrete
   payloads. Symbols keep semantic identity across physical graph copies, while

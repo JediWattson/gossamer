@@ -7,22 +7,25 @@ import "unsafe"
 // entry counts separately: Go's map bucket overhead is implementation-defined
 // and belongs in the process heap profile rather than an invented byte total.
 type PhysicalStats struct {
-	SlotSizeBytes        uint64 `json:"slotSizeBytes"`
-	SlotPayloadSizeBytes uint64 `json:"slotPayloadSizeBytes"`
-	RefSizeBytes         uint64 `json:"refSizeBytes"`
-	ValueSizeBytes       uint64 `json:"valueSizeBytes"`
-	ReservedSlotBytes    uint64 `json:"reservedSlotBytes"`
-	OccupiedSlotBytes    uint64 `json:"occupiedSlotBytes"`
-	PayloadBytes         uint64 `json:"payloadBytes"`
-	FreeListBytes        uint64 `json:"freeListBytes"`
-	AttributedBytes      uint64 `json:"attributedBytes"`
-	RegionRecords        uint64 `json:"regionRecords"`
-	PooledSlotBuffers    uint64 `json:"pooledSlotBuffers"`
-	RegionEdgeEntries    uint64 `json:"regionEdgeEntries"`
-	ObjectEdgeEntries    uint64 `json:"objectEdgeEntries"`
-	ObjectRegionEntries  uint64 `json:"objectRegionEntries"`
-	PromotionEntries     uint64 `json:"promotionEntries"`
-	OwnerClaimEntries    uint64 `json:"ownerClaimEntries"`
+	SlotSizeBytes             uint64 `json:"slotSizeBytes"`
+	SlotPayloadSizeBytes      uint64 `json:"slotPayloadSizeBytes"`
+	RefSizeBytes              uint64 `json:"refSizeBytes"`
+	ValueSizeBytes            uint64 `json:"valueSizeBytes"`
+	ReservedSlotBytes         uint64 `json:"reservedSlotBytes"`
+	OccupiedSlotBytes         uint64 `json:"occupiedSlotBytes"`
+	PayloadBytes              uint64 `json:"payloadBytes"`
+	PayloadArenaSlabs         uint64 `json:"payloadArenaSlabs"`
+	ReservedTypedPayloadBytes uint64 `json:"reservedTypedPayloadBytes"`
+	OccupiedTypedPayloadBytes uint64 `json:"occupiedTypedPayloadBytes"`
+	FreeListBytes             uint64 `json:"freeListBytes"`
+	AttributedBytes           uint64 `json:"attributedBytes"`
+	RegionRecords             uint64 `json:"regionRecords"`
+	PooledSlotBuffers         uint64 `json:"pooledSlotBuffers"`
+	RegionEdgeEntries         uint64 `json:"regionEdgeEntries"`
+	ObjectEdgeEntries         uint64 `json:"objectEdgeEntries"`
+	ObjectRegionEntries       uint64 `json:"objectRegionEntries"`
+	PromotionEntries          uint64 `json:"promotionEntries"`
+	OwnerClaimEntries         uint64 `json:"ownerClaimEntries"`
 }
 
 // PhysicalStats scans the Store at a profiling checkpoint. Ordinary runtime
@@ -67,6 +70,11 @@ func (store *Store) PhysicalStats() PhysicalStats {
 		result.PooledSlotBuffers++
 		result.ReservedSlotBytes += uint64(cap(buffer)) * result.SlotSizeBytes
 	}
+	typedPayloads := store.payloads.physical()
+	result.PayloadArenaSlabs = typedPayloads.slabs
+	result.ReservedTypedPayloadBytes = typedPayloads.reservedBytes
+	result.OccupiedTypedPayloadBytes = typedPayloads.occupiedBytes
+	result.PayloadBytes += typedPayloads.reservedBytes
 	result.AttributedBytes = result.ReservedSlotBytes + result.PayloadBytes + result.FreeListBytes
 	return result
 }

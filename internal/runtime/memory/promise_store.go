@@ -28,7 +28,7 @@ func (store *Store) DerefPromise(owner ownership.OwnerID, ref Ref) (Promise, err
 	if slot.Kind != HeapPromise {
 		return Promise{}, typeError(ref, slot.Kind, HeapPromise)
 	}
-	return clonePromise(slot.Promise), nil
+	return clonePromise(*slot.Promise), nil
 }
 
 func (store *Store) AddPromiseReaction(owner ownership.OwnerID, promise Ref, reaction PromiseReaction) error {

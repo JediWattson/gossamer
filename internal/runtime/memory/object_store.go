@@ -35,7 +35,7 @@ func (store *Store) DerefObject(owner ownership.OwnerID, ref Ref) (Object, error
 	if slot.Kind != HeapObject {
 		return Object{}, typeError(ref, slot.Kind, HeapObject)
 	}
-	return cloneObject(slot.Object), nil
+	return cloneObject(*slot.Object), nil
 }
 
 // DerefObjectHeader returns the prototype and named own properties for any

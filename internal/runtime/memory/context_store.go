@@ -42,7 +42,7 @@ func (store *Store) DerefContext(owner ownership.OwnerID, ref Ref) (Context, err
 	if slot.Kind != HeapContext {
 		return Context{}, typeError(ref, slot.Kind, HeapContext)
 	}
-	return cloneContext(slot.Context), nil
+	return cloneContext(*slot.Context), nil
 }
 
 func (store *Store) SetContextParent(owner ownership.OwnerID, context Ref, parent Value) error {

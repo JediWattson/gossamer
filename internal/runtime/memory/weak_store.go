@@ -31,7 +31,7 @@ func (store *Store) DerefWeakMap(owner ownership.OwnerID, ref Ref) (WeakMap, err
 	if slot.Kind != HeapWeakMap {
 		return WeakMap{}, typeError(ref, slot.Kind, HeapWeakMap)
 	}
-	return cloneWeakMap(slot.WeakMap), nil
+	return cloneWeakMap(*slot.WeakMap), nil
 }
 
 func (store *Store) WeakMapSet(owner ownership.OwnerID, ref, key Ref, value Value) error {
@@ -167,7 +167,7 @@ func (store *Store) DerefWeakSet(owner ownership.OwnerID, ref Ref) (WeakSet, err
 	if slot.Kind != HeapWeakSet {
 		return WeakSet{}, typeError(ref, slot.Kind, HeapWeakSet)
 	}
-	return cloneWeakSet(slot.WeakSet), nil
+	return cloneWeakSet(*slot.WeakSet), nil
 }
 
 func (store *Store) WeakSetAdd(owner ownership.OwnerID, ref, key Ref) error {

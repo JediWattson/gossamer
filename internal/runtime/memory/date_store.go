@@ -34,7 +34,7 @@ func (store *Store) DerefDate(owner ownership.OwnerID, ref Ref) (Date, error) {
 	if slot.Kind != HeapDate {
 		return Date{}, typeError(ref, slot.Kind, HeapDate)
 	}
-	return slot.Date, nil
+	return *slot.Date, nil
 }
 
 func (store *Store) SetDateTime(owner ownership.OwnerID, ref Ref, milliseconds float64) error {

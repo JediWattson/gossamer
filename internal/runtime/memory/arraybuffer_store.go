@@ -35,7 +35,7 @@ func (store *Store) DerefArrayBuffer(owner ownership.OwnerID, ref Ref) (ArrayBuf
 	if slot.Kind != HeapArrayBuffer {
 		return ArrayBuffer{}, typeError(ref, slot.Kind, HeapArrayBuffer)
 	}
-	return cloneArrayBuffer(slot.ArrayBuffer), nil
+	return cloneArrayBuffer(*slot.ArrayBuffer), nil
 }
 
 func (store *Store) ReadArrayBuffer(owner ownership.OwnerID, ref Ref, offset, length uint64) ([]byte, error) {

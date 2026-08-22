@@ -60,26 +60,27 @@ type StringObject struct {
 // Ref metadata outside this union lets regions retain generation tombstones
 // without pinning every possible heap representation for every vacant slot.
 type slotPayload struct {
-	Cell        Cell
-	String      StringObject
-	Object      Object
-	Array       Array
-	Context     Context
-	Function    Function
-	Promise     Promise
-	BigInt      BigInt
-	Symbol      Symbol
-	ArrayBuffer ArrayBuffer
-	TypedArray  TypedArray
-	Map         Map
-	Set         Set
-	Date        Date
-	RegExp      RegExp
-	Error       ErrorObject
-	WeakMap     WeakMap
-	WeakSet     WeakSet
-	Iterator    Iterator
-	HostObject  HostObject
+	handle      payloadHandle
+	Cell        *Cell
+	String      *StringObject
+	Object      *Object
+	Array       *Array
+	Context     *Context
+	Function    *Function
+	Promise     *Promise
+	BigInt      *BigInt
+	Symbol      *Symbol
+	ArrayBuffer *ArrayBuffer
+	TypedArray  *TypedArray
+	Map         *Map
+	Set         *Set
+	Date        *Date
+	RegExp      *RegExp
+	Error       *ErrorObject
+	WeakMap     *WeakMap
+	WeakSet     *WeakSet
+	Iterator    *Iterator
+	HostObject  *HostObject
 }
 
 // Slot holds one generation-checked typed heap payload. The payload pointer is
@@ -133,29 +134,54 @@ func cloneSlot(slot Slot) Slot {
 	if slot.slotPayload == nil {
 		return result
 	}
-	result.slotPayload = &slotPayload{
-		Cell:        cloneCell(slot.Cell),
-		String:      cloneString(slot.String),
-		Object:      cloneObject(slot.Object),
-		Array:       cloneArray(slot.Array),
-		Context:     cloneContext(slot.Context),
-		Function:    cloneFunction(slot.Function),
-		Promise:     clonePromise(slot.Promise),
-		BigInt:      cloneBigInt(slot.BigInt),
-		Symbol:      cloneSymbol(slot.Symbol),
-		ArrayBuffer: cloneArrayBuffer(slot.ArrayBuffer),
-		TypedArray:  cloneTypedArray(slot.TypedArray),
-		Map:         cloneMap(slot.Map),
-		Set:         cloneSet(slot.Set),
-		Date:        slot.Date,
-		RegExp:      cloneRegExp(slot.RegExp),
-		Error:       cloneError(slot.Error),
-		WeakMap:     cloneWeakMap(slot.WeakMap),
-		WeakSet:     cloneWeakSet(slot.WeakSet),
-		Iterator:    cloneIterator(slot.Iterator),
-		HostObject:  slot.HostObject,
+	result.slotPayload = &slotPayload{}
+	switch slot.Kind {
+	case HeapCell:
+		result.Cell = payloadPointer(cloneCell(*slot.Cell))
+	case HeapString:
+		result.String = payloadPointer(cloneString(*slot.String))
+	case HeapObject:
+		result.Object = payloadPointer(cloneObject(*slot.Object))
+	case HeapArray:
+		result.Array = payloadPointer(cloneArray(*slot.Array))
+	case HeapContext:
+		result.Context = payloadPointer(cloneContext(*slot.Context))
+	case HeapFunction:
+		result.Function = payloadPointer(cloneFunction(*slot.Function))
+	case HeapPromise:
+		result.Promise = payloadPointer(clonePromise(*slot.Promise))
+	case HeapBigInt:
+		result.BigInt = payloadPointer(cloneBigInt(*slot.BigInt))
+	case HeapSymbol:
+		result.Symbol = payloadPointer(cloneSymbol(*slot.Symbol))
+	case HeapArrayBuffer:
+		result.ArrayBuffer = payloadPointer(cloneArrayBuffer(*slot.ArrayBuffer))
+	case HeapTypedArray:
+		result.TypedArray = payloadPointer(cloneTypedArray(*slot.TypedArray))
+	case HeapMap:
+		result.Map = payloadPointer(cloneMap(*slot.Map))
+	case HeapSet:
+		result.Set = payloadPointer(cloneSet(*slot.Set))
+	case HeapDate:
+		result.Date = payloadPointer(*slot.Date)
+	case HeapRegExp:
+		result.RegExp = payloadPointer(cloneRegExp(*slot.RegExp))
+	case HeapError:
+		result.Error = payloadPointer(cloneError(*slot.Error))
+	case HeapWeakMap:
+		result.WeakMap = payloadPointer(cloneWeakMap(*slot.WeakMap))
+	case HeapWeakSet:
+		result.WeakSet = payloadPointer(cloneWeakSet(*slot.WeakSet))
+	case HeapIterator:
+		result.Iterator = payloadPointer(cloneIterator(*slot.Iterator))
+	case HeapHostObject:
+		result.HostObject = payloadPointer(*slot.HostObject)
 	}
 	return result
+}
+
+func payloadPointer[T any](value T) *T {
+	return &value
 }
 
 func slotReferences(slot *Slot) []Value {
@@ -262,14 +288,8 @@ func objectHeaderStorageEmpty(header ObjectHeader) bool {
 	return header.Prototype == (Value{}) && len(header.Properties) == 0 && !header.NonExtensible && !header.ImmutablePrototype
 }
 
-func clearSlotPayload(slot *Slot) {
-	slot.Kind = HeapInvalid
-	slot.slotPayload = nil
-}
-
-func initializeSlotPayload(slot *Slot, kind HeapKind) {
-	clearSlotPayload(slot)
-	slot.slotPayload = &slotPayload{}
+func (store *Store) initializeSlotPayloadLocked(slot *Slot, kind HeapKind) {
+	slot.slotPayload = store.payloads.allocate(kind)
 	slot.Kind = kind
 	if header, ok := objectHeaderForSlot(slot); ok {
 		header.Prototype = NullValue()
@@ -278,6 +298,15 @@ func initializeSlotPayload(slot *Slot, kind HeapKind) {
 	case HeapContext:
 		slot.Context.Parent = NullValue()
 	}
+}
+
+func (store *Store) clearSlotPayloadLocked(slot *Slot) error {
+	if err := store.payloads.release(slot.Kind, slot.slotPayload); err != nil {
+		return err
+	}
+	slot.Kind = HeapInvalid
+	slot.slotPayload = nil
+	return nil
 }
 
 func cloneRegion(region *Region) Region {
