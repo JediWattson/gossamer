@@ -476,6 +476,30 @@ undefined;
 	}
 }
 
+func TestIterativeBytecodeStackRunsDeepCallsAndRoutesThrows(t *testing.T) {
+	t.Parallel()
+
+	image, err := compiler.Compile(`
+function descend(value) {
+  if (value === 0) return 0;
+  return descend(value - 1) + 1;
+}
+function leaf() { throw 7; }
+function middle() { return leaf(); }
+function catchDeep() {
+  try { return middle(); } catch (error) { return error + 1; }
+}
+descend(1500) + catchDeep();
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := executeWithConfig(t, 814_003, image, browserruntime.InterpreterConfig{MaxCallDepth: 2048})
+	if result.Kind() != memory.ValueNumber || result.Number() != 1508 {
+		t.Fatalf("iterative call result = %#v, want 1508", result)
+	}
+}
+
 func TestCompileExecutesConstructionWithExplicitThis(t *testing.T) {
 	t.Parallel()
 
@@ -1010,13 +1034,17 @@ function* matching(values, minimum) {
 }
 
 func execute(t *testing.T, realmID browserruntime.RealmID, image program.Program) memory.Value {
+	return executeWithConfig(t, realmID, image, browserruntime.InterpreterConfig{})
+}
+
+func executeWithConfig(t *testing.T, realmID browserruntime.RealmID, image program.Program, config browserruntime.InterpreterConfig) memory.Value {
 	t.Helper()
 	realm, err := browserruntime.NewRealm(realmID, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer realm.Close()
-	interpreter := browserruntime.NewInterpreter(browserruntime.InterpreterConfig{})
+	interpreter := browserruntime.NewInterpreter(config)
 	var result memory.Value
 	_, err = realm.EnqueueTask(func(task *browserruntime.TaskContext) error {
 		environment, err := task.NewContext(memory.NullValue())

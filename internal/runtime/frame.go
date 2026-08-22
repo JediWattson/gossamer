@@ -63,12 +63,22 @@ type Frame struct {
 	environments      []memory.Value
 	completion        *abruptCompletion
 	current           *ThrownError
+	call              *frameCall
 	profile           *instructionProgramStats
 	bindings          []frameBinding
 	stackLocals       bool
 	localBindings     []frameLocalBinding
 	localScopes       []int
 	localEnvironments []bool
+}
+
+type frameCall struct {
+	function    memory.Ref
+	this        memory.Value
+	arguments   []memory.Value
+	mode        callMode
+	construct   bool
+	constructed memory.Ref
 }
 
 type frameBinding struct {
@@ -121,6 +131,26 @@ func (frame *Frame) VisitRefs(visit func(memory.Ref) error) error {
 	for _, value := range frame.environments {
 		if err := visitValue(value); err != nil {
 			return err
+		}
+	}
+	if frame.call != nil {
+		if frame.call.function != (memory.Ref{}) {
+			if err := visit(frame.call.function); err != nil {
+				return err
+			}
+		}
+		if err := visitValue(frame.call.this); err != nil {
+			return err
+		}
+		for _, value := range frame.call.arguments {
+			if err := visitValue(value); err != nil {
+				return err
+			}
+		}
+		if frame.call.constructed != (memory.Ref{}) {
+			if err := visit(frame.call.constructed); err != nil {
+				return err
+			}
 		}
 	}
 	for _, binding := range frame.bindings {
@@ -179,6 +209,7 @@ func (frame *Frame) reset() {
 	frame.environments = frame.environments[:0]
 	frame.completion = nil
 	frame.current = nil
+	frame.call = nil
 	frame.profile = nil
 	clear(frame.bindings)
 	frame.bindings = frame.bindings[:0]

@@ -19,6 +19,7 @@ var (
 	ErrNativeFunction   = errors.New("runtime: native Function is not registered")
 	ErrOperandType      = errors.New("runtime: invalid operand type")
 	ErrExceptionState   = errors.New("runtime: invalid exception state")
+	errFrameCall        = errors.New("runtime: bytecode frame call")
 )
 
 const (
@@ -241,27 +242,45 @@ func (interpreter *Interpreter) DiscardJobs(task TaskID) {
 	interpreter.jobMutex.Unlock()
 }
 
-func (execution *execution) call(function memory.Ref, this memory.Value, arguments []memory.Value, mode callMode) (result memory.Value, resultErr error) {
+func (execution *execution) call(function memory.Ref, this memory.Value, arguments []memory.Value, mode callMode) (memory.Value, error) {
 	stack := execution.context.stack
 	if stack == nil {
 		stack = &Stack{}
 		execution.context.stack = stack
 	}
-	// Stack depth is task-shared, unlike execution, so native re-entry through
-	// a public Interpreter call cannot reset and bypass the call-depth limit.
-	if uint64(stack.Depth()) >= uint64(execution.interpreter.config.MaxCallDepth) {
-		return memory.Value{}, ErrCallDepth
-	}
-	descriptor, err := execution.context.LoadFunction(function)
+	descriptor, this, err := execution.prepareCall(stack, function, this, mode)
 	if err != nil {
 		return memory.Value{}, err
 	}
+	if descriptor.Kind == memory.FunctionNative {
+		return execution.invokeNative(stack, function, descriptor, this, arguments)
+	}
+	return execution.runBytecodeCall(stack, function, descriptor, this, arguments)
+}
+
+func (execution *execution) prepareCall(stack *Stack, function memory.Ref, this memory.Value, mode callMode) (memory.Function, memory.Value, error) {
+	// Stack depth is task-shared, unlike execution, so native re-entry through
+	// a public Interpreter call cannot reset and bypass the call-depth limit.
+	if uint64(stack.Depth()) >= uint64(execution.interpreter.config.MaxCallDepth) {
+		return memory.Function{}, memory.Value{}, ErrCallDepth
+	}
+	descriptor, err := execution.context.LoadFunction(function)
+	if err != nil {
+		return memory.Function{}, memory.Value{}, err
+	}
 	if mode == callNativeOnly && descriptor.Kind != memory.FunctionNative {
-		return memory.Value{}, fmt.Errorf("%w: %s", ErrNotCallable, function)
+		return memory.Function{}, memory.Value{}, fmt.Errorf("%w: %s", ErrNotCallable, function)
 	}
 	if descriptor.ThisMode == memory.FunctionThisLexical {
 		this = descriptor.LexicalThis
 	}
+	if descriptor.Kind != memory.FunctionNative && descriptor.Kind != memory.FunctionBytecode {
+		return memory.Function{}, memory.Value{}, fmt.Errorf("%w: %s", ErrNotCallable, function)
+	}
+	return descriptor, this, nil
+}
+
+func (execution *execution) acquireFrame(stack *Stack, function memory.Ref, descriptor memory.Function, this memory.Value, arguments []memory.Value) (*Frame, error) {
 	frame := stack.acquireFrame()
 	frame.Function = function
 	frame.Environment = descriptor.Environment
@@ -270,6 +289,14 @@ func (execution *execution) call(function memory.Ref, this memory.Value, argumen
 	frame.function = descriptor
 	if err := stack.push(frame); err != nil {
 		stack.recycleFrame(frame)
+		return nil, err
+	}
+	return frame, nil
+}
+
+func (execution *execution) invokeNative(stack *Stack, function memory.Ref, descriptor memory.Function, this memory.Value, arguments []memory.Value) (result memory.Value, resultErr error) {
+	frame, err := execution.acquireFrame(stack, function, descriptor, this, arguments)
+	if err != nil {
 		return memory.Value{}, err
 	}
 	defer func() {
@@ -279,47 +306,173 @@ func (execution *execution) call(function memory.Ref, this memory.Value, argumen
 		}
 		stack.recycleFrame(frame)
 	}()
-	if descriptor.Kind == memory.FunctionNative {
-		execution.interpreter.nativeMutex.RLock()
-		native := execution.interpreter.natives[descriptor.NativeID]
-		execution.interpreter.nativeMutex.RUnlock()
-		if native == nil {
-			return memory.Value{}, fmt.Errorf("%w: ID %d", ErrNativeFunction, descriptor.NativeID)
-		}
-		result, err := native(execution, function, descriptor, this, frame.Arguments)
-		if err != nil {
-			return memory.Value{}, fmt.Errorf("runtime: native function %s ID %d: %w", function, descriptor.NativeID, err)
-		}
-		return result, nil
+	execution.interpreter.nativeMutex.RLock()
+	native := execution.interpreter.natives[descriptor.NativeID]
+	execution.interpreter.nativeMutex.RUnlock()
+	if native == nil {
+		return memory.Value{}, fmt.Errorf("%w: ID %d", ErrNativeFunction, descriptor.NativeID)
 	}
-	if descriptor.Kind != memory.FunctionBytecode {
-		return memory.Value{}, fmt.Errorf("%w: %s", ErrNotCallable, function)
+	result, err = native(execution, function, descriptor, this, frame.Arguments)
+	if err != nil {
+		return memory.Value{}, fmt.Errorf("runtime: native function %s ID %d: %w", function, descriptor.NativeID, err)
+	}
+	return result, nil
+}
+
+func (execution *execution) acquireBytecodeFrame(stack *Stack, function memory.Ref, descriptor memory.Function, this memory.Value, arguments []memory.Value) (*Frame, error) {
+	frame, err := execution.acquireFrame(stack, function, descriptor, this, arguments)
+	if err != nil {
+		return nil, err
 	}
 	program, err := execution.interpreter.loadProgram(descriptor.Code, len(descriptor.Constants))
 	if err != nil {
-		return memory.Value{}, err
+		_ = stack.pop(frame)
+		stack.recycleFrame(frame)
+		return nil, err
 	}
 	frame.instructions = program.instructions
 	if execution.profile != nil {
 		execution.profile.bind(frame, program, execution.context)
 	}
-	result, err = execution.runFrame(frame)
+	return frame, nil
+}
+
+// runBytecodeCall drives bytecode-to-bytecode calls on the task's explicit
+// Frame stack. Native callbacks may still re-enter call, but ordinary JS call
+// chains no longer consume one Go goroutine frame per JavaScript frame.
+func (execution *execution) runBytecodeCall(stack *Stack, function memory.Ref, descriptor memory.Function, this memory.Value, arguments []memory.Value) (result memory.Value, resultErr error) {
+	baseDepth := stack.Depth()
+	frame, err := execution.acquireBytecodeFrame(stack, function, descriptor, this, arguments)
 	if err != nil {
-		detail := execution.thrownSummary(err)
-		if detail != "" {
-			err = fmt.Errorf("%s: %w", detail, err)
+		return memory.Value{}, err
+	}
+	defer func() {
+		for stack.Depth() > baseDepth {
+			index := stack.Depth() - 1
+			active := stack.frames[index]
+			if popErr := stack.pop(active); popErr != nil {
+				resultErr = errors.Join(resultErr, popErr)
+				break
+			}
+			stack.recycleFrame(active)
 		}
-		instruction := uint32(0)
-		if frame.ip != 0 {
-			instruction = frame.ip - 1
+	}()
+
+	for {
+		result, err = execution.runFrame(frame)
+		if err == errFrameCall {
+			request := frame.call
+			if request == nil {
+				return memory.Value{}, fmt.Errorf("%w: missing pending call", ErrExceptionState)
+			}
+			child, childThis, prepareErr := execution.prepareCall(stack, request.function, request.this, request.mode)
+			if prepareErr != nil {
+				frame.call = nil
+				handled, terminal := execution.routeFrameError(frame, prepareErr)
+				if handled {
+					continue
+				}
+				err = terminal
+			} else if child.Kind == memory.FunctionNative {
+				result, err = execution.invokeNative(stack, request.function, child, childThis, request.arguments)
+				frame.call = nil
+				if err == nil {
+					result, err = execution.finishPendingCall(request, result)
+				}
+				if err == nil {
+					frame.push(result)
+					continue
+				}
+				handled, terminal := execution.routeFrameError(frame, err)
+				if handled {
+					continue
+				}
+				err = terminal
+			} else {
+				childFrame, childErr := execution.acquireBytecodeFrame(stack, request.function, child, childThis, request.arguments)
+				if childErr == nil {
+					request.arguments = nil
+					frame = childFrame
+					continue
+				}
+				frame.call = nil
+				handled, terminal := execution.routeFrameError(frame, childErr)
+				if handled {
+					continue
+				}
+				err = terminal
+			}
 		}
-		if uint64(instruction) < uint64(len(descriptor.Locations)) {
-			location := descriptor.Locations[instruction]
-			return memory.Value{}, fmt.Errorf("runtime: bytecode function %s instruction %d source %d:%d: %w", function, instruction, location.Start, location.End, err)
+
+		for {
+			if err != nil {
+				err = execution.wrapFrameError(frame, err)
+			}
+			if popErr := stack.pop(frame); popErr != nil {
+				return memory.Value{}, errors.Join(err, popErr)
+			}
+			stack.recycleFrame(frame)
+			if stack.Depth() == baseDepth {
+				return result, err
+			}
+
+			parent := stack.frames[stack.Depth()-1]
+			request := parent.call
+			parent.call = nil
+			if request == nil {
+				return memory.Value{}, fmt.Errorf("%w: caller has no pending continuation", ErrExceptionState)
+			}
+			if err == nil {
+				result, err = execution.finishPendingCall(request, result)
+				if err == nil {
+					parent.push(result)
+					frame = parent
+					break
+				}
+			}
+			handled, terminal := execution.routeFrameError(parent, err)
+			if handled {
+				frame = parent
+				err = nil
+				break
+			}
+			frame = parent
+			err = terminal
 		}
-		return memory.Value{}, fmt.Errorf("runtime: bytecode function %s instruction %d: %w", function, instruction, err)
+	}
+}
+
+func (execution *execution) finishPendingCall(call *frameCall, result memory.Value) (memory.Value, error) {
+	if call == nil || !call.construct {
+		return result, nil
+	}
+	object, err := isObjectValue(execution.context, result)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	if !object {
+		return memory.RefValue(call.constructed), nil
 	}
 	return result, nil
+}
+
+func (execution *execution) wrapFrameError(frame *Frame, err error) error {
+	if frame == nil || err == nil {
+		return err
+	}
+	detail := execution.thrownSummary(err)
+	if detail != "" {
+		err = fmt.Errorf("%s: %w", detail, err)
+	}
+	instruction := uint32(0)
+	if frame.ip != 0 {
+		instruction = frame.ip - 1
+	}
+	if uint64(instruction) < uint64(len(frame.function.Locations)) {
+		location := frame.function.Locations[instruction]
+		return fmt.Errorf("runtime: bytecode function %s instruction %d source %d:%d: %w", frame.Function, instruction, location.Start, location.End, err)
+	}
+	return fmt.Errorf("runtime: bytecode function %s instruction %d: %w", frame.Function, instruction, err)
 }
 
 func (execution *execution) thrownSummary(err error) string {
@@ -1126,16 +1279,8 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 						return memory.Value{}, terminal
 					}
 				}
-				result, err := execution.call(callee, base, arguments, callAny)
-				if err != nil {
-					if handled, terminal := execution.routeFrameError(frame, err); handled {
-						continue
-					} else {
-						return memory.Value{}, terminal
-					}
-				}
-				frame.push(result)
-				continue
+				frame.call = &frameCall{function: callee, this: base, arguments: arguments, mode: callAny}
+				return memory.Value{}, errFrameCall
 			}
 			var callee memory.Ref
 			var arguments []memory.Value
@@ -1192,24 +1337,11 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 				}
 				this = memory.RefValue(constructed)
 			}
-			result, err := execution.call(callee, this, arguments, mode)
-			if err != nil {
-				if handled, terminal := execution.routeFrameError(frame, err); handled {
-					continue
-				} else {
-					return memory.Value{}, terminal
-				}
+			frame.call = &frameCall{
+				function: callee, this: this, arguments: arguments, mode: mode,
+				construct: construct, constructed: constructed,
 			}
-			if construct {
-				object, err := isObjectValue(context, result)
-				if err != nil {
-					return memory.Value{}, err
-				}
-				if !object {
-					result = memory.RefValue(constructed)
-				}
-			}
-			frame.push(result)
+			return memory.Value{}, errFrameCall
 		case OpCreateClosure, OpCreateArrowClosure:
 			if frame.stackLocals {
 				return memory.Value{}, fmt.Errorf("%w: stack-local function cannot create a closure", ErrInvalidBytecode)
