@@ -99,8 +99,9 @@ type Stats struct {
 }
 
 type promotionKey struct {
-	owner  ownership.OwnerID
-	source Ref
+	owner    ownership.OwnerID
+	lifetime ownership.OwnerKind
+	source   Ref
 }
 
 // ownerRecord binds one semantic ledger claim to its live physical regions.
@@ -226,6 +227,14 @@ func (store *Store) RegisterOwner(owner ownership.OwnerID) error {
 }
 
 func (store *Store) NewRegion(owner ownership.OwnerID) (RegionID, error) {
+	return store.NewRegionWithLifetime(owner, owner.Kind)
+}
+
+// NewRegionWithLifetime creates private physical storage whose release horizon
+// may be shorter than its semantic owner. A Realm can therefore execute one
+// task in disposable storage while retaining authority to read and mutate its
+// persistent private graph.
+func (store *Store) NewRegionWithLifetime(owner ownership.OwnerID, lifetime ownership.OwnerKind) (RegionID, error) {
 	if store == nil {
 		return 0, fmt.Errorf("memory: nil store")
 	}
@@ -233,6 +242,9 @@ func (store *Store) NewRegion(owner ownership.OwnerID) (RegionID, error) {
 	defer store.mutex.Unlock()
 	if store.closed {
 		return 0, ErrStoreClosed
+	}
+	if lifetime > owner.Kind || lifetime > ownership.OwnerShared || stateForOwner(owner) != RegionPrivate && lifetime != owner.Kind {
+		return 0, fmt.Errorf("memory: invalid %s region lifetime %d", owner, lifetime)
 	}
 	claim, err := store.ensureOwnerLocked(owner)
 	if err != nil {
@@ -243,10 +255,11 @@ func (store *Store) NewRegion(owner ownership.OwnerID) (RegionID, error) {
 	}
 	store.nextRegion++
 	region := &Region{
-		ID:    store.nextRegion,
-		Owner: owner,
-		State: stateForOwner(owner),
-		claim: claim,
+		ID:       store.nextRegion,
+		Owner:    owner,
+		Lifetime: lifetime,
+		State:    stateForOwner(owner),
+		claim:    claim,
 	}
 	store.regions[region.ID] = region
 	if err := store.attachOwnerRegionLocked(owner, region.ID); err != nil {
@@ -300,6 +313,7 @@ func (store *Store) RegionMetadata(id RegionID) (RegionMetadata, error) {
 	return RegionMetadata{
 		ID:           region.ID,
 		Owner:        region.Owner,
+		Lifetime:     region.Lifetime,
 		State:        region.State,
 		Slots:        len(region.Slots),
 		SlotCapacity: cap(region.Slots),
@@ -526,25 +540,46 @@ func (store *Store) prepareEscapingValueLocked(destination *Region, value Value,
 	if err != nil {
 		return Value{}, err
 	}
-	if source.State == RegionPublished || source.Owner == destination.Owner {
+	if source.State == RegionPublished {
 		return value, nil
 	}
 	if source.State == RegionInTransit {
 		return Value{}, fmt.Errorf("%w: R%d", ErrRegionInTransit, source.ID)
 	}
+	sameOwner := source.Owner == destination.Owner
+	if sameOwner {
+		// A same-owner task scratch region borrows Realm authority. Keep the
+		// original identity visible for the rest of the task and evacuate only
+		// final escaping state at the ordered checkpoint.
+		return value, nil
+	}
 	if destination.Owner.Kind <= source.Owner.Kind {
 		return Value{}, fmt.Errorf("%w: R%d owned by %s cannot retain R%d owned by %s", ErrAccessDenied, destination.ID, destination.Owner, source.ID, source.Owner)
 	}
-	key := promotionKey{owner: destination.Owner, source: value.Ref()}
+	return store.promoteEscapingValueLocked(destination, value)
+}
+
+func (store *Store) promoteEscapingValueLocked(destination *Region, value Value) (Value, error) {
+	source, _, err := store.slotLocked(value.Ref())
+	if err != nil {
+		return Value{}, err
+	}
+	sameOwner := source.Owner == destination.Owner
+	key := promotionKey{owner: destination.Owner, lifetime: destination.Lifetime, source: value.Ref()}
 	if cached := store.promotions[key]; cached != (Ref{}) {
 		cachedRegion, _, cacheErr := store.slotLocked(cached)
-		if cacheErr == nil && cachedRegion.Owner == destination.Owner {
+		if cacheErr == nil && cachedRegion.Owner == destination.Owner && cachedRegion.Lifetime >= destination.Lifetime {
 			store.stats.PromotionCacheHits++
 			return RefValue(cached), nil
 		}
 		store.deletePromotionLocked(key)
 	}
-	promoted, err := store.copyLocked(source.Owner, destination.Owner, []Ref{value.Ref()})
+	var promoted []Ref
+	if sameOwner {
+		promoted, err = store.copyShorterGraphLocked(destination.Owner, destination.Lifetime, []Ref{value.Ref()})
+	} else {
+		promoted, err = store.copyLocked(source.Owner, destination.Owner, []Ref{value.Ref()})
+	}
 	if err != nil {
 		return Value{}, err
 	}
@@ -594,6 +629,133 @@ func (store *Store) forgetPromotionsToDestinationLocked(destination Ref) {
 	for key := range store.promotionsByDestination[destination] {
 		store.deletePromotionLocked(key)
 	}
+}
+
+// PromoteEscapes evacuates final references from longer-lived regions into a
+// short-lived same-owner region. Execution may temporarily expose those refs
+// during a task so mutable identity remains canonical; this ordered checkpoint
+// rewrites the sparse incoming region frontier before bulk release.
+func (store *Store) PromoteEscapes(owner ownership.OwnerID, regionID RegionID) (uint64, error) {
+	if store == nil {
+		return 0, fmt.Errorf("memory: nil store")
+	}
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+	short := store.regions[regionID]
+	if short == nil {
+		if store.assignedRegionIDLocked(regionID) {
+			return 0, fmt.Errorf("%w: R%d", ErrRegionDestroyed, regionID)
+		}
+		return 0, fmt.Errorf("%w: R%d", ErrUnknownRegion, regionID)
+	}
+	if short.State != RegionPrivate || short.Owner != owner {
+		return 0, store.accessError(short, owner)
+	}
+
+	sourceSet := make(map[RegionID]struct{})
+	for sourceID := range store.barrier.incoming[regionID] {
+		source := store.regions[sourceID]
+		if source != nil && source.State == RegionPrivate && source.Owner == owner && source.Lifetime > short.Lifetime {
+			sourceSet[sourceID] = struct{}{}
+		}
+	}
+	oldReferences := make([]Value, 0, 16)
+	newReferences := make([]Value, 0, 16)
+	var roots []Ref
+	var destinationLifetime ownership.OwnerKind
+	for _, sourceID := range sortedRegionSet(sourceSet) {
+		sourceRegion := store.regions[sourceID]
+		for slotIndex := range sourceRegion.Slots {
+			sourceSlot := &sourceRegion.Slots[slotIndex]
+			if !sourceSlot.Occupied {
+				continue
+			}
+			oldReferences = appendSlotReferences(oldReferences[:0], sourceSlot)
+			for _, value := range oldReferences {
+				if !value.IsRef() {
+					continue
+				}
+				targetRegion, _, err := store.slotLocked(value.Ref())
+				if err != nil {
+					return 0, err
+				}
+				if targetRegion.State != RegionPrivate || targetRegion.Owner != owner || targetRegion.Lifetime >= sourceRegion.Lifetime {
+					continue
+				}
+				roots = append(roots, value.Ref())
+				if sourceRegion.Lifetime > destinationLifetime {
+					destinationLifetime = sourceRegion.Lifetime
+				}
+			}
+		}
+	}
+	roots = uniqueRefs(roots)
+	if len(roots) == 0 {
+		return 0, nil
+	}
+	promoted, err := store.copyShorterGraphLocked(owner, destinationLifetime, roots)
+	if err != nil {
+		return 0, err
+	}
+	replacements := make(map[Ref]Ref, len(roots))
+	for index, root := range roots {
+		replacements[root] = promoted[index]
+		store.cachePromotionLocked(promotionKey{owner: owner, lifetime: destinationLifetime, source: root}, promoted[index])
+	}
+	store.stats.AutomaticPromotions++
+	for _, sourceID := range sortedRegionSet(sourceSet) {
+		sourceRegion := store.regions[sourceID]
+		for slotIndex := range sourceRegion.Slots {
+			sourceSlot := &sourceRegion.Slots[slotIndex]
+			if !sourceSlot.Occupied {
+				continue
+			}
+			oldReferences = appendSlotReferences(oldReferences[:0], sourceSlot)
+			rewrite := false
+			for _, value := range oldReferences {
+				if value.IsRef() && replacements[value.Ref()] != (Ref{}) {
+					rewrite = true
+					break
+				}
+			}
+			if !rewrite {
+				continue
+			}
+			for _, value := range oldReferences {
+				if !value.IsRef() {
+					continue
+				}
+				targetRegion, targetSlot, err := store.slotLocked(value.Ref())
+				if err != nil {
+					return 0, err
+				}
+				if err := store.unlinkLocked(sourceRegion.ID, targetRegion.ID, targetSlot); err != nil {
+					return 0, err
+				}
+			}
+			rewriteSlotReferences(sourceSlot, replacements)
+			newReferences = appendSlotReferences(newReferences[:0], sourceSlot)
+			for _, value := range newReferences {
+				if !value.IsRef() {
+					continue
+				}
+				targetRegion, targetSlot, err := store.slotLocked(value.Ref())
+				if err != nil {
+					return 0, err
+				}
+				if err := store.linkLocked(sourceRegion.ID, targetRegion.ID, targetSlot); err != nil {
+					return 0, err
+				}
+			}
+		}
+	}
+	for sourceID := range store.barrier.incoming[regionID] {
+		source := store.regions[sourceID]
+		if source != nil && source.Lifetime > short.Lifetime {
+			return 0, fmt.Errorf("%w: R%d still references task-lifetime R%d after promotion", ErrInvariantViolation, sourceID, regionID)
+		}
+	}
+	return uint64(len(roots)), nil
 }
 
 func (store *Store) Free(owner ownership.OwnerID, ref Ref) error {
@@ -1583,6 +1745,7 @@ func (store *Store) moveRegionsLocked(ids map[RegionID]struct{}, from, to owners
 			return err
 		}
 		region.Owner = to
+		region.Lifetime = to.Kind
 		region.State = state
 		region.claim = claim
 	}
@@ -1590,6 +1753,17 @@ func (store *Store) moveRegionsLocked(ids map[RegionID]struct{}, from, to owners
 }
 
 func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, error) {
+	return store.copyGraphLocked(from, to, to.Kind, false, roots)
+}
+
+// copyShorterGraphLocked promotes only storage with a shorter physical
+// lifetime than the destination. References back into equal- or longer-lived
+// regions remain borrowed edges instead of cloning the persistent Realm graph.
+func (store *Store) copyShorterGraphLocked(owner ownership.OwnerID, lifetime ownership.OwnerKind, roots []Ref) ([]Ref, error) {
+	return store.copyGraphLocked(owner, owner, lifetime, true, roots)
+}
+
+func (store *Store) copyGraphLocked(from, to ownership.OwnerID, lifetime ownership.OwnerKind, stopAtLifetime bool, roots []Ref) ([]Ref, error) {
 	if len(roots) == 0 {
 		return nil, nil
 	}
@@ -1605,6 +1779,7 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 		queue[index] = copyCandidate{ref: root, reference: -1, root: index}
 	}
 	seen := make(map[Ref]struct{})
+	external := make(map[Ref]struct{})
 	order := make([]Ref, 0)
 	pendingEphemerons := make(map[Ref][]copyCandidate)
 	references := make([]Value, 0, 16)
@@ -1613,6 +1788,9 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 			candidate := queue[cursor]
 			ref := candidate.ref
 			if _, exists := seen[ref]; exists {
+				continue
+			}
+			if _, exists := external[ref]; exists {
 				continue
 			}
 			region, slot, err := store.slotLocked(ref)
@@ -1628,6 +1806,14 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 			if region.State == RegionPrivate && region.Owner != from {
 				return store.accessError(region, from)
 			}
+			if stopAtLifetime && (region.State == RegionPublished || region.Lifetime >= lifetime) {
+				external[ref] = struct{}{}
+				if pending := pendingEphemerons[ref]; len(pending) != 0 {
+					queue = append(queue, pending...)
+					delete(pendingEphemerons, ref)
+				}
+				continue
+			}
 			seen[ref] = struct{}{}
 			order = append(order, ref)
 			if slot.Kind == HeapWeakMap {
@@ -1636,7 +1822,9 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 						continue
 					}
 					value := copyCandidate{ref: entry.Value.Ref(), from: ref, fromKind: HeapWeakMap, reference: reference, root: -1}
-					if _, keyLive := seen[entry.Key]; keyLive {
+					_, keyCopied := seen[entry.Key]
+					_, keyExternal := external[entry.Key]
+					if keyCopied || keyExternal {
 						queue = append(queue, value)
 					} else {
 						pendingEphemerons[entry.Key] = append(pendingEphemerons[entry.Key], value)
@@ -1665,6 +1853,9 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 	if err := drainStrongReferences(); err != nil {
 		return nil, err
 	}
+	if len(order) == 0 {
+		return append([]Ref(nil), roots...), nil
+	}
 	claim, err := store.ensureOwnerLocked(to)
 	if err != nil {
 		return nil, err
@@ -1673,7 +1864,7 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 		return nil, fmt.Errorf("memory: exhausted region IDs")
 	}
 	store.nextRegion++
-	destination := &Region{ID: store.nextRegion, Owner: to, State: stateForOwner(to), claim: claim}
+	destination := &Region{ID: store.nextRegion, Owner: to, Lifetime: lifetime, State: stateForOwner(to), claim: claim}
 	store.regions[destination.ID] = destination
 	if err := store.attachOwnerRegionLocked(to, destination.ID); err != nil {
 		delete(store.regions, destination.ID)
@@ -1712,9 +1903,7 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 		switch sourceSlot.Kind {
 		case HeapCell:
 			for field, value := range sourceSlot.Cell.Fields {
-				if value.IsRef() {
-					value = RefValue(mapping[value.Ref()])
-				}
+				value = remapValue(value, mapping)
 				if err := store.setLocked(to, copyRef, field, value, true); err != nil {
 					_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
 					return nil, err
@@ -1741,9 +1930,9 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 				return nil, err
 			}
 			for _, binding := range sourceSlot.Context.Bindings {
-				name := mapping[binding.Name]
+				name := remapRef(binding.Name, mapping)
 				if binding.Indirect {
-					if err := store.declareIndirectBindingLocked(to, copyRef, name, mapping[binding.Target], mapping[binding.TargetName], true); err != nil {
+					if err := store.declareIndirectBindingLocked(to, copyRef, name, remapRef(binding.Target, mapping), remapRef(binding.TargetName, mapping), true); err != nil {
 						_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
 						return nil, err
 					}
@@ -1813,7 +2002,7 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 			// Mutable bytes were cloned during allocation.
 		case HeapTypedArray:
 			view := cloneTypedArray(*sourceSlot.TypedArray)
-			view.Buffer = mapping[view.Buffer]
+			view.Buffer = remapRef(view.Buffer, mapping)
 			if err := store.initializeTypedArrayLocked(to, copyRef, view, true); err != nil {
 				_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
 				return nil, err
@@ -1839,7 +2028,7 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 			}
 		case HeapRegExp:
 			expression := cloneRegExp(*sourceSlot.RegExp)
-			expression.Pattern = mapping[expression.Pattern]
+			expression.Pattern = remapRef(expression.Pattern, mapping)
 			if err := store.initializeRegExpLocked(to, copyRef, expression, true); err != nil {
 				_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
 				return nil, err
@@ -1863,13 +2052,21 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 			for _, entry := range sourceSlot.WeakMap.Entries {
 				key, keyLive := mapping[entry.Key]
 				if !keyLive {
+					_, keyLive = external[entry.Key]
+					key = entry.Key
+				}
+				if !keyLive {
 					continue
 				}
 				value := entry.Value
 				if value.IsRef() {
 					mapped, valueLive := mapping[value.Ref()]
 					if !valueLive {
-						continue
+						_, valueLive = external[value.Ref()]
+						mapped = value.Ref()
+						if !valueLive {
+							continue
+						}
 					}
 					value = RefValue(mapped)
 				}
@@ -1880,7 +2077,12 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 			}
 		case HeapWeakSet:
 			for _, key := range sourceSlot.WeakSet.Keys {
-				if mapped, live := mapping[key]; live {
+				mapped, live := mapping[key]
+				if !live {
+					_, live = external[key]
+					mapped = key
+				}
+				if live {
 					if err := store.weakSetAddLocked(to, copyRef, mapped, true); err != nil {
 						_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
 						return nil, err
@@ -1889,7 +2091,7 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 			}
 		case HeapIterator:
 			copyRegion, copySlot, _ := store.slotLocked(copyRef)
-			target, err := store.replaceValueLocked(to, copyRegion, copySlot, Value{}, RefValue(mapping[sourceSlot.Iterator.Target]), true)
+			target, err := store.replaceValueLocked(to, copyRegion, copySlot, Value{}, RefValue(remapRef(sourceSlot.Iterator.Target, mapping)), true)
 			if err != nil {
 				_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
 				return nil, err
@@ -1921,7 +2123,7 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 	}
 	result := make([]Ref, len(roots))
 	for index, root := range roots {
-		result[index] = mapping[root]
+		result[index] = remapRef(root, mapping)
 	}
 	return result, nil
 }
@@ -1936,7 +2138,7 @@ func (store *Store) copyObjectHeaderLocked(to ownership.OwnerID, copyRef Ref, so
 		descriptor.Value = remapValue(property.Value, mapping)
 		descriptor.Getter = remapValue(property.Getter, mapping)
 		descriptor.Setter = remapValue(property.Setter, mapping)
-		if err := store.definePropertyLocked(to, copyRef, mapping[property.Name], descriptor, true); err != nil {
+		if err := store.definePropertyLocked(to, copyRef, remapRef(property.Name, mapping), descriptor, true); err != nil {
 			return err
 		}
 	}
@@ -1945,9 +2147,16 @@ func (store *Store) copyObjectHeaderLocked(to ownership.OwnerID, copyRef Ref, so
 
 func remapValue(value Value, mapping map[Ref]Ref) Value {
 	if value.IsRef() {
-		return RefValue(mapping[value.Ref()])
+		return RefValue(remapRef(value.Ref(), mapping))
 	}
 	return value
+}
+
+func remapRef(ref Ref, mapping map[Ref]Ref) Ref {
+	if mapped, exists := mapping[ref]; exists {
+		return mapped
+	}
+	return ref
 }
 
 func uniqueRefs(refs []Ref) []Ref {

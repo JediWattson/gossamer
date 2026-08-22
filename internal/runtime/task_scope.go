@@ -36,10 +36,10 @@ func (context *TaskContext) WithMemoryRegion(region memory.RegionID, intrinsics 
 	}, nil
 }
 
-// WithBorrowedRealmMemoryRegion returns an execution view over private Realm
-// storage while preserving the current task's ordered-executor identity. The
-// returned context borrows the Realm's ownership authority; it does not add a
-// claim or transfer the region to the task.
+// WithBorrowedRealmMemoryRegion returns an execution view with Realm ownership
+// authority while preserving the current task's ordered-executor identity.
+// The allocation region may be persistent or a shorter-lived Realm-owned task
+// scratch region; the returned context adds no claim or transfer.
 func (context *TaskContext) WithBorrowedRealmMemoryRegion(region memory.RegionID, intrinsics *Intrinsics) (*TaskContext, error) {
 	if context == nil || context.Realm == nil {
 		return nil, fmt.Errorf("runtime: nil task context")

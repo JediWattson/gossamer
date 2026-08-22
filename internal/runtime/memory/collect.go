@@ -331,7 +331,32 @@ func (store *Store) collectLocked(owner ownership.OwnerID, regionID RegionID, ro
 	store.stats.CollectedSlots += result.ReclaimedSlots
 	store.stats.CollectedBytes += result.ReclaimedBytes
 	store.stats.WeakEntriesCleared += result.ClearedWeakEntries
+	if regionID == 0 {
+		empty := make(map[RegionID]struct{})
+		for _, id := range regionIDs {
+			region := store.regions[id]
+			if region == nil || region.State != RegionPrivate || region.Owner != owner || regionHasOccupiedSlots(region) {
+				continue
+			}
+			if len(store.barrier.incoming[id]) != 0 || len(store.barrier.outgoing[id]) != 0 {
+				return Collection{}, fmt.Errorf("%w: empty R%d retains region edges", ErrInvariantViolation, id)
+			}
+			empty[id] = struct{}{}
+		}
+		if err := store.destroyRegionsLocked(empty); err != nil {
+			return Collection{}, err
+		}
+	}
 	return result, nil
+}
+
+func regionHasOccupiedSlots(region *Region) bool {
+	for index := range region.Slots {
+		if region.Slots[index].Occupied {
+			return true
+		}
+	}
+	return false
 }
 
 // incomingFromSourcesLocked counts authoritative strong references from one

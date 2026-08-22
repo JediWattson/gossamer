@@ -97,10 +97,11 @@ type Slot struct {
 // Region is a snapshot-compatible physical allocation region. Store methods
 // return copies so callers cannot mutate slots around the write barrier.
 type Region struct {
-	ID    RegionID
-	Owner ownership.OwnerID
-	State RegionState
-	Slots []Slot
+	ID       RegionID
+	Owner    ownership.OwnerID
+	Lifetime ownership.OwnerKind
+	State    RegionState
+	Slots    []Slot
 
 	claim ownership.RegionID
 	free  []uint32
@@ -112,6 +113,7 @@ type Region struct {
 type RegionMetadata struct {
 	ID           RegionID
 	Owner        ownership.OwnerID
+	Lifetime     ownership.OwnerKind
 	State        RegionState
 	Slots        int
 	SlotCapacity int
@@ -281,6 +283,106 @@ func appendObjectHeaderReferences(values []Value, slot *Slot) []Value {
 	return values
 }
 
+func rewriteSlotReferences(slot *Slot, replacements map[Ref]Ref) {
+	if slot == nil || !slot.Occupied || len(replacements) == 0 {
+		return
+	}
+	rewriteValue := func(value Value) Value {
+		if value.IsRef() {
+			if replacement, exists := replacements[value.Ref()]; exists {
+				return RefValue(replacement)
+			}
+		}
+		return value
+	}
+	rewriteRef := func(ref Ref) Ref {
+		if replacement, exists := replacements[ref]; exists {
+			return replacement
+		}
+		return ref
+	}
+	if header, ok := objectHeaderForSlot(slot); ok {
+		header.Prototype = rewriteValue(header.Prototype)
+		for index := range header.Properties {
+			property := &header.Properties[index]
+			property.Name = rewriteRef(property.Name)
+			property.Value = rewriteValue(property.Value)
+			property.Getter = rewriteValue(property.Getter)
+			property.Setter = rewriteValue(property.Setter)
+		}
+	}
+	switch slot.Kind {
+	case HeapCell:
+		for index := range slot.Cell.Fields {
+			slot.Cell.Fields[index] = rewriteValue(slot.Cell.Fields[index])
+		}
+	case HeapArray:
+		for index := range slot.Array.Elements {
+			slot.Array.Elements[index].Value = rewriteValue(slot.Array.Elements[index].Value)
+		}
+	case HeapContext:
+		slot.Context.Parent = rewriteValue(slot.Context.Parent)
+		for index := range slot.Context.Bindings {
+			binding := &slot.Context.Bindings[index]
+			binding.Name = rewriteRef(binding.Name)
+			if binding.Indirect {
+				binding.Target = rewriteRef(binding.Target)
+				binding.TargetName = rewriteRef(binding.TargetName)
+			} else if binding.Initialized {
+				binding.Value = rewriteValue(binding.Value)
+			}
+		}
+	case HeapFunction:
+		slot.Function.Name = rewriteValue(slot.Function.Name)
+		slot.Function.Environment = rewriteValue(slot.Function.Environment)
+		if slot.Function.ThisMode == FunctionThisLexical {
+			slot.Function.LexicalThis = rewriteValue(slot.Function.LexicalThis)
+		}
+		for index := range slot.Function.Constants {
+			slot.Function.Constants[index] = rewriteValue(slot.Function.Constants[index])
+		}
+		for index := range slot.Function.Captures {
+			slot.Function.Captures[index] = rewriteValue(slot.Function.Captures[index])
+		}
+	case HeapPromise:
+		if slot.Promise.State != PromisePending {
+			slot.Promise.Result = rewriteValue(slot.Promise.Result)
+		}
+		for index := range slot.Promise.Reactions {
+			reaction := &slot.Promise.Reactions[index]
+			reaction.OnFulfilled = rewriteValue(reaction.OnFulfilled)
+			reaction.OnRejected = rewriteValue(reaction.OnRejected)
+			reaction.Downstream = rewriteValue(reaction.Downstream)
+		}
+	case HeapSymbol:
+		slot.Symbol.Description = rewriteValue(slot.Symbol.Description)
+	case HeapTypedArray:
+		slot.TypedArray.Buffer = rewriteRef(slot.TypedArray.Buffer)
+	case HeapMap:
+		for index := range slot.Map.Entries {
+			slot.Map.Entries[index].Key = rewriteValue(slot.Map.Entries[index].Key)
+			slot.Map.Entries[index].Value = rewriteValue(slot.Map.Entries[index].Value)
+		}
+	case HeapSet:
+		for index := range slot.Set.Values {
+			slot.Set.Values[index] = rewriteValue(slot.Set.Values[index])
+		}
+	case HeapRegExp:
+		slot.RegExp.Pattern = rewriteRef(slot.RegExp.Pattern)
+	case HeapError:
+		slot.Error.Message = rewriteValue(slot.Error.Message)
+		slot.Error.Stack = rewriteValue(slot.Error.Stack)
+		if slot.Error.HasCause {
+			slot.Error.Cause = rewriteValue(slot.Error.Cause)
+		}
+		for index := range slot.Error.Errors {
+			slot.Error.Errors[index] = rewriteValue(slot.Error.Errors[index])
+		}
+	case HeapIterator:
+		slot.Iterator.Target = rewriteRef(slot.Iterator.Target)
+	}
+}
+
 func slotStorageEmpty(slot *Slot) bool {
 	return slot != nil && slot.Kind == HeapInvalid && slot.slotPayload == nil
 }
@@ -312,10 +414,11 @@ func (store *Store) clearSlotPayloadLocked(slot *Slot) error {
 
 func cloneRegion(region *Region) Region {
 	result := Region{
-		ID:    region.ID,
-		Owner: region.Owner,
-		State: region.State,
-		Slots: make([]Slot, len(region.Slots)),
+		ID:       region.ID,
+		Owner:    region.Owner,
+		Lifetime: region.Lifetime,
+		State:    region.State,
+		Slots:    make([]Slot, len(region.Slots)),
 	}
 	for index, slot := range region.Slots {
 		result.Slots[index] = cloneSlot(slot)

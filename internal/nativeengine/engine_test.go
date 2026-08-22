@@ -80,6 +80,12 @@ counter;
 	if firstStats.LiveRegions != secondStats.LiveRegions || secondStats.LiveRegions != thirdStats.LiveRegions {
 		t.Fatalf("task checkpoints retained regions: first=%#v second=%#v third=%#v", firstStats, secondStats, thirdStats)
 	}
+	if delta := secondStats.BulkRegionReleases - firstStats.BulkRegionReleases; delta < 2 {
+		t.Fatalf("second task bulk-released %d regions, want task owner and Realm scratch: first=%#v second=%#v", delta, firstStats, secondStats)
+	}
+	if delta := thirdStats.BulkRegionReleases - secondStats.BulkRegionReleases; delta < 2 {
+		t.Fatalf("third task bulk-released %d regions, want task owner and Realm scratch: second=%#v third=%#v", delta, secondStats, thirdStats)
+	}
 	if secondStats.LiveSlots != thirdStats.LiveSlots {
 		t.Fatalf("unreachable script graph survived checkpoint: second=%#v third=%#v", secondStats, thirdStats)
 	}
@@ -105,6 +111,66 @@ counter;
 	engineProfile := scriptEngine.Profile()
 	if engineProfile.RealmsCreated != 1 || engineProfile.RealmsClosed != 1 || engineProfile.LiveRealms != 0 || engineProfile.Evaluations != 3 || engineProfile.Checkpoints != 3 {
 		t.Fatalf("native Engine profile = %#v", engineProfile)
+	}
+}
+
+func TestTaskScratchEvacuatesFinalMutableState(t *testing.T) {
+	t.Parallel()
+
+	scriptEngine := nativeengine.New(nativeengine.Config{})
+	browserRuntime, err := browser.NewWithEngine(scriptEngine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer browserRuntime.Close()
+	location, _ := url.Parse("https://gossamer.test/task-scratch/")
+	page, err := browserRuntime.NewPage(dom.NewDocument(), location)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run := func(label, source string) {
+		t.Helper()
+		if _, err := page.QueueScript(browser.ScriptSource{URL: label + ".js", Source: source}); err != nil {
+			t.Fatal(err)
+		}
+		if err := page.Realm.RunOne(context.Background()); err != nil {
+			t.Fatalf("RunOne(%s): %v", label, err)
+		}
+	}
+
+	run("bootstrap", `let saved = null;`)
+	before := page.Realm.Store().Stats()
+	run("escape", `
+let staged = { phase: 1 };
+saved = staged;
+staged.phase = 2;
+`)
+	afterEscape := page.Realm.Store().Stats()
+	run("verify", `
+if (saved.phase !== 2) {
+  throw new Error("checkpoint copied an intermediate object state");
+}
+`)
+	afterVerify := page.Realm.Store().Stats()
+
+	if afterEscape.AutomaticPromotions <= before.AutomaticPromotions {
+		t.Fatalf("escaping task graph was not promoted: before=%#v after=%#v", before, afterEscape)
+	}
+	promotionDelta := afterEscape.AutomaticPromotions - before.AutomaticPromotions
+	if afterEscape.LiveRegions != before.LiveRegions+promotionDelta {
+		t.Fatalf("escape retained storage beyond its promotion regions: before=%#v after=%#v", before, afterEscape)
+	}
+	if afterVerify.LiveRegions != afterEscape.LiveRegions || afterVerify.AutomaticPromotions != afterEscape.AutomaticPromotions {
+		t.Fatalf("no-escape verification task retained storage: escape=%#v verify=%#v", afterEscape, afterVerify)
+	}
+	if delta := afterVerify.BulkRegionReleases - afterEscape.BulkRegionReleases; delta < 2 {
+		t.Fatalf("verification task bulk-released %d regions, want task owner and Realm scratch", delta)
+	}
+	if err := page.Realm.Store().CheckInvariants(); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.Close(); err != nil {
+		t.Fatalf("close Realm with promotion regions: %v", err)
 	}
 }
 

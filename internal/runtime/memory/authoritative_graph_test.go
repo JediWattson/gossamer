@@ -334,3 +334,300 @@ func TestEnsureOwnerDoesNotSnapshotSemanticObjects(t *testing.T) {
 		t.Fatalf("ensureOwnerLocked() allocated %.2f times with 10k semantic objects", allocations)
 	}
 }
+
+func TestShortLivedSameOwnerGraphPromotesWithoutCopyingPersistentTail(t *testing.T) {
+	store := NewStore(nil)
+	defer store.Close()
+	owner := ownership.OwnerID{Kind: ownership.OwnerRealm, Value: 23_001}
+	persistentRegion, err := store.NewRegion(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scratchRegion, err := store.NewRegionWithLifetime(owner, ownership.OwnerTask)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persistent, _ := store.AllocCell(owner, persistentRegion)
+	holder, _ := store.AllocCell(owner, persistentRegion)
+	root, _ := store.AllocCell(owner, scratchRegion)
+	child, _ := store.AllocCell(owner, scratchRegion)
+	if err := store.Set(owner, root, 0, RefValue(child)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Set(owner, root, 1, RefValue(persistent)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Set(owner, holder, 0, RefValue(root)); err != nil {
+		t.Fatal(err)
+	}
+
+	holderCell, err := store.Deref(owner, holder)
+	if err != nil || len(holderCell.Fields) != 1 || !holderCell.Fields[0].IsRef() {
+		t.Fatalf("holder = %#v, %v", holderCell, err)
+	}
+	if holderCell.Fields[0].Ref() != root {
+		t.Fatal("same-owner store eagerly copied the short-lived source")
+	}
+	if err := store.Set(owner, root, 2, NumberValue(42)); err != nil {
+		t.Fatal(err)
+	}
+	promotedCount, err := store.PromoteEscapes(owner, scratchRegion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if promotedCount != 1 {
+		t.Fatalf("promoted source count = %d, want 1", promotedCount)
+	}
+	holderCell, err = store.Deref(owner, holder)
+	if err != nil || len(holderCell.Fields) != 1 || !holderCell.Fields[0].IsRef() {
+		t.Fatalf("promoted holder = %#v, %v", holderCell, err)
+	}
+	promotedRoot := holderCell.Fields[0].Ref()
+	if promotedRoot == root {
+		t.Fatal("checkpoint retained the short-lived source ref")
+	}
+	promotedRegion, err := store.RegionMetadata(promotedRoot.Region)
+	if err != nil || promotedRegion.Owner != owner || promotedRegion.Lifetime != ownership.OwnerRealm {
+		t.Fatalf("promoted region = %#v, %v", promotedRegion, err)
+	}
+	promoted, err := store.Deref(owner, promotedRoot)
+	if err != nil || len(promoted.Fields) != 3 || !promoted.Fields[0].IsRef() || promoted.Fields[1].Ref() != persistent || promoted.Fields[2] != NumberValue(42) {
+		t.Fatalf("promoted graph = %#v, %v", promoted, err)
+	}
+	if promoted.Fields[0].Ref() == child {
+		t.Fatal("short-lived child was not promoted")
+	}
+	if stats := store.Stats(); stats.AutomaticPromotions != 1 {
+		t.Fatalf("automatic promotions = %d, want 1", stats.AutomaticPromotions)
+	}
+	if err := store.DestroyRegion(owner, scratchRegion); err != nil {
+		t.Fatalf("destroy scratch region: %v", err)
+	}
+	if _, err := store.Deref(owner, promotedRoot); err != nil {
+		t.Fatalf("promoted root after scratch release: %v", err)
+	}
+	if _, err := store.Deref(owner, persistent); err != nil {
+		t.Fatalf("persistent tail after scratch release: %v", err)
+	}
+	if err := store.CheckInvariants(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNewRegionRejectsLifetimeLongerThanOwner(t *testing.T) {
+	store := NewStore(nil)
+	defer store.Close()
+	owner := ownership.OwnerID{Kind: ownership.OwnerTask, Value: 23_002}
+	if _, err := store.NewRegionWithLifetime(owner, ownership.OwnerRealm); err == nil {
+		t.Fatal("task owner created Realm-lifetime storage")
+	}
+	if stats := store.Stats(); stats.LiveRegions != 0 {
+		t.Fatalf("invalid lifetime retained %d regions", stats.LiveRegions)
+	}
+}
+
+func TestCheckpointPromotionPreservesAliasesAcrossEscapeRoots(t *testing.T) {
+	store := NewStore(nil)
+	defer store.Close()
+	owner := ownership.OwnerID{Kind: ownership.OwnerRealm, Value: 23_004}
+	persistentRegion, err := store.NewRegion(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scratchRegion, err := store.NewRegionWithLifetime(owner, ownership.OwnerTask)
+	if err != nil {
+		t.Fatal(err)
+	}
+	holder, _ := store.AllocCell(owner, persistentRegion)
+	root, _ := store.AllocCell(owner, scratchRegion)
+	shared, _ := store.AllocCell(owner, scratchRegion)
+	if err := store.Set(owner, root, 0, RefValue(shared)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Set(owner, holder, 0, RefValue(root)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Set(owner, holder, 1, RefValue(shared)); err != nil {
+		t.Fatal(err)
+	}
+	promotedCount, err := store.PromoteEscapes(owner, scratchRegion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if promotedCount != 2 {
+		t.Fatalf("promoted source count = %d, want 2", promotedCount)
+	}
+	persistent, err := store.Deref(owner, holder)
+	if err != nil || len(persistent.Fields) != 2 {
+		t.Fatalf("holder = %#v, %v", persistent, err)
+	}
+	promotedRoot := persistent.Fields[0].Ref()
+	promotedShared := persistent.Fields[1].Ref()
+	rootCell, err := store.Deref(owner, promotedRoot)
+	if err != nil || len(rootCell.Fields) != 1 || rootCell.Fields[0].Ref() != promotedShared {
+		t.Fatalf("promoted aliases diverged: root=%#v shared=%s, %v", rootCell, promotedShared, err)
+	}
+	if promotedRoot.Region != promotedShared.Region {
+		t.Fatalf("batched roots landed in R%d and R%d", promotedRoot.Region, promotedShared.Region)
+	}
+	if stats := store.Stats(); stats.AutomaticPromotions != 1 {
+		t.Fatalf("batched automatic promotions = %d, want 1", stats.AutomaticPromotions)
+	}
+	if err := store.DestroyRegion(owner, scratchRegion); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CheckInvariants(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestOwnerCollectionRetiresEmptyPromotionRegion(t *testing.T) {
+	store := NewStore(nil)
+	defer store.Close()
+	owner := ownership.OwnerID{Kind: ownership.OwnerRealm, Value: 23_003}
+	persistentRegion, err := store.NewRegion(owner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scratchRegion, err := store.NewRegionWithLifetime(owner, ownership.OwnerTask)
+	if err != nil {
+		t.Fatal(err)
+	}
+	holder, _ := store.AllocCell(owner, persistentRegion)
+	escape, _ := store.AllocCell(owner, scratchRegion)
+	if err := store.Set(owner, holder, 0, RefValue(escape)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PromoteEscapes(owner, scratchRegion); err != nil {
+		t.Fatal(err)
+	}
+	holderCell, err := store.Deref(owner, holder)
+	if err != nil || len(holderCell.Fields) != 1 || !holderCell.Fields[0].IsRef() {
+		t.Fatalf("holder = %#v, %v", holderCell, err)
+	}
+	promotionRegion := holderCell.Fields[0].Ref().Region
+	if promotionRegion == persistentRegion || promotionRegion == scratchRegion {
+		t.Fatalf("promotion region = R%d, want a distinct region", promotionRegion)
+	}
+	if err := store.DestroyRegion(owner, scratchRegion); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Set(owner, holder, 0, UndefinedValue()); err != nil {
+		t.Fatal(err)
+	}
+	result, err := store.Collect(owner, holder)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ReclaimedSlots != 1 {
+		t.Fatalf("collection = %#v, want one reclaimed promoted slot", result)
+	}
+	retired, err := store.Region(promotionRegion)
+	if err != nil || retired.State != RegionDestroyed {
+		t.Fatalf("empty promotion Region(R%d) = %#v, %v, want destroyed", promotionRegion, retired, err)
+	}
+	if _, err := store.Region(persistentRegion); err != nil {
+		t.Fatalf("persistent region retired: %v", err)
+	}
+	if stats := store.Stats(); stats.LiveRegions != 1 || stats.BulkRegionReleases != 2 {
+		t.Fatalf("region retirement stats = %#v", stats)
+	}
+	if err := store.CheckInvariants(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCheckpointRewriteCoversEveryStrongTypedLocation(t *testing.T) {
+	old := Ref{Region: 1, Slot: 2, Gen: 3}
+	replacement := Ref{Region: 4, Slot: 5, Gen: 6}
+	value := RefValue(old)
+	header := func() ObjectHeader {
+		return ObjectHeader{
+			Prototype: value,
+			Properties: []Property{{
+				Name: old, Value: value, Getter: value, Setter: value,
+			}},
+		}
+	}
+	slots := map[string]Slot{
+		"cell": {
+			Kind: HeapCell, Occupied: true,
+			slotPayload: &slotPayload{Cell: &Cell{Fields: []Value{value}}},
+		},
+		"object": {
+			Kind: HeapObject, Occupied: true,
+			slotPayload: &slotPayload{Object: &Object{ObjectHeader: header()}},
+		},
+		"array": {
+			Kind: HeapArray, Occupied: true,
+			slotPayload: &slotPayload{Array: &Array{ObjectHeader: header(), Elements: []ArrayElement{{Value: value}}}},
+		},
+		"context": {
+			Kind: HeapContext, Occupied: true,
+			slotPayload: &slotPayload{Context: &Context{Parent: value, Bindings: []Binding{
+				{Name: old, Value: value, Initialized: true},
+				{Name: old, Indirect: true, Target: old, TargetName: old},
+			}}},
+		},
+		"function": {
+			Kind: HeapFunction, Occupied: true,
+			slotPayload: &slotPayload{Function: &Function{
+				ObjectHeader: header(), Name: value, Environment: value,
+				ThisMode: FunctionThisLexical, LexicalThis: value,
+				Constants: []Value{value}, Captures: []Value{value},
+			}},
+		},
+		"promise": {
+			Kind: HeapPromise, Occupied: true,
+			slotPayload: &slotPayload{Promise: &Promise{
+				ObjectHeader: header(), State: PromiseFulfilled, Result: value,
+				Reactions: []PromiseReaction{{OnFulfilled: value, OnRejected: value, Downstream: value}},
+			}},
+		},
+		"symbol": {
+			Kind: HeapSymbol, Occupied: true,
+			slotPayload: &slotPayload{Symbol: &Symbol{Description: value}},
+		},
+		"typed-array": {
+			Kind: HeapTypedArray, Occupied: true,
+			slotPayload: &slotPayload{TypedArray: &TypedArray{Buffer: old}},
+		},
+		"map": {
+			Kind: HeapMap, Occupied: true,
+			slotPayload: &slotPayload{Map: &Map{ObjectHeader: header(), Entries: []MapEntry{{Key: value, Value: value}}}},
+		},
+		"set": {
+			Kind: HeapSet, Occupied: true,
+			slotPayload: &slotPayload{Set: &Set{ObjectHeader: header(), Values: []Value{value}}},
+		},
+		"regexp": {
+			Kind: HeapRegExp, Occupied: true,
+			slotPayload: &slotPayload{RegExp: &RegExp{Pattern: old}},
+		},
+		"error": {
+			Kind: HeapError, Occupied: true,
+			slotPayload: &slotPayload{Error: &ErrorObject{
+				ObjectHeader: header(), Message: value, Stack: value,
+				Cause: value, HasCause: true, Errors: []Value{value},
+			}},
+		},
+		"iterator": {
+			Kind: HeapIterator, Occupied: true,
+			slotPayload: &slotPayload{Iterator: &Iterator{ObjectHeader: header(), Target: old}},
+		},
+	}
+	for name, slot := range slots {
+		t.Run(name, func(t *testing.T) {
+			rewriteSlotReferences(&slot, map[Ref]Ref{old: replacement})
+			references := appendSlotReferences(nil, &slot)
+			if len(references) == 0 {
+				t.Fatal("test slot did not expose any strong references")
+			}
+			for index, reference := range references {
+				if !reference.IsRef() || reference.Ref() != replacement {
+					t.Fatalf("strong reference %d = %v, want %s", index, reference, replacement)
+				}
+			}
+		})
+	}
+}

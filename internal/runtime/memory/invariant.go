@@ -106,6 +106,9 @@ func (store *Store) CheckInvariants() error {
 		if region.Owner.Value == 0 {
 			return invariantError("live R%d has no owner", id)
 		}
+		if region.Lifetime > region.Owner.Kind || region.Lifetime > ownership.OwnerShared {
+			return invariantError("live R%d owned by %s has invalid lifetime %d", id, region.Owner, region.Lifetime)
+		}
 		switch region.State {
 		case RegionPrivate:
 			if region.Owner.Kind == ownership.OwnerQueue || region.Owner.Kind == ownership.OwnerShared {

@@ -318,8 +318,9 @@ func (realm *Realm) DrainMicrotasks(host browser.Host) error {
 	scope, err := realm.activeScopeLocked(task)
 	if err != nil {
 		realm.interpreter.DiscardJobs(realm.activeTask)
+		releaseErr := realm.releaseActiveScratchLocked()
 		realm.clearActiveLocked()
-		return err
+		return errors.Join(err, releaseErr)
 	}
 	observerErr := realm.deliverMutationObserversLocked(scope)
 	if observerErr != nil {
@@ -464,7 +465,6 @@ func (realm *Realm) Close() error {
 	realm.closed = true
 	profile := realm.profileLocked()
 	runtimeRealm := realm.runtime
-	persistentRegion := realm.persistentRegion
 	activeTask := realm.activeTask
 	realm.persistent = nil
 	realm.persistentRegion = 0
@@ -494,8 +494,8 @@ func (realm *Realm) Close() error {
 		realm.interpreter.DiscardJobs(activeTask)
 	}
 	var result error
-	if runtimeRealm != nil && persistentRegion != 0 {
-		result = runtimeRealm.Store().DestroyRegion(runtimeRealm.Owner(), persistentRegion)
+	if runtimeRealm != nil {
+		result = runtimeRealm.Store().ReleaseOwner(runtimeRealm.Owner())
 	}
 	if realm.engine != nil {
 		realm.engine.forget(realm, profile)
@@ -533,15 +533,22 @@ func (realm *Realm) beginTaskLocked(task *browserruntime.TaskContext) (*browserr
 		return task, nil
 	}
 
-	scope, err := task.WithBorrowedRealmMemoryRegion(realm.persistentRegion, realm.persistent)
+	scratchRegion, err := task.Realm.Store().NewRegionWithLifetime(realm.runtime.Owner(), ownership.OwnerTask)
 	if err != nil {
 		return nil, err
 	}
+	scope, err := task.WithBorrowedRealmMemoryRegion(scratchRegion, realm.persistent)
+	if err != nil {
+		_ = task.Realm.Store().DestroyRegion(realm.runtime.Owner(), scratchRegion)
+		return nil, err
+	}
 	realm.active = realm.persistent
-	realm.activeRegion = realm.persistentRegion
+	realm.activeRegion = scratchRegion
 	realm.activeTask = task.TaskID
 	if err := realm.prepareBrowserBindingsLocked(scope); err != nil {
-		return nil, err
+		releaseErr := task.Realm.Store().DestroyRegion(realm.runtime.Owner(), scratchRegion)
+		realm.clearActiveLocked()
+		return nil, errors.Join(err, releaseErr)
 	}
 	return scope, nil
 }
@@ -557,6 +564,17 @@ func (realm *Realm) persistLocked(task *browserruntime.TaskContext) (result erro
 			return fmt.Errorf("nativeengine: collect persistent realm region R%d: %w", realm.persistentRegion, err)
 		}
 		realm.persistent = realm.active
+		return nil
+	}
+	if realm.persistentRegion != 0 {
+		realm.persistent = realm.active
+		activeRegion := realm.activeRegion
+		if _, err := realm.runtime.Store().PromoteEscapes(realm.runtime.Owner(), activeRegion); err != nil {
+			return fmt.Errorf("nativeengine: promote task scratch region R%d escapes: %w", activeRegion, err)
+		}
+		if err := realm.releaseActiveScratchLocked(); err != nil {
+			return fmt.Errorf("nativeengine: release task scratch region R%d: %w", activeRegion, err)
+		}
 		return nil
 	}
 	roots, err := task.Realm.Store().Copy(task.Owner, realm.runtime.Owner(), realm.active.Roots()...)
@@ -617,10 +635,17 @@ func (realm *Realm) persistLocked(task *browserruntime.TaskContext) (result erro
 }
 
 func (realm *Realm) activeScopeLocked(task *browserruntime.TaskContext) (*browserruntime.TaskContext, error) {
-	if realm.persistentRegion != 0 && realm.activeRegion == realm.persistentRegion {
+	if realm.persistentRegion != 0 {
 		return task.WithBorrowedRealmMemoryRegion(realm.activeRegion, realm.active)
 	}
 	return task.WithMemoryRegion(realm.activeRegion, realm.active)
+}
+
+func (realm *Realm) releaseActiveScratchLocked() error {
+	if realm.runtime == nil || realm.activeRegion == 0 || realm.activeRegion == realm.persistentRegion {
+		return nil
+	}
+	return realm.runtime.Store().DestroyRegion(realm.runtime.Owner(), realm.activeRegion)
 }
 
 func persistentBindingRef(store *memory.Store, owner ownership.OwnerID, region memory.RegionID, global memory.Ref, name string) (memory.Ref, error) {
