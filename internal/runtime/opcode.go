@@ -117,6 +117,7 @@ const (
 	OpJumpIfThisPropertyFalse
 	OpJumpIfPropertyConstantTrue
 	OpJumpIfPropertyConstantFalse
+	OpEnterStackFunction
 )
 
 func (opcode Opcode) String() string {
@@ -327,6 +328,8 @@ func (opcode Opcode) String() string {
 		return "SetElementConstant"
 	case OpEnterFunction:
 		return "EnterFunction"
+	case OpEnterStackFunction:
+		return "EnterStackFunction"
 	case OpDeclareBindings:
 		return "DeclareBindings"
 	case OpJumpIfBindingPropertyTrue:
@@ -347,7 +350,7 @@ func (opcode Opcode) String() string {
 }
 
 func (opcode Opcode) valid() bool {
-	return opcode >= OpConstant && opcode <= OpJumpIfPropertyConstantFalse
+	return opcode >= OpConstant && opcode <= OpEnterStackFunction
 }
 
 func packConstantPair(first, second uint32) (uint32, bool) {

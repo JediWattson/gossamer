@@ -56,7 +56,7 @@ func verifyInstructions(instructions []Instruction, constantCount int) error {
 			if uint64(instruction.A) >= uint64(len(instructions)) {
 				return fmt.Errorf("%w: instruction %d jumps to %d", ErrInvalidBytecode, index, instruction.A)
 			}
-		case OpEnterFunction:
+		case OpEnterFunction, OpEnterStackFunction:
 			if uint64(instruction.A)+uint64(instruction.B) > uint64(constantCount) {
 				return fmt.Errorf("%w: instruction %d uses constant range %d..%d", ErrConstantBounds, index, instruction.A, uint64(instruction.A)+uint64(instruction.B))
 			}
@@ -211,7 +211,7 @@ func instructionStackEffect(instruction Instruction) (required, delta int, termi
 		return 2, -1, false, nil
 	case OpSetLength:
 		return 2, -1, false, nil
-	case OpDeclareBinding, OpDeclareBindings, OpEnterTry, OpLeaveTry, OpEnterFinally, OpEndFinally, OpEnterScope, OpEnterFunction, OpLeaveScope:
+	case OpDeclareBinding, OpDeclareBindings, OpEnterTry, OpLeaveTry, OpEnterFinally, OpEndFinally, OpEnterScope, OpEnterFunction, OpEnterStackFunction, OpLeaveScope:
 		return 0, 0, false, nil
 	case OpBindArgument:
 		return 0, 0, false, nil

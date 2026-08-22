@@ -382,6 +382,100 @@ add(first(1), second(2)) + factorial(5);
 	}
 }
 
+func TestCompileUsesStackLocalsOnlyForClosureFreeFunctions(t *testing.T) {
+	t.Parallel()
+
+	image, err := compiler.Compile(`
+function scoped(value) {
+  let result = value;
+  {
+    let value = 10;
+    result = result + value;
+  }
+  return result + value;
+}
+function make(value) {
+  return () => value;
+}
+scoped(2) + make(3)();
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scoped, _ := image.Function(1)
+	scopedCode, err := browserruntime.Disassemble(scoped.Code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(scopedCode, "EnterStackFunction") || strings.Contains(scopedCode, "EnterFunction ") {
+		t.Fatalf("closure-free function does not use stack locals:\n%s", scopedCode)
+	}
+	make, _ := image.Function(2)
+	makeCode, err := browserruntime.Disassemble(make.Code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(makeCode, "EnterFunction") || strings.Contains(makeCode, "EnterStackFunction") {
+		t.Fatalf("capturing function does not retain heap environment:\n%s", makeCode)
+	}
+	result := execute(t, 814_001, image)
+	if result.Kind() != memory.ValueNumber || result.Number() != 17 {
+		t.Fatalf("stack-local result = %#v, want 17", result)
+	}
+}
+
+func TestClosureFreeCallsDoNotAllocateLexicalContexts(t *testing.T) {
+	t.Parallel()
+
+	image, err := compiler.Compile(`
+function sum(value) {
+  let doubled = value * 2;
+  { const one = 1; doubled = doubled + one; }
+  return doubled;
+}
+undefined;
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	realm, err := browserruntime.NewRealm(814_002, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer realm.Close()
+	interpreter := browserruntime.NewInterpreter(browserruntime.InterpreterConfig{})
+	_, err = realm.EnqueueTask(func(task *browserruntime.TaskContext) error {
+		environment, err := task.NewContext(memory.NullValue())
+		if err != nil {
+			return err
+		}
+		loaded, err := program.Load(task, image, memory.RefValue(environment))
+		if err != nil {
+			return err
+		}
+		before := task.Realm.Store().Stats().LiveContexts
+		for index := 0; index < 100; index++ {
+			result, err := interpreter.Execute(task, loaded.Functions[1], memory.NumberValue(float64(index)))
+			if err != nil {
+				return err
+			}
+			if result.Kind() != memory.ValueNumber || result.Number() != float64(index*2+1) {
+				return fmt.Errorf("result %d = %#v, want %d", index, result, index*2+1)
+			}
+		}
+		if after := task.Realm.Store().Stats().LiveContexts; after != before {
+			return fmt.Errorf("live Contexts = %d after calls, want %d", after, before)
+		}
+		return task.Realm.Store().CheckInvariants()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestCompileExecutesConstructionWithExplicitThis(t *testing.T) {
 	t.Parallel()
 

@@ -56,21 +56,35 @@ type Frame struct {
 	Arguments   []memory.Value
 	Stack       []memory.Value
 
-	function     memory.Function
-	instructions []Instruction
-	ip           uint32
-	handlers     []exceptionHandler
-	environments []memory.Value
-	completion   *abruptCompletion
-	current      *ThrownError
-	profile      *instructionProgramStats
-	bindings     []frameBinding
+	function          memory.Function
+	instructions      []Instruction
+	ip                uint32
+	handlers          []exceptionHandler
+	environments      []memory.Value
+	completion        *abruptCompletion
+	current           *ThrownError
+	profile           *instructionProgramStats
+	bindings          []frameBinding
+	stackLocals       bool
+	localBindings     []frameLocalBinding
+	localScopes       []int
+	localEnvironments []bool
 }
 
 type frameBinding struct {
 	environment memory.Ref
 	location    memory.BindingLocation
 	valid       bool
+}
+
+// frameLocalBinding is a borrowed lexical slot owned by one active Frame.
+// name is the function constant index for the interned binding name. Values
+// remain ordinary stack roots and create no RegionStore ownership edge.
+type frameLocalBinding struct {
+	name        uint32
+	value       memory.Value
+	mutable     bool
+	initialized bool
 }
 
 func (frame *Frame) VisitRefs(visit func(memory.Ref) error) error {
@@ -123,6 +137,13 @@ func (frame *Frame) VisitRefs(visit func(memory.Ref) error) error {
 			}
 		}
 	}
+	for _, binding := range frame.localBindings {
+		if binding.initialized {
+			if err := visitValue(binding.value); err != nil {
+				return err
+			}
+		}
+	}
 	if frame.completion != nil {
 		if err := visitValue(frame.completion.value); err != nil {
 			return err
@@ -161,6 +182,13 @@ func (frame *Frame) reset() {
 	frame.profile = nil
 	clear(frame.bindings)
 	frame.bindings = frame.bindings[:0]
+	frame.stackLocals = false
+	clear(frame.localBindings)
+	frame.localBindings = frame.localBindings[:0]
+	clear(frame.localScopes)
+	frame.localScopes = frame.localScopes[:0]
+	clear(frame.localEnvironments)
+	frame.localEnvironments = frame.localEnvironments[:0]
 }
 
 func (frame *Frame) push(value memory.Value) {

@@ -165,6 +165,7 @@ type functionCompiler struct {
 	moduleFunctions      map[string]uint32
 	moduleUsesImportMeta bool
 	moduleUsesImport     bool
+	createsClosure       bool
 }
 
 type constantKey struct {
@@ -226,18 +227,24 @@ func (compiler *functionCompiler) finish(name string, arity uint32) (program.Fun
 }
 
 func (compiler *functionCompiler) emit(instruction browserruntime.Instruction, span lexer.Span) error {
+	_, err := compiler.emitInstruction(instruction, span)
+	return err
+}
+
+func (compiler *functionCompiler) emitInstruction(instruction browserruntime.Instruction, span lexer.Span) (uint32, error) {
 	var err error
+	var index uint32
 	if instruction.Op == browserruntime.OpDeclareBinding {
-		_, err = compiler.builder.EmitBindingDeclaration(instruction.A, instruction.B == 1, runtimeSpan(span))
+		index, err = compiler.builder.EmitBindingDeclaration(instruction.A, instruction.B == 1, runtimeSpan(span))
 	} else if instruction.Op == browserruntime.OpPop {
-		_, err = compiler.builder.EmitDiscardAt(runtimeSpan(span))
+		index, err = compiler.builder.EmitDiscardAt(runtimeSpan(span))
 	} else {
-		_, err = compiler.builder.EmitAt(instruction, runtimeSpan(span))
+		index, err = compiler.builder.EmitAt(instruction, runtimeSpan(span))
 	}
 	if err != nil {
-		return fmt.Errorf("%w: %v", ErrCompile, err)
+		return 0, fmt.Errorf("%w: %v", ErrCompile, err)
 	}
-	return nil
+	return index, nil
 }
 
 func (compiler *functionCompiler) emitJump(opcode browserruntime.Opcode, label browserruntime.Label, span lexer.Span) error {

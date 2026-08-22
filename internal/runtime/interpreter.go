@@ -844,11 +844,7 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 			}
 			frame.push(value)
 		case OpTypeOfBinding:
-			environment, name, err := bindingOperands(frame, instruction.A)
-			if err != nil {
-				return memory.Value{}, err
-			}
-			value, found, err := context.ResolveBinding(environment, name)
+			value, found, err := execution.resolveBindingOperandFound(frame, instruction.A)
 			if err != nil {
 				if handled, terminal := execution.routeFrameError(frame, err); handled {
 					continue
@@ -872,38 +868,26 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 			if instruction.B > 1 {
 				return memory.Value{}, fmt.Errorf("%w: DeclareBinding mutability %d", ErrInvalidBytecode, instruction.B)
 			}
-			environment, name, err := bindingOperands(frame, instruction.A)
-			if err != nil {
-				return memory.Value{}, err
-			}
-			if err := context.DeclareBinding(environment, name, instruction.B == 1); err != nil {
+			if err := execution.declareBindingOperand(frame, instruction.A, instruction.B == 1); err != nil {
 				return memory.Value{}, err
 			}
 		case OpDeclareBindings:
 			count := instruction.B &^ bindingBatchMutable
 			mutable := instruction.B&bindingBatchMutable != 0
 			for bindingIndex := uint32(0); bindingIndex < count; bindingIndex++ {
-				environment, name, err := bindingOperands(frame, instruction.A+bindingIndex)
-				if err != nil {
-					return memory.Value{}, err
-				}
-				if err := context.DeclareBinding(environment, name, mutable); err != nil {
+				if err := execution.declareBindingOperand(frame, instruction.A+bindingIndex, mutable); err != nil {
 					return memory.Value{}, err
 				}
 			}
 		case OpBindArgument:
-			environment, name, err := bindingOperands(frame, instruction.A)
-			if err != nil {
-				return memory.Value{}, err
-			}
-			if err := context.DeclareBinding(environment, name, true); err != nil {
+			if err := execution.declareBindingOperand(frame, instruction.A, true); err != nil {
 				return memory.Value{}, err
 			}
 			value := memory.UndefinedValue()
 			if uint64(instruction.B) < uint64(len(frame.Arguments)) {
 				value = frame.Arguments[instruction.B]
 			}
-			if err := context.InitializeBinding(environment, name, value); err != nil {
+			if err := execution.initializeBindingOperand(frame, instruction.A, value); err != nil {
 				return memory.Value{}, err
 			}
 		case OpInitializeBinding:
@@ -911,11 +895,7 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 			if err != nil {
 				return memory.Value{}, err
 			}
-			environment, name, err := bindingOperands(frame, instruction.A)
-			if err != nil {
-				return memory.Value{}, err
-			}
-			if err := context.InitializeBinding(environment, name, value); err != nil {
+			if err := execution.initializeBindingOperand(frame, instruction.A, value); err != nil {
 				return memory.Value{}, err
 			}
 			if instruction.B == 0 {
@@ -1231,6 +1211,9 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 			}
 			frame.push(result)
 		case OpCreateClosure, OpCreateArrowClosure:
+			if frame.stackLocals {
+				return memory.Value{}, fmt.Errorf("%w: stack-local function cannot create a closure", ErrInvalidBytecode)
+			}
 			template, err := constantRef(frame, instruction.A, "Function template")
 			if err != nil {
 				return memory.Value{}, err
@@ -1374,18 +1357,24 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 			}
 			return result, Throw(value)
 		case OpEnterScope:
-			environment, err := context.NewContext(frame.Environment)
-			if err != nil {
-				return memory.Value{}, err
+			if frame.stackLocals {
+				frame.enterLocalEnvironment()
+			} else {
+				environment, err := context.NewContext(frame.Environment)
+				if err != nil {
+					return memory.Value{}, err
+				}
+				frame.environments = append(frame.environments, frame.Environment)
+				frame.localEnvironments = append(frame.localEnvironments, false)
+				frame.Environment = memory.RefValue(environment)
 			}
-			frame.environments = append(frame.environments, frame.Environment)
-			frame.Environment = memory.RefValue(environment)
 		case OpEnterFunction:
 			environment, err := context.NewContext(frame.Environment)
 			if err != nil {
 				return memory.Value{}, err
 			}
 			frame.environments = append(frame.environments, frame.Environment)
+			frame.localEnvironments = append(frame.localEnvironments, false)
 			frame.Environment = memory.RefValue(environment)
 			for parameterIndex := uint32(0); parameterIndex < instruction.B; parameterIndex++ {
 				_, name, operandErr := bindingOperands(frame, instruction.A+parameterIndex)
@@ -1403,14 +1392,25 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 					return memory.Value{}, err
 				}
 			}
+		case OpEnterStackFunction:
+			frame.stackLocals = true
+			frame.enterLocalEnvironment()
+			for parameterIndex := uint32(0); parameterIndex < instruction.B; parameterIndex++ {
+				value := memory.UndefinedValue()
+				if uint64(parameterIndex) < uint64(len(frame.Arguments)) {
+					value = frame.Arguments[parameterIndex]
+				}
+				if err := frame.declareLocal(instruction.A+parameterIndex, true, true, value); err != nil {
+					return memory.Value{}, err
+				}
+			}
 		case OpLeaveScope:
 			if len(frame.environments) == 0 {
 				return memory.Value{}, fmt.Errorf("%w: LeaveScope without EnterScope", ErrExceptionState)
 			}
-			index := len(frame.environments) - 1
-			frame.Environment = frame.environments[index]
-			frame.environments[index] = memory.Value{}
-			frame.environments = frame.environments[:index]
+			if err := frame.leaveEnvironment(); err != nil {
+				return memory.Value{}, err
+			}
 		default:
 			return memory.Value{}, fmt.Errorf("%w: unimplemented %s", ErrInvalidBytecode, instruction.Op)
 		}
@@ -1424,40 +1424,95 @@ func requireRef(value memory.Value, label string) (memory.Ref, error) {
 	return value.Ref(), nil
 }
 
-func (execution *execution) resolveBindingOperand(frame *Frame, index uint32) (memory.Value, error) {
+func (execution *execution) declareBindingOperand(frame *Frame, index uint32, mutable bool) error {
+	if frame.stackLocals {
+		return frame.declareLocal(index, mutable, false, memory.Value{})
+	}
 	environment, name, err := bindingOperands(frame, index)
 	if err != nil {
+		return err
+	}
+	return execution.context.DeclareBinding(environment, name, mutable)
+}
+
+func (execution *execution) initializeBindingOperand(frame *Frame, index uint32, value memory.Value) error {
+	if binding, found := frame.resolveLocal(index); found {
+		if binding.initialized {
+			return execution.localBindingError(memory.ErrBindingExists, frame, index, "is already initialized")
+		}
+		binding.value = value
+		binding.initialized = true
+		return nil
+	}
+	environment, name, err := bindingOperands(frame, index)
+	if err != nil {
+		return err
+	}
+	return execution.context.InitializeBinding(environment, name, value)
+}
+
+func (execution *execution) resolveBindingOperand(frame *Frame, index uint32) (memory.Value, error) {
+	value, found, err := execution.resolveBindingOperandFound(frame, index)
+	if err != nil {
 		return memory.Value{}, err
+	}
+	if found {
+		return value, nil
+	}
+	name, nameErr := constantRef(frame, index, "binding name")
+	if nameErr != nil {
+		return memory.Value{}, nameErr
+	}
+	nameText, nameErr := execution.context.DerefString(name)
+	if nameErr != nil {
+		return memory.Value{}, nameErr
+	}
+	return memory.Value{}, fmt.Errorf("%w: %q", memory.ErrBindingNotFound, nameText)
+}
+
+func (execution *execution) resolveBindingOperandFound(frame *Frame, index uint32) (memory.Value, bool, error) {
+	if binding, found := frame.resolveLocal(index); found {
+		if !binding.initialized {
+			return memory.Value{}, true, execution.localBindingError(memory.ErrBindingUninitialized, frame, index, "")
+		}
+		return binding.value, true, nil
+	}
+	environment, name, err := bindingOperands(frame, index)
+	if err != nil {
+		return memory.Value{}, false, err
 	}
 	cache := frame.bindingCache(index)
 	if cache.valid && cache.environment == environment {
-		return execution.context.ResolveBindingAt(cache.location)
+		value, err := execution.context.ResolveBindingAt(cache.location)
+		return value, true, err
 	}
 	location, value, found, err := execution.context.ResolveBindingLocation(environment, name)
 	if err != nil {
-		return memory.Value{}, err
+		return memory.Value{}, false, err
 	}
 	if found {
 		cache.environment = environment
 		cache.location = location
 		cache.valid = true
-		return value, nil
+		return value, true, nil
 	}
-	value, found, err = execution.context.ResolveBinding(environment, name)
-	if err != nil {
-		return memory.Value{}, err
-	}
-	if found {
-		return value, nil
-	}
-	nameText, err := execution.context.DerefString(name)
-	if err != nil {
-		return memory.Value{}, err
-	}
-	return memory.Value{}, fmt.Errorf("%w: %q", memory.ErrBindingNotFound, nameText)
+	// Browser globals may be properties created through globalThis rather than
+	// Context bindings. Preserve TaskContext's object-backed global fallback
+	// after the fast lexical lookup misses.
+	return execution.context.ResolveBinding(environment, name)
 }
 
 func (execution *execution) setBindingOperand(frame *Frame, index uint32, value memory.Value) error {
+	if binding, found := frame.resolveLocal(index); found {
+		if !binding.initialized {
+			return execution.localBindingError(memory.ErrBindingUninitialized, frame, index, "")
+		}
+		if !binding.mutable {
+			return execution.localBindingError(memory.ErrImmutableBinding, frame, index, "")
+		}
+		binding.value = value
+		return nil
+	}
 	environment, name, err := bindingOperands(frame, index)
 	if err != nil {
 		return err
@@ -1477,6 +1532,77 @@ func (execution *execution) setBindingOperand(frame *Frame, index uint32, value 
 	cache.location = location
 	cache.valid = true
 	return execution.context.SetBindingAt(location, value)
+}
+
+func (execution *execution) localBindingError(base error, frame *Frame, index uint32, suffix string) error {
+	name, err := constantRef(frame, index, "binding name")
+	if err != nil {
+		return err
+	}
+	text, err := execution.context.DerefString(name)
+	if err != nil {
+		return err
+	}
+	if suffix == "" {
+		return fmt.Errorf("%w: %q", base, text)
+	}
+	return fmt.Errorf("%w: %q %s", base, text, suffix)
+}
+
+func (frame *Frame) enterLocalEnvironment() {
+	frame.environments = append(frame.environments, frame.Environment)
+	frame.localEnvironments = append(frame.localEnvironments, true)
+	frame.localScopes = append(frame.localScopes, len(frame.localBindings))
+}
+
+func (frame *Frame) declareLocal(name uint32, mutable, initialized bool, value memory.Value) error {
+	if len(frame.localScopes) == 0 {
+		return fmt.Errorf("%w: local declaration outside stack scope", ErrExceptionState)
+	}
+	start := frame.localScopes[len(frame.localScopes)-1]
+	for index := start; index < len(frame.localBindings); index++ {
+		if frame.localBindings[index].name == name {
+			return fmt.Errorf("%w: local constant %d", memory.ErrBindingExists, name)
+		}
+	}
+	frame.localBindings = append(frame.localBindings, frameLocalBinding{
+		name: name, value: value, mutable: mutable, initialized: initialized,
+	})
+	return nil
+}
+
+func (frame *Frame) resolveLocal(name uint32) (*frameLocalBinding, bool) {
+	if frame == nil || !frame.stackLocals {
+		return nil, false
+	}
+	for index := len(frame.localBindings) - 1; index >= 0; index-- {
+		if frame.localBindings[index].name == name {
+			return &frame.localBindings[index], true
+		}
+	}
+	return nil, false
+}
+
+func (frame *Frame) leaveEnvironment() error {
+	if len(frame.environments) == 0 || len(frame.localEnvironments) != len(frame.environments) {
+		return fmt.Errorf("%w: environment stack mismatch", ErrExceptionState)
+	}
+	index := len(frame.environments) - 1
+	if frame.localEnvironments[index] {
+		if len(frame.localScopes) == 0 {
+			return fmt.Errorf("%w: local scope stack underflow", ErrExceptionState)
+		}
+		start := frame.localScopes[len(frame.localScopes)-1]
+		clear(frame.localBindings[start:])
+		frame.localBindings = frame.localBindings[:start]
+		frame.localScopes = frame.localScopes[:len(frame.localScopes)-1]
+	}
+	frame.Environment = frame.environments[index]
+	frame.environments[index] = memory.Value{}
+	frame.environments = frame.environments[:index]
+	frame.localEnvironments[index] = false
+	frame.localEnvironments = frame.localEnvironments[:index]
+	return nil
 }
 
 func (frame *Frame) bindingCache(index uint32) *frameBinding {
@@ -1646,10 +1772,9 @@ func restoreEnvironmentDepth(frame *Frame, depth int) error {
 		return fmt.Errorf("%w: handler environment depth %d", ErrExceptionState, depth)
 	}
 	for len(frame.environments) > depth {
-		index := len(frame.environments) - 1
-		frame.Environment = frame.environments[index]
-		frame.environments[index] = memory.Value{}
-		frame.environments = frame.environments[:index]
+		if err := frame.leaveEnvironment(); err != nil {
+			return err
+		}
 	}
 	return nil
 }

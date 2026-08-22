@@ -1039,6 +1039,10 @@ func (compiler *functionCompiler) compileHoistedFunction(declaration *ast.Functi
 }
 
 func (compiler *functionCompiler) compileNestedFunction(name string, parameters []*ast.Identifier, body *ast.BlockStatement, span lexer.Span, async, generator bool) (uint32, error) {
+	// Until escape analysis can distinguish individual captures, any nested
+	// closure keeps this function on a RegionStore-backed lexical environment.
+	// Closure-free functions can safely use borrowed frame-local bindings.
+	compiler.createsClosure = true
 	if async && generator {
 		return 0, compiler.problem(span, "async generator Functions are not implemented")
 	}
@@ -1074,7 +1078,8 @@ func (compiler *functionCompiler) compileNestedFunction(name string, parameters 
 			firstParameter = constant
 		}
 	}
-	if err := child.emit(browserruntime.Instruction{Op: browserruntime.OpEnterFunction, A: firstParameter, B: uint32(len(parameters))}, span); err != nil {
+	prologue, err := child.emitInstruction(browserruntime.Instruction{Op: browserruntime.OpEnterFunction, A: firstParameter, B: uint32(len(parameters))}, span)
+	if err != nil {
 		return 0, err
 	}
 	child.environmentDepth++
@@ -1091,6 +1096,11 @@ func (compiler *functionCompiler) compileNestedFunction(name string, parameters 
 	}
 	if err := child.emit(browserruntime.Instruction{Op: browserruntime.OpReturn}, body.Span()); err != nil {
 		return 0, err
+	}
+	if !child.createsClosure {
+		if err := child.builder.ReplaceOpcode(prologue, browserruntime.OpEnterFunction, browserruntime.OpEnterStackFunction); err != nil {
+			return 0, fmt.Errorf("Function %d: %w", index, err)
+		}
 	}
 	template, err := child.finish(name, uint32(len(parameters)))
 	if err != nil {

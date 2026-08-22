@@ -108,6 +108,39 @@ func TestBytecodeBuilderRejectsInvalidLabelsAndPrograms(t *testing.T) {
 	}
 }
 
+func TestBytecodeBuilderRewritesOnlyTheExpectedOpcode(t *testing.T) {
+	t.Parallel()
+
+	builder := browserruntime.NewBytecodeBuilder()
+	index, err := builder.Emit(browserruntime.Instruction{Op: browserruntime.OpEnterFunction, A: 2, B: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := builder.ReplaceOpcode(index, browserruntime.OpEnterFunction, browserruntime.OpEnterStackFunction); err != nil {
+		t.Fatal(err)
+	}
+	if err := builder.ReplaceOpcode(index, browserruntime.OpEnterFunction, browserruntime.OpEnterStackFunction); !errors.Is(err, browserruntime.ErrInvalidBytecode) {
+		t.Fatalf("mismatched rewrite error = %v", err)
+	}
+	if _, err := builder.Emit(browserruntime.Instruction{Op: browserruntime.OpUndefined}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := builder.Emit(browserruntime.Instruction{Op: browserruntime.OpReturn}); err != nil {
+		t.Fatal(err)
+	}
+	code, _, err := builder.BuildCode(5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	instructions, err := browserruntime.DecodeBytecode(code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if instructions[0] != (browserruntime.Instruction{Op: browserruntime.OpEnterStackFunction, A: 2, B: 3}) {
+		t.Fatalf("rewritten prologue = %#v", instructions[0])
+	}
+}
+
 func TestBytecodeBuilderBuildsAgainstPortableConstantTable(t *testing.T) {
 	t.Parallel()
 

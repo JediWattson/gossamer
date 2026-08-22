@@ -139,6 +139,27 @@ func (builder *BytecodeBuilder) EmitAt(instruction Instruction, location SourceS
 	return index, nil
 }
 
+// ReplaceOpcode rewrites one already-emitted instruction without changing its
+// operands, source location, or any label positions. The compiler uses this to
+// select a stack-local function prologue after it has seen the complete body
+// and proved that the function creates no closures.
+func (builder *BytecodeBuilder) ReplaceOpcode(index uint32, from, to Opcode) error {
+	if builder == nil {
+		return fmt.Errorf("%w: nil bytecode builder", ErrInvalidBytecode)
+	}
+	if uint64(index) >= uint64(len(builder.instructions)) {
+		return fmt.Errorf("%w: instruction %d", ErrInvalidBytecode, index)
+	}
+	if builder.instructions[index].Op != from {
+		return fmt.Errorf("%w: instruction %d is %s, want %s", ErrInvalidBytecode, index, builder.instructions[index].Op, from)
+	}
+	if !to.valid() {
+		return fmt.Errorf("%w: opcode %d", ErrInvalidBytecode, to)
+	}
+	builder.instructions[index].Op = to
+	return nil
+}
+
 // EmitDiscardAt emits Pop, or marks the immediately preceding binding write as
 // discard-only when no branch can enter between the write and the Pop. This
 // preserves the observable result of expression bytecode while avoiding a
