@@ -91,6 +91,11 @@ type Interpreter struct {
 
 	jobMutex sync.Mutex
 	jobs     map[TaskID][]microtaskJob
+
+	programMutex sync.Mutex
+	programs     map[bytecodeCacheKey][]*cachedBytecode
+	programClock []*cachedBytecode
+	programAt    int
 }
 
 func NewInterpreter(config InterpreterConfig) *Interpreter {
@@ -103,7 +108,12 @@ func NewInterpreter(config InterpreterConfig) *Interpreter {
 	if config.MaxCallDepth == 0 {
 		config.MaxCallDepth = 256
 	}
-	return &Interpreter{config: config, natives: make(map[uint64]nativeFunction), jobs: make(map[TaskID][]microtaskJob)}
+	return &Interpreter{
+		config:   config,
+		natives:  make(map[uint64]nativeFunction),
+		jobs:     make(map[TaskID][]microtaskJob),
+		programs: make(map[bytecodeCacheKey][]*cachedBytecode),
+	}
 }
 
 func (interpreter *Interpreter) RegisterNative(id uint64, function NativeFunction) error {
@@ -227,7 +237,7 @@ func (execution *execution) call(function memory.Ref, this memory.Value, argumen
 	if execution.depth >= execution.interpreter.config.MaxCallDepth {
 		return memory.Value{}, ErrCallDepth
 	}
-	descriptor, err := execution.context.DerefFunction(function)
+	descriptor, err := execution.context.LoadFunction(function)
 	if err != nil {
 		return memory.Value{}, err
 	}
@@ -252,7 +262,10 @@ func (execution *execution) call(function memory.Ref, this memory.Value, argumen
 	if descriptor.Kind != memory.FunctionBytecode {
 		return memory.Value{}, fmt.Errorf("%w: %s", ErrNotCallable, function)
 	}
-	instructions, err := DecodeBytecode(descriptor.Code)
+	if descriptor.ThisMode == memory.FunctionThisLexical {
+		this = descriptor.LexicalThis
+	}
+	instructions, err := execution.interpreter.decodeProgram(descriptor.Code, len(descriptor.Constants))
 	if err != nil {
 		return memory.Value{}, err
 	}
@@ -263,9 +276,6 @@ func (execution *execution) call(function memory.Ref, this memory.Value, argumen
 		Arguments:    append([]memory.Value(nil), arguments...),
 		function:     descriptor,
 		instructions: instructions,
-	}
-	if err := validateFrameProgram(frame); err != nil {
-		return memory.Value{}, err
 	}
 	result, err := execution.runFrame(frame)
 	if err != nil {
@@ -924,7 +934,7 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 			}
 			construct := instruction.Op == OpConstruct || instruction.Op == OpConstructSpread
 			if construct {
-				descriptor, descriptorErr := context.DerefFunction(callee)
+				descriptor, descriptorErr := context.LoadFunction(callee)
 				if descriptorErr != nil {
 					return memory.Value{}, descriptorErr
 				}
@@ -974,21 +984,29 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 				}
 			}
 			frame.push(result)
-		case OpCreateClosure:
+		case OpCreateClosure, OpCreateArrowClosure:
 			template, err := constantRef(frame, instruction.A, "Function template")
 			if err != nil {
 				return memory.Value{}, err
 			}
-			descriptor, err := context.DerefFunction(template)
+			descriptor, err := context.LoadFunction(template)
 			if err != nil {
 				return memory.Value{}, err
 			}
 			var closure memory.Ref
 			switch descriptor.Kind {
 			case memory.FunctionBytecode:
-				closure, err = context.NewBytecodeFunctionWithLocations(descriptor.Name, frame.Environment, descriptor.Arity, descriptor.Code, descriptor.Constants, descriptor.Locations)
+				if instruction.Op == OpCreateArrowClosure {
+					closure, err = context.NewArrowBytecodeClosure(template, frame.Environment, frame.This)
+				} else {
+					closure, err = context.NewBytecodeClosure(template, frame.Environment)
+				}
 			case memory.FunctionNative:
-				closure, err = context.NewNativeFunction(descriptor.Name, frame.Environment, descriptor.Arity, descriptor.NativeID)
+				if instruction.Op == OpCreateArrowClosure {
+					err = fmt.Errorf("%w: native arrow template %s", ErrNotCallable, template)
+				} else {
+					closure, err = context.NewNativeFunction(descriptor.Name, frame.Environment, descriptor.Arity, descriptor.NativeID)
+				}
 			default:
 				err = fmt.Errorf("%w: template %s", ErrNotCallable, template)
 			}

@@ -61,6 +61,66 @@ func TestNativeFunctionOwnsCodeAndCapturedReferences(t *testing.T) {
 	}
 }
 
+func TestBytecodeClosureSharesImmutableExecutableStorage(t *testing.T) {
+	store := memory.NewStore(nil)
+	defer store.Close()
+	owner := realmOwner(56)
+	functionRegion := mustRegion(t, store, owner)
+	valueRegion := mustRegion(t, store, owner)
+	captured, err := store.AllocObject(owner, valueRegion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := make([]byte, 1024)
+	for index := range code {
+		code[index] = byte(index)
+	}
+	template, err := store.AllocBytecodeFunction(owner, functionRegion, memory.NullValue(), memory.NullValue(), 0, code, []memory.Value{memory.RefValue(captured)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	locations := []memory.SourceSpan{{Start: 1, End: 2}, {Start: 3, End: 5}}
+	if err := store.SetFunctionLocations(owner, template, locations); err != nil {
+		t.Fatal(err)
+	}
+	before := store.PhysicalStats()
+	closure, err := store.AllocBytecodeClosure(owner, functionRegion, template, memory.NullValue())
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := store.PhysicalStats()
+	if delta := after.PayloadBytes - before.PayloadBytes; delta != after.SlotPayloadSizeBytes {
+		t.Fatalf("closure payload grew by %d bytes, want only its %d-byte slot payload", delta, after.SlotPayloadSizeBytes)
+	}
+	if got := store.EdgeCount(functionRegion, valueRegion); got != 2 {
+		t.Fatalf("template and closure edge count = %d, want 2", got)
+	}
+	loaded, err := store.LoadFunction(owner, closure)
+	if err != nil || len(loaded.Code) != len(code) || len(loaded.Locations) != len(locations) || len(loaded.Constants) != 1 || loaded.Constants[0].Ref() != captured {
+		t.Fatalf("LoadFunction(closure) = %#v, %v", loaded, err)
+	}
+	if allocations := testing.AllocsPerRun(100, func() {
+		if _, err := store.LoadFunction(owner, closure); err != nil {
+			t.Fatal(err)
+		}
+	}); allocations != 0 {
+		t.Fatalf("LoadFunction allocated %.2f objects per read", allocations)
+	}
+	if err := store.Free(owner, template); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.EdgeCount(functionRegion, valueRegion); got != 1 {
+		t.Fatalf("closure edge count after template free = %d, want 1", got)
+	}
+	snapshot, err := store.DerefFunction(owner, closure)
+	if err != nil || snapshot.Code[513] != code[513] || snapshot.Locations[1] != locations[1] {
+		t.Fatalf("closure after template free = %#v, %v", snapshot, err)
+	}
+	if err := store.CheckInvariants(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestNativeFunctionPromotionPreservesClosureAndAliases(t *testing.T) {
 	t.Parallel()
 
@@ -145,6 +205,53 @@ func TestBoundNativeFunctionCapturesParticipateInGraphCopy(t *testing.T) {
 	snapshot, err := store.DerefFunction(reader, copied[0])
 	if err != nil || len(snapshot.Captures) != 2 || snapshot.Captures[0] != snapshot.Captures[1] || snapshot.Captures[0].Ref() == value {
 		t.Fatalf("copied captures = %#v, %v", snapshot.Captures, err)
+	}
+	if err := store.CheckInvariants(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestArrowFunctionLexicalThisParticipatesInGraphCopy(t *testing.T) {
+	t.Parallel()
+
+	store := memory.NewStore(nil)
+	defer store.Close()
+	owner := realmOwner(54)
+	functionRegion := mustRegion(t, store, owner)
+	receiverRegion := mustRegion(t, store, owner)
+	receiver, _ := store.AllocObject(owner, receiverRegion)
+	function, err := store.AllocArrowBytecodeFunction(
+		owner,
+		functionRegion,
+		memory.NullValue(),
+		memory.NullValue(),
+		memory.RefValue(receiver),
+		0,
+		[]byte{0xaa},
+		nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := store.EdgeCount(functionRegion, receiverRegion); got != 1 {
+		t.Fatalf("lexical receiver edge count = %d, want 1", got)
+	}
+	snapshot, err := store.DerefFunction(owner, function)
+	if err != nil || snapshot.ThisMode != memory.FunctionThisLexical || snapshot.Constructible || snapshot.LexicalThis.Ref() != receiver {
+		t.Fatalf("arrow descriptor = %#v, %v", snapshot, err)
+	}
+
+	reader := realmOwner(55)
+	copied, err := store.Copy(owner, reader, function)
+	if err != nil {
+		t.Fatal(err)
+	}
+	copyFunction, err := store.DerefFunction(reader, copied[0])
+	if err != nil || copyFunction.ThisMode != memory.FunctionThisLexical || copyFunction.Constructible || !copyFunction.LexicalThis.IsRef() || copyFunction.LexicalThis.Ref() == receiver {
+		t.Fatalf("copied arrow descriptor = %#v, %v", copyFunction, err)
+	}
+	if _, err := store.DerefObjectHeader(reader, copyFunction.LexicalThis.Ref()); err != nil {
+		t.Fatalf("copied lexical receiver = %v", err)
 	}
 	if err := store.CheckInvariants(); err != nil {
 		t.Fatal(err)

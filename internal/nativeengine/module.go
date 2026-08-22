@@ -447,7 +447,7 @@ func (realm *Realm) instantiateModuleLocalsLocked(context *browserruntime.TaskCo
 			if uint64(binding.FunctionIndex) >= uint64(len(loaded.Functions)) {
 				return fmt.Errorf("%w: binding %q references function %d", program.ErrInvalidProgram, binding.Name, binding.FunctionIndex)
 			}
-			template, err := context.DerefFunction(loaded.Functions[binding.FunctionIndex])
+			template, err := context.LoadFunction(loaded.Functions[binding.FunctionIndex])
 			if err != nil {
 				return err
 			}

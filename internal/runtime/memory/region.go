@@ -184,14 +184,14 @@ func payloadPointer[T any](value T) *T {
 	return &value
 }
 
-func slotReferences(slot *Slot) []Value {
+func appendSlotReferences(values []Value, slot *Slot) []Value {
 	if slot == nil || !slot.Occupied {
-		return nil
+		return values
 	}
 	if slot.Kind == HeapCell {
-		return slot.Cell.Fields
+		return append(values, slot.Cell.Fields...)
 	}
-	values := objectHeaderReferences(slot)
+	values = appendObjectHeaderReferences(values, slot)
 	if slot.Kind == HeapObject {
 		return values
 	}
@@ -202,7 +202,6 @@ func slotReferences(slot *Slot) []Value {
 		return values
 	}
 	if slot.Kind == HeapContext {
-		values := make([]Value, 0, 1+len(slot.Context.Bindings)*3)
 		values = append(values, slot.Context.Parent)
 		for _, binding := range slot.Context.Bindings {
 			values = append(values, RefValue(binding.Name))
@@ -216,6 +215,9 @@ func slotReferences(slot *Slot) []Value {
 	}
 	if slot.Kind == HeapFunction {
 		values = append(values, slot.Function.Name, slot.Function.Environment)
+		if slot.Function.ThisMode == FunctionThisLexical {
+			values = append(values, slot.Function.LexicalThis)
+		}
 		values = append(values, slot.Function.Constants...)
 		values = append(values, slot.Function.Captures...)
 		return values
@@ -230,13 +232,13 @@ func slotReferences(slot *Slot) []Value {
 		return values
 	}
 	if slot.Kind == HeapSymbol {
-		return []Value{slot.Symbol.Description}
+		return append(values, slot.Symbol.Description)
 	}
 	if slot.Kind == HeapTypedArray {
 		if slot.TypedArray.Buffer == (Ref{}) {
-			return nil
+			return values
 		}
-		return []Value{RefValue(slot.TypedArray.Buffer)}
+		return append(values, RefValue(slot.TypedArray.Buffer))
 	}
 	if slot.Kind == HeapMap {
 		for _, entry := range slot.Map.Entries {
@@ -249,9 +251,9 @@ func slotReferences(slot *Slot) []Value {
 	}
 	if slot.Kind == HeapRegExp {
 		if slot.RegExp.Pattern == (Ref{}) {
-			return nil
+			return values
 		}
-		return []Value{RefValue(slot.RegExp.Pattern)}
+		return append(values, RefValue(slot.RegExp.Pattern))
 	}
 	if slot.Kind == HeapError {
 		values = append(values, slot.Error.Message, slot.Error.Stack)
@@ -264,15 +266,14 @@ func slotReferences(slot *Slot) []Value {
 	if slot.Kind == HeapIterator {
 		return append(values, RefValue(slot.Iterator.Target))
 	}
-	return nil
+	return values
 }
 
-func objectHeaderReferences(slot *Slot) []Value {
+func appendObjectHeaderReferences(values []Value, slot *Slot) []Value {
 	header, ok := objectHeaderForSlot(slot)
 	if !ok {
-		return nil
+		return values
 	}
-	values := make([]Value, 0, 1+len(header.Properties)*4)
 	values = append(values, header.Prototype)
 	for _, property := range header.Properties {
 		values = append(values, RefValue(property.Name), property.Value, property.Getter, property.Setter)

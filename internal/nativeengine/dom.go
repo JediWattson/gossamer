@@ -335,7 +335,6 @@ type nativeRegistration struct {
 
 func (realm *Realm) installBrowserNatives() error {
 	registrations := []nativeRegistration{
-		{nativeConsoleMethod, realm.consoleMethod},
 		{nativeDocumentGetElementByID, realm.documentGetElementByID},
 		{nativeDocumentGetElementsByTagName, realm.documentGetElementsByTagName},
 		{nativeDocumentCreateElement, realm.documentCreateElement},
@@ -643,6 +642,12 @@ func (realm *Realm) installBrowserNatives() error {
 		{nativeElementDefaultSelectedSet, realm.elementReflectedBoolean("selected", true)},
 		{nativeElementFormIndeterminateGet, realm.elementFormIndeterminateGet},
 		{nativeElementFormIndeterminateSet, realm.elementFormIndeterminateSet},
+	}
+	for index, name := range consoleMethodNames {
+		registrations = append(registrations, nativeRegistration{
+			id:       nativeConsoleMethod + uint64(index),
+			callback: realm.consoleMethod(name),
+		})
 	}
 	for _, registration := range registrations {
 		if err := realm.interpreter.RegisterNative(registration.id, registration.callback); err != nil {

@@ -18,6 +18,7 @@ import (
 	"github.com/JediWattson/gossamer/internal/loader"
 	"github.com/JediWattson/gossamer/internal/memoryprofile"
 	"github.com/JediWattson/gossamer/internal/nativeengine"
+	browserruntime "github.com/JediWattson/gossamer/internal/runtime"
 	"github.com/JediWattson/gossamer/internal/window"
 )
 
@@ -33,13 +34,14 @@ func main() {
 	memoryProfile := flag.String("memory-profile", "", "optional JSONL browser memory timeline path")
 	heapProfile := flag.String("heap-profile", "", "optional Go heap profile path written when the window closes")
 	memoryProfileInterval := flag.Duration("memory-profile-interval", time.Second, "minimum interval between memory timeline checkpoints")
+	maxInstructions := flag.Uint64("max-instructions", 0, "optional Strand instruction budget per top-level call (zero uses the runtime default)")
 	flag.Parse()
 	if flag.NArg() != 1 {
 		fatalf("usage: gossamer-window [flags] <absolute-http-or-https-url>")
 	}
 	rawURL := flag.Arg(0)
 
-	engine, err := selectEngine(*engineName, *icuData)
+	engine, err := selectEngineWithInterpreter(*engineName, *icuData, browserruntime.InterpreterConfig{MaxInstructions: *maxInstructions})
 	if err != nil {
 		fatalf("initialize %s engine: %v", strings.TrimSpace(*engineName), err)
 	}
@@ -95,9 +97,13 @@ func main() {
 }
 
 func selectEngine(name, icuData string) (browser.Engine, error) {
+	return selectEngineWithInterpreter(name, icuData, browserruntime.InterpreterConfig{})
+}
+
+func selectEngineWithInterpreter(name, icuData string, interpreter browserruntime.InterpreterConfig) (browser.Engine, error) {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "strand":
-		return nativeengine.New(nativeengine.Config{}), nil
+		return nativeengine.New(nativeengine.Config{Interpreter: interpreter}), nil
 	case "v8":
 		return newStockV8Engine(icuData)
 	default:

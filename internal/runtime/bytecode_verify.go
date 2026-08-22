@@ -25,7 +25,7 @@ func verifyInstructions(instructions []Instruction, constantCount int) error {
 	}
 	for index, instruction := range instructions {
 		switch instruction.Op {
-		case OpConstant, OpLoadBinding, OpTypeOfBinding, OpDeclareBinding, OpInitializeBinding, OpStoreBinding, OpCreateClosure:
+		case OpConstant, OpLoadBinding, OpTypeOfBinding, OpDeclareBinding, OpInitializeBinding, OpStoreBinding, OpCreateClosure, OpCreateArrowClosure:
 			if uint64(instruction.A) >= uint64(constantCount) {
 				return fmt.Errorf("%w: instruction %d uses constant %d", ErrConstantBounds, index, instruction.A)
 			}
@@ -117,7 +117,7 @@ func mergeStackDepth(depths map[int]int, queue *[]int, target, depth int) error 
 func instructionStackEffect(instruction Instruction) (required, delta int, terminal bool, err error) {
 	switch instruction.Op {
 	case OpConstant, OpArgument, OpUndefined, OpNull, OpTrue, OpFalse,
-		OpNewObject, OpNewArray, OpLoadBinding, OpTypeOfBinding, OpArguments, OpLoadThis, OpCreateClosure:
+		OpNewObject, OpNewArray, OpLoadBinding, OpTypeOfBinding, OpArguments, OpLoadThis, OpCreateClosure, OpCreateArrowClosure:
 		return 0, 1, false, nil
 	case OpPop:
 		return 1, -1, false, nil

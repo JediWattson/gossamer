@@ -25,9 +25,11 @@ import (
 )
 
 const (
-	defaultPlace    = "global"
-	defaultUsername = "anon-strand"
-	defaultUserUUID = "00000000-0000-4000-8000-000000000001"
+	defaultPlace          = "global"
+	defaultUsername       = "anon-strand"
+	defaultUserUUID       = "00000000-0000-4000-8000-000000000001"
+	historyMessageID      = "strand-history-message-1"
+	historyMessageContent = "history rendered by Strand"
 )
 
 type Options struct {
@@ -55,16 +57,24 @@ type WebSocketReport struct {
 	Payload  any      `json:"payload,omitempty"`
 }
 
+type HistoryReport struct {
+	MessageID string `json:"messageId"`
+	Content   string `json:"content"`
+	Rendered  bool   `json:"rendered"`
+}
+
 type Report struct {
-	Passed     bool                       `json:"passed"`
-	URL        string                     `json:"url,omitempty"`
-	Navigation browser.NavigationSnapshot `json:"navigation"`
-	Session    SessionReport              `json:"session"`
-	WebSocket  WebSocketReport            `json:"webSocket"`
-	DOM        []string                   `json:"dom,omitempty"`
-	Ownership  ownership.Stats            `json:"ownership"`
-	Teardown   ownership.Stats            `json:"teardown"`
-	Failure    string                     `json:"failure,omitempty"`
+	Passed     bool                          `json:"passed"`
+	URL        string                        `json:"url,omitempty"`
+	Navigation browser.NavigationSnapshot    `json:"navigation"`
+	Session    SessionReport                 `json:"session"`
+	History    HistoryReport                 `json:"history"`
+	Console    []nativeengine.ConsoleMessage `json:"console,omitempty"`
+	WebSocket  WebSocketReport               `json:"webSocket"`
+	DOM        []string                      `json:"dom,omitempty"`
+	Ownership  ownership.Stats               `json:"ownership"`
+	Teardown   ownership.Stats               `json:"teardown"`
+	Failure    string                        `json:"failure,omitempty"`
 }
 
 type wireEnvelope struct {
@@ -102,7 +112,8 @@ func Run(ctx context.Context, options Options) (report Report, resultErr error) 
 	report.URL = server.URL + "/" + url.PathEscape(place)
 
 	dialer := newRecordingDialer()
-	engine := nativeengine.New(nativeengine.Config{})
+	console := &consoleRecorder{}
+	engine := nativeengine.New(nativeengine.Config{ConsoleSink: console.record})
 	browserRuntime, err := browser.NewWithEngine(engine)
 	if err != nil {
 		return report, errors.Join(err, engine.Close())
@@ -133,6 +144,40 @@ func Run(ctx context.Context, options Options) (report Report, resultErr error) 
 		})
 	}
 	if err == nil {
+		err = waitFor(ctx, page, func() bool {
+			root, rootReady := page.Document().ElementByID("root")
+			text, _ := page.Document().TextContent(root)
+			return rootReady && strings.Contains(text, historyMessageContent)
+		})
+		if err != nil {
+			err = fmt.Errorf("efchatcompat: wait for history message: %w", err)
+		}
+	}
+	if err == nil {
+		source := fmt.Sprintf(`
+const historyRow = document.querySelector('[data-message-bubble-id=%s]');
+if (!historyRow) throw new Error('efchat history gate: missing message row');
+historyRow.id = 'strand-history-gate-row';
+`, quotedJavaScriptString(historyMessageID))
+		_, err = page.QueueScript(browser.ScriptSource{URL: server.URL + "/strand-history-row.js", Source: source})
+	}
+	if err == nil {
+		err = waitFor(ctx, page, func() bool {
+			_, found := page.Document().ElementByID("strand-history-gate-row")
+			return found
+		})
+		if err != nil {
+			err = fmt.Errorf("efchatcompat: verify history message row: %w", err)
+		}
+	}
+	report.History = HistoryReport{
+		MessageID: historyMessageID,
+		Content:   historyMessageContent,
+	}
+	if page != nil {
+		_, report.History.Rendered = page.Document().ElementByID("strand-history-gate-row")
+	}
+	if err == nil {
 		source := fmt.Sprintf(`
 const input = document.getElementById("efchat-input");
 if (!input) throw new Error("efchat anonymous gate: missing #efchat-input");
@@ -153,6 +198,7 @@ input.dispatchEvent(enter);
 		report.DOM, _ = page.InspectorDOMLines(120)
 	}
 	report.Session = session.report(dialer.snapshot().Cookie)
+	report.Console = console.snapshot()
 	socket := dialer.snapshot()
 	report.WebSocket.URL = socket.URL
 	report.WebSocket.Messages = append([]string(nil), socket.Messages...)
@@ -185,11 +231,38 @@ input.dispatchEvent(enter);
 	if err == nil && report.WebSocket.Event != "message" {
 		err = fmt.Errorf("efchatcompat: efchat message envelope was not observed")
 	}
+	if err == nil && !report.History.Rendered {
+		err = fmt.Errorf("efchatcompat: history message row was not rendered")
+	}
 	report.Passed = err == nil
 	if err != nil {
 		report.Failure = err.Error()
 	}
 	return report, err
+}
+
+type consoleRecorder struct {
+	mutex    sync.Mutex
+	messages []nativeengine.ConsoleMessage
+}
+
+func (recorder *consoleRecorder) record(message nativeengine.ConsoleMessage) {
+	recorder.mutex.Lock()
+	recorder.messages = append(recorder.messages, message)
+	recorder.mutex.Unlock()
+}
+
+func (recorder *consoleRecorder) snapshot() []nativeengine.ConsoleMessage {
+	recorder.mutex.Lock()
+	defer recorder.mutex.Unlock()
+	result := make([]nativeengine.ConsoleMessage, len(recorder.messages))
+	for index, message := range recorder.messages {
+		result[index] = nativeengine.ConsoleMessage{
+			Method:    message.Method,
+			Arguments: append([]string(nil), message.Arguments...),
+		}
+	}
+	return result
 }
 
 func waitFor(ctx context.Context, page *browser.Page, ready func() bool) error {
@@ -243,7 +316,10 @@ func (server *anonymousSessionServer) ServeHTTP(writer http.ResponseWriter, requ
 		writer.WriteHeader(http.StatusNotFound)
 	case "/api/chat/history":
 		writer.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(writer, `{"messages":[],"reactions":[],"hasMore":false,"placeId":"global","pageInfo":{"hasOlder":false,"hasNewer":false}}`)
+		_, _ = io.WriteString(writer, `{"messages":[{"id":"`+historyMessageID+`","event":"message","createdAt":"2026-08-21T12:00:00Z","updateNumber":0,"historyCursor":"strand-history-cursor-1","historyPosition":{"score":1,"id":"`+historyMessageID+`"},"payload":{"username":"history-user","content":"`+historyMessageContent+`","userUuid":"00000000-0000-4000-8000-000000000002","isAnonymous":false,"appearance":{"color":"#2563eb","badges":[]}}}],"reactions":[],"hasMore":false,"placeId":"global","pageInfo":{"startCursor":"strand-history-cursor-1","endCursor":"strand-history-cursor-1","hasOlder":false,"hasNewer":false}}`)
+	case "/api/chat/reactions":
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(writer, `{"reactions":[]}`)
 	case "/api/attachments/place/global/photo/meta":
 		writer.WriteHeader(http.StatusNotFound)
 	default:

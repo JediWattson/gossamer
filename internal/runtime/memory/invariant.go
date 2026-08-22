@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"sort"
 
 	"github.com/JediWattson/gossamer/internal/runtime/ownership"
 )
@@ -321,6 +320,16 @@ func (store *Store) CheckInvariants() error {
 				if slot.Function.Kind == FunctionNative && (slot.Function.NativeID == 0 || len(slot.Function.Code) != 0 || len(slot.Function.Locations) != 0 || len(slot.Function.Constants) != 0) {
 					return invariantError("native Function %s has an invalid descriptor", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
 				}
+				if slot.Function.ThisMode != FunctionThisDynamic && slot.Function.ThisMode != FunctionThisLexical {
+					return invariantError("Function %s has invalid this mode %d", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot.Function.ThisMode)
+				}
+				if slot.Function.ThisMode == FunctionThisLexical {
+					if slot.Function.Kind != FunctionBytecode || slot.Function.Constructible {
+						return invariantError("Function %s has an invalid lexical receiver", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
+					}
+				} else if slot.Function.LexicalThis != (Value{}) {
+					return invariantError("Function %s retains a lexical receiver in dynamic mode", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
+				}
 				if err := store.checkOptionalTypedRefLocked(slot.Function.Name, HeapString, "Function name"); err != nil {
 					return err
 				}
@@ -572,6 +581,7 @@ func (store *Store) CheckInvariants() error {
 	expectedObjectEdges := make(map[objectEdge]uint32)
 	expectedRegionEdges := make(map[edgeKey]uint32)
 	expectedLedgerEdges := make(map[ownership.ObjectID]map[ownership.ObjectID]struct{})
+	references := make([]Value, 0, 16)
 	for id, region := range store.regions {
 		if region == nil || region.State == RegionDestroyed {
 			continue
@@ -581,7 +591,8 @@ func (store *Store) CheckInvariants() error {
 			if !slot.Occupied {
 				continue
 			}
-			for field, value := range slotReferences(slot) {
+			references = appendSlotReferences(references[:0], slot)
+			for field, value := range references {
 				if !value.IsRef() {
 					continue
 				}
@@ -620,17 +631,9 @@ func (store *Store) CheckInvariants() error {
 		return err
 	}
 	for object, location := range objects {
-		snapshot, err := store.ledger.Object(object)
-		if err != nil {
-			return invariantError("R%d slot %d ledger object %d: %v", location.region, location.slot, object, err)
-		}
 		region := store.regions[location.region]
-		if !snapshot.Alive || snapshot.References != 1 || len(snapshot.Owners) != 1 || snapshot.Owners[region.Owner] != 1 {
-			return invariantError("R%d slot %d has invalid ledger object %#v", location.region, location.slot, snapshot)
-		}
-		wantTargets := sortedObjectSet(expectedLedgerEdges[object])
-		if !equalObjectIDs(snapshot.Edges, wantTargets) {
-			return invariantError("ledger object %d edges %v, want %v", object, snapshot.Edges, wantTargets)
+		if err := store.ledger.ValidateObjectState(object, region.Owner, expectedLedgerEdges[object]); err != nil {
+			return invariantError("R%d slot %d ledger object %d: %v", location.region, location.slot, object, err)
 		}
 	}
 	if store.stats.LiveSlots != liveSlots || store.stats.LiveCells != liveCells || store.stats.LiveStrings != liveStrings || store.stats.LiveObjects != liveObjects || store.stats.LiveArrays != liveArrays || store.stats.LiveContexts != liveContexts || store.stats.LiveFunctions != liveFunctions || store.stats.LivePromises != livePromises || store.stats.LiveBigInts != liveBigInts || store.stats.LiveSymbols != liveSymbols || store.stats.LiveArrayBuffers != liveArrayBuffers || store.stats.LiveTypedArrays != liveTypedArrays || store.stats.LiveMaps != liveMaps || store.stats.LiveSets != liveSets || store.stats.LiveDates != liveDates || store.stats.LiveRegExps != liveRegExps || store.stats.LiveErrors != liveErrors || store.stats.LiveBytes != liveBytes || store.stats.LiveRegions != liveRegions {
@@ -689,27 +692,6 @@ func compareRegionEdges(got, want map[edgeKey]uint32) error {
 		}
 	}
 	return nil
-}
-
-func sortedObjectSet(objects map[ownership.ObjectID]struct{}) []ownership.ObjectID {
-	result := make([]ownership.ObjectID, 0, len(objects))
-	for object := range objects {
-		result = append(result, object)
-	}
-	sort.Slice(result, func(left, right int) bool { return result[left] < result[right] })
-	return result
-}
-
-func equalObjectIDs(left, right []ownership.ObjectID) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	for index := range left {
-		if left[index] != right[index] {
-			return false
-		}
-	}
-	return true
 }
 
 func invariantError(format string, arguments ...any) error {

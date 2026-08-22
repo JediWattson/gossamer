@@ -410,6 +410,7 @@ var _ AnimationFrameHost = (*taskHost)(nil)
 var _ SessionHistoryHost = (*taskHost)(nil)
 var _ NativeTaskHost = (*taskHost)(nil)
 var _ FetchHost = (*taskHost)(nil)
+var _ AsyncFetchHost = (*taskHost)(nil)
 var _ StorageHost = (*taskHost)(nil)
 var _ WebSocketHost = (*taskHost)(nil)
 
@@ -420,19 +421,23 @@ const maxFetchResponseBytes int64 = 16 << 20
 // single redirect policy, transport, and cookie jar for the full document
 // lifetime.
 func (host *taskHost) Fetch(input FetchRequest) (FetchResponse, error) {
-	host.page.mutex.RLock()
-	if host.page.closed {
-		host.page.mutex.RUnlock()
+	return host.page.fetch(host.generation, input)
+}
+
+func (page *Page) fetch(generation DocumentGeneration, input FetchRequest) (FetchResponse, error) {
+	page.mutex.RLock()
+	if page.closed {
+		page.mutex.RUnlock()
 		return FetchResponse{}, ErrPageClosed
 	}
-	if host.page.documentGeneration != host.generation {
-		host.page.mutex.RUnlock()
+	if page.documentGeneration != generation {
+		page.mutex.RUnlock()
 		return FetchResponse{}, ErrStaleNodeHandle
 	}
-	base := cloneURL(host.page.location)
-	requester, ok := host.page.navigationLoader.(loader.Requester)
-	ctx := host.page.documentContext
-	host.page.mutex.RUnlock()
+	base := cloneURL(page.location)
+	requester, ok := page.navigationLoader.(loader.Requester)
+	ctx := page.documentContext
+	page.mutex.RUnlock()
 	if !ok || requester == nil {
 		return FetchResponse{}, fmt.Errorf("browser: fetch is unavailable for this document loader")
 	}
@@ -471,6 +476,85 @@ func (host *taskHost) Fetch(input FetchRequest) (FetchResponse, error) {
 		URL: responseURL, Status: response.StatusCode, StatusText: http.StatusText(response.StatusCode),
 		Header: response.Header.Clone(), Body: body,
 	}, nil
+}
+
+func (host *taskHost) QueueFetch(handle ValueHandle, input FetchRequest) error {
+	if handle == 0 {
+		return fmt.Errorf("browser: invalid fetch handle 0")
+	}
+	host.page.mutex.RLock()
+	if host.page.closed {
+		host.page.mutex.RUnlock()
+		return ErrPageClosed
+	}
+	if host.page.documentGeneration != host.generation {
+		host.page.mutex.RUnlock()
+		return ErrStaleNodeHandle
+	}
+	page := host.page
+	generation := host.generation
+	host.page.mutex.RUnlock()
+	request := FetchRequest{
+		URL: input.URL, Method: input.Method, Header: input.Header.Clone(), Body: append([]byte(nil), input.Body...),
+	}
+	_, err := host.task.QueueTask(func(*browserruntime.TaskContext) error {
+		go page.loadFetch(generation, handle, request)
+		return nil
+	})
+	return err
+}
+
+func (page *Page) loadFetch(generation DocumentGeneration, handle ValueHandle, request FetchRequest) {
+	response, fetchErr := page.fetch(generation, request)
+	_, _ = page.Realm.EnqueueTask(func(task *browserruntime.TaskContext) error {
+		if err := page.dispatchFetch(task, generation, handle, response, fetchErr); err != nil {
+			method := request.Method
+			if method == "" {
+				method = http.MethodGet
+			}
+			requestURL := request.URL
+			if response.URL != "" {
+				requestURL = response.URL
+			}
+			return fmt.Errorf("browser: complete fetch %s %s: %w", method, requestURL, err)
+		}
+		return nil
+	})
+}
+
+func (page *Page) dispatchFetch(
+	task *browserruntime.TaskContext,
+	generation DocumentGeneration,
+	handle ValueHandle,
+	response FetchResponse,
+	fetchErr error,
+) error {
+	page.mutex.RLock()
+	if page.closed || page.documentGeneration != generation {
+		page.mutex.RUnlock()
+		return nil
+	}
+	script := page.script
+	pendingStyle := page.dirty
+	page.mutex.RUnlock()
+	realm, ok := script.(JSFetchRealm)
+	if !ok {
+		return fmt.Errorf("browser: JavaScript engine does not support fetch completions")
+	}
+	host := &taskHost{page: page, task: task, generation: generation, autoRender: true, styleChanged: pendingStyle}
+	dispatchErr := realm.DispatchFetch(host, handle, response, fetchErr)
+	microtaskErr := script.DrainMicrotasks(host)
+	finishErr := host.finish()
+	if dispatchErr != nil {
+		dispatchErr = fmt.Errorf("browser: dispatch fetch %d completion: %w", handle, dispatchErr)
+	}
+	if microtaskErr != nil {
+		microtaskErr = fmt.Errorf("browser: drain fetch %d completion microtasks: %w", handle, microtaskErr)
+	}
+	if finishErr != nil {
+		finishErr = fmt.Errorf("browser: finish fetch %d completion: %w", handle, finishErr)
+	}
+	return errors.Join(dispatchErr, microtaskErr, finishErr)
 }
 
 func (host *taskHost) GetElementByID(value string) (NodeHandle, bool, error) {
@@ -1956,18 +2040,19 @@ func (page *Page) queueScrollEventsFromTask(context *browserruntime.TaskContext,
 }
 
 func (host *taskHost) finish() error {
-	if !host.autoRender {
-		return nil
-	}
 	var err error
+	if host.mutated {
+		err = errors.Join(err, host.page.syncAndLoadStylesheets())
+		err = errors.Join(err, host.page.syncAndLoadImages())
+	}
+	if !host.autoRender {
+		return err
+	}
 	if host.scrolled {
-		err = host.page.queueScrollEventsFromTask(host.task, host.scrollTargets)
+		err = errors.Join(err, host.page.queueScrollEventsFromTask(host.task, host.scrollTargets))
 	}
 	if host.animationRequested {
 		err = errors.Join(err, host.page.queueAnimationFrameFromTask())
-	}
-	if host.mutated {
-		err = errors.Join(err, host.page.syncAndLoadStylesheets())
 	}
 	shouldRender := host.mutated || host.scrolled || host.resized || host.styleChanged
 	if host.followupQueued && host.styleChanged && !host.mutated && !host.scrolled && !host.resized {

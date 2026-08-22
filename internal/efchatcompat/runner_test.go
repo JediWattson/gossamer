@@ -27,15 +27,25 @@ fetch("/api/user")
     const input = document.createElement("textarea");
     input.id = "efchat-input";
     root.appendChild(input);
-    const socket = new WebSocket("ws://" + location.host + "/ws/global");
-    input.addEventListener("keydown", event => {
-      if (event.key === "Enter") {
-        socket.send(JSON.stringify({
-          event: "message",
-          payload: { content: input.value }
-        }));
-      }
-    });
+    fetch("/api/chat/history?place=global&limit=24&includeReactions=false")
+      .then(response => response.json())
+      .then(history => {
+        history.messages.forEach(message => {
+          const row = document.createElement("div");
+          row.setAttribute("data-message-bubble-id", message.id);
+          row.textContent = message.payload.content;
+          root.appendChild(row);
+        });
+        const socket = new WebSocket("ws://" + location.host + "/ws/global");
+        input.addEventListener("keydown", event => {
+          if (event.key === "Enter") {
+            socket.send(JSON.stringify({
+              event: "message",
+              payload: { content: input.value }
+            }));
+          }
+        });
+      });
   });
 `), 0o644); err != nil {
 		t.Fatal(err)
@@ -55,6 +65,9 @@ fetch("/api/user")
 	}
 	if !report.Session.CookieOnSocket {
 		t.Fatal("anonymous session cookie did not reach WebSocket")
+	}
+	if !report.History.Rendered || report.History.MessageID != historyMessageID || report.History.Content != historyMessageContent {
+		t.Fatalf("history message = %#v", report.History)
 	}
 	payload, payloadOK := report.WebSocket.Payload.(map[string]any)
 	if report.WebSocket.Event != "message" || !payloadOK || payload["content"] != "hello from the anonymous gate" {

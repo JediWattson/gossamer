@@ -36,10 +36,23 @@ func DecodeImageWithLimit(asset *Asset, maxPixels int64) (*DecodedImage, error) 
 	if asset == nil {
 		return nil, fmt.Errorf("resource: nil image asset")
 	}
+	return DecodeImageBytesWithLimit(asset.data, maxPixels)
+}
+
+// DecodeImageBytes decodes image bytes using the default pixel budget. It is
+// used for document-owned sources such as data URLs that do not travel through
+// the HTTP resource pipeline.
+func DecodeImageBytes(data []byte) (*DecodedImage, error) {
+	return DecodeImageBytesWithLimit(data, DefaultMaxImagePixels)
+}
+
+// DecodeImageBytesWithLimit checks dimensions before allocating the full
+// decoded bitmap. A non-positive limit selects DefaultMaxImagePixels.
+func DecodeImageBytesWithLimit(data []byte, maxPixels int64) (*DecodedImage, error) {
 	if maxPixels <= 0 {
 		maxPixels = DefaultMaxImagePixels
 	}
-	configuration, format, err := image.DecodeConfig(bytes.NewReader(asset.data))
+	configuration, format, err := image.DecodeConfig(bytes.NewReader(data))
 	if err != nil {
 		return nil, fmt.Errorf("decode image configuration: %w", err)
 	}
@@ -54,7 +67,7 @@ func DecodeImageWithLimit(asset *Asset, maxPixels int64) (*DecodedImage, error) 
 		)
 	}
 
-	decoded, decodedFormat, err := image.Decode(bytes.NewReader(asset.data))
+	decoded, decodedFormat, err := image.Decode(bytes.NewReader(data))
 	if err != nil {
 		return nil, fmt.Errorf("decode %s image: %w", format, err)
 	}

@@ -1149,19 +1149,25 @@ func (store *Store) unlinkLocked(fromRegion RegionID, fromObject ownership.Objec
 }
 
 func (store *Store) unlinkSlotLocked(region *Region, slot *Slot) error {
-	for _, value := range slotReferences(slot) {
+	_, err := store.unlinkSlotWithScratchLocked(region, slot, nil)
+	return err
+}
+
+func (store *Store) unlinkSlotWithScratchLocked(region *Region, slot *Slot, references []Value) ([]Value, error) {
+	references = appendSlotReferences(references[:0], slot)
+	for _, value := range references {
 		if !value.IsRef() {
 			continue
 		}
 		targetRegion, targetSlot, err := store.slotLocked(value.Ref())
 		if err != nil {
-			return fmt.Errorf("memory: unlink %s object %d in R%d through %s: %w", slot.Kind, slot.object, region.ID, value.Ref(), err)
+			return references, fmt.Errorf("memory: unlink %s object %d in R%d through %s: %w", slot.Kind, slot.object, region.ID, value.Ref(), err)
 		}
 		if err := store.unlinkLocked(region.ID, slot.object, targetRegion.ID, targetSlot.object); err != nil {
-			return err
+			return references, err
 		}
 	}
-	return nil
+	return references, nil
 }
 
 func (store *Store) destroyRegionsLocked(ids map[RegionID]struct{}) error {
@@ -1185,12 +1191,15 @@ func (store *Store) destroyRegionsLocked(ids map[RegionID]struct{}) error {
 		}
 	}
 	ordered := sortedRegionSet(ids)
+	references := make([]Value, 0, 16)
 	for _, id := range ordered {
 		region := store.regions[id]
 		for index := range region.Slots {
 			slot := &region.Slots[index]
 			if slot.Occupied {
-				if err := store.unlinkSlotLocked(region, slot); err != nil {
+				var err error
+				references, err = store.unlinkSlotWithScratchLocked(region, slot, references)
+				if err != nil {
 					return err
 				}
 			}
@@ -1367,6 +1376,7 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 	}
 	seen := make(map[Ref]struct{})
 	order := make([]Ref, 0)
+	references := make([]Value, 0, 16)
 	drainStrongReferences := func() error {
 		for len(queue) != 0 {
 			candidate := queue[0]
@@ -1390,7 +1400,8 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 			}
 			seen[ref] = struct{}{}
 			order = append(order, ref)
-			for reference, value := range slotReferences(slot) {
+			references = appendSlotReferences(references[:0], slot)
+			for reference, value := range references {
 				if value.IsRef() {
 					queue = append(queue, copyCandidate{
 						ref:       value.Ref(),
@@ -1534,13 +1545,14 @@ func (store *Store) copyLocked(from, to ownership.OwnerID, roots []Ref) ([]Ref, 
 			function.ObjectHeader = ObjectHeader{}
 			function.Name = remapValue(function.Name, mapping)
 			function.Environment = remapValue(function.Environment, mapping)
+			function.LexicalThis = remapValue(function.LexicalThis, mapping)
 			for index, constant := range function.Constants {
 				function.Constants[index] = remapValue(constant, mapping)
 			}
 			for index, capture := range function.Captures {
 				function.Captures[index] = remapValue(capture, mapping)
 			}
-			if err := store.initializeFunctionLocked(to, copyRef, function, true); err != nil {
+			if err := store.initializeFunctionLocked(to, copyRef, function, true, false); err != nil {
 				_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
 				return nil, err
 			}

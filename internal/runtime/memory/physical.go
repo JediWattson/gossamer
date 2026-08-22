@@ -51,6 +51,7 @@ func (store *Store) PhysicalStats() PhysicalStats {
 	if store.barrier != nil {
 		result.RegionEdgeEntries = uint64(len(store.barrier.edges))
 	}
+	functionStorage := make(map[unsafe.Pointer]struct{})
 	for _, region := range store.regions {
 		if region == nil {
 			continue
@@ -63,7 +64,7 @@ func (store *Store) PhysicalStats() PhysicalStats {
 				continue
 			}
 			result.OccupiedSlotBytes += result.SlotSizeBytes
-			result.PayloadBytes += result.SlotPayloadSizeBytes + slotPayloadCapacityBytes(slot)
+			result.PayloadBytes += result.SlotPayloadSizeBytes + slotPayloadCapacityBytes(slot, functionStorage)
 		}
 	}
 	for _, buffer := range store.slotBuffers {
@@ -79,7 +80,7 @@ func (store *Store) PhysicalStats() PhysicalStats {
 	return result
 }
 
-func slotPayloadCapacityBytes(slot *Slot) uint64 {
+func slotPayloadCapacityBytes(slot *Slot, functionStorage map[unsafe.Pointer]struct{}) uint64 {
 	if slot == nil || !slot.Occupied {
 		return 0
 	}
@@ -94,9 +95,9 @@ func slotPayloadCapacityBytes(slot *Slot) uint64 {
 	case HeapContext:
 		bytes += sliceCapacityBytes(slot.Context.Bindings)
 	case HeapFunction:
-		bytes += uint64(cap(slot.Function.Code))
-		bytes += sliceCapacityBytes(slot.Function.Locations)
-		bytes += sliceCapacityBytes(slot.Function.Constants)
+		bytes += uniqueSliceCapacityBytes(slot.Function.Code, functionStorage)
+		bytes += uniqueSliceCapacityBytes(slot.Function.Locations, functionStorage)
+		bytes += uniqueSliceCapacityBytes(slot.Function.Constants, functionStorage)
 		bytes += sliceCapacityBytes(slot.Function.Captures)
 	case HeapPromise:
 		bytes += sliceCapacityBytes(slot.Promise.Reactions)
@@ -129,4 +130,16 @@ func objectHeaderCapacityBytes(slot *Slot) uint64 {
 func sliceCapacityBytes[T any](values []T) uint64 {
 	var value T
 	return uint64(cap(values)) * uint64(unsafe.Sizeof(value))
+}
+
+func uniqueSliceCapacityBytes[T any](values []T, seen map[unsafe.Pointer]struct{}) uint64 {
+	if cap(values) == 0 {
+		return 0
+	}
+	pointer := unsafe.Pointer(unsafe.SliceData(values))
+	if _, exists := seen[pointer]; exists {
+		return 0
+	}
+	seen[pointer] = struct{}{}
+	return sliceCapacityBytes(values)
 }

@@ -67,6 +67,34 @@ func TestMutationJournalCapturesAtomicChildAttributeAndCharacterChanges(t *testi
 	}
 }
 
+func TestTreeMutationSequenceIgnoresNonStructuralChanges(t *testing.T) {
+	document, err := IndexDocument(NewDocument())
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := document.RootID()
+	child, err := document.CreateElement("div")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sequence := document.TreeMutationSequence(); sequence != 0 {
+		t.Fatalf("detached creation tree sequence = %d", sequence)
+	}
+	if err := document.Mutate(root, MutationAppend, []NodeID{child}); err != nil {
+		t.Fatal(err)
+	}
+	structural := document.TreeMutationSequence()
+	if structural == 0 {
+		t.Fatal("child insertion did not advance the tree sequence")
+	}
+	if err := document.SetAttribute(child, "class", "active"); err != nil {
+		t.Fatal(err)
+	}
+	if sequence := document.TreeMutationSequence(); sequence != structural {
+		t.Fatalf("attribute change advanced tree sequence from %d to %d", structural, sequence)
+	}
+}
+
 func TestMutationJournalRetainsMutationTimeConnectedness(t *testing.T) {
 	root := NewDocument()
 	body := NewElement("body")

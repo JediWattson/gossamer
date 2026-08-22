@@ -96,6 +96,7 @@ const (
 	OpIteratorClose
 	OpAppendSpread
 	OpCopyDataProperties
+	OpCreateArrowClosure
 )
 
 func (opcode Opcode) String() string {
@@ -278,11 +279,13 @@ func (opcode Opcode) String() string {
 		return "AppendSpread"
 	case OpCopyDataProperties:
 		return "CopyDataProperties"
+	case OpCreateArrowClosure:
+		return "CreateArrowClosure"
 	default:
 		return fmt.Sprintf("Opcode(%d)", opcode)
 	}
 }
 
 func (opcode Opcode) valid() bool {
-	return opcode >= OpConstant && opcode <= OpCopyDataProperties
+	return opcode >= OpConstant && opcode <= OpCreateArrowClosure
 }

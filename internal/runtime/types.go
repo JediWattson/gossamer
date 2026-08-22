@@ -296,6 +296,64 @@ func (context *TaskContext) NewBytecodeFunctionWithLocations(name, environment m
 	return ref, nil
 }
 
+func (context *TaskContext) NewArrowBytecodeFunctionWithLocations(name, environment, lexicalThis memory.Value, arity uint32, code []byte, constants []memory.Value, locations []memory.SourceSpan) (memory.Ref, error) {
+	if context == nil || context.Realm == nil {
+		return memory.Ref{}, fmt.Errorf("runtime: nil task context")
+	}
+	ref, err := context.Realm.store.AllocArrowBytecodeFunction(context.Owner, context.MemoryRegion, name, environment, lexicalThis, arity, code, constants)
+	if err == nil && len(locations) != 0 {
+		err = context.Realm.store.SetFunctionLocations(context.Owner, ref, locations)
+	}
+	if err != nil || context.intrinsics == nil {
+		return ref, err
+	}
+	if err := context.intrinsics.initializeFunction(context, ref, name, arity, false); err != nil {
+		_ = context.Realm.store.Free(context.Owner, ref)
+		return memory.Ref{}, err
+	}
+	return ref, nil
+}
+
+func (context *TaskContext) NewBytecodeClosure(template memory.Ref, environment memory.Value) (memory.Ref, error) {
+	if context == nil || context.Realm == nil {
+		return memory.Ref{}, fmt.Errorf("runtime: nil task context")
+	}
+	ref, err := context.Realm.store.AllocBytecodeClosure(context.Owner, context.MemoryRegion, template, environment)
+	if err != nil || context.intrinsics == nil {
+		return ref, err
+	}
+	descriptor, err := context.LoadFunction(ref)
+	if err != nil {
+		_ = context.Realm.store.Free(context.Owner, ref)
+		return memory.Ref{}, err
+	}
+	if err := context.intrinsics.initializeFunction(context, ref, descriptor.Name, descriptor.Arity, true); err != nil {
+		_ = context.Realm.store.Free(context.Owner, ref)
+		return memory.Ref{}, err
+	}
+	return ref, nil
+}
+
+func (context *TaskContext) NewArrowBytecodeClosure(template memory.Ref, environment, lexicalThis memory.Value) (memory.Ref, error) {
+	if context == nil || context.Realm == nil {
+		return memory.Ref{}, fmt.Errorf("runtime: nil task context")
+	}
+	ref, err := context.Realm.store.AllocArrowBytecodeClosure(context.Owner, context.MemoryRegion, template, environment, lexicalThis)
+	if err != nil || context.intrinsics == nil {
+		return ref, err
+	}
+	descriptor, err := context.LoadFunction(ref)
+	if err != nil {
+		_ = context.Realm.store.Free(context.Owner, ref)
+		return memory.Ref{}, err
+	}
+	if err := context.intrinsics.initializeFunction(context, ref, descriptor.Name, descriptor.Arity, false); err != nil {
+		_ = context.Realm.store.Free(context.Owner, ref)
+		return memory.Ref{}, err
+	}
+	return ref, nil
+}
+
 func (context *TaskContext) NewNativeFunction(name, environment memory.Value, arity uint32, nativeID uint64) (memory.Ref, error) {
 	if context == nil || context.Realm == nil {
 		return memory.Ref{}, fmt.Errorf("runtime: nil task context")
@@ -346,6 +404,15 @@ func (context *TaskContext) DerefFunction(ref memory.Ref) (memory.Function, erro
 		return memory.Function{}, fmt.Errorf("runtime: nil task context")
 	}
 	return context.Realm.store.DerefFunction(context.Owner, ref)
+}
+
+// LoadFunction returns the immutable executable view used by the interpreter.
+// Diagnostics that need independently mutable slices should use DerefFunction.
+func (context *TaskContext) LoadFunction(ref memory.Ref) (memory.Function, error) {
+	if context == nil || context.Realm == nil {
+		return memory.Function{}, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.LoadFunction(context.Owner, ref)
 }
 
 func (context *TaskContext) NewPromise() (memory.Ref, error) {

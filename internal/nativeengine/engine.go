@@ -31,6 +31,7 @@ var (
 type Config struct {
 	Interpreter                  browserruntime.InterpreterConfig
 	CheckpointCollectionInterval uint64
+	ConsoleSink                  func(ConsoleMessage)
 }
 
 type EngineProfile struct {
@@ -103,6 +104,7 @@ type Realm struct {
 	checkpointCollectionInterval uint64
 	lastCheckpointCollection     uint64
 	checkpointCollections        uint64
+	consoleSink                  func(ConsoleMessage)
 
 	evaluations        uint64
 	moduleCompilations uint64
@@ -143,6 +145,7 @@ func (engine *Engine) NewRealm() (browser.JSRealm, error) {
 		modules:                      make(map[string]*nativeModule),
 		moduleResolutions:            make(map[moduleResolutionKey]string),
 		checkpointCollectionInterval: collectionInterval,
+		consoleSink:                  engine.config.ConsoleSink,
 	}
 	if err := realm.installBrowserNatives(); err != nil {
 		return nil, err

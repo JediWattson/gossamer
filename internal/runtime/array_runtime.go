@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"fmt"
 	"math"
 	"strconv"
 
@@ -88,6 +89,124 @@ func builtinArrayReverse(execution *execution, _ memory.Ref, _ memory.Function, 
 		}
 	}
 	return this, nil
+}
+
+func builtinArrayFlat(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+	arrayRef, err := execution.arrayReceiver(this)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	depth := int64(1)
+	if value := argument(arguments, 0); value.Kind() != memory.ValueUndefined {
+		number, err := execution.toNumber(value)
+		if err != nil {
+			return memory.Value{}, err
+		}
+		switch {
+		case math.IsNaN(number), number <= 0:
+			depth = 0
+		case math.IsInf(number, 1), number >= math.MaxInt64:
+			depth = math.MaxInt64
+		default:
+			depth = int64(math.Trunc(number))
+		}
+	}
+
+	result, err := execution.context.NewArray(0)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	next := uint64(0)
+	if err := flattenArrayInto(execution, result, arrayRef, depth, &next); err != nil {
+		return memory.Value{}, err
+	}
+	return memory.RefValue(result), nil
+}
+
+func builtinArrayFlatMap(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+	arrayRef, err := execution.arrayReceiver(this)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	callback, err := requireCallable(execution.context, argument(arguments, 0))
+	if err != nil {
+		return memory.Value{}, err
+	}
+	snapshot, err := execution.context.DerefArray(arrayRef)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	result, err := execution.context.NewArray(0)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	next := uint64(0)
+	thisArg := argument(arguments, 1)
+	for _, element := range snapshot.Elements {
+		mapped, err := execution.call(callback, thisArg, []memory.Value{
+			element.Value, memory.NumberValue(float64(element.Index)), this,
+		}, callAny)
+		if err != nil {
+			return memory.Value{}, err
+		}
+		if mapped.IsRef() {
+			kind, err := execution.context.HeapKind(mapped.Ref())
+			if err != nil {
+				return memory.Value{}, err
+			}
+			if kind == memory.HeapArray {
+				if err := flattenArrayInto(execution, result, mapped.Ref(), 0, &next); err != nil {
+					return memory.Value{}, err
+				}
+				continue
+			}
+		}
+		if err := appendFlatValue(execution, result, mapped, &next); err != nil {
+			return memory.Value{}, err
+		}
+	}
+	return memory.RefValue(result), nil
+}
+
+func flattenArrayInto(execution *execution, result, source memory.Ref, depth int64, next *uint64) error {
+	array, err := execution.context.DerefArray(source)
+	if err != nil {
+		return err
+	}
+	for _, element := range array.Elements {
+		value := element.Value
+		if depth > 0 && value.IsRef() {
+			kind, err := execution.context.HeapKind(value.Ref())
+			if err != nil {
+				return err
+			}
+			if kind == memory.HeapArray {
+				nextDepth := depth - 1
+				if depth == math.MaxInt64 {
+					nextDepth = depth
+				}
+				if err := flattenArrayInto(execution, result, value.Ref(), nextDepth, next); err != nil {
+					return err
+				}
+				continue
+			}
+		}
+		if err := appendFlatValue(execution, result, value, next); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func appendFlatValue(execution *execution, result memory.Ref, value memory.Value, next *uint64) error {
+	if *next >= math.MaxUint32 {
+		return fmt.Errorf("%w: flattened Array result exceeds uint32 length", memory.ErrInvalidIndex)
+	}
+	if err := execution.context.SetArrayElement(result, uint32(*next), value); err != nil {
+		return err
+	}
+	*next++
+	return nil
 }
 
 func arrayProperty(execution *execution, receiver, key memory.Value) (memory.Value, bool, error) {

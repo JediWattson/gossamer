@@ -60,7 +60,7 @@ func (intrinsics *Intrinsics) installCollectionBuiltins(context *TaskContext) er
 		{"endsWith", 1, nativeStringEndsWith},
 		{"startsWith", 1, nativeStringStartsWith}, {"replace", 2, nativeStringReplace},
 		{"padStart", 1, nativeStringPadStart}, {"padEnd", 1, nativeStringPadEnd},
-		{"match", 1, nativeStringMatch},
+		{"match", 1, nativeStringMatch}, {"search", 1, nativeStringSearch},
 		{"at", 1, nativeStringAt},
 		{"indexOf", 1, nativeStringIndexOf}, {"slice", 2, nativeStringSlice},
 		{"substring", 2, nativeStringSubstring},
@@ -553,6 +553,60 @@ func builtinStringMatch(execution *execution, _ memory.Ref, _ memory.Function, t
 		}
 	}
 	return memory.RefValue(result), nil
+}
+
+func builtinStringSearch(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+	text, err := requireString(execution.context, this)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	search := argument(arguments, 0)
+	var expression memory.RegExp
+	if search.IsRef() {
+		kind, kindErr := execution.context.HeapKind(search.Ref())
+		if kindErr != nil {
+			return memory.Value{}, kindErr
+		}
+		if kind == memory.HeapRegExp {
+			_, expression, err = requireRegExp(execution.context, search)
+			if err != nil {
+				return memory.Value{}, err
+			}
+		}
+	}
+	if expression.Pattern == (memory.Ref{}) {
+		pattern := ""
+		if search.Kind() != memory.ValueUndefined {
+			pattern, err = execution.toString(search)
+			if err != nil {
+				return memory.Value{}, err
+			}
+		}
+		patternRef, allocationErr := execution.context.NewString(pattern)
+		if allocationErr != nil {
+			return memory.Value{}, allocationErr
+		}
+		expressionRef, allocationErr := execution.context.NewRegExp(patternRef, "")
+		if allocationErr != nil {
+			return memory.Value{}, allocationErr
+		}
+		expression, err = execution.context.DerefRegExp(expressionRef)
+		if err != nil {
+			return memory.Value{}, err
+		}
+	}
+	compiled, err := compileRegExp(execution.context, expression)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	location, err := compiled.FindStringIndex(text)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	if location == nil {
+		return memory.NumberValue(-1), nil
+	}
+	return memory.NumberValue(float64(regexpByteOffsetToRuneIndex(text, location[0]))), nil
 }
 
 func expandStringReplacement(replacement, source string, match []int) string {

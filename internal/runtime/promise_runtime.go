@@ -456,11 +456,32 @@ func (execution *execution) resolvePromise(promise memory.Ref, result memory.Val
 	return execution.enqueuePromiseReactions(promise)
 }
 
+// ResolvePromise settles a host-owned Promise and enqueues its reactions in
+// the current interpreter task. The reactions remain pending until DrainJobs,
+// preserving the embedder's microtask-checkpoint boundary.
+func (interpreter *Interpreter) ResolvePromise(context *TaskContext, promise memory.Ref, result memory.Value) error {
+	if interpreter == nil || context == nil || context.Realm == nil {
+		return fmt.Errorf("runtime: nil interpreter or task context")
+	}
+	execution := &execution{interpreter: interpreter, context: context}
+	return execution.resolvePromise(promise, result)
+}
+
 func (execution *execution) rejectPromise(promise memory.Ref, reason memory.Value) error {
 	if err := execution.context.RejectPromise(promise, reason); err != nil {
 		return err
 	}
 	return execution.enqueuePromiseReactions(promise)
+}
+
+// RejectPromise is the rejected form of ResolvePromise. It schedules retained
+// rejection reactions without running them before the next DrainJobs call.
+func (interpreter *Interpreter) RejectPromise(context *TaskContext, promise memory.Ref, reason memory.Value) error {
+	if interpreter == nil || context == nil || context.Realm == nil {
+		return fmt.Errorf("runtime: nil interpreter or task context")
+	}
+	execution := &execution{interpreter: interpreter, context: context}
+	return execution.rejectPromise(promise, reason)
 }
 
 func (execution *execution) enqueuePromiseReactions(promise memory.Ref) error {

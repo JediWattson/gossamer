@@ -32,6 +32,24 @@ func TestDecodeImage(t *testing.T) {
 	}
 }
 
+func TestDecodeImageBytes(t *testing.T) {
+	t.Parallel()
+
+	source := image.NewNRGBA(image.Rect(0, 0, 1, 1))
+	source.SetNRGBA(0, 0, color.NRGBA{G: 0xff, A: 0xff})
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, source); err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := DecodeImageBytes(encoded.Bytes())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Format != "png" || decoded.Image.Bounds() != image.Rect(0, 0, 1, 1) {
+		t.Fatalf("DecodeImageBytes() = %#v", decoded)
+	}
+}
+
 func TestDecodeImageEnforcesPixelBudget(t *testing.T) {
 	t.Parallel()
 

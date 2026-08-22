@@ -42,11 +42,36 @@ func TestNativeFetchUsesDocumentRequesterAndWebResponseObjects(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if text != "42:strand:1, 2" {
+	if text != "pending" {
+		t.Fatalf("fetch settled during the navigation task: result = %q", text)
+	}
+	for attempt := 0; attempt < 4 && text != "42:strand:1, 2:2"; attempt++ {
+		deadline := time.Now().Add(time.Second)
+		for page.Realm.Tasks.Len() == 0 && time.Now().Before(deadline) {
+			time.Sleep(time.Millisecond)
+		}
+		if page.Realm.Tasks.Len() == 0 {
+			client.mutex.Lock()
+			requests := append([]loader.Request(nil), client.requests...)
+			client.mutex.Unlock()
+			t.Fatalf("fetch settlement task was not queued after attempt %d: result = %q, requests = %#v", attempt, text, requests)
+		}
+		runContext, cancel := context.WithTimeout(context.Background(), time.Second)
+		err = page.Realm.RunOne(runContext)
+		cancel()
+		if err != nil {
+			t.Fatal(err)
+		}
+		text, err = page.Document().TextContent(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if text != "42:strand:1, 2:2" {
 		client.mutex.Lock()
 		requests := append([]loader.Request(nil), client.requests...)
 		client.mutex.Unlock()
-		t.Fatalf("result = %q, navigation = %#v, requests = %#v; want 42:strand:1, 2", text, snapshot, requests)
+		t.Fatalf("result = %q, navigation = %#v, requests = %#v; want 42:strand:1, 2:2", text, snapshot, requests)
 	}
 	client.mutex.Lock()
 	defer client.mutex.Unlock()
@@ -244,6 +269,8 @@ func (client *nativeFetchLoader) Load(_ context.Context, rawURL string) (*loader
 		URL: location, StatusCode: http.StatusOK, Header: make(http.Header),
 		Body: io.NopCloser(strings.NewReader(`<!doctype html><html><body><div id="result">pending</div><script>
 const headers = new Headers({"X-Test": "yes"});
+const receiver = { calls: 0 };
+const markSettled = (function () { return () => { this.calls += 1; }; }).call(receiver);
 headers.append("X-List", "1");
 headers.append("X-List", "2");
 fetch("/api", {method: "POST", headers: headers, body: "payload"}).then(function (response) {
@@ -252,8 +279,10 @@ fetch("/api", {method: "POST", headers: headers, body: "payload"}).then(function
   }
   return response.clone().json();
 }).then(function (data) {
+	markSettled();
   return fetch("/session").then(function (response) { return response.text(); }).then(function (session) {
-    document.getElementById("result").textContent = data.answer + ":" + session + ":" + headers.get("x-list");
+	markSettled();
+    document.getElementById("result").textContent = data.answer + ":" + session + ":" + headers.get("x-list") + ":" + receiver.calls;
   });
 }, function (error) {
   document.getElementById("result").textContent = "error:" + error.message;

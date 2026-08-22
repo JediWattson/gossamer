@@ -31,6 +31,13 @@ type pageResources struct {
 	userStylesheets      []css.Stylesheet
 	userAgentStylesheets []css.Stylesheet
 	images               map[dom.NodeID]image.Image
+	imageSources         map[dom.NodeID]imageResourceEntry
+	nextImageGeneration  uint64
+}
+
+type imageResourceEntry struct {
+	source     string
+	generation uint64
 }
 
 type navigationResourceRequest struct {
@@ -41,6 +48,8 @@ type navigationResourceRequest struct {
 	stylesheetGeneration uint64
 	stylesheetSource     string
 	stylesheetBase       *url.URL
+	imageGeneration      uint64
+	imageSource          string
 }
 
 type navigationResourceResult struct {
@@ -49,6 +58,8 @@ type navigationResourceResult struct {
 	stylesheet           css.Stylesheet
 	stylesheetGeneration uint64
 	image                image.Image
+	imageGeneration      uint64
+	imageSource          string
 	err                  error
 }
 
@@ -57,17 +68,24 @@ func newPageResources() pageResources {
 		stylesheets:  newStylesheetGraph(),
 		inlineStyles: newInlineStyleCache(),
 		images:       make(map[dom.NodeID]image.Image),
+		imageSources: make(map[dom.NodeID]imageResourceEntry),
 	}
 }
 
 func (resources *pageResources) apply(result navigationResourceResult) bool {
-	if resources.stylesheets.entries == nil || resources.images == nil {
+	if resources.stylesheets.entries == nil || resources.images == nil || resources.imageSources == nil {
 		*resources = newPageResources()
 	}
 	switch result.kind {
 	case resource.Stylesheet:
 		return resources.stylesheets.apply(result)
 	case resource.Image:
+		if result.imageGeneration != 0 {
+			entry, ok := resources.imageSources[result.target.Node]
+			if !ok || entry.generation != result.imageGeneration || entry.source != result.imageSource {
+				return false
+			}
+		}
 		resources.images[result.target.Node] = result.image
 		return true
 	}
@@ -201,6 +219,8 @@ func loadNavigationResourceSequence(
 			target:               NodeHandle{Document: generation, Node: request.node},
 			kind:                 request.kind,
 			stylesheetGeneration: request.stylesheetGeneration,
+			imageGeneration:      request.imageGeneration,
+			imageSource:          request.imageSource,
 		}
 		if request.kind == resource.Stylesheet && request.stylesheetSource != "" {
 			result.stylesheet, result.err = loadStylesheetSourceWithImports(

@@ -7,14 +7,24 @@ import (
 )
 
 func (store *Store) AllocBytecodeFunction(owner ownership.OwnerID, regionID RegionID, name, environment Value, arity uint32, code []byte, constants []Value) (Ref, error) {
+	return store.allocBytecodeFunction(owner, regionID, name, environment, arity, code, constants, FunctionThisDynamic, Value{})
+}
+
+func (store *Store) AllocArrowBytecodeFunction(owner ownership.OwnerID, regionID RegionID, name, environment Value, lexicalThis Value, arity uint32, code []byte, constants []Value) (Ref, error) {
+	return store.allocBytecodeFunction(owner, regionID, name, environment, arity, code, constants, FunctionThisLexical, lexicalThis)
+}
+
+func (store *Store) allocBytecodeFunction(owner ownership.OwnerID, regionID RegionID, name, environment Value, arity uint32, code []byte, constants []Value, thisMode FunctionThisMode, lexicalThis Value) (Ref, error) {
 	return store.allocFunction(owner, regionID, Function{
 		Kind:          FunctionBytecode,
 		Name:          name,
 		Environment:   environment,
 		Arity:         arity,
-		Constructible: true,
-		Code:          append([]byte(nil), code...),
-		Constants:     append([]Value(nil), constants...),
+		Constructible: thisMode == FunctionThisDynamic,
+		ThisMode:      thisMode,
+		LexicalThis:   lexicalThis,
+		Code:          code,
+		Constants:     constants,
 	})
 }
 
@@ -33,7 +43,7 @@ func (store *Store) AllocBoundNativeFunction(owner ownership.OwnerID, regionID R
 		Environment: environment,
 		Arity:       arity,
 		NativeID:    nativeID,
-		Captures:    append([]Value(nil), captures...),
+		Captures:    captures,
 	})
 }
 
@@ -58,7 +68,57 @@ func (store *Store) allocFunction(owner ownership.OwnerID, regionID RegionID, fu
 	if err != nil {
 		return Ref{}, err
 	}
-	if err := store.initializeFunctionLocked(owner, ref, function, false); err != nil {
+	if err := store.initializeFunctionLocked(owner, ref, function, false, false); err != nil {
+		_ = store.freeLocked(owner, ref, true)
+		return Ref{}, err
+	}
+	return ref, nil
+}
+
+// AllocBytecodeClosure creates a dynamic-this closure whose immutable
+// executable storage aliases template. The closure still gets its own heap
+// identity, environment edges, and Function object properties.
+func (store *Store) AllocBytecodeClosure(owner ownership.OwnerID, regionID RegionID, template Ref, environment Value) (Ref, error) {
+	return store.allocBytecodeClosure(owner, regionID, template, environment, Value{}, FunctionThisDynamic)
+}
+
+// AllocArrowBytecodeClosure creates a lexical-this closure whose immutable
+// executable storage aliases template.
+func (store *Store) AllocArrowBytecodeClosure(owner ownership.OwnerID, regionID RegionID, template Ref, environment, lexicalThis Value) (Ref, error) {
+	return store.allocBytecodeClosure(owner, regionID, template, environment, lexicalThis, FunctionThisLexical)
+}
+
+func (store *Store) allocBytecodeClosure(owner ownership.OwnerID, regionID RegionID, template Ref, environment, lexicalThis Value, thisMode FunctionThisMode) (Ref, error) {
+	if store == nil {
+		return Ref{}, fmt.Errorf("memory: nil store")
+	}
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+	_, templateSlot, err := store.readSlotLocked(owner, template)
+	if err != nil {
+		return Ref{}, err
+	}
+	if templateSlot.Kind != HeapFunction || templateSlot.Function.Kind != FunctionBytecode {
+		return Ref{}, fmt.Errorf("%w: template %s is not bytecode", ErrInvalidFunction, template)
+	}
+	templateFunction := loadFunction(*templateSlot.Function)
+	function := Function{
+		Kind:          FunctionBytecode,
+		Name:          templateFunction.Name,
+		Environment:   environment,
+		Arity:         templateFunction.Arity,
+		Constructible: thisMode == FunctionThisDynamic,
+		ThisMode:      thisMode,
+		LexicalThis:   lexicalThis,
+		Code:          templateFunction.Code,
+		Locations:     templateFunction.Locations,
+		Constants:     templateFunction.Constants,
+	}
+	ref, err := store.allocKindLocked(owner, regionID, HeapFunction, false)
+	if err != nil {
+		return Ref{}, err
+	}
+	if err := store.initializeFunctionLocked(owner, ref, function, false, true); err != nil {
 		_ = store.freeLocked(owner, ref, true)
 		return Ref{}, err
 	}
@@ -81,6 +141,25 @@ func (store *Store) DerefFunction(owner ownership.OwnerID, ref Ref) (Function, e
 	return cloneFunction(*slot.Function), nil
 }
 
+// LoadFunction returns an immutable execution view backed by Store-owned
+// slices. Callers must not mutate Code, Locations, Constants, or Captures; use
+// DerefFunction when a defensive diagnostic snapshot is required.
+func (store *Store) LoadFunction(owner ownership.OwnerID, ref Ref) (Function, error) {
+	if store == nil {
+		return Function{}, fmt.Errorf("memory: nil store")
+	}
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+	_, slot, err := store.readSlotLocked(owner, ref)
+	if err != nil {
+		return Function{}, err
+	}
+	if slot.Kind != HeapFunction {
+		return Function{}, typeError(ref, slot.Kind, HeapFunction)
+	}
+	return loadFunction(*slot.Function), nil
+}
+
 func (store *Store) SetFunctionLocations(owner ownership.OwnerID, ref Ref, locations []SourceSpan) error {
 	if store == nil {
 		return fmt.Errorf("memory: nil store")
@@ -100,7 +179,7 @@ func (store *Store) SetFunctionLocations(owner ownership.OwnerID, ref Ref, locat
 	return nil
 }
 
-func (store *Store) initializeFunctionLocked(owner ownership.OwnerID, ref Ref, function Function, internal bool) error {
+func (store *Store) initializeFunctionLocked(owner ownership.OwnerID, ref Ref, function Function, internal, shareExecutable bool) error {
 	region, slot, err := store.writeSlotLocked(owner, ref, internal)
 	if err != nil {
 		return err
@@ -120,6 +199,16 @@ func (store *Store) initializeFunctionLocked(owner ownership.OwnerID, ref Ref, f
 	if function.Kind == FunctionNative && (function.NativeID == 0 || len(function.Code) != 0 || len(function.Locations) != 0 || len(function.Constants) != 0) {
 		return fmt.Errorf("%w: native Function requires only a nonzero native ID", ErrInvalidFunction)
 	}
+	if function.ThisMode != FunctionThisDynamic && function.ThisMode != FunctionThisLexical {
+		return fmt.Errorf("%w: unknown this mode %d", ErrInvalidFunction, function.ThisMode)
+	}
+	if function.ThisMode == FunctionThisLexical {
+		if function.Kind != FunctionBytecode || function.Constructible {
+			return fmt.Errorf("%w: lexical-this Function must be non-constructible bytecode with a captured receiver", ErrInvalidFunction)
+		}
+	} else if function.LexicalThis != (Value{}) {
+		return fmt.Errorf("%w: dynamic-this Function retains a lexical receiver", ErrInvalidFunction)
+	}
 	if function.ObjectHeader.Prototype == (Value{}) {
 		function.ObjectHeader.Prototype = NullValue()
 	}
@@ -129,8 +218,11 @@ func (store *Store) initializeFunctionLocked(owner ownership.OwnerID, ref Ref, f
 	if err := store.validateOptionalTypedValueLocked(owner, function.Environment, HeapContext, "Function environment", internal); err != nil {
 		return err
 	}
-	values := make([]Value, 0, 2+len(function.Constants)+len(function.Captures))
+	values := make([]Value, 0, 3+len(function.Constants)+len(function.Captures))
 	values = append(values, function.Name, function.Environment)
+	if function.ThisMode == FunctionThisLexical {
+		values = append(values, function.LexicalThis)
+	}
 	values = append(values, function.Constants...)
 	values = append(values, function.Captures...)
 	linked := make([]Value, 0, len(values))
@@ -146,10 +238,20 @@ func (store *Store) initializeFunctionLocked(owner ownership.OwnerID, ref Ref, f
 	}
 	function.Name = linked[0]
 	function.Environment = linked[1]
-	constantEnd := 2 + len(function.Constants)
-	function.Constants = append([]Value(nil), linked[2:constantEnd]...)
-	function.Captures = append([]Value(nil), linked[constantEnd:]...)
-	*slot.Function = cloneFunction(function)
+	valueStart := 2
+	if function.ThisMode == FunctionThisLexical {
+		function.LexicalThis = linked[valueStart]
+		valueStart++
+	}
+	originalConstants := function.Constants
+	constantEnd := valueStart + len(originalConstants)
+	function.Constants = linked[valueStart:constantEnd]
+	function.Captures = linked[constantEnd:]
+	shareConstants := shareExecutable && equalValues(originalConstants, function.Constants)
+	if shareConstants {
+		function.Constants = originalConstants
+	}
+	*slot.Function = storeFunction(function, shareExecutable, shareConstants)
 	store.stats.LiveBytes += uint64(len(slot.Function.Code)) + uint64(len(slot.Function.Locations))*8
 	return nil
 }

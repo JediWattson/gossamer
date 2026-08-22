@@ -663,6 +663,30 @@ let missing;
 	}
 }
 
+func TestCompileArrowFunctionsCaptureLexicalThis(t *testing.T) {
+	t.Parallel()
+
+	image, err := compiler.Compile(`
+function makeArrow() {
+  return () => this.value;
+}
+let first = {value: 7, makeArrow: makeArrow};
+let second = {value: 11};
+let arrow = first.makeArrow();
+second.invoke = arrow;
+let nonConstructible = false;
+try { new arrow(); } catch (_) { nonConstructible = true; }
+arrow() === 7 && second.invoke() === 7 && nonConstructible;
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := execute(t, 824, image)
+	if result.Kind() != memory.ValueBool || !result.Bool() {
+		t.Fatalf("arrow lexical this result = %#v, want true", result)
+	}
+}
+
 func TestCompileExecutesOptionalChainsOnceAndPreservesReceivers(t *testing.T) {
 	t.Parallel()
 

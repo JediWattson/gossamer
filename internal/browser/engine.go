@@ -265,12 +265,17 @@ type FetchResponse struct {
 	Body       []byte
 }
 
-// FetchHost is the optional browser-owned HTTP seam used by script engines.
-// The initial implementation performs I/O synchronously beneath the
-// JavaScript Promise API; async transport can be added without changing this
-// value contract.
+// FetchHost is the browser-owned HTTP seam used by script engines that perform
+// transport during the current host entry.
 type FetchHost interface {
 	Fetch(FetchRequest) (FetchResponse, error)
+}
+
+// AsyncFetchHost starts transport after the current script task has crossed
+// its publication boundary. Completion is delivered through JSFetchRealm in a
+// later Page task, identified only by an opaque engine-owned handle.
+type AsyncFetchHost interface {
+	QueueFetch(ValueHandle, FetchRequest) error
 }
 
 type StorageArea uint8
@@ -332,6 +337,13 @@ type WebSocketHost interface {
 // lifetime stay in Go; engines retain only the wrapper keyed by WebSocketID.
 type JSWebSocketRealm interface {
 	DispatchWebSocket(Host, WebSocketID, WebSocketEvent) error
+}
+
+// JSFetchRealm receives one browser-queued fetch completion. Browser-owned
+// response bytes cross the boundary by value; no runtime Ref is retained by
+// the transport goroutine.
+type JSFetchRealm interface {
+	DispatchFetch(Host, ValueHandle, FetchResponse, error) error
 }
 
 // Host is the execution-scoped browser API visible to an engine. Methods that

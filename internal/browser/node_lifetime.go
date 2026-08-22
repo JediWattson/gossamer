@@ -44,6 +44,10 @@ type nodeLifetimeState struct {
 	nodes   map[dom.NodeID]ownership.ObjectID
 	reverse map[ownership.ObjectID]dom.NodeID
 	parents map[dom.NodeID]dom.NodeID
+	// These monotonic document counters let attribute/text/state-only syncs
+	// avoid rebuilding the complete stable-ID parent snapshot.
+	treeSequence  uint64
+	identitySlots int
 }
 
 func newNodeLifetimeState(
@@ -110,8 +114,14 @@ func (state *nodeLifetimeState) sync(task *browserruntime.TaskContext) error {
 	if state == nil || state.document == nil {
 		return fmt.Errorf("browser: document lifetime boundary is closed")
 	}
+	treeSequence := state.document.TreeMutationSequence()
+	identitySlots := state.document.Store().Len()
+	if treeSequence == state.treeSequence && identitySlots == state.identitySlots {
+		return nil
+	}
 	records := state.document.IdentitySnapshots()
 	currentParents := make(map[dom.NodeID]dom.NodeID, len(records))
+	documentDirty := false
 	for _, record := range records {
 		currentParents[record.ID] = record.Parent
 		if _, exists := state.nodes[record.ID]; exists {
@@ -141,13 +151,27 @@ func (state *nodeLifetimeState) sync(task *browserruntime.TaskContext) error {
 		state.nodes[record.ID] = object
 		state.reverse[object] = record.ID
 		state.facades[record.ID] = facade
+		// Objects created directly in the document region need one exact pass
+		// to discard any initially detached records. Task-local objects instead
+		// acquire document ownership incrementally through the write barrier.
+		if task == nil {
+			documentDirty = true
+		}
 	}
 
+	graphChanged := false
+	graphRemoved := false
 	for node, oldParent := range state.parents {
 		newParent, retained := currentParents[node]
+		if !retained {
+			graphChanged = true
+			graphRemoved = true
+		}
 		if oldParent == dom.InvalidNodeID || (retained && oldParent == newParent) {
 			continue
 		}
+		graphChanged = true
+		graphRemoved = true
 		if err := state.ledger.RemoveReference(state.nodes[node], state.nodes[oldParent]); err != nil {
 			return fmt.Errorf("browser: remove native node %d -> parent %d edge: %w", node, oldParent, err)
 		}
@@ -159,6 +183,7 @@ func (state *nodeLifetimeState) sync(task *browserruntime.TaskContext) error {
 		if record.Parent == dom.InvalidNodeID || state.parents[record.ID] == record.Parent {
 			continue
 		}
+		graphChanged = true
 		if err := state.ledger.AddReference(state.nodes[record.Parent], state.nodes[record.ID]); err != nil {
 			return err
 		}
@@ -167,8 +192,13 @@ func (state *nodeLifetimeState) sync(task *browserruntime.TaskContext) error {
 		}
 	}
 	state.parents = currentParents
-	if err := state.reconcileWrapperRoots(); err != nil {
-		return err
+	wrapperRootsChanged := false
+	var err error
+	if graphChanged {
+		wrapperRootsChanged, err = state.reconcileWrapperRoots()
+		if err != nil {
+			return err
+		}
 	}
 
 	root := state.nodes[state.document.RootID()]
@@ -178,34 +208,45 @@ func (state *nodeLifetimeState) sync(task *browserruntime.TaskContext) error {
 	if err := state.ledger.AddReference(state.documentRoot, root); err != nil {
 		return err
 	}
-	wrapperDestroyed, err := state.ledger.ReconcileRegion(state.wrapperOwner, []ownership.ObjectID{state.wrapperRoot})
-	if err != nil {
-		return err
-	}
-	documentRoots := make([]ownership.ObjectID, 0, len(state.facades)+1)
-	documentRoots = append(documentRoots, state.documentRoot)
-	for _, record := range records {
-		facade := state.facades[record.ID]
-		if facade == (memory.Ref{}) {
-			return fmt.Errorf("browser: node %d has no facade record", record.ID)
+	var wrapperDestroyed []ownership.ObjectID
+	if graphRemoved || wrapperRootsChanged {
+		wrapperDestroyed, err = state.ledger.ReconcileRegion(state.wrapperOwner, []ownership.ObjectID{state.wrapperRoot})
+		if err != nil {
+			return err
 		}
 	}
-	// Keep every facade rooted through this reconciliation, including records
-	// whose DOM identities were just retired by a cross-document adoption.
-	// reclaim frees those physical slots after the semantic node graph reports
-	// its destroyed set; the next reconciliation then drops the facade claim.
-	for _, facade := range state.facades {
-		object, objectErr := state.store.ObjectID(state.documentOwner, facade)
-		if objectErr != nil {
-			return objectErr
+	var documentDestroyed []ownership.ObjectID
+	if graphRemoved || documentDirty {
+		documentRoots := make([]ownership.ObjectID, 0, len(state.facades)+1)
+		documentRoots = append(documentRoots, state.documentRoot)
+		for _, record := range records {
+			facade := state.facades[record.ID]
+			if facade == (memory.Ref{}) {
+				return fmt.Errorf("browser: node %d has no facade record", record.ID)
+			}
 		}
-		documentRoots = append(documentRoots, object)
+		// Keep every facade rooted through this reconciliation, including records
+		// whose DOM identities were just retired by a cross-document adoption.
+		// reclaim frees those physical slots after the semantic node graph reports
+		// its destroyed set; the next reconciliation then drops the facade claim.
+		for _, facade := range state.facades {
+			object, objectErr := state.store.ObjectID(state.documentOwner, facade)
+			if objectErr != nil {
+				return objectErr
+			}
+			documentRoots = append(documentRoots, object)
+		}
+		documentDestroyed, err = state.ledger.ReconcileRegion(state.documentOwner, documentRoots)
+		if err != nil {
+			return err
+		}
 	}
-	documentDestroyed, err := state.ledger.ReconcileRegion(state.documentOwner, documentRoots)
-	if err != nil {
+	if err := state.reclaim(append(wrapperDestroyed, documentDestroyed...)); err != nil {
 		return err
 	}
-	return state.reclaim(append(wrapperDestroyed, documentDestroyed...))
+	state.treeSequence = treeSequence
+	state.identitySlots = identitySlots
+	return nil
 }
 
 func (state *nodeLifetimeState) retainWrapper(handle NodeHandle) error {
@@ -227,8 +268,7 @@ func (state *nodeLifetimeState) retainWrapper(handle NodeHandle) error {
 		}
 		state.wrapperRoots[handle.Node] = struct{}{}
 	}
-	_, err := state.ledger.ReconcileRegion(state.wrapperOwner, []ownership.ObjectID{state.wrapperRoot})
-	return err
+	return nil
 }
 
 func (state *nodeLifetimeState) releaseWrappers(handles []NodeHandle) error {
@@ -249,8 +289,12 @@ func (state *nodeLifetimeState) releaseWrappers(handles []NodeHandle) error {
 		}
 		delete(state.wrappers, handle.Node)
 	}
-	if err := state.reconcileWrapperRoots(); err != nil {
+	changed, err := state.reconcileWrapperRoots()
+	if err != nil {
 		return err
+	}
+	if !changed {
+		return nil
 	}
 	destroyed, err := state.ledger.ReconcileRegion(state.wrapperOwner, []ownership.ObjectID{state.wrapperRoot})
 	if err != nil {
@@ -267,15 +311,19 @@ func (state *nodeLifetimeState) retainEventTarget(handle NodeHandle) error {
 		return dom.ErrUnknownNode
 	}
 	state.listeners[handle.Node]++
-	if err := state.reconcileWrapperRoots(); err != nil {
+	changed, err := state.reconcileWrapperRoots()
+	if err != nil {
 		state.listeners[handle.Node]--
 		if state.listeners[handle.Node] == 0 {
 			delete(state.listeners, handle.Node)
 		}
 		return err
 	}
-	_, err := state.ledger.ReconcileRegion(state.wrapperOwner, []ownership.ObjectID{state.wrapperRoot})
-	return err
+	if !changed {
+		return nil
+	}
+	// Adding a root propagates the wrapper claim through the ownership barrier.
+	return nil
 }
 
 func (state *nodeLifetimeState) releaseEventTarget(handle NodeHandle) error {
@@ -291,9 +339,13 @@ func (state *nodeLifetimeState) releaseEventTarget(handle NodeHandle) error {
 	} else {
 		state.listeners[handle.Node] = count - 1
 	}
-	if err := state.reconcileWrapperRoots(); err != nil {
+	changed, err := state.reconcileWrapperRoots()
+	if err != nil {
 		state.listeners[handle.Node] = count
 		return err
+	}
+	if !changed {
+		return nil
 	}
 	destroyed, err := state.ledger.ReconcileRegion(state.wrapperOwner, []ownership.ObjectID{state.wrapperRoot})
 	if err != nil {
@@ -302,7 +354,8 @@ func (state *nodeLifetimeState) releaseEventTarget(handle NodeHandle) error {
 	return state.reclaim(destroyed)
 }
 
-func (state *nodeLifetimeState) reconcileWrapperRoots() error {
+func (state *nodeLifetimeState) reconcileWrapperRoots() (bool, error) {
+	changed := false
 	candidates := make(map[dom.NodeID]struct{}, len(state.wrappers)+len(state.listeners)+len(state.wrapperRoots))
 	for node := range state.wrappers {
 		candidates[node] = struct{}{}
@@ -322,34 +375,34 @@ func (state *nodeLifetimeState) reconcileWrapperRoots() error {
 		}
 		object := state.nodes[node]
 		if object == 0 {
-			return dom.ErrUnknownNode
+			return false, dom.ErrUnknownNode
 		}
 		if needsRoot {
 			if err := state.ledger.AddReference(state.wrapperRoot, object); err != nil {
-				return err
+				return false, err
 			}
 			state.wrapperRoots[node] = struct{}{}
+			changed = true
 			continue
 		}
 		if err := state.ledger.RemoveReference(state.wrapperRoot, object); err != nil {
-			return err
+			return false, err
 		}
 		delete(state.wrapperRoots, node)
+		changed = true
 	}
-	return nil
+	return changed, nil
 }
 
 func (state *nodeLifetimeState) connected(node dom.NodeID) bool {
 	root := state.document.RootID()
-	seen := make(map[dom.NodeID]struct{})
-	for node != dom.InvalidNodeID {
+	// Parent links are a tree invariant. Bound the walk by the known node count
+	// so corrupt cycles still fail closed without allocating a visited map for
+	// every wrapper/root check.
+	for remaining := len(state.parents) + 1; node != dom.InvalidNodeID && remaining != 0; remaining-- {
 		if node == root {
 			return true
 		}
-		if _, exists := seen[node]; exists {
-			return false
-		}
-		seen[node] = struct{}{}
 		node = state.parents[node]
 	}
 	return false

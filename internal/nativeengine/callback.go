@@ -160,6 +160,10 @@ func (realm *Realm) performanceNow(_ *browserruntime.TaskContext, _ memory.Value
 }
 
 func (realm *Realm) retainCallbackLocked(context *browserruntime.TaskContext, callback memory.Value) (browser.ValueHandle, error) {
+	return realm.retainValueLocked(context, callback)
+}
+
+func (realm *Realm) retainValueLocked(context *browserruntime.TaskContext, value memory.Value) (browser.ValueHandle, error) {
 	if realm.bindings == nil || realm.bindings.callbackCache == (memory.Ref{}) {
 		return 0, fmt.Errorf("nativeengine: callback cache is unavailable")
 	}
@@ -168,7 +172,7 @@ func (realm *Realm) retainCallbackLocked(context *browserruntime.TaskContext, ca
 		return 0, fmt.Errorf("nativeengine: callback handle space exhausted")
 	}
 	handle := realm.nextCallback
-	if err := context.MapSet(realm.bindings.callbackCache, memory.NumberValue(float64(handle)), callback); err != nil {
+	if err := context.MapSet(realm.bindings.callbackCache, memory.NumberValue(float64(handle)), value); err != nil {
 		return 0, err
 	}
 	return handle, nil

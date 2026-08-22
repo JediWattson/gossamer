@@ -45,6 +45,7 @@ type Document struct {
 	version atomic.Uint64
 
 	mutationSequence uint64
+	treeSequence     uint64
 	mutations        []MutationRecord
 }
 

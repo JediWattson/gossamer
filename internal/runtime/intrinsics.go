@@ -196,6 +196,9 @@ const (
 	nativeStringFromCodePoint
 	nativeIntlDisplayNamesConstructor
 	nativeIntlDisplayNamesOf
+	nativeArrayFlat
+	nativeArrayFlatMap
+	nativeStringSearch
 )
 
 // Intrinsics is one task-local instantiation of the native ECMAScript
@@ -593,6 +596,9 @@ func (interpreter *Interpreter) registerBuiltinCallbacks() error {
 		nativeStringFromCodePoint:             builtinStringFromCodePoint,
 		nativeIntlDisplayNamesConstructor:     builtinIntlDisplayNamesConstructor,
 		nativeIntlDisplayNamesOf:              builtinIntlDisplayNamesOf,
+		nativeArrayFlat:                       builtinArrayFlat,
+		nativeArrayFlatMap:                    builtinArrayFlatMap,
+		nativeStringSearch:                    builtinStringSearch,
 		nativeStringIncludes:                  builtinStringIncludes,
 		nativeStringEndsWith:                  builtinStringEndsWith,
 		nativeStringIndexOf:                   builtinStringIndexOf,
@@ -924,6 +930,8 @@ func (intrinsics *Intrinsics) installArrayBuiltins(context *TaskContext) error {
 		{"sort", 1, nativeArraySort},
 		{"fill", 1, nativeArrayFill},
 		{"reverse", 0, nativeArrayReverse},
+		{"flat", 0, nativeArrayFlat},
+		{"flatMap", 1, nativeArrayFlatMap},
 	} {
 		function, err := intrinsics.newBuiltinMethod(context, method.name, method.arity, method.id)
 		if err != nil {

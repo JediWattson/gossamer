@@ -393,6 +393,69 @@ func TestLedgerBoundsEventsAndCompactsDestroyedObjects(t *testing.T) {
 	}
 }
 
+func TestLedgerCompactsCommonClaimsAndAllocatesEdgesLazily(t *testing.T) {
+	ledger := NewLedgerWithEventLimit(0)
+	task := OwnerID{Kind: OwnerTask, Value: 1}
+	realm := OwnerID{Kind: OwnerRealm, Value: 1}
+	taskRegion := mustCreateRegion(t, ledger, task)
+	mustCreateRegion(t, ledger, realm)
+	object, err := ledger.CreateObject(taskRegion)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := ledger.objects[object]
+	if record.claim != taskRegion || record.claims != nil || record.edges != nil || record.incoming != nil {
+		t.Fatalf("fresh object record is not compact: %#v", record)
+	}
+	if err := ledger.Publish(object, task, realm); err != nil {
+		t.Fatal(err)
+	}
+	if record.claim != 0 || len(record.claims) != 2 {
+		t.Fatalf("published claims = inline %d overflow %#v", record.claim, record.claims)
+	}
+	if err := ledger.Release(object, task); err != nil {
+		t.Fatal(err)
+	}
+	if record.claim == 0 || record.claims != nil || referenceCount(record) != 1 {
+		t.Fatalf("claims did not collapse inline: inline %d overflow %#v", record.claim, record.claims)
+	}
+}
+
+func TestLedgerBoundsDestroyedTombstonesWithoutRevivingOldIDs(t *testing.T) {
+	ledger := NewLedgerWithEventLimit(0)
+	owner := OwnerID{Kind: OwnerTask, Value: 1}
+	region := mustCreateRegion(t, ledger, owner)
+	var first, last ObjectID
+	for index := 0; index < DefaultTombstoneLimit+1; index++ {
+		object, err := ledger.CreateObject(region)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if index == 0 {
+			first = object
+		}
+		last = object
+		if err := ledger.Release(object, owner); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(ledger.destroyed) != DefaultTombstoneLimit || len(ledger.destroyedIDs) != DefaultTombstoneLimit {
+		t.Fatalf("tombstone retention = map %d ring %d", len(ledger.destroyed), len(ledger.destroyedIDs))
+	}
+	if _, retained := ledger.destroyed[first]; retained {
+		t.Fatalf("oldest tombstone %d was not evicted", first)
+	}
+	if snapshot, err := ledger.Object(first); err != nil || snapshot.Alive || snapshot.ID != first {
+		t.Fatalf("expired tombstone resolved incorrectly: snapshot=%#v err=%v", snapshot, err)
+	}
+	if _, err := ledger.liveObjectLocked(first); !errors.Is(err, ErrObjectDestroyed) {
+		t.Fatalf("expired tombstone became usable: %v", err)
+	}
+	if snapshot, err := ledger.Object(last); err != nil || snapshot.Alive || snapshot.Region != region {
+		t.Fatalf("recent tombstone = %#v err=%v", snapshot, err)
+	}
+}
+
 func TestPublicationRetainsCyclesOncePerDestinationRegion(t *testing.T) {
 	t.Parallel()
 
@@ -570,6 +633,40 @@ func TestReconcileShorterRegionClaimsLongerLivedRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertObject(t, ledger, node, true, wrapperRegion, map[OwnerID]int{wrapper: 1})
+}
+
+func TestAllocationFreeObjectStateReads(t *testing.T) {
+	ledger := NewLedgerWithEventLimit(0)
+	owner := OwnerID{Kind: OwnerTask, Value: 1}
+	region := mustCreateRegion(t, ledger, owner)
+	parent, err := ledger.CreateObject(region)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := ledger.CreateObject(region)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ledger.AddReference(parent, child); err != nil {
+		t.Fatal(err)
+	}
+
+	objects := []ObjectID{parent, child}
+	counts := make([]int, len(objects))
+	targets := map[ObjectID]struct{}{child: {}}
+	if allocations := testing.AllocsPerRun(100, func() {
+		if err := ledger.ReferenceCounts(objects, counts); err != nil {
+			t.Fatal(err)
+		}
+		if err := ledger.ValidateObjectState(parent, owner, targets); err != nil {
+			t.Fatal(err)
+		}
+	}); allocations != 0 {
+		t.Fatalf("allocation-free state reads allocated %.2f objects per run", allocations)
+	}
+	if counts[0] != 1 || counts[1] != 1 {
+		t.Fatalf("ReferenceCounts() = %v, want [1 1]", counts)
+	}
 }
 
 func mustCreateRegion(t *testing.T, ledger *Ledger, owner OwnerID) RegionID {

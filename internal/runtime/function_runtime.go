@@ -40,7 +40,7 @@ func builtinFunctionBind(execution *execution, _ memory.Ref, _ memory.Function, 
 	if err != nil {
 		return memory.Value{}, err
 	}
-	targetFunction, err := execution.context.DerefFunction(target)
+	targetFunction, err := execution.context.LoadFunction(target)
 	if err != nil {
 		return memory.Value{}, err
 	}

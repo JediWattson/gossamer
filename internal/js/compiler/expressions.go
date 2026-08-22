@@ -209,7 +209,7 @@ func (compiler *functionCompiler) compileArrowFunctionExpression(expression *ast
 	if err != nil {
 		return err
 	}
-	return compiler.emit(browserruntime.Instruction{Op: browserruntime.OpCreateClosure, A: constant}, expression.Span())
+	return compiler.emit(browserruntime.Instruction{Op: browserruntime.OpCreateArrowClosure, A: constant}, expression.Span())
 }
 
 func (compiler *functionCompiler) compileCall(call *ast.CallExpression) error {

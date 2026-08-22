@@ -42,6 +42,18 @@ func (document *Document) MutationSequence() uint64 {
 	return document.mutationSequence
 }
 
+// TreeMutationSequence returns the sequence of the latest child-list change.
+// Attribute, character-data, and native control-state mutations intentionally
+// leave it unchanged so ownership mirrors can skip rebuilding stable-ID edges.
+func (document *Document) TreeMutationSequence() uint64 {
+	if document == nil || document.store == nil {
+		return 0
+	}
+	document.store.mutex.RLock()
+	defer document.store.mutex.RUnlock()
+	return document.treeSequence
+}
+
 // MutationRecordsSince returns copies of records newer than sequence.
 func (document *Document) MutationRecordsSince(sequence uint64) ([]MutationRecord, uint64, error) {
 	if document == nil || document.store == nil {
@@ -75,6 +87,9 @@ func (document *Document) mutationRecordsSinceLocked(sequence uint64) ([]Mutatio
 func (document *Document) appendMutationLocked(record MutationRecord) {
 	document.mutationSequence++
 	record.Sequence = document.mutationSequence
+	if record.Type == MutationChildList {
+		document.treeSequence = record.Sequence
+	}
 	if len(document.mutations) == maxMutationJournalRecords {
 		copy(document.mutations, document.mutations[1:])
 		document.mutations[len(document.mutations)-1] = record

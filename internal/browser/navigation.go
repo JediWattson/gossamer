@@ -506,6 +506,22 @@ func (page *Page) commitNavigationDocument(
 			requests = append(requests, request)
 		}
 	}
+	if err := replacementResources.markImageRequests(requests); err != nil {
+		page.mutex.Lock()
+		if page.matchesNavigationLocked(id, 0) {
+			page.failNavigationLocked(err)
+		}
+		page.mutex.Unlock()
+		return err
+	}
+	if err := replacementResources.decodeInitialInlineImages(prepared.document, prepared.location); err != nil {
+		page.mutex.Lock()
+		if page.matchesNavigationLocked(id, 0) {
+			page.failNavigationLocked(err)
+		}
+		page.mutex.Unlock()
+		return err
+	}
 	prepared.requests = requests
 
 	cacheDeparture := page.canCacheCurrentDocument()

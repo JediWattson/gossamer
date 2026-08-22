@@ -240,7 +240,7 @@ func (execution *execution) instanceOf(value, constructor memory.Value) (bool, e
 	if err != nil {
 		return false, err
 	}
-	descriptor, err := execution.context.DerefFunction(constructorRef)
+	descriptor, err := execution.context.LoadFunction(constructorRef)
 	if err != nil {
 		return false, ErrNotCallable
 	}

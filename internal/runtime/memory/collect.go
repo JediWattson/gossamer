@@ -65,6 +65,7 @@ func (store *Store) collectLocked(owner ownership.OwnerID, regionID RegionID, ro
 
 	owned := make(map[Ref]struct{})
 	byObject := make(map[ownership.ObjectID]Ref)
+	objects := make([]ownership.ObjectID, 0)
 	for _, id := range sortedRegionIDs(store.regions) {
 		region := store.regions[id]
 		if region == nil || region.State != RegionPrivate || region.Owner != owner || regionID != 0 && id != regionID {
@@ -78,6 +79,7 @@ func (store *Store) collectLocked(owner ownership.OwnerID, regionID RegionID, ro
 			ref := Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}
 			owned[ref] = struct{}{}
 			byObject[slot.object] = ref
+			objects = append(objects, slot.object)
 		}
 	}
 
@@ -98,12 +100,13 @@ func (store *Store) collectLocked(owner ownership.OwnerID, regionID RegionID, ro
 		queue = append(queue, root)
 	}
 
-	for object, ref := range byObject {
-		snapshot, err := store.ledger.Object(object)
-		if err != nil {
-			return Collection{}, err
-		}
-		if snapshot.References > 1 {
+	counts := make([]int, len(objects))
+	if err := store.ledger.ReferenceCounts(objects, counts); err != nil {
+		return Collection{}, err
+	}
+	for index, object := range objects {
+		if counts[index] > 1 {
+			ref := byObject[object]
 			if _, exists := rootSet[ref]; !exists {
 				rootSet[ref] = struct{}{}
 				queue = append(queue, ref)
@@ -126,6 +129,7 @@ func (store *Store) collectLocked(owner ownership.OwnerID, regionID RegionID, ro
 
 	marked := make(map[Ref]struct{})
 	seen := make(map[Ref]struct{})
+	references := make([]Value, 0, 16)
 	drainStrongReferences := func() error {
 		for len(queue) != 0 {
 			ref := queue[0]
@@ -141,7 +145,8 @@ func (store *Store) collectLocked(owner ownership.OwnerID, regionID RegionID, ro
 			if _, isOwned := owned[ref]; isOwned {
 				marked[ref] = struct{}{}
 			}
-			for _, value := range slotReferences(slot) {
+			references = appendSlotReferences(references[:0], slot)
+			for _, value := range references {
 				if value.IsRef() {
 					queue = append(queue, value.Ref())
 				}
@@ -241,9 +246,12 @@ func (store *Store) collectLocked(owner ownership.OwnerID, regionID RegionID, ro
 		}
 	}
 
+	references = references[:0]
 	for _, ref := range candidates {
 		region, slot, _ := store.slotLocked(ref)
-		if err := store.unlinkSlotLocked(region, slot); err != nil {
+		var err error
+		references, err = store.unlinkSlotWithScratchLocked(region, slot, references)
+		if err != nil {
 			return Collection{}, err
 		}
 	}

@@ -285,40 +285,43 @@ func (realm *Realm) globalFetch(context *browserruntime.TaskContext, _ memory.Va
 	if err != nil {
 		return memory.Value{}, err
 	}
-	reject := func(cause error) (memory.Value, error) {
-		message, messageErr := context.NewString(cause.Error())
-		if messageErr != nil {
-			return memory.Value{}, messageErr
-		}
-		reason, errorErr := context.NewError(memory.ErrorType, memory.RefValue(message))
-		if errorErr != nil {
-			return memory.Value{}, errorErr
-		}
-		if errorErr = context.RejectPromise(promise, memory.RefValue(reason)); errorErr != nil {
-			return memory.Value{}, errorErr
+
+	request, err := realm.fetchRequest(context, arguments)
+	if err != nil {
+		if rejectErr := rejectPromise(context, promise, err); rejectErr != nil {
+			return memory.Value{}, rejectErr
 		}
 		return memory.RefValue(promise), nil
 	}
-	request, err := realm.fetchRequest(context, arguments)
-	if err != nil {
-		return reject(err)
+	if host, ok := realm.host.(browser.AsyncFetchHost); ok {
+		handle, err := realm.retainValueLocked(context, memory.RefValue(promise))
+		if err != nil {
+			return memory.Value{}, err
+		}
+		if err := host.QueueFetch(handle, request); err != nil {
+			_, _ = context.MapDelete(realm.bindings.callbackCache, memory.NumberValue(float64(handle)))
+			if rejectErr := rejectPromise(context, promise, err); rejectErr != nil {
+				return memory.Value{}, rejectErr
+			}
+		}
+		return memory.RefValue(promise), nil
 	}
 	host, ok := realm.host.(browser.FetchHost)
 	if !ok {
-		return reject(fmt.Errorf("fetch is unavailable in this browser host"))
+		if rejectErr := rejectPromise(context, promise, fmt.Errorf("fetch is unavailable in this browser host")); rejectErr != nil {
+			return memory.Value{}, rejectErr
+		}
+		return memory.RefValue(promise), nil
 	}
 	response, err := host.Fetch(request)
 	if err != nil {
-		return reject(err)
+		if rejectErr := rejectPromise(context, promise, err); rejectErr != nil {
+			return memory.Value{}, rejectErr
+		}
+		return memory.RefValue(promise), nil
 	}
-	object, err := context.NewHeapObject()
+	object, err := realm.newResponseObject(context, response)
 	if err != nil {
-		return memory.Value{}, err
-	}
-	if err := context.SetPrototype(object, memory.RefValue(realm.bindings.responsePrototype)); err != nil {
-		return memory.Value{}, err
-	}
-	if err := realm.initializeResponse(context, object, response); err != nil {
 		return memory.Value{}, err
 	}
 	if err := context.ResolvePromise(promise, memory.RefValue(object)); err != nil {
@@ -326,6 +329,87 @@ func (realm *Realm) globalFetch(context *browserruntime.TaskContext, _ memory.Va
 	}
 	return memory.RefValue(promise), nil
 }
+
+func (realm *Realm) DispatchFetch(host browser.Host, handle browser.ValueHandle, response browser.FetchResponse, fetchErr error) error {
+	if realm == nil {
+		return ErrRealmClosed
+	}
+	realm.mutex.Lock()
+	defer realm.mutex.Unlock()
+	if realm.closed {
+		return ErrRealmClosed
+	}
+	realm.host = host
+	defer func() { realm.host = nil }()
+	task, err := runtimeTask(host)
+	if err != nil {
+		return err
+	}
+	context, err := realm.beginTaskLocked(task)
+	if err != nil {
+		return fmt.Errorf("nativeengine: begin fetch %d completion task %d: %w", handle, task.TaskID, err)
+	}
+	key := memory.NumberValue(float64(handle))
+	value, found, err := context.MapGet(realm.bindings.callbackCache, key)
+	if err != nil {
+		return err
+	}
+	if !found || !value.IsRef() {
+		return fmt.Errorf("nativeengine: missing fetch promise %d", handle)
+	}
+	if _, err := context.MapDelete(realm.bindings.callbackCache, key); err != nil {
+		return err
+	}
+	promise := value.Ref()
+	if fetchErr != nil {
+		return realm.rejectPromise(context, promise, fetchErr)
+	}
+	object, err := realm.newResponseObject(context, response)
+	if err != nil {
+		return err
+	}
+	return realm.interpreter.ResolvePromise(context, promise, memory.RefValue(object))
+}
+
+func (realm *Realm) newResponseObject(context *browserruntime.TaskContext, response browser.FetchResponse) (memory.Ref, error) {
+	object, err := context.NewHeapObject()
+	if err != nil {
+		return memory.Ref{}, err
+	}
+	if err := context.SetPrototype(object, memory.RefValue(realm.bindings.responsePrototype)); err != nil {
+		return memory.Ref{}, err
+	}
+	if err := realm.initializeResponse(context, object, response); err != nil {
+		return memory.Ref{}, err
+	}
+	return object, nil
+}
+
+func (realm *Realm) rejectPromise(context *browserruntime.TaskContext, promise memory.Ref, cause error) error {
+	message, err := context.NewString(cause.Error())
+	if err != nil {
+		return err
+	}
+	reason, err := context.NewError(memory.ErrorType, memory.RefValue(message))
+	if err != nil {
+		return err
+	}
+	return realm.interpreter.RejectPromise(context, promise, memory.RefValue(reason))
+}
+
+func rejectPromise(context *browserruntime.TaskContext, promise memory.Ref, cause error) error {
+	message, err := context.NewString(cause.Error())
+	if err != nil {
+		return err
+	}
+	reason, err := context.NewError(memory.ErrorType, memory.RefValue(message))
+	if err != nil {
+		return err
+	}
+	return context.RejectPromise(promise, memory.RefValue(reason))
+}
+
+var _ browser.JSFetchRealm = (*Realm)(nil)
 
 func (realm *Realm) fetchRequest(context *browserruntime.TaskContext, arguments []memory.Value) (browser.FetchRequest, error) {
 	input := argument(arguments, 0)
