@@ -74,33 +74,34 @@ go run ./cmd/gossamer-sitecheck --engine=strand --dist /absolute/path/to/dist
 ./tools/v8/sitecheck.sh --engine=v8 --dist /absolute/path/to/dist
 ```
 
-The efchat-specific gate runs its production bundle through an anonymous local
-session and an exact local Turnstile init/validate/verify handshake, submits the
-real chat input, and records the resulting WebSocket message without posting to
-a public place:
+Repeatable application interactions are described by product-neutral JSON
+scenarios. A scenario supplies HTTP fixtures, external resource replacements,
+WebSocket open messages and an optional unlock match, ordered DOM waits, and
+JavaScript actions:
 
 ```sh
-go run ./cmd/gossamer-efchatcheck \
-  --dist /absolute/path/to/efchat/web/dist \
-  --message "hello from Strand"
+go run ./cmd/gossamer-scenariocheck \
+  --dist /absolute/path/to/web/dist \
+  --scenario /absolute/path/to/scenario.json \
+  --var message="hello from Strand"
 ```
 
 The same deterministic production-bundle path can emit active-execution
 region censuses and a retained Go heap profile without opening a window or
-posting to the public service:
+contacting the scenario's real APIs:
 
 ```sh
-go run ./cmd/gossamer-efchatcheck \
-  --dist /absolute/path/to/efchat/web/dist \
-  --message "hello from Strand" \
-  --memory-profile /tmp/efchat-strand-memory.jsonl \
-  --heap-profile /tmp/efchat-strand-heap.pprof
+go run ./cmd/gossamer-scenariocheck \
+  --dist /absolute/path/to/web/dist \
+  --scenario /absolute/path/to/scenario.json \
+  --memory-profile /tmp/scenario-strand-memory.jsonl \
+  --heap-profile /tmp/scenario-strand-heap.pprof
 ```
 
-To use the same Strand path interactively against the live service, launch:
+To use Strand interactively against a live service, launch:
 
 ```sh
-go run ./cmd/gossamer-window --engine=strand https://efchat.net/global
+go run ./cmd/gossamer-window --engine=strand https://example.com
 ```
 
 Record an engine-neutral JSONL timeline plus a Go heap profile while exercising
@@ -109,10 +110,10 @@ the live page with:
 ```sh
 go run ./cmd/gossamer-window \
   --engine=strand \
-  --memory-profile /tmp/efchat-strand-memory.jsonl \
-  --heap-profile /tmp/efchat-strand-heap.pprof \
-  https://efchat.net/global
-go run github.com/google/pprof@latest /tmp/efchat-strand-heap.pprof
+  --memory-profile /tmp/site-strand-memory.jsonl \
+  --heap-profile /tmp/site-strand-heap.pprof \
+  https://example.com
+go run github.com/google/pprof@latest /tmp/site-strand-heap.pprof
 ```
 
 The timeline samples Go heap usage, RegionStore physical attribution, ownership
@@ -133,11 +134,11 @@ compact source-location, constant, and capture bytes. Source locations retain
 exact diagnostic spans but use run/delta encoding when it beats their raw
 fixed-width representation.
 
-Messages submitted in that window use the real efchat backend and are public;
-the compatibility gate above remains entirely local.
+Messages submitted to a live site use its real backend and may be public;
+declarative compatibility scenarios remain entirely local.
 
 See [`docs/site-compatibility.md`](docs/site-compatibility.md) for the report
-contract, screenshot mode, and the current efchat baseline.
+contract, screenshot mode, and product-neutral scenario format.
 
 Subsequent launches only need `window.sh`; rerun `build.sh` after changing the
 C++ V8 bridge. URLs containing shell characters such as `&` should be quoted.
@@ -519,9 +520,10 @@ performance budgets; see
 | `internal/render` | Used-value resolution, layout, display lists, and PNG painting |
 | `internal/runtime` | Realms, task and microtask queues, actor scheduling, and shadow ownership telemetry |
 | `internal/browser` | Browser/Page ownership, loading, stable-ID mutation scheduling, and frame invalidation |
+| `internal/sitecompat` | Product-neutral boot, paint, and declarative interaction scenarios for production bundles |
 | `internal/window` | Graphite browser shell, backend-neutral interactive loop, copied frame presentation, and normalized native input |
 | `cmd/gossamer-window` | Strand/stock-V8 selectable launcher for the Graphite AppKit shell |
-| `cmd/gossamer-efchatcheck` | Deterministic Strand anonymous-session and message-send gate for an efchat production bundle |
+| `cmd/gossamer-scenariocheck` | Deterministic Strand interaction runner driven by a JSON scenario |
 
 ## Current limitations
 

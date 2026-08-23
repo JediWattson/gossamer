@@ -56,41 +56,70 @@ compatibility backlog. A failure in both Strand and V8 indicates a shared
 browser-kernel boundary; a Strand-only failure identifies native engine or
 binding work.
 
-## Current efchat baseline
+## Declarative interaction scenarios
 
-The current efchat production distribution evaluates under Strand, hydrates an
-anonymous session, opens the place WebSocket with the session cookie, and can
-submit the real `#efchat-input` Enter path. The compatibility gate records the
-same `message` envelope efchat would send, verifies the optimistic message in
-the DOM, and requires zero live or persistent objects after teardown. Its fake
-WebSocket also sends `turnstile:init`: the production frontend must dynamically
-load the Turnstile script, validate the raw widget token over HTTP, store the
-`efchat_code` cookie, return the derived token on `turnstile:verify`, and only
-then resubmit the message:
+`gossamer-scenariocheck` extends the boot gate with ordered application
+interactions while keeping product contracts out of the runtime. The JSON
+definition can provide:
 
-```sh
-GOCACHE=/tmp/gossamer-go-cache go run ./cmd/gossamer-efchatcheck \
-  --dist /absolute/path/to/efchat/web/dist \
-  --message "hello from Strand"
+- deterministic method/path HTTP responses and response headers;
+- exact external resource replacements;
+- external HTTP blocking by default, with an explicit `allowExternal` escape;
+- an optional deterministic viewport;
+- WebSocket messages emitted on connection;
+- an optional JSON-field match that unlocks later socket writes;
+- DOM ID and text waits, socket-state waits, and accepted-message matches;
+- JavaScript steps with JSON-quoted `{{variable}}` substitution; and
+- named memory-profile checkpoints.
+
+A minimal scenario looks like:
+
+```json
+{
+  "path": "/room",
+  "viewport": { "width": 1280, "height": 720 },
+  "routes": [
+    {
+      "path": "/session",
+      "headers": { "Content-Type": "application/json" },
+      "body": "{\"name\":\"anonymous-user\"}"
+    }
+  ],
+  "socket": {
+    "openMessages": ["{\"event\":\"ready\"}"]
+  },
+  "steps": [
+    {
+      "name": "composer ready",
+      "before": { "elementId": "message-input", "socketConnected": true }
+    },
+    {
+      "name": "send message",
+      "script": "document.getElementById('message-input').value = {{message}};"
+    }
+  ]
+}
 ```
 
-The command serves the supplied distribution from an ephemeral local origin.
-Its `/api/user` response and WebSocket are deterministic local fakes, so the
-gate exercises the production frontend and Gossamer's cookie/socket boundary
-without sending a message to efchat.net. A passing report contains
-`session.role: "anon"`, `session.cookieOnSocket: true`,
-all four `turnstile` completion fields, `webSocket.event: "message"`, the
-requested content, clean navigation, and zero teardown ownership. Verification
-tokens are redacted from the report.
-
-For a manual live session, the Graphite shell can open efchat with Strand:
+Run a scenario against any production distribution:
 
 ```sh
-go run ./cmd/gossamer-window --engine=strand https://efchat.net/global
+GOCACHE=/tmp/gossamer-go-cache go run ./cmd/gossamer-scenariocheck \
+  --dist /absolute/path/to/web/dist \
+  --scenario /absolute/path/to/scenario.json \
+  --var message="hello from Strand"
 ```
 
-Unlike `gossamer-efchatcheck`, this command uses efchat's real HTTP and
-WebSocket services, so a submitted message is public.
+The command serves the distribution from an ephemeral local origin. Unmatched
+GET paths without an extension fall back to `index.html`, so client-side routes
+exercise the production entry point. Fixture HTTP and WebSocket traffic never
+contacts the application's real services. Reports contain every completed
+step, requested local path, socket event names and counts without payloads,
+bounded DOM evidence, and ownership before and after teardown.
+
+Application-specific selectors, endpoints, cookies, challenge tokens, and
+message envelopes belong only in the external scenario file. Adding another
+site requires data, not a Go adapter.
 
 ## Fetch and session rung
 
