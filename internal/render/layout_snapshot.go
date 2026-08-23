@@ -2,6 +2,7 @@ package render
 
 import (
 	"fmt"
+	"image"
 	"math"
 
 	"github.com/JediWattson/gossamer/internal/dom"
@@ -85,20 +86,21 @@ func cloneGridLineNames(names [][]string) [][]string {
 // is painted. Stable-document snapshots expose geometry by NodeID and retain
 // the exact computed-style snapshot used to produce the layout.
 type LayoutSnapshot struct {
-	viewport       Viewport
-	root           *Box
-	styles         map[*dom.Node]computedStyle
-	computedStyles *computed.Snapshot
-	rootNode       *dom.Node
-	rootID         dom.NodeID
-	document       dom.DocumentIdentity
-	version        uint64
-	byNode         map[*dom.Node]LayoutGeometry
-	byID           map[dom.NodeID]LayoutGeometry
-	byPseudoNode   map[pointerPseudoGeometryKey]LayoutGeometry
-	byPseudoID     map[stablePseudoGeometryKey]LayoutGeometry
-	damage         []Rect
-	reusedLayout   bool
+	viewport         Viewport
+	root             *Box
+	styles           map[*dom.Node]computedStyle
+	backgroundImages map[*dom.Node]map[string]image.Image
+	computedStyles   *computed.Snapshot
+	rootNode         *dom.Node
+	rootID           dom.NodeID
+	document         dom.DocumentIdentity
+	version          uint64
+	byNode           map[*dom.Node]LayoutGeometry
+	byID             map[dom.NodeID]LayoutGeometry
+	byPseudoNode     map[pointerPseudoGeometryKey]LayoutGeometry
+	byPseudoID       map[stablePseudoGeometryKey]LayoutGeometry
+	damage           []Rect
+	reusedLayout     bool
 }
 
 type pointerPseudoGeometryKey struct {
@@ -203,17 +205,19 @@ func newPointerLayoutSnapshot(
 	document *dom.Node,
 	root *Box,
 	styles map[*dom.Node]computedStyle,
+	backgroundImages map[*dom.Node]map[string]image.Image,
 	viewport Viewport,
 	computedStyles *computed.Snapshot,
 ) *LayoutSnapshot {
 	snapshot := &LayoutSnapshot{
-		viewport:       viewport,
-		root:           root,
-		styles:         styles,
-		computedStyles: computedStyles,
-		rootNode:       document,
-		byNode:         make(map[*dom.Node]LayoutGeometry),
-		byPseudoNode:   make(map[pointerPseudoGeometryKey]LayoutGeometry),
+		viewport:         viewport,
+		root:             root,
+		styles:           styles,
+		backgroundImages: backgroundImages,
+		computedStyles:   computedStyles,
+		rootNode:         document,
+		byNode:           make(map[*dom.Node]LayoutGeometry),
+		byPseudoNode:     make(map[pointerPseudoGeometryKey]LayoutGeometry),
 	}
 	indexPointerGeometry(root, snapshot.byNode, snapshot.byPseudoNode)
 	return snapshot
@@ -223,6 +227,7 @@ func newStableLayoutSnapshot(
 	access *dom.ReadAccess,
 	root *Box,
 	styles map[*dom.Node]computedStyle,
+	backgroundImages map[*dom.Node]map[string]image.Image,
 	viewport Viewport,
 	computedStyles *computed.Snapshot,
 ) (*LayoutSnapshot, error) {
@@ -232,15 +237,16 @@ func newStableLayoutSnapshot(
 		return nil, fmt.Errorf("render: layout document root has no stable identity")
 	}
 	snapshot := &LayoutSnapshot{
-		viewport:       viewport,
-		root:           root,
-		styles:         styles,
-		computedStyles: computedStyles,
-		rootID:         rootID,
-		document:       access.Identity(),
-		version:        access.Version(),
-		byID:           make(map[dom.NodeID]LayoutGeometry),
-		byPseudoID:     make(map[stablePseudoGeometryKey]LayoutGeometry),
+		viewport:         viewport,
+		root:             root,
+		styles:           styles,
+		backgroundImages: backgroundImages,
+		computedStyles:   computedStyles,
+		rootID:           rootID,
+		document:         access.Identity(),
+		version:          access.Version(),
+		byID:             make(map[dom.NodeID]LayoutGeometry),
+		byPseudoID:       make(map[stablePseudoGeometryKey]LayoutGeometry),
 	}
 	indexStableGeometry(root, access, snapshot.byID, snapshot.byPseudoID)
 	return snapshot, nil

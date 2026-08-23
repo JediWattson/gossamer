@@ -26,18 +26,26 @@ var scriptingEnabledUserAgentStylesheet = func() css.Stylesheet {
 }()
 
 type pageResources struct {
-	stylesheets          stylesheetGraph
-	inlineStyles         inlineStyleCache
-	userStylesheets      []css.Stylesheet
-	userAgentStylesheets []css.Stylesheet
-	images               map[dom.NodeID]image.Image
-	imageSources         map[dom.NodeID]imageResourceEntry
-	nextImageGeneration  uint64
+	stylesheets            stylesheetGraph
+	inlineStyles           inlineStyleCache
+	userStylesheets        []css.Stylesheet
+	userAgentStylesheets   []css.Stylesheet
+	images                 map[dom.NodeID]image.Image
+	imageSources           map[dom.NodeID]imageResourceEntry
+	backgroundImages       map[backgroundImageResourceKey]image.Image
+	backgroundImageSources map[backgroundImageResourceKey]imageResourceEntry
+	nextImageGeneration    uint64
+}
+
+type backgroundImageResourceKey struct {
+	node   dom.NodeID
+	source string
 }
 
 type imageResourceEntry struct {
 	source     string
 	generation uint64
+	manual     bool
 }
 
 type navigationResourceRequest struct {
@@ -50,6 +58,8 @@ type navigationResourceRequest struct {
 	stylesheetBase       *url.URL
 	imageGeneration      uint64
 	imageSource          string
+	backgroundImage      bool
+	backgroundSource     string
 }
 
 type navigationResourceResult struct {
@@ -60,26 +70,39 @@ type navigationResourceResult struct {
 	image                image.Image
 	imageGeneration      uint64
 	imageSource          string
+	backgroundImage      bool
+	backgroundSource     string
 	err                  error
 }
 
 func newPageResources() pageResources {
 	return pageResources{
-		stylesheets:  newStylesheetGraph(),
-		inlineStyles: newInlineStyleCache(),
-		images:       make(map[dom.NodeID]image.Image),
-		imageSources: make(map[dom.NodeID]imageResourceEntry),
+		stylesheets:            newStylesheetGraph(),
+		inlineStyles:           newInlineStyleCache(),
+		images:                 make(map[dom.NodeID]image.Image),
+		imageSources:           make(map[dom.NodeID]imageResourceEntry),
+		backgroundImages:       make(map[backgroundImageResourceKey]image.Image),
+		backgroundImageSources: make(map[backgroundImageResourceKey]imageResourceEntry),
 	}
 }
 
 func (resources *pageResources) apply(result navigationResourceResult) bool {
-	if resources.stylesheets.entries == nil || resources.images == nil || resources.imageSources == nil {
+	if resources.stylesheets.entries == nil || resources.images == nil || resources.imageSources == nil || resources.backgroundImages == nil || resources.backgroundImageSources == nil {
 		*resources = newPageResources()
 	}
 	switch result.kind {
 	case resource.Stylesheet:
 		return resources.stylesheets.apply(result)
 	case resource.Image:
+		if result.backgroundImage {
+			key := backgroundImageResourceKey{node: result.target.Node, source: result.backgroundSource}
+			entry, ok := resources.backgroundImageSources[key]
+			if !ok || entry.generation != result.imageGeneration || entry.source != result.imageSource {
+				return false
+			}
+			resources.backgroundImages[key] = result.image
+			return true
+		}
 		if result.imageGeneration != 0 {
 			entry, ok := resources.imageSources[result.target.Node]
 			if !ok || entry.generation != result.imageGeneration || entry.source != result.imageSource {
@@ -98,6 +121,7 @@ func (resources pageResources) rendererResources(document *dom.Document, scripti
 		UserStylesheets:      append([]css.Stylesheet(nil), resources.userStylesheets...),
 		UserAgentStylesheets: append([]css.Stylesheet(nil), resources.userAgentStylesheets...),
 		Images:               make(map[*dom.Node]image.Image, len(resources.images)),
+		BackgroundImages:     make(map[*dom.Node]map[string]image.Image),
 	}
 	if scriptingEnabled {
 		resolved.UserAgentStylesheets = append(resolved.UserAgentStylesheets, scriptingEnabledUserAgentStylesheet)
@@ -105,6 +129,16 @@ func (resources pageResources) rendererResources(document *dom.Document, scripti
 	for id, decoded := range resources.images {
 		if node, ok := document.Resolve(id); ok {
 			resolved.Images[node] = decoded
+		}
+	}
+	for key, decoded := range resources.backgroundImages {
+		if node, ok := document.Resolve(key.node); ok {
+			bySource := resolved.BackgroundImages[node]
+			if bySource == nil {
+				bySource = make(map[string]image.Image)
+				resolved.BackgroundImages[node] = bySource
+			}
+			bySource[key.source] = decoded
 		}
 	}
 	return resolved
@@ -141,6 +175,17 @@ func pageResourcesFromRenderer(document *dom.Document, resources render.Resource
 			return pageResources{}, fmt.Errorf("browser: image resource references a node outside the document")
 		}
 		stable.images[id] = decoded
+	}
+	for node, decodedBySource := range resources.BackgroundImages {
+		id, ok := document.ID(node)
+		if !ok {
+			return pageResources{}, fmt.Errorf("browser: background image resource references a node outside the document")
+		}
+		for source, decoded := range decodedBySource {
+			key := backgroundImageResourceKey{node: id, source: source}
+			stable.backgroundImages[key] = decoded
+			stable.backgroundImageSources[key] = imageResourceEntry{source: source, manual: true}
+		}
 	}
 	return stable, nil
 }
@@ -221,6 +266,8 @@ func loadNavigationResourceSequence(
 			stylesheetGeneration: request.stylesheetGeneration,
 			imageGeneration:      request.imageGeneration,
 			imageSource:          request.imageSource,
+			backgroundImage:      request.backgroundImage,
+			backgroundSource:     request.backgroundSource,
 		}
 		if request.kind == resource.Stylesheet && request.stylesheetSource != "" {
 			result.stylesheet, result.err = loadStylesheetSourceWithImports(

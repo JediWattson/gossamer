@@ -571,10 +571,20 @@ func (page *Page) renderLocked(onlyIfDirty bool) error {
 	resources := page.resources.rendererResources(page.document, page.script != nil)
 	var frame *render.Frame
 	var renderedVersion uint64
+	var backgroundRequests []navigationResourceRequest
 	err := page.document.WithReadView(func(view dom.ReadView) error {
 		snapshot, snapshotErr := page.styleSnapshotForViewLocked(view, resources)
 		if snapshotErr != nil {
 			return snapshotErr
+		}
+		requests, changed, backgroundErr := page.syncBackgroundImagesForViewLocked(view, snapshot)
+		if backgroundErr != nil {
+			return backgroundErr
+		}
+		backgroundRequests = requests
+		if changed {
+			page.invalidateLayoutLocked()
+			resources = page.resources.rendererResources(page.document, page.script != nil)
 		}
 		layout, layoutErr := page.layoutSnapshotForViewLocked(view, resources, snapshot)
 		if layoutErr != nil {
@@ -594,6 +604,9 @@ func (page *Page) renderLocked(onlyIfDirty bool) error {
 	page.frameGeneration = page.documentGeneration
 	page.renderedVersion = renderedVersion
 	page.dirty = false
+	if len(backgroundRequests) > 0 && page.resourceFetcher != nil && page.documentContext != nil {
+		go page.loadDynamicImages(page.documentContext, page.documentGeneration, page.resourceFetcher, backgroundRequests)
+	}
 	return nil
 }
 

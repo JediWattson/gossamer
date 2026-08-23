@@ -267,7 +267,7 @@ func computeLayoutWithStyleSnapshotAndFonts(document *dom.Node, viewport Viewpor
 	if err != nil {
 		return nil, err
 	}
-	return newPointerLayoutSnapshot(document, rootBox, styles, viewport, snapshot), nil
+	return newPointerLayoutSnapshot(document, rootBox, styles, resources.BackgroundImages, viewport, snapshot), nil
 }
 
 func renderReadAccessWithStyleSnapshotAndFonts(access *dom.ReadAccess, viewport Viewport, resources Resources, snapshot *computed.Snapshot, fonts *fontBook) (*Frame, error) {
@@ -311,7 +311,7 @@ func computeReadAccessLayoutWithStyleSnapshotAndFonts(access *dom.ReadAccess, vi
 	if err != nil {
 		return nil, err
 	}
-	return newStableLayoutSnapshot(access, rootBox, styles, viewport, snapshot)
+	return newStableLayoutSnapshot(access, rootBox, styles, resources.BackgroundImages, viewport, snapshot)
 }
 
 func layoutProjectedStyles(styledRoot *styledNode, viewport Viewport, resources Resources, fonts *fontBook) (*Box, map[*dom.Node]computedStyle, error) {
@@ -324,7 +324,7 @@ func layoutProjectedStyles(styledRoot *styledNode, viewport Viewport, resources 
 }
 
 func frameFromLayout(document *dom.Node, layout *LayoutSnapshot) *Frame {
-	displayList := buildDisplayList(document, layout.root, layout.styles, layout.viewport)
+	displayList := buildDisplayList(document, layout.root, layout.styles, layout.backgroundImages, layout.viewport)
 	return &Frame{
 		Viewport:       layout.viewport,
 		Root:           layout.root,
@@ -368,8 +368,8 @@ func validateStableLayoutSnapshot(access *dom.ReadAccess, snapshot *LayoutSnapsh
 	return nil
 }
 
-func buildDisplayList(document *dom.Node, root *Box, styles map[*dom.Node]computedStyle, viewport Viewport) DisplayList {
-	list := DisplayList{Viewport: viewport}
+func buildDisplayList(document *dom.Node, root *Box, styles map[*dom.Node]computedStyle, backgroundImages map[*dom.Node]map[string]image.Image, viewport Viewport) DisplayList {
+	list := DisplayList{Viewport: viewport, backgroundImages: backgroundImages}
 	canvas := Rect{Width: float64(viewport.Width), Height: float64(viewport.Height)}
 	list.Commands = append(list.Commands, Command{Kind: FillRectCommand, Rect: canvas, Color: opaqueWhite})
 
@@ -407,6 +407,13 @@ func paintBox(list *DisplayList, box *Box, styles map[*dom.Node]computedStyle) {
 		style, hasStyle = styles[box.Node]
 	}
 	visible := hasStyle && style.Visibility() == visibilityVisible
+	transformed := hasStyle && hasUsedTransform(style)
+	if transformed {
+		list.Commands = append(list.Commands, Command{
+			Kind: BeginTransformCommand, Node: box.Node, Pseudo: box.Pseudo,
+			Transform: usedTransform(style, box.Bounds, list.Viewport),
+		})
+	}
 	opacity := style.Opacity()
 	if box.hasOpacity {
 		opacity = box.paintOpacity
@@ -416,13 +423,28 @@ func paintBox(list *DisplayList, box *Box, styles map[*dom.Node]computedStyle) {
 		list.Commands = append(list.Commands, Command{Kind: BeginOpacityCommand, Node: box.Node, Pseudo: box.Pseudo, Opacity: opacity})
 	}
 	paintBoxDecorations(list, box, style, visible)
+	clipped := hasStyle && clipsOverflow(style)
+	if clipped {
+		clip := boxClientBounds(box)
+		outer := usedCornerRadii(style, box.Bounds, list.Viewport)
+		list.Commands = append(list.Commands, Command{
+			Kind: BeginClipCommand, Node: box.Node, Pseudo: box.Pseudo,
+			Rect: clip, Radii: insetCornerRadii(outer, box.Border),
+		})
+	}
 	if box.tableWrapper && box.tableRoot != nil {
 		paintTableWrapperContents(list, box, styles)
 	} else {
 		paintBoxContents(list, box, styles)
 	}
+	if clipped {
+		list.Commands = append(list.Commands, Command{Kind: EndClipCommand, Node: box.Node, Pseudo: box.Pseudo})
+	}
 	if grouped {
 		list.Commands = append(list.Commands, Command{Kind: EndOpacityCommand, Node: box.Node, Pseudo: box.Pseudo})
+	}
+	if transformed {
+		list.Commands = append(list.Commands, Command{Kind: EndTransformCommand, Node: box.Node, Pseudo: box.Pseudo})
 	}
 	if box.hasClipBounds {
 		clipPaintCommands(list, commandStart, len(list.Commands), box.clipBounds)
@@ -430,17 +452,21 @@ func paintBox(list *DisplayList, box *Box, styles map[*dom.Node]computedStyle) {
 }
 
 func paintBoxDecorations(list *DisplayList, box *Box, style computedStyle, visible bool) {
+	bounds := box.Bounds
+	if box.hasDecorationBounds {
+		bounds = box.decorationBounds
+	}
+	radii := usedCornerRadii(style, bounds, list.Viewport)
+	if visible && !box.suppressDecorations {
+		paintBoxShadows(list, box, style, bounds, radii, false)
+	}
 	background, hasBackground := style.Background()
 	if visible && !box.suppressDecorations && hasBackground {
 		if len(box.backgroundRects) == 0 {
-			bounds := box.Bounds
-			if box.hasDecorationBounds {
-				bounds = box.decorationBounds
-			}
 			if bounds.Width > 0 && bounds.Height > 0 {
 				list.Commands = append(list.Commands, Command{
 					Kind: FillRectCommand, Node: box.Node, Pseudo: box.Pseudo,
-					Rect: bounds, Color: background, Radii: usedCornerRadii(style, bounds, list.Viewport),
+					Rect: bounds, Color: background, Radii: radii,
 				})
 			}
 		} else {
@@ -455,8 +481,37 @@ func paintBoxDecorations(list *DisplayList, box *Box, style computedStyle, visib
 			}
 		}
 	}
+	if visible && !box.suppressDecorations && len(box.backgroundRects) == 0 {
+		paintBackgroundImages(list, box, style, bounds, radii)
+		paintBoxShadows(list, box, style, bounds, radii, true)
+	}
 	if visible && !box.suppressDecorations && !box.suppressBorders {
 		paintBoxBorders(list, box, style)
+	}
+}
+
+func clipsOverflow(style computedStyle) bool {
+	return style.OverflowX() != computed.OverflowVisible || style.OverflowY() != computed.OverflowVisible
+}
+
+func insetCornerRadii(outer CornerRadii, edges Edges) CornerRadii {
+	return CornerRadii{
+		TopLeft: CornerRadius{
+			X: math.Max(0, outer.TopLeft.X-edges.Left),
+			Y: math.Max(0, outer.TopLeft.Y-edges.Top),
+		},
+		TopRight: CornerRadius{
+			X: math.Max(0, outer.TopRight.X-edges.Right),
+			Y: math.Max(0, outer.TopRight.Y-edges.Top),
+		},
+		BottomRight: CornerRadius{
+			X: math.Max(0, outer.BottomRight.X-edges.Right),
+			Y: math.Max(0, outer.BottomRight.Y-edges.Bottom),
+		},
+		BottomLeft: CornerRadius{
+			X: math.Max(0, outer.BottomLeft.X-edges.Left),
+			Y: math.Max(0, outer.BottomLeft.Y-edges.Bottom),
+		},
 	}
 }
 
@@ -492,6 +547,180 @@ func usedCornerRadii(style computedStyle, bounds Rect, viewport Viewport) Corner
 		}
 	}
 	return radii
+}
+
+func paintBoxShadows(list *DisplayList, box *Box, style computedStyle, bounds Rect, radii CornerRadii, inset bool) {
+	shadows := style.BoxShadows()
+	for index := shadows.Len() - 1; index >= 0; index-- {
+		shadow, ok := shadows.At(index)
+		if !ok || shadow.Inset() != inset {
+			continue
+		}
+		offsetX := resolveLength(shadow.OffsetX(), 0, list.Viewport, 0)
+		offsetY := resolveLength(shadow.OffsetY(), 0, list.Viewport, 0)
+		blur := math.Max(0, resolveLength(shadow.BlurRadius(), 0, list.Viewport, 0))
+		spread := resolveLength(shadow.SpreadRadius(), 0, list.Viewport, 0)
+		shadowColor := shadow.Color(style.Color())
+		if shadowColor.A == 0 || !isFinite(offsetX) || !isFinite(offsetY) || !isFinite(blur) || !isFinite(spread) {
+			continue
+		}
+		list.Commands = append(list.Commands, Command{
+			Kind: DrawBoxShadowCommand, Node: box.Node, Pseudo: box.Pseudo,
+			Rect: bounds, Radii: radii, Color: shadowColor,
+			ShadowOffsetX: offsetX, ShadowOffsetY: offsetY,
+			ShadowBlur: blur, ShadowSpread: spread, ShadowInset: inset,
+		})
+	}
+}
+
+func paintBackgroundImages(list *DisplayList, box *Box, style computedStyle, bounds Rect, radii CornerRadii) {
+	images := style.BackgroundImages()
+	for index := images.Len() - 1; index >= 0; index-- {
+		background, ok := images.At(index)
+		if !ok {
+			continue
+		}
+		command := Command{Node: box.Node, Pseudo: box.Pseudo, Rect: bounds, Radii: radii}
+		switch background.Kind() {
+		case computed.BackgroundImageURL:
+			decoded := list.backgroundImages[box.Node][background.URL()]
+			if decoded == nil {
+				continue
+			}
+			command.Kind, command.Image, command.Opacity = DrawImageCommand, decoded, 1
+		case computed.BackgroundImageLinearGradient, computed.BackgroundImageRadialGradient:
+			command.Kind = DrawGradientCommand
+			command.GradientKind = LinearGradient
+			if background.Kind() == computed.BackgroundImageRadialGradient {
+				command.GradientKind = RadialGradient
+			}
+			command.GradientAngle = background.AngleDegrees()
+			command.GradientRepeating = background.Repeating()
+			if !resolveGradientStops(&command, background, bounds, style.Color(), list.Viewport) {
+				continue
+			}
+		default:
+			continue
+		}
+		if !radii.empty() {
+			appendRoundedClip(&command, RoundedClip{Rect: bounds, Radii: radii})
+		}
+		list.Commands = append(list.Commands, command)
+	}
+}
+
+func resolveGradientStops(command *Command, background computed.BackgroundImage, bounds Rect, currentColor color.NRGBA, viewport Viewport) bool {
+	if command == nil || background.StopCount() < 2 || background.StopCount() > maxPaintGradientStops {
+		return false
+	}
+	length := math.Hypot(bounds.Width/2, bounds.Height/2)
+	if background.Kind() == computed.BackgroundImageLinearGradient {
+		angle := background.AngleDegrees() * math.Pi / 180
+		length = math.Abs(math.Sin(angle))*bounds.Width + math.Abs(math.Cos(angle))*bounds.Height
+	}
+	if length <= 0 || !isFinite(length) {
+		return false
+	}
+	offsets := [maxPaintGradientStops]float64{}
+	specified := [maxPaintGradientStops]bool{}
+	count := background.StopCount()
+	for index := 0; index < count; index++ {
+		stop, _ := background.Stop(index)
+		command.GradientStops[index].Color = stop.Color(currentColor)
+		if position, ok := stop.Position(); ok {
+			resolved, valid := position.Resolve(length, float64(viewport.Width), float64(viewport.Height))
+			if !valid {
+				return false
+			}
+			offsets[index], specified[index] = resolved/length, true
+		}
+	}
+	if !specified[0] {
+		offsets[0], specified[0] = 0, true
+	}
+	if !specified[count-1] {
+		offsets[count-1], specified[count-1] = 1, true
+	}
+	last := offsets[0]
+	for index := 1; index < count; index++ {
+		if specified[index] {
+			if offsets[index] < last {
+				offsets[index] = last
+			}
+			last = offsets[index]
+		}
+	}
+	for start := 0; start < count-1; {
+		end := start + 1
+		for end < count && !specified[end] {
+			end++
+		}
+		span := offsets[end] - offsets[start]
+		for index := start + 1; index < end; index++ {
+			offsets[index] = offsets[start] + span*float64(index-start)/float64(end-start)
+		}
+		start = end
+	}
+	for index := 0; index < count; index++ {
+		command.GradientStops[index].Offset = offsets[index]
+	}
+	command.GradientStopCount = uint8(count)
+	return true
+}
+
+func usedTransform(style computedStyle, bounds Rect, viewport Viewport) AffineTransform {
+	result := identityTransform()
+	translate := style.Translate()
+	if !translate.IsNone() {
+		result = multiplyTransforms(result, translatedTransform(
+			resolveLength(translate.X(), bounds.Width, viewport, 0),
+			resolveLength(translate.Y(), bounds.Height, viewport, 0),
+		))
+	}
+	rotate := style.Rotate()
+	if !rotate.IsNone() {
+		angle := rotate.Radians()
+		result = multiplyTransforms(result, AffineTransform{A: math.Cos(angle), B: math.Sin(angle), C: -math.Sin(angle), D: math.Cos(angle)})
+	}
+	scale := style.Scale()
+	if !scale.IsNone() {
+		result = multiplyTransforms(result, AffineTransform{A: scale.X(), D: scale.Y()})
+	}
+	transforms := style.Transforms()
+	for index := 0; index < transforms.Len(); index++ {
+		operation, ok := transforms.At(index)
+		if !ok {
+			continue
+		}
+		a, b, c, d, e, f := operation.Values()
+		matrix := identityTransform()
+		switch operation.Kind() {
+		case computed.TransformMatrix:
+			matrix = AffineTransform{A: a, B: b, C: c, D: d, E: e, F: f}
+		case computed.TransformTranslate:
+			x := resolveLength(operation.X(), bounds.Width, viewport, 0)
+			y := resolveLength(operation.Y(), bounds.Height, viewport, 0)
+			matrix = translatedTransform(x, y)
+		case computed.TransformScale:
+			matrix = AffineTransform{A: a, D: b}
+		case computed.TransformRotate:
+			matrix = AffineTransform{A: math.Cos(a), B: math.Sin(a), C: -math.Sin(a), D: math.Cos(a)}
+		case computed.TransformSkew:
+			matrix = AffineTransform{A: 1, B: math.Tan(b), C: math.Tan(a), D: 1}
+		}
+		result = multiplyTransforms(result, matrix)
+	}
+	origin := style.TransformOrigin()
+	originX := bounds.X + resolveLength(origin.X(), bounds.Width, viewport, bounds.Width/2)
+	originY := bounds.Y + resolveLength(origin.Y(), bounds.Height, viewport, bounds.Height/2)
+	return multiplyTransforms(
+		translatedTransform(originX, originY),
+		multiplyTransforms(result, translatedTransform(-originX, -originY)),
+	)
+}
+
+func hasUsedTransform(style computedStyle) bool {
+	return !style.Translate().IsNone() || !style.Rotate().IsNone() || !style.Scale().IsNone() || style.Transforms().Len() > 0
 }
 
 func paintBoxContents(list *DisplayList, box *Box, styles map[*dom.Node]computedStyle) {
@@ -578,6 +807,34 @@ func clipPaintCommands(list *DisplayList, start, end int, bounds Rect) {
 	}
 }
 
+func clipPaintCommandsRounded(list *DisplayList, start, end int, clip RoundedClip) {
+	if clip.Rect.Width <= 0 || clip.Rect.Height <= 0 {
+		clip.Rect.Width, clip.Rect.Height = 0, 0
+	}
+	for index := start; index < end; index++ {
+		command := &list.Commands[index]
+		switch command.Kind {
+		case BeginOpacityCommand, EndOpacityCommand, BeginTransformCommand, EndTransformCommand, BeginClipCommand, EndClipCommand:
+			continue
+		}
+		if command.HasClip {
+			command.Clip = intersectRects(command.Clip, clip.Rect)
+		} else {
+			command.HasClip = true
+			command.Clip = clip.Rect
+		}
+		appendRoundedClip(command, clip)
+	}
+}
+
+func appendRoundedClip(command *Command, clip RoundedClip) {
+	if command == nil || clip.Radii.empty() || command.RoundedClipCount >= maxCommandRoundedClips {
+		return
+	}
+	command.RoundedClips[command.RoundedClipCount] = clip
+	command.RoundedClipCount++
+}
+
 func positionedPaintChildrenExcluding(box, excluded *Box) (negative, nonNegative []*Box) {
 	if box == nil {
 		return nil, nil
@@ -637,6 +894,28 @@ func paintBoxBorders(list *DisplayList, box *Box, style computedStyle) {
 		bounds = box.decorationBounds
 	}
 	borders := box.Border
+	radii := usedCornerRadii(style, bounds, list.Viewport)
+	if !radii.empty() && roundedBorderSupported(style) {
+		sides := [4]borderSide{style.BorderTop(), style.BorderRight(), style.BorderBottom(), style.BorderLeft()}
+		command := Command{
+			Kind: DrawRoundedBorderCommand, Node: box.Node, Pseudo: box.Pseudo,
+			Rect: bounds, Radii: radii, BorderWidths: borders,
+		}
+		visible := false
+		for index, side := range sides {
+			command.BorderStyles[index] = side.Style()
+			command.BorderColors[index] = style.Color()
+			if explicit, ok := side.Color(); ok {
+				command.BorderColors[index] = explicit
+			}
+			width := []float64{borders.Top, borders.Right, borders.Bottom, borders.Left}[index]
+			visible = visible || width > 0 && command.BorderColors[index].A > 0 && side.Style() == borderStyleSolid
+		}
+		if visible {
+			list.Commands = append(list.Commands, command)
+		}
+		return
+	}
 	// Physical sides are painted in top/right/bottom/left order. Uniform solid
 	// borders are exact; diagonal corner splitting for differently colored
 	// adjacent sides is deferred with the remaining advanced border geometry.
@@ -644,6 +923,17 @@ func paintBoxBorders(list *DisplayList, box *Box, style computedStyle) {
 	paintBorderSide(list, box.Node, box.Pseudo, Rect{X: bounds.X + bounds.Width - borders.Right, Y: bounds.Y, Width: borders.Right, Height: bounds.Height}, style.BorderRight(), style.Color(), borderPaintRight)
 	paintBorderSide(list, box.Node, box.Pseudo, Rect{X: bounds.X, Y: bounds.Y + bounds.Height - borders.Bottom, Width: bounds.Width, Height: borders.Bottom}, style.BorderBottom(), style.Color(), borderPaintBottom)
 	paintBorderSide(list, box.Node, box.Pseudo, Rect{X: bounds.X, Y: bounds.Y, Width: borders.Left, Height: bounds.Height}, style.BorderLeft(), style.Color(), borderPaintLeft)
+}
+
+func roundedBorderSupported(style computedStyle) bool {
+	for _, side := range []borderSide{style.BorderTop(), style.BorderRight(), style.BorderBottom(), style.BorderLeft()} {
+		switch side.Style() {
+		case borderStyleNone, borderStyleHidden, borderStyleSolid:
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 type borderPaintEdge uint8

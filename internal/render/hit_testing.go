@@ -1,6 +1,10 @@
 package render
 
-import "github.com/JediWattson/gossamer/internal/dom"
+import (
+	"math"
+
+	"github.com/JediWattson/gossamer/internal/dom"
+)
 
 // HitTest returns the topmost DOM node painted at a CSS-pixel coordinate.
 // Pointer identity remains internal to the renderer; Page immediately converts
@@ -10,7 +14,7 @@ func HitTest(frame *Frame, x, y float64) *dom.Node {
 		x >= float64(frame.Viewport.Width) || y >= float64(frame.Viewport.Height) {
 		return nil
 	}
-	return hitTestBox(frame.Root, x, y)
+	return hitTestBox(frame.Root, x, y, frame.Viewport)
 }
 
 // HitTestDocument resolves a point already translated into document
@@ -19,7 +23,7 @@ func HitTestDocument(frame *Frame, x, y float64) *dom.Node {
 	if frame == nil || frame.Root == nil {
 		return nil
 	}
-	return hitTestBox(frame.Root, x, y)
+	return hitTestBox(frame.Root, x, y, frame.Viewport)
 }
 
 // HitTestVisual resolves a point against boxes and fragments after applying
@@ -30,10 +34,10 @@ func HitTestVisual(frame *Frame, x, y float64, transforms map[*dom.Node]VisualTr
 		x >= float64(frame.Viewport.Width) || y >= float64(frame.Viewport.Height) {
 		return nil
 	}
-	return hitTestVisualBox(frame.Root, x, y, transforms)
+	return hitTestVisualBox(frame.Root, x, y, transforms, frame.Viewport)
 }
 
-func hitTestVisualBox(box *Box, x, y float64, transforms map[*dom.Node]VisualTransform) *dom.Node {
+func hitTestVisualBox(box *Box, x, y float64, transforms map[*dom.Node]VisualTransform, viewport Viewport) *dom.Node {
 	if box == nil {
 		return nil
 	}
@@ -41,12 +45,30 @@ func hitTestVisualBox(box *Box, x, y float64, transforms map[*dom.Node]VisualTra
 	if boxTransform.HasClip && !containsPoint(boxTransform.Clip, x, y) {
 		return nil
 	}
+	visualBounds := translatedRect(box.Bounds, boxTransform)
+	if box.hasStyle && hasUsedTransform(box.style) {
+		var ok bool
+		x, y, ok = inverseTransformPoint(usedTransform(box.style, visualBounds, viewport), x, y)
+		if !ok {
+			return nil
+		}
+	}
 	if box.hasClipBounds && !containsPoint(translatedRect(box.clipBounds, boxTransform), x, y) {
 		return nil
 	}
+	if box.hasStyle && clipsOverflow(box.style) {
+		clip := translatedRect(boxClientBounds(box), boxTransform)
+		radii := insetCornerRadii(usedCornerRadii(box.style, visualBounds, viewport), box.Border)
+		if !pointInRoundedRect(clip, radii, x, y) {
+			if !box.hitTransparent && containsPoint(visualBounds, x, y) {
+				return box.Node
+			}
+			return nil
+		}
+	}
 	negative, nonNegative := positionedPaintChildren(box)
 	for index := len(nonNegative) - 1; index >= 0; index-- {
-		if node := hitTestVisualBox(nonNegative[index], x, y, transforms); node != nil {
+		if node := hitTestVisualBox(nonNegative[index], x, y, transforms, viewport); node != nil {
 			return node
 		}
 	}
@@ -54,7 +76,7 @@ func hitTestVisualBox(box *Box, x, y float64, transforms map[*dom.Node]VisualTra
 		for index := len(box.flow) - 1; index >= 0; index-- {
 			item := box.flow[index]
 			if item.box != nil {
-				if node := hitTestVisualBox(item.box, x, y, transforms); node != nil {
+				if node := hitTestVisualBox(item.box, x, y, transforms, viewport); node != nil {
 					return node
 				}
 				continue
@@ -68,7 +90,7 @@ func hitTestVisualBox(box *Box, x, y float64, transforms map[*dom.Node]VisualTra
 			if box.Children[index].positioned {
 				continue
 			}
-			if node := hitTestVisualBox(box.Children[index], x, y, transforms); node != nil {
+			if node := hitTestVisualBox(box.Children[index], x, y, transforms, viewport); node != nil {
 				return node
 			}
 		}
@@ -79,7 +101,7 @@ func hitTestVisualBox(box *Box, x, y float64, transforms map[*dom.Node]VisualTra
 		}
 	}
 	for index := len(negative) - 1; index >= 0; index-- {
-		if node := hitTestVisualBox(negative[index], x, y, transforms); node != nil {
+		if node := hitTestVisualBox(negative[index], x, y, transforms, viewport); node != nil {
 			return node
 		}
 	}
@@ -112,16 +134,33 @@ func translatedRect(rectangle Rect, transform VisualTransform) Rect {
 	return rectangle
 }
 
-func hitTestBox(box *Box, x, y float64) *dom.Node {
+func hitTestBox(box *Box, x, y float64, viewport Viewport) *dom.Node {
 	if box == nil {
 		return nil
+	}
+	if box.hasStyle && hasUsedTransform(box.style) {
+		var ok bool
+		x, y, ok = inverseTransformPoint(usedTransform(box.style, box.Bounds, viewport), x, y)
+		if !ok {
+			return nil
+		}
 	}
 	if box.hasClipBounds && !containsPoint(box.clipBounds, x, y) {
 		return nil
 	}
+	if box.hasStyle && clipsOverflow(box.style) {
+		clip := boxClientBounds(box)
+		radii := insetCornerRadii(usedCornerRadii(box.style, box.Bounds, viewport), box.Border)
+		if !pointInRoundedRect(clip, radii, x, y) {
+			if !box.hitTransparent && containsPoint(box.Bounds, x, y) {
+				return box.Node
+			}
+			return nil
+		}
+	}
 	negative, nonNegative := positionedPaintChildren(box)
 	for index := len(nonNegative) - 1; index >= 0; index-- {
-		if node := hitTestBox(nonNegative[index], x, y); node != nil {
+		if node := hitTestBox(nonNegative[index], x, y, viewport); node != nil {
 			return node
 		}
 	}
@@ -129,7 +168,7 @@ func hitTestBox(box *Box, x, y float64) *dom.Node {
 		for index := len(box.flow) - 1; index >= 0; index-- {
 			item := box.flow[index]
 			if item.box != nil {
-				if node := hitTestBox(item.box, x, y); node != nil {
+				if node := hitTestBox(item.box, x, y, viewport); node != nil {
 					return node
 				}
 				continue
@@ -143,7 +182,7 @@ func hitTestBox(box *Box, x, y float64) *dom.Node {
 			if box.Children[index].positioned {
 				continue
 			}
-			if node := hitTestBox(box.Children[index], x, y); node != nil {
+			if node := hitTestBox(box.Children[index], x, y, viewport); node != nil {
 				return node
 			}
 		}
@@ -154,7 +193,7 @@ func hitTestBox(box *Box, x, y float64) *dom.Node {
 		}
 	}
 	for index := len(negative) - 1; index >= 0; index-- {
-		if node := hitTestBox(negative[index], x, y); node != nil {
+		if node := hitTestBox(negative[index], x, y, viewport); node != nil {
 			return node
 		}
 	}
@@ -162,6 +201,17 @@ func hitTestBox(box *Box, x, y float64) *dom.Node {
 		return box.Node
 	}
 	return nil
+}
+
+func inverseTransformPoint(transform AffineTransform, x, y float64) (float64, float64, bool) {
+	determinant := transform.A*transform.D - transform.B*transform.C
+	if !isFinite(determinant) || math.Abs(determinant) < 1e-12 {
+		return 0, 0, false
+	}
+	x -= transform.E
+	y -= transform.F
+	return (transform.D*x - transform.C*y) / determinant,
+		(-transform.B*x + transform.A*y) / determinant, true
 }
 
 func hitTestFragment(fragment InlineFragment, x, y float64) *dom.Node {

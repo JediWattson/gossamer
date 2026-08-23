@@ -111,6 +111,69 @@ func TestImageResourceGraphDecodesDataURLAndRejectsStaleResults(t *testing.T) {
 	}
 }
 
+func TestCSSBackgroundDataURLDecodesBeforePaint(t *testing.T) {
+	t.Parallel()
+
+	pixel := image.NewNRGBA(image.Rect(0, 0, 1, 1))
+	pixel.SetNRGBA(0, 0, color.NRGBA{R: 0x24, G: 0x68, B: 0xac, A: 0xff})
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, pixel); err != nil {
+		t.Fatal(err)
+	}
+	dataURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString(encoded.Bytes())
+	secondPixel := image.NewNRGBA(image.Rect(0, 0, 1, 1))
+	secondPixel.SetNRGBA(0, 0, color.NRGBA{R: 0xef, G: 0x91, B: 0x37, A: 0xff})
+	var secondEncoded bytes.Buffer
+	if err := png.Encode(&secondEncoded, secondPixel); err != nil {
+		t.Fatal(err)
+	}
+	secondDataURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString(secondEncoded.Bytes())
+
+	root := dom.NewDocument()
+	html := dom.NewElement("html")
+	body := dom.NewElement("body", dom.Attribute{Name: "style", Value: "margin:0"})
+	target := dom.NewElement("div", dom.Attribute{Name: "style", Value: `width:8px;height:8px;background-image:url("` + dataURL + `"),url("` + secondDataURL + `")`})
+	root.AppendChild(html)
+	html.AppendChild(body)
+	body.AppendChild(target)
+
+	runtime, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	page, err := runtime.NewPage(root, &url.URL{Scheme: "https", Host: "background.test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := page.SetViewport(render.Viewport{Width: 16, Height: 16}); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.Render(); err != nil {
+		t.Fatal(err)
+	}
+	frame := page.Frame()
+	if frame == nil {
+		t.Fatal("background image render did not publish a frame")
+	}
+	painted := 0
+	for _, command := range frame.DisplayList.Commands {
+		if command.Kind == render.DrawImageCommand && command.Node == target {
+			painted++
+		}
+	}
+	if painted != 2 {
+		t.Fatalf("decoded CSS background layers painted = %d, want 2", painted)
+	}
+	canvas, err := render.Rasterize(frame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := color.NRGBAModel.Convert(canvas.At(4, 4)).(color.NRGBA); got != (color.NRGBA{R: 0x24, G: 0x68, B: 0xac, A: 0xff}) {
+		t.Fatalf("painted CSS background pixel = %#v", got)
+	}
+}
+
 func TestInitialDataImageIsDecodedBeforeNavigationRender(t *testing.T) {
 	t.Parallel()
 
@@ -208,6 +271,69 @@ func TestDynamicImageFetchQueuesRepaint(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("dynamic image result did not paint")
+	}
+}
+
+func TestDynamicCSSBackgroundFetchQueuesRepaint(t *testing.T) {
+	t.Parallel()
+
+	pixel := image.NewNRGBA(image.Rect(0, 0, 1, 1))
+	pixel.SetNRGBA(0, 0, color.NRGBA{R: 0x36, G: 0x9a, B: 0x71, A: 0xff})
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, pixel); err != nil {
+		t.Fatal(err)
+	}
+	fetcher := &signalingImageFetcher{body: encoded.Bytes(), fetched: make(chan string, 1)}
+
+	root := dom.NewDocument()
+	html := dom.NewElement("html")
+	body := dom.NewElement("body")
+	target := dom.NewElement("div", dom.Attribute{Name: "style", Value: `width:4px;height:4px;background-image:url("textures/tile.png")`})
+	root.AppendChild(html)
+	html.AppendChild(body)
+	body.AppendChild(target)
+	runtime, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	page, err := runtime.NewPage(root, &url.URL{Scheme: "https", Host: "background.test", Path: "/app/index.html"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	page.mutex.Lock()
+	page.resourceFetcher = fetcher
+	page.mutex.Unlock()
+	if err := page.Render(); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	select {
+	case fetched := <-fetcher.fetched:
+		if fetched != "https://background.test/app/textures/tile.png" {
+			t.Fatalf("fetched CSS background = %q", fetched)
+		}
+	case <-ctx.Done():
+		t.Fatal("dynamic CSS background fetch did not start")
+	}
+	if err := page.Realm.RunOne(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.Realm.RunOne(ctx); err != nil {
+		t.Fatal(err)
+	}
+	frame := page.Frame()
+	found := false
+	for _, command := range frame.DisplayList.Commands {
+		if command.Kind == render.DrawImageCommand && command.Node == target {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("dynamic CSS background result did not repaint")
 	}
 }
 

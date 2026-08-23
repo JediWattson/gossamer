@@ -6,8 +6,8 @@ import (
 )
 
 func TestPropertyDefinitionsAreCanonicalAndComplete(t *testing.T) {
-	if len(propertyDefinitions) != 90 {
-		t.Fatalf("property definition count = %d, want 90", len(propertyDefinitions))
+	if len(propertyDefinitions) != 97 {
+		t.Fatalf("property definition count = %d, want 97", len(propertyDefinitions))
 	}
 	if !slices.IsSorted(computedPropertyNames) {
 		t.Fatalf("computed property names are not sorted: %q", computedPropertyNames)
@@ -88,6 +88,8 @@ func registryTestValue(definition propertyDefinition) string {
 		return "self-end"
 	case propertyBackgroundColor, propertyBorderColor, propertyColor:
 		return "red"
+	case propertyBackgroundImage:
+		return "linear-gradient(to right, red, blue)"
 	case propertyBorderStyle:
 		return "solid"
 	case propertyBorderWidth:
@@ -100,6 +102,8 @@ func registryTestValue(definition propertyDefinition) string {
 		return "3px 4px"
 	case propertyBoxSizing:
 		return "border-box"
+	case propertyBoxShadow:
+		return "1px 2px 3px black"
 	case propertyCaptionSide:
 		return "bottom"
 	case propertyContent:
@@ -146,6 +150,12 @@ func registryTestValue(definition propertyDefinition) string {
 		return "square"
 	case propertyOpacity:
 		return "0.5"
+	case propertyTranslate:
+		return "2px 25%"
+	case propertyRotate:
+		return "10deg"
+	case propertyScale:
+		return "105% 0.5"
 	case propertyOrder:
 		return "-1"
 	case propertyOverflowX, propertyOverflowY:
@@ -162,6 +172,10 @@ func registryTestValue(definition propertyDefinition) string {
 		return "underline"
 	case propertyTextOrientation:
 		return "upright"
+	case propertyTransform:
+		return "translate(2px, 3px) rotate(10deg)"
+	case propertyTransformOrigin:
+		return "left top"
 	case propertyVerticalAlign:
 		return "25%"
 	case propertyZIndex:

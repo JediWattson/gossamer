@@ -32,6 +32,9 @@ type Resources struct {
 	UserAgentStylesheets []css.Stylesheet
 	SelectorState        computed.SelectorState
 	Images               map[*dom.Node]image.Image
+	// BackgroundImages is keyed by element and authored URL so layered CSS
+	// backgrounds can retain more than one decoded resource per element.
+	BackgroundImages map[*dom.Node]map[string]image.Image
 }
 
 // Rect is an axis-aligned rectangle in CSS pixels.
@@ -239,6 +242,13 @@ const (
 	BeginOpacityCommand
 	EndOpacityCommand
 	DrawImageCommand
+	DrawRoundedBorderCommand
+	DrawBoxShadowCommand
+	DrawGradientCommand
+	BeginTransformCommand
+	EndTransformCommand
+	BeginClipCommand
+	EndClipCommand
 )
 
 // CornerRadius is one used elliptical radius in CSS pixels.
@@ -260,6 +270,66 @@ func (radii CornerRadii) empty() bool {
 	return radii == (CornerRadii{})
 }
 
+// RoundedClip is one retained rounded-rectangle clip. Commands can carry
+// multiple clips so nested overflow containers remain an intersection rather
+// than being flattened into one incorrect radius.
+type RoundedClip struct {
+	Rect  Rect
+	Radii CornerRadii
+}
+
+const maxCommandRoundedClips = 8
+
+// AffineTransform is a two-dimensional matrix in CSS matrix(a,b,c,d,e,f)
+// order. It maps (x,y) to (a*x+c*y+e, b*x+d*y+f).
+type AffineTransform struct {
+	A float64
+	B float64
+	C float64
+	D float64
+	E float64
+	F float64
+}
+
+func identityTransform() AffineTransform { return AffineTransform{A: 1, D: 1} }
+
+func multiplyTransforms(left, right AffineTransform) AffineTransform {
+	return AffineTransform{
+		A: left.A*right.A + left.C*right.B,
+		B: left.B*right.A + left.D*right.B,
+		C: left.A*right.C + left.C*right.D,
+		D: left.B*right.C + left.D*right.D,
+		E: left.A*right.E + left.C*right.F + left.E,
+		F: left.B*right.E + left.D*right.F + left.F,
+	}
+}
+
+func translatedTransform(x, y float64) AffineTransform {
+	return AffineTransform{A: 1, D: 1, E: x, F: y}
+}
+
+func translateTransformCoordinates(transform AffineTransform, offsetX, offsetY float64) AffineTransform {
+	return multiplyTransforms(
+		translatedTransform(-offsetX, -offsetY),
+		multiplyTransforms(transform, translatedTransform(offsetX, offsetY)),
+	)
+}
+
+// GradientKind identifies the retained raster gradient algorithm.
+type GradientKind uint8
+
+const (
+	LinearGradient GradientKind = iota + 1
+	RadialGradient
+)
+
+type GradientStop struct {
+	Offset float64
+	Color  color.NRGBA
+}
+
+const maxPaintGradientStops = 16
+
 // Command is a backend-neutral paint operation.
 type Command struct {
 	Kind CommandKind
@@ -275,17 +345,37 @@ type Command struct {
 	Color color.NRGBA
 	Radii CornerRadii
 
-	Text       string
-	X          float64
-	BaselineY  float64
-	FontSize   float64
-	FontFamily FontFamily
-	FontWeight FontWeight
-	FontStyle  FontStyle
-	Opacity    float64
-	Image      image.Image
-	HasClip    bool
-	Clip       Rect
+	BorderWidths Edges
+	BorderColors [4]color.NRGBA
+	BorderStyles [4]computed.BorderStyle
+
+	ShadowOffsetX float64
+	ShadowOffsetY float64
+	ShadowBlur    float64
+	ShadowSpread  float64
+	ShadowInset   bool
+
+	GradientKind      GradientKind
+	GradientAngle     float64
+	GradientRepeating bool
+	GradientStops     [maxPaintGradientStops]GradientStop
+	GradientStopCount uint8
+
+	Transform AffineTransform
+
+	Text             string
+	X                float64
+	BaselineY        float64
+	FontSize         float64
+	FontFamily       FontFamily
+	FontWeight       FontWeight
+	FontStyle        FontStyle
+	Opacity          float64
+	Image            image.Image
+	HasClip          bool
+	Clip             Rect
+	RoundedClips     [maxCommandRoundedClips]RoundedClip
+	RoundedClipCount uint8
 
 	textOrientation textPaintOrientation
 	textBounds      Rect
@@ -315,8 +405,9 @@ type VisualTransform struct {
 
 // DisplayList is an ordered set of paint operations for a viewport.
 type DisplayList struct {
-	Viewport Viewport
-	Commands []Command
+	Viewport         Viewport
+	Commands         []Command
+	backgroundImages map[*dom.Node]map[string]image.Image
 }
 
 // Frame contains reusable layout geometry and its paint operations.
@@ -341,9 +432,11 @@ func ScrollDisplayList(frame *Frame, x, y float64) *Frame {
 	for index := range result.DisplayList.Commands {
 		command := &result.DisplayList.Commands[index]
 		switch command.Kind {
-		case FillRectCommand, FillEllipseCommand, DrawImageCommand:
+		case FillRectCommand, FillEllipseCommand, DrawImageCommand, DrawRoundedBorderCommand, DrawBoxShadowCommand, DrawGradientCommand, BeginClipCommand:
 			command.Rect.X -= x
 			command.Rect.Y -= y
+		case BeginTransformCommand:
+			command.Transform = translateTransformCoordinates(command.Transform, x, y)
 		case DrawTextCommand:
 			command.X -= x
 			command.BaselineY -= y
@@ -357,6 +450,10 @@ func ScrollDisplayList(frame *Frame, x, y float64) *Frame {
 		if command.HasClip {
 			command.Clip.X -= x
 			command.Clip.Y -= y
+		}
+		for clipIndex := 0; clipIndex < int(command.RoundedClipCount); clipIndex++ {
+			command.RoundedClips[clipIndex].Rect.X -= x
+			command.RoundedClips[clipIndex].Rect.Y -= y
 		}
 	}
 	return &result
@@ -379,9 +476,11 @@ func TransformDisplayList(frame *Frame, transforms map[*dom.Node]VisualTransform
 			continue
 		}
 		switch command.Kind {
-		case FillRectCommand, FillEllipseCommand, DrawImageCommand:
+		case FillRectCommand, FillEllipseCommand, DrawImageCommand, DrawRoundedBorderCommand, DrawBoxShadowCommand, DrawGradientCommand, BeginClipCommand:
 			command.Rect.X -= transform.OffsetX
 			command.Rect.Y -= transform.OffsetY
+		case BeginTransformCommand:
+			command.Transform = translateTransformCoordinates(command.Transform, transform.OffsetX, transform.OffsetY)
 		case DrawTextCommand:
 			command.X -= transform.OffsetX
 			command.BaselineY -= transform.OffsetY
@@ -395,6 +494,10 @@ func TransformDisplayList(frame *Frame, transforms map[*dom.Node]VisualTransform
 		if command.HasClip {
 			command.Clip.X -= transform.OffsetX
 			command.Clip.Y -= transform.OffsetY
+		}
+		for clipIndex := 0; clipIndex < int(command.RoundedClipCount); clipIndex++ {
+			command.RoundedClips[clipIndex].Rect.X -= transform.OffsetX
+			command.RoundedClips[clipIndex].Rect.Y -= transform.OffsetY
 		}
 		if transform.HasClip {
 			if command.HasClip {

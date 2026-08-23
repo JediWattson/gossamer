@@ -710,6 +710,8 @@ type ComputedStyle struct {
 	background        color.NRGBA
 	hasBackground     bool
 	backgroundCurrent bool
+	backgroundImages  BackgroundImageList
+	boxShadows        BoxShadowList
 	fontSize          float64
 	fontFamily        FontFamily
 	fontFamilyValue   string
@@ -723,6 +725,11 @@ type ComputedStyle struct {
 	verticalAlign     VerticalAlignment
 	listStyleType     ListStyleType
 	opacity           float64
+	translate         TranslateValue
+	rotate            RotateValue
+	scale             ScaleValue
+	transforms        TransformList
+	transformOrigin   TransformOrigin
 	overflowX         OverflowMode
 	overflowY         OverflowMode
 	position          PositionMode
@@ -880,7 +887,11 @@ func (computed ComputedStyle) Background() (color.NRGBA, bool) {
 	}
 	return computed.background, computed.hasBackground
 }
-func (computed ComputedStyle) FontSize() float64 { return computed.fontSize }
+func (computed ComputedStyle) BackgroundImages() BackgroundImageList {
+	return computed.backgroundImages
+}
+func (computed ComputedStyle) BoxShadows() BoxShadowList { return computed.boxShadows }
+func (computed ComputedStyle) FontSize() float64         { return computed.fontSize }
 func (computed ComputedStyle) FontFamily() FontFamily {
 	return computed.fontFamily
 }
@@ -899,6 +910,11 @@ func (computed ComputedStyle) TextAlignment() TextAlignment           { return c
 func (computed ComputedStyle) VerticalAlignment() VerticalAlignment   { return computed.verticalAlign }
 func (computed ComputedStyle) ListStyleType() ListStyleType           { return computed.listStyleType }
 func (computed ComputedStyle) Opacity() float64                       { return computed.opacity }
+func (computed ComputedStyle) Translate() TranslateValue              { return computed.translate }
+func (computed ComputedStyle) Rotate() RotateValue                    { return computed.rotate }
+func (computed ComputedStyle) Scale() ScaleValue                      { return computed.scale }
+func (computed ComputedStyle) Transforms() TransformList              { return computed.transforms }
+func (computed ComputedStyle) TransformOrigin() TransformOrigin       { return computed.transformOrigin }
 func (computed ComputedStyle) OverflowX() OverflowMode                { return computed.overflowX }
 func (computed ComputedStyle) OverflowY() OverflowMode                { return computed.overflowY }
 func (computed ComputedStyle) Position() PositionMode                 { return computed.position }
@@ -1494,6 +1510,7 @@ func cssInitialStyle(viewport Viewport) computedStyle {
 		textAlign:       alignStart,
 		verticalAlign:   VerticalAlignment{mode: VerticalAlignBaseline},
 		opacity:         1,
+		transformOrigin: initialTransformOrigin(),
 		position:        PositionStatic,
 		top:             length{unit: lengthAuto},
 		right:           length{unit: lengthAuto},

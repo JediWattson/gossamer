@@ -10,6 +10,7 @@ import (
 	"github.com/JediWattson/gossamer/internal/dom"
 	"github.com/JediWattson/gossamer/internal/resource"
 	browserruntime "github.com/JediWattson/gossamer/internal/runtime"
+	computed "github.com/JediWattson/gossamer/internal/style"
 )
 
 type documentImageSource struct {
@@ -74,6 +75,126 @@ func (resources *pageResources) beginImageSource(node dom.NodeID, source string)
 	generation := resources.nextImageGeneration
 	resources.imageSources[node] = imageResourceEntry{source: source, generation: generation}
 	return generation, nil
+}
+
+func (resources *pageResources) beginBackgroundImageSource(key backgroundImageResourceKey, source string) (uint64, error) {
+	resources.nextImageGeneration++
+	if resources.nextImageGeneration == 0 {
+		return 0, fmt.Errorf("browser: image resource generation exhausted")
+	}
+	generation := resources.nextImageGeneration
+	resources.backgroundImageSources[key] = imageResourceEntry{source: source, generation: generation}
+	return generation, nil
+}
+
+func (page *Page) syncBackgroundImagesForViewLocked(view dom.ReadView, snapshot *computed.Snapshot) ([]navigationResourceRequest, bool, error) {
+	if snapshot == nil {
+		return nil, false, nil
+	}
+	access, err := view.Acquire()
+	if err != nil {
+		return nil, false, err
+	}
+	defer access.Close()
+	seen := make(map[backgroundImageResourceKey]struct{})
+	requests := make([]navigationResourceRequest, 0)
+	changed := false
+	documentBase := stylesheetBaseURL(access.Root(), page.location)
+	var visit func(*dom.Node) error
+	visit = func(node *dom.Node) error {
+		if node == nil {
+			return nil
+		}
+		if node.Type == dom.ElementNode {
+			id, ok := access.ID(node)
+			if !ok {
+				return fmt.Errorf("browser: styled background image node is not indexed")
+			}
+			if style, available := snapshot.LookupID(id); available {
+				base := page.backgroundImageBaseURL(snapshot, id, documentBase)
+				images := style.BackgroundImages()
+				for index := 0; index < images.Len(); index++ {
+					background, ok := images.At(index)
+					if !ok || background.Kind() != computed.BackgroundImageURL {
+						continue
+					}
+					rawSource := background.URL()
+					key := backgroundImageResourceKey{node: id, source: rawSource}
+					seen[key] = struct{}{}
+					entry, tracked := page.resources.backgroundImageSources[key]
+					if tracked && entry.manual {
+						continue
+					}
+					source, valid := resolveDocumentImageSource(rawSource, base)
+					if !valid {
+						if tracked {
+							delete(page.resources.backgroundImageSources, key)
+						}
+						if _, loaded := page.resources.backgroundImages[key]; loaded {
+							delete(page.resources.backgroundImages, key)
+							changed = true
+						}
+					} else if !tracked || entry.source != source.key {
+						if _, loaded := page.resources.backgroundImages[key]; loaded {
+							delete(page.resources.backgroundImages, key)
+							changed = true
+						}
+						generation, generationErr := page.resources.beginBackgroundImageSource(key, source.key)
+						if generationErr != nil {
+							return generationErr
+						}
+						if source.inline {
+							decoded, decodeErr := decodeImageDataURL(source.key)
+							if decodeErr == nil {
+								page.resources.backgroundImages[key] = decoded.Image
+								changed = true
+							}
+						} else {
+							requests = append(requests, navigationResourceRequest{
+								kind: resource.Image, url: source.url, node: id,
+								imageGeneration: generation, imageSource: source.key, backgroundImage: true, backgroundSource: rawSource,
+							})
+						}
+					}
+				}
+			}
+		}
+		for _, child := range node.Children {
+			if err := visit(child); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if err := visit(access.Root()); err != nil {
+		return nil, false, err
+	}
+	for key := range page.resources.backgroundImageSources {
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		delete(page.resources.backgroundImageSources, key)
+		if _, loaded := page.resources.backgroundImages[key]; loaded {
+			delete(page.resources.backgroundImages, key)
+			changed = true
+		}
+	}
+	return requests, changed, nil
+}
+
+func (page *Page) backgroundImageBaseURL(snapshot *computed.Snapshot, node dom.NodeID, documentBase *url.URL) *url.URL {
+	if page == nil || snapshot == nil {
+		return documentBase
+	}
+	explanation, ok := snapshot.ExplainID(node, "background-image")
+	if !ok || explanation.ValueSource.Kind != computed.SourceStylesheet || explanation.ValueSource.OwnerID == dom.InvalidNodeID {
+		return documentBase
+	}
+	entry, ok := page.resources.stylesheets.entries[explanation.ValueSource.OwnerID]
+	if !ok || entry.kind != stylesheetOwnerExternal || entry.resolved == nil {
+		return documentBase
+	}
+	return entry.resolved
 }
 
 func (page *Page) syncAndLoadImages() error {

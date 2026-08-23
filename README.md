@@ -430,9 +430,15 @@ performance budgets; see
   definite containing-block percentage heights across block, atomic-inline,
   flex, replaced, and positioned boxes, margins, padding, the full CSS
   `none`/`hidden`/`dotted`/`dashed`/`solid`/`double`/`groove`/`ridge`/`inset`/
-  `outset` border-style set,
-  backgrounds, opacity, start/end/center alignment, and inter-word
+  `outset` border-style set, background colors, bounded layered URL/linear/
+  radial/repeating gradient images, and start/end/center alignment plus inter-word
   justification of soft-wrapped non-final lines
+- Normalized elliptical corner radii across backgrounds and solid curved
+  border strokes, padding-edge rounded overflow clips shared by raster paint
+  and hit testing, bounded outer/inset shadow layers (including Tailwind v4
+  ring-variable composition), atomic opacity groups, and two-dimensional
+  `transform` plus individual `translate`/`rotate`/`scale` properties with
+  transform-origin-aware paint and hit testing
 - Baseline, subscript/superscript, text-edge, middle, line-edge, and typed
   length-percentage `vertical-align` placement for inline runs, replaced
   content, and atomic inline formatting roots, with shifted geometry and hit
@@ -528,9 +534,10 @@ The following are intentionally still outside the current milestone:
   font-provided vertical metrics and OpenType vertical glyph substitution,
   floats, advanced sticky and full inline positioned layout, and retained inline boxes
 - The remaining CSS math grammar beyond the current bounded length
-  `calc()`/`min()`/`max()`/`clamp()` slice, plus gradients, background images,
-  curved border strokes, rounded overflow clipping, shadows, transforms,
-  counters, quotation marks, and generated images
+  `calc()`/`min()`/`max()`/`clamp()` slice; advanced CSS Images geometry such
+  as background sizing/positioning/repetition and gradient hints/color spaces;
+  non-solid curved-border paths, 3D transforms, counters, quotation marks, and
+  generated images
 - Escaped literal dots in layer-name segments, `@font-face`, keyframes,
   arbitrary or repeated non-leading `&` nesting selectors, and the remaining
   media-query and `@supports` syntax beyond the current

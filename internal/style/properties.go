@@ -29,6 +29,7 @@ const (
 	propertyAlignItems
 	propertyAlignSelf
 	propertyBackgroundColor
+	propertyBackgroundImage
 	propertyBorderColor
 	propertyBorderCollapse
 	propertyBorderRadius
@@ -36,6 +37,7 @@ const (
 	propertyBorderStyle
 	propertyBorderWidth
 	propertyBoxSizing
+	propertyBoxShadow
 	propertyCaptionSide
 	propertyColor
 	propertyContent
@@ -80,10 +82,15 @@ const (
 	propertyPadding
 	propertyPosition
 	propertyGap
+	propertyRotate
+	propertyScale
 	propertyTableLayout
 	propertyTextAlign
 	propertyTextDecorationLine
 	propertyTextOrientation
+	propertyTransform
+	propertyTransformOrigin
+	propertyTranslate
 	propertyVerticalAlign
 	propertyVisibility
 	propertyWhiteSpace
@@ -148,6 +155,7 @@ var propertyDefinitions = [...]propertyDefinition{
 	{name: "align-items", kind: propertyAlignItems, invalidation: propertyInvalidatesLayout},
 	{name: "align-self", kind: propertyAlignSelf, invalidation: propertyInvalidatesLayout},
 	{name: "background-color", kind: propertyBackgroundColor, invalidation: propertyInvalidatesPaint},
+	{name: "background-image", kind: propertyBackgroundImage, invalidation: propertyInvalidatesPaint},
 	{name: "border-bottom-color", kind: propertyBorderColor, edge: propertyBottom, invalidation: propertyInvalidatesPaint},
 	{name: "border-bottom-left-radius", kind: propertyBorderRadius, corner: propertyBottomLeft, invalidation: propertyInvalidatesPaint},
 	{name: "border-bottom-right-radius", kind: propertyBorderRadius, corner: propertyBottomRight, invalidation: propertyInvalidatesPaint},
@@ -167,6 +175,7 @@ var propertyDefinitions = [...]propertyDefinition{
 	{name: "border-top-style", kind: propertyBorderStyle, edge: propertyTop, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "border-top-width", kind: propertyBorderWidth, edge: propertyTop, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "bottom", kind: propertyInset, edge: propertyBottom, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
+	{name: "box-shadow", kind: propertyBoxShadow, invalidation: propertyInvalidatesPaint},
 	{name: "box-sizing", kind: propertyBoxSizing, invalidation: propertyInvalidatesLayout},
 	{name: "caption-side", kind: propertyCaptionSide, inherited: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "color", kind: propertyColor, inherited: true, invalidation: propertyInvalidatesPaint},
@@ -222,12 +231,17 @@ var propertyDefinitions = [...]propertyDefinition{
 	{name: "padding-top", kind: propertyPadding, edge: propertyTop, invalidation: propertyInvalidatesLayout},
 	{name: "position", kind: propertyPosition, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "right", kind: propertyInset, edge: propertyRight, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
+	{name: "rotate", kind: propertyRotate, invalidation: propertyInvalidatesPaint},
 	{name: "row-gap", kind: propertyGap, edge: propertyBottom, invalidation: propertyInvalidatesLayout},
+	{name: "scale", kind: propertyScale, invalidation: propertyInvalidatesPaint},
 	{name: "table-layout", kind: propertyTableLayout, invalidation: propertyInvalidatesLayout},
 	{name: "text-align", kind: propertyTextAlign, inherited: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "text-decoration-line", kind: propertyTextDecorationLine, invalidation: propertyInvalidatesPaint},
 	{name: "text-orientation", kind: propertyTextOrientation, inherited: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "top", kind: propertyInset, edge: propertyTop, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
+	{name: "transform", kind: propertyTransform, invalidation: propertyInvalidatesPaint},
+	{name: "transform-origin", kind: propertyTransformOrigin, invalidation: propertyInvalidatesPaint},
+	{name: "translate", kind: propertyTranslate, invalidation: propertyInvalidatesPaint},
 	{name: "vertical-align", kind: propertyVerticalAlign, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	// collapse changes table row/column geometry; treating every visibility
 	// mutation as layout+paint invalidation is the safe registry contract.
@@ -372,6 +386,8 @@ func (definition propertyDefinition) copy(destination *computedStyle, source com
 		destination.background = source.background
 		destination.hasBackground = source.hasBackground
 		destination.backgroundCurrent = source.backgroundCurrent
+	case propertyBackgroundImage:
+		destination.backgroundImages = source.backgroundImages
 	case propertyBorderColor:
 		destinationSide := definition.borderSide(destination)
 		sourceSide := definition.borderSide(&source)
@@ -389,6 +405,8 @@ func (definition propertyDefinition) copy(destination *computedStyle, source com
 		definition.borderSide(destination).width = definition.borderSide(&source).width
 	case propertyBoxSizing:
 		destination.boxSizing = source.boxSizing
+	case propertyBoxShadow:
+		destination.boxShadows = source.boxShadows
 	case propertyCaptionSide:
 		destination.captionSide = source.captionSide
 	case propertyColor:
@@ -473,6 +491,16 @@ func (definition propertyDefinition) copy(destination *computedStyle, source com
 		destination.minWidth = source.minWidth
 	case propertyOpacity:
 		destination.opacity = source.opacity
+	case propertyTranslate:
+		destination.translate = source.translate
+	case propertyRotate:
+		destination.rotate = source.rotate
+	case propertyScale:
+		destination.scale = source.scale
+	case propertyTransform:
+		destination.transforms = source.transforms
+	case propertyTransformOrigin:
+		destination.transformOrigin = source.transformOrigin
 	case propertyOrder:
 		destination.order = source.order
 	case propertyOverflowX:
@@ -531,6 +559,9 @@ func (definition propertyDefinition) valid(source string, viewport Viewport) boo
 	case propertyBackgroundColor:
 		_, ok := parseComputedColor(source)
 		return ok
+	case propertyBackgroundImage:
+		_, ok := parseBackgroundImageList(source, 1, viewport)
+		return ok
 	case propertyBorderColor:
 		_, ok := parseBorderColor(source)
 		return ok
@@ -552,6 +583,9 @@ func (definition propertyDefinition) valid(source string, viewport Viewport) boo
 	case propertyBoxSizing:
 		keyword, ok := singleCSSKeyword(source)
 		return ok && (keyword == "content-box" || keyword == "border-box")
+	case propertyBoxShadow:
+		_, ok := parseBoxShadowList(source, 1, viewport)
+		return ok
 	case propertyCaptionSide:
 		keyword, ok := singleCSSKeyword(source)
 		return ok && (keyword == "top" || keyword == "bottom")
@@ -663,6 +697,21 @@ func (definition propertyDefinition) valid(source string, viewport Viewport) boo
 	case propertyOpacity:
 		_, ok := singleCSSNumber(source)
 		return ok
+	case propertyTranslate:
+		_, ok := parseTranslateValue(source, 1, viewport)
+		return ok
+	case propertyRotate:
+		_, ok := parseRotateValue(source)
+		return ok
+	case propertyScale:
+		_, ok := parseScaleValue(source)
+		return ok
+	case propertyTransform:
+		_, ok := parseTransformList(source, 1, viewport)
+		return ok
+	case propertyTransformOrigin:
+		_, ok := parseTransformOrigin(source, 1, viewport)
+		return ok
 	case propertyOrder:
 		token, ok := singleCSSNumber(source)
 		return ok && token.Integer
@@ -746,6 +795,10 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 			style.backgroundCurrent = parsed.currentColor
 			style.hasBackground = !parsed.currentColor && parsed.value.A != 0
 		}
+	case propertyBackgroundImage:
+		if parsed, ok := parseBackgroundImageList(source, style.fontSize, context.viewport); ok {
+			style.backgroundImages = parsed
+		}
 	case propertyBorderColor:
 		if parsed, ok := parseBorderColor(source); ok {
 			applyBorderColor(definition.borderSide(style), parsed)
@@ -778,6 +831,10 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 			style.boxSizing = BoxSizingBorderBox
 		} else {
 			style.boxSizing = BoxSizingContentBox
+		}
+	case propertyBoxShadow:
+		if parsed, ok := parseBoxShadowList(source, style.fontSize, context.viewport); ok {
+			style.boxShadows = parsed
 		}
 	case propertyCaptionSide:
 		keyword, _ := singleCSSKeyword(source)
@@ -1049,6 +1106,26 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 		if token, ok := singleCSSNumber(source); ok {
 			style.opacity = clamp(token.Number, 0, 1)
 		}
+	case propertyTranslate:
+		if parsed, ok := parseTranslateValue(source, style.fontSize, context.viewport); ok {
+			style.translate = parsed
+		}
+	case propertyRotate:
+		if parsed, ok := parseRotateValue(source); ok {
+			style.rotate = parsed
+		}
+	case propertyScale:
+		if parsed, ok := parseScaleValue(source); ok {
+			style.scale = parsed
+		}
+	case propertyTransform:
+		if parsed, ok := parseTransformList(source, style.fontSize, context.viewport); ok {
+			style.transforms = parsed
+		}
+	case propertyTransformOrigin:
+		if parsed, ok := parseTransformOrigin(source, style.fontSize, context.viewport); ok {
+			style.transformOrigin = parsed
+		}
 	case propertyOrder:
 		if token, ok := singleCSSNumber(source); ok && token.Integer {
 			style.order = int(token.Number)
@@ -1191,6 +1268,8 @@ func (definition propertyDefinition) serialize(computed ComputedStyle) string {
 	case propertyBackgroundColor:
 		background, _ := computed.Background()
 		return serializeComputedColor(background)
+	case propertyBackgroundImage:
+		return serializeBackgroundImageList(computed.backgroundImages)
 	case propertyBorderColor:
 		return serializeComputedBorderColor(*definition.borderSide(&computed), computed.color)
 	case propertyBorderCollapse:
@@ -1216,6 +1295,8 @@ func (definition propertyDefinition) serialize(computed ComputedStyle) string {
 			return "border-box"
 		}
 		return "content-box"
+	case propertyBoxShadow:
+		return serializeBoxShadowList(computed.boxShadows)
 	case propertyCaptionSide:
 		if computed.captionSide == CaptionSideBottom {
 			return "bottom"
@@ -1347,6 +1428,16 @@ func (definition propertyDefinition) serialize(computed ComputedStyle) string {
 		return serializeComputedLength(computed.minHeight)
 	case propertyOpacity:
 		return serializeComputedNumber(computed.opacity)
+	case propertyTranslate:
+		return serializeTranslateValue(computed.translate)
+	case propertyRotate:
+		return serializeRotateValue(computed.rotate)
+	case propertyScale:
+		return serializeScaleValue(computed.scale)
+	case propertyTransform:
+		return serializeTransformList(computed.transforms)
+	case propertyTransformOrigin:
+		return serializeTransformOrigin(computed.transformOrigin)
 	case propertyOrder:
 		return strconv.Itoa(computed.order)
 	case propertyOverflowX:
@@ -1582,6 +1673,15 @@ func validCascadedDeclaration(declaration css.Declaration, viewport Viewport) bo
 func SupportsDeclaration(declaration css.Declaration) bool {
 	if strings.HasPrefix(declaration.Property, "--") {
 		return css.ValidCustomPropertyValue(declaration.Value)
+	}
+	// Tailwind v4 uses this legacy WebKit declaration solely as the positive
+	// arm of a feature query that installs ordinary custom-property fallbacks
+	// in engines without CSS @property registration. Gossamer needs that
+	// fallback arm, so recognize the bounded probe without exposing a false
+	// computed hyphens property.
+	if declaration.Property == "-webkit-hyphens" {
+		keyword, ok := singleCSSKeyword(declaration.Value)
+		return ok && (keyword == "none" || keyword == "manual" || keyword == "auto")
 	}
 	if len(declarationTargets(declaration.Property)) == 0 {
 		return false
