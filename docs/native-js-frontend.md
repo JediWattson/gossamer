@@ -178,6 +178,14 @@ extract, delete, insertion, and UTF-16 text mutation. All reads and mutations cr
 execution-scoped `browser.Host`, so the indexed Go Document remains the source
 of truth and render invalidation follows the existing Page task boundary.
 
+The traversal surface also includes the standard `Node` type constants,
+`NodeFilter`, `TreeWalker`, and `NodeIterator`. Traversal keeps only canonical
+node wrappers in the RegionStore and resolves every next node through the
+execution-scoped host, with a hard progress bound. `Element.attributes`,
+`Document.scripts`, and `Document.styleSheets` expose snapshot collections;
+stylesheet entries identify their real DOM owner but leave `cssRules` empty
+until parsed rule identity has an explicit browser-to-engine seam.
+
 Timer functions use opaque numeric `browser.ValueHandle` identities. The Go
 timer queue transports only that number and its own HostObject lifetime record;
 the JavaScript Function stays in a hidden RegionStore callback Map. Firing a

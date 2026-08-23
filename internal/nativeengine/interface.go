@@ -34,6 +34,24 @@ func (realm *Realm) newDOMInterfaces(context *browserruntime.TaskContext, bindin
 	if err := add("Node", realm.active.ObjectPrototype, &bindings.nodePrototype); err != nil {
 		return nil, err
 	}
+	nodeInterface := interfaces[len(interfaces)-1]
+	for _, constant := range []struct {
+		name  string
+		value uint8
+	}{
+		{"ELEMENT_NODE", 1}, {"ATTRIBUTE_NODE", 2}, {"TEXT_NODE", 3}, {"CDATA_SECTION_NODE", 4},
+		{"ENTITY_REFERENCE_NODE", 5}, {"ENTITY_NODE", 6}, {"PROCESSING_INSTRUCTION_NODE", 7},
+		{"COMMENT_NODE", 8}, {"DOCUMENT_NODE", 9}, {"DOCUMENT_TYPE_NODE", 10},
+		{"DOCUMENT_FRAGMENT_NODE", 11}, {"NOTATION_NODE", 12},
+	} {
+		value := memory.NumberValue(float64(constant.value))
+		if err := defineData(context, nodeInterface.constructor, constant.name, value, false, false, false); err != nil {
+			return nil, err
+		}
+		if err := defineData(context, nodeInterface.prototype, constant.name, value, false, false, false); err != nil {
+			return nil, err
+		}
+	}
 	if err := add("Element", bindings.nodePrototype, &bindings.elementPrototype); err != nil {
 		return nil, err
 	}

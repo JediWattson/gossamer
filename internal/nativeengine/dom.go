@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"strings"
 
 	"github.com/JediWattson/gossamer/internal/browser"
 	"github.com/JediWattson/gossamer/internal/dom"
@@ -203,6 +204,12 @@ const (
 	nativeElementAttributes
 	nativeAttributesItem
 	nativeAttributesGetNamedItem
+	nativeDocumentReferrer
+	nativeDocumentScripts
+	nativeDocumentCurrentScript
+	nativeDocumentStyleSheets
+	nativeDocumentTitleGet
+	nativeDocumentTitleSet
 )
 
 const (
@@ -256,6 +263,11 @@ const (
 	bindingIntersectionObserverConstructor = "\x00gossamer.intersection-observer.constructor"
 	bindingPerformanceObserverPrototype    = "\x00gossamer.performance-observer.prototype"
 	bindingPerformanceObserverConstructor  = "\x00gossamer.performance-observer.constructor"
+	bindingTreeWalkerPrototype             = "\x00gossamer.tree-walker.prototype"
+	bindingTreeWalkerConstructor           = "\x00gossamer.tree-walker.constructor"
+	bindingNodeIteratorPrototype           = "\x00gossamer.node-iterator.prototype"
+	bindingNodeIteratorConstructor         = "\x00gossamer.node-iterator.constructor"
+	bindingNodeFilter                      = "\x00gossamer.node-filter"
 	bindingDOMException                    = "DOMException"
 	bindingWrapperCache                    = "\x00gossamer.wrapper.cache"
 	bindingCallbackCache                   = "\x00gossamer.callback.cache"
@@ -329,6 +341,11 @@ type browserBindings struct {
 	intersectionObserverConstructor memory.Ref
 	performanceObserverPrototype    memory.Ref
 	performanceObserverConstructor  memory.Ref
+	treeWalkerPrototype             memory.Ref
+	treeWalkerConstructor           memory.Ref
+	nodeIteratorPrototype           memory.Ref
+	nodeIteratorConstructor         memory.Ref
+	nodeFilter                      memory.Ref
 	domExceptionPrototype           memory.Ref
 	domExceptionConstructor         memory.Ref
 	urlSearchParamsPrototype        memory.Ref
@@ -437,6 +454,12 @@ func (realm *Realm) installBrowserNatives() error {
 		{nativeElementAttributes, realm.elementAttributes},
 		{nativeAttributesItem, realm.attributesItem},
 		{nativeAttributesGetNamedItem, realm.attributesGetNamedItem},
+		{nativeDocumentReferrer, realm.documentReferrer},
+		{nativeDocumentScripts, realm.documentScripts},
+		{nativeDocumentCurrentScript, realm.documentCurrentScript},
+		{nativeDocumentStyleSheets, realm.documentStyleSheets},
+		{nativeDocumentTitleGet, realm.documentTitleGet},
+		{nativeDocumentTitleSet, realm.documentTitleSet},
 		{nativeNodeParentElement, realm.nodeRelation(browser.RelationParentElement)},
 		{nativeNodeOwnerDocument, realm.nodeOwnerDocument},
 		{nativeNodeNamespaceURI, realm.nodeNamespaceURI},
@@ -541,6 +564,21 @@ func (realm *Realm) installBrowserNatives() error {
 		{nativePerformanceObserverObserve, realm.performanceObserverObserve},
 		{nativePerformanceObserverDisconnect, realm.performanceObserverDisconnect},
 		{nativePerformanceObserverTakeRecords, realm.performanceObserverTakeRecords},
+		{nativeDocumentCreateTreeWalker, realm.documentCreateTreeWalker},
+		{nativeTreeWalkerRoot, realm.treeWalkerRoot},
+		{nativeTreeWalkerWhatToShow, realm.treeWalkerWhatToShow},
+		{nativeTreeWalkerFilter, realm.treeWalkerFilter},
+		{nativeTreeWalkerCurrentNodeGet, realm.treeWalkerCurrentNodeGet},
+		{nativeTreeWalkerCurrentNodeSet, realm.treeWalkerCurrentNodeSet},
+		{nativeTreeWalkerNextNode, realm.treeWalkerNextNode},
+		{nativeDocumentCreateNodeIterator, realm.documentCreateNodeIterator},
+		{nativeNodeIteratorRoot, realm.nodeIteratorRoot},
+		{nativeNodeIteratorWhatToShow, realm.nodeIteratorWhatToShow},
+		{nativeNodeIteratorFilter, realm.nodeIteratorFilter},
+		{nativeNodeIteratorReferenceNode, realm.nodeIteratorReferenceNode},
+		{nativeNodeIteratorPointerBeforeReferenceNode, realm.nodeIteratorPointerBeforeReferenceNode},
+		{nativeNodeIteratorNextNode, realm.nodeIteratorNextNode},
+		{nativeNodeIteratorDetach, realm.nodeIteratorDetach},
 		{nativeMutationObserverConstructor, realm.mutationObserverConstructor},
 		{nativeMutationObserverObserve, realm.mutationObserverObserve},
 		{nativeMutationObserverDisconnect, realm.mutationObserverDisconnect},
@@ -791,6 +829,11 @@ func (realm *Realm) prepareBrowserBindingsLocked(context *browserruntime.TaskCon
 			{bindingIntersectionObserverConstructor, &bindings.intersectionObserverConstructor},
 			{bindingPerformanceObserverPrototype, &bindings.performanceObserverPrototype},
 			{bindingPerformanceObserverConstructor, &bindings.performanceObserverConstructor},
+			{bindingTreeWalkerPrototype, &bindings.treeWalkerPrototype},
+			{bindingTreeWalkerConstructor, &bindings.treeWalkerConstructor},
+			{bindingNodeIteratorPrototype, &bindings.nodeIteratorPrototype},
+			{bindingNodeIteratorConstructor, &bindings.nodeIteratorConstructor},
+			{bindingNodeFilter, &bindings.nodeFilter},
 			{bindingDOMExceptionPrototype, &bindings.domExceptionPrototype},
 			{bindingDOMExceptionConstructor, &bindings.domExceptionConstructor},
 			{bindingURLSearchParamsPrototype, &bindings.urlSearchParamsPrototype},
@@ -925,6 +968,26 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		return err
 	}
 	bindings.performanceObserverConstructor, bindings.performanceObserverPrototype, err = realm.newPerformanceObserverConstructor(context)
+	if err != nil {
+		return err
+	}
+	bindings.treeWalkerConstructor, err = realm.newDOMInterfaceConstructor(context, "TreeWalker", realm.active.ObjectPrototype)
+	if err != nil {
+		return err
+	}
+	bindings.treeWalkerPrototype, err = constructorPrototype(context, bindings.treeWalkerConstructor, "TreeWalker")
+	if err != nil {
+		return err
+	}
+	bindings.nodeIteratorConstructor, err = realm.newDOMInterfaceConstructor(context, "NodeIterator", realm.active.ObjectPrototype)
+	if err != nil {
+		return err
+	}
+	bindings.nodeIteratorPrototype, err = constructorPrototype(context, bindings.nodeIteratorConstructor, "NodeIterator")
+	if err != nil {
+		return err
+	}
+	bindings.nodeFilter, err = newNodeFilter(context)
 	if err != nil {
 		return err
 	}
@@ -1176,6 +1239,9 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{"ResizeObserver", memory.RefValue(bindings.resizeObserverConstructor)},
 		{"IntersectionObserver", memory.RefValue(bindings.intersectionObserverConstructor)},
 		{"PerformanceObserver", memory.RefValue(bindings.performanceObserverConstructor)},
+		{"TreeWalker", memory.RefValue(bindings.treeWalkerConstructor)},
+		{"NodeIterator", memory.RefValue(bindings.nodeIteratorConstructor)},
+		{"NodeFilter", memory.RefValue(bindings.nodeFilter)},
 		{bindingDOMException, memory.RefValue(bindings.domExceptionConstructor)},
 		{"URLSearchParams", memory.RefValue(bindings.urlSearchParamsConstructor)},
 		{"URL", memory.RefValue(bindings.urlConstructor)},
@@ -1242,6 +1308,11 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{bindingIntersectionObserverConstructor, bindings.intersectionObserverConstructor, false},
 		{bindingPerformanceObserverPrototype, bindings.performanceObserverPrototype, false},
 		{bindingPerformanceObserverConstructor, bindings.performanceObserverConstructor, false},
+		{bindingTreeWalkerPrototype, bindings.treeWalkerPrototype, false},
+		{bindingTreeWalkerConstructor, bindings.treeWalkerConstructor, false},
+		{bindingNodeIteratorPrototype, bindings.nodeIteratorPrototype, false},
+		{bindingNodeIteratorConstructor, bindings.nodeIteratorConstructor, false},
+		{bindingNodeFilter, bindings.nodeFilter, false},
 		{bindingDOMExceptionPrototype, bindings.domExceptionPrototype, false},
 		{bindingDOMExceptionConstructor, bindings.domExceptionConstructor, false},
 		{bindingURLSearchParamsPrototype, bindings.urlSearchParamsPrototype, false},
@@ -1293,6 +1364,9 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{bindingResizeObserver, bindings.resizeObserverConstructor, false},
 		{bindingIntersectionObserver, bindings.intersectionObserverConstructor, true},
 		{bindingPerformanceObserver, bindings.performanceObserverConstructor, true},
+		{"TreeWalker", bindings.treeWalkerConstructor, true},
+		{"NodeIterator", bindings.nodeIteratorConstructor, true},
+		{"NodeFilter", bindings.nodeFilter, false},
 		{bindingDOMException, bindings.domExceptionConstructor, true},
 		{"URLSearchParams", bindings.urlSearchParamsConstructor, true},
 		{"URL", bindings.urlConstructor, true},
@@ -1357,6 +1431,8 @@ func (realm *Realm) installDOMPrototypeProperties(context *browserruntime.TaskCo
 		{realm.bindings.fragmentPrototype, "querySelector", 1, nativeElementQuerySelector},
 		{realm.bindings.fragmentPrototype, "querySelectorAll", 1, nativeElementQuerySelectorAll},
 		{realm.bindings.documentPrototype, "createRange", 0, nativeDocumentCreateRange},
+		{realm.bindings.documentPrototype, "createTreeWalker", 1, nativeDocumentCreateTreeWalker},
+		{realm.bindings.documentPrototype, "createNodeIterator", 1, nativeDocumentCreateNodeIterator},
 		{realm.bindings.documentPrototype, "getSelection", 0, nativeDocumentGetSelection},
 		{realm.bindings.nodePrototype, "appendChild", 1, nativeNodeAppendChild},
 		{realm.bindings.nodePrototype, "insertBefore", 2, nativeNodeInsertBefore},
@@ -1433,6 +1509,9 @@ func (realm *Realm) installDOMPrototypeProperties(context *browserruntime.TaskCo
 		{realm.bindings.performanceObserverPrototype, "observe", 1, nativePerformanceObserverObserve},
 		{realm.bindings.performanceObserverPrototype, "disconnect", 0, nativePerformanceObserverDisconnect},
 		{realm.bindings.performanceObserverPrototype, "takeRecords", 0, nativePerformanceObserverTakeRecords},
+		{realm.bindings.treeWalkerPrototype, "nextNode", 0, nativeTreeWalkerNextNode},
+		{realm.bindings.nodeIteratorPrototype, "nextNode", 0, nativeNodeIteratorNextNode},
+		{realm.bindings.nodeIteratorPrototype, "detach", 0, nativeNodeIteratorDetach},
 		{realm.bindings.nodePrototype, "addEventListener", 2, nativeEventTargetAdd},
 		{realm.bindings.nodePrototype, "removeEventListener", 2, nativeEventTargetRemove},
 		{realm.bindings.nodePrototype, "dispatchEvent", 1, nativeEventTargetDispatch},
@@ -1500,6 +1579,11 @@ func (realm *Realm) installDOMPrototypeProperties(context *browserruntime.TaskCo
 		{realm.bindings.documentPrototype, "readyState", nativeDocumentReadyState, 0},
 		{realm.bindings.documentPrototype, "visibilityState", nativeDocumentVisibilityState, 0},
 		{realm.bindings.documentPrototype, "hidden", nativeDocumentHidden, 0},
+		{realm.bindings.documentPrototype, "referrer", nativeDocumentReferrer, 0},
+		{realm.bindings.documentPrototype, "scripts", nativeDocumentScripts, 0},
+		{realm.bindings.documentPrototype, "currentScript", nativeDocumentCurrentScript, 0},
+		{realm.bindings.documentPrototype, "styleSheets", nativeDocumentStyleSheets, 0},
+		{realm.bindings.documentPrototype, "title", nativeDocumentTitleGet, nativeDocumentTitleSet},
 		{realm.bindings.documentPrototype, "activeElement", nativeDocumentActiveElement, 0},
 		{realm.bindings.documentPrototype, "scrollingElement", nativeDocumentScrollingElement, 0},
 		{realm.bindings.nodePrototype, "nodeType", nativeNodeType, 0},
@@ -1524,6 +1608,15 @@ func (realm *Realm) installDOMPrototypeProperties(context *browserruntime.TaskCo
 		{realm.bindings.elementPrototype, "localName", nativeElementLocalName, 0},
 		{realm.bindings.elementPrototype, "tagName", nativeNodeName, 0},
 		{realm.bindings.elementPrototype, "attributes", nativeElementAttributes, 0},
+		{realm.bindings.treeWalkerPrototype, "root", nativeTreeWalkerRoot, 0},
+		{realm.bindings.treeWalkerPrototype, "whatToShow", nativeTreeWalkerWhatToShow, 0},
+		{realm.bindings.treeWalkerPrototype, "filter", nativeTreeWalkerFilter, 0},
+		{realm.bindings.treeWalkerPrototype, "currentNode", nativeTreeWalkerCurrentNodeGet, nativeTreeWalkerCurrentNodeSet},
+		{realm.bindings.nodeIteratorPrototype, "root", nativeNodeIteratorRoot, 0},
+		{realm.bindings.nodeIteratorPrototype, "whatToShow", nativeNodeIteratorWhatToShow, 0},
+		{realm.bindings.nodeIteratorPrototype, "filter", nativeNodeIteratorFilter, 0},
+		{realm.bindings.nodeIteratorPrototype, "referenceNode", nativeNodeIteratorReferenceNode, 0},
+		{realm.bindings.nodeIteratorPrototype, "pointerBeforeReferenceNode", nativeNodeIteratorPointerBeforeReferenceNode, 0},
 		{realm.bindings.elementPrototype, "shadowRoot", nativeElementShadowRoot, 0},
 		{realm.bindings.shadowRootPrototype, "host", nativeShadowRootHost, 0},
 		{realm.bindings.shadowRootPrototype, "mode", nativeShadowRootMode, 0},
@@ -1910,6 +2003,189 @@ func (realm *Realm) documentHidden(context *browserruntime.TaskContext, this mem
 		return memory.Value{}, err
 	}
 	return memory.BoolValue(false), nil
+}
+
+func (realm *Realm) documentReferrer(context *browserruntime.TaskContext, this memory.Value, _ []memory.Value) (memory.Value, error) {
+	if _, err := realm.unwrapNode(context, this); err != nil {
+		return memory.Value{}, err
+	}
+	// Navigation currently carries no referrer metadata across the host seam.
+	return newString(context, "")
+}
+
+func (realm *Realm) documentScripts(context *browserruntime.TaskContext, this memory.Value, _ []memory.Value) (memory.Value, error) {
+	root, err := realm.unwrapNode(context, this)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	host, ok := realm.host.(browser.DOMElementHost)
+	if !ok {
+		return memory.Value{}, fmt.Errorf("nativeengine: browser host does not expose script collection traversal")
+	}
+	handles, err := host.QuerySelector(root, "script", true)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	return realm.nodeArray(context, handles)
+}
+
+func (realm *Realm) documentCurrentScript(context *browserruntime.TaskContext, this memory.Value, _ []memory.Value) (memory.Value, error) {
+	if _, err := realm.unwrapNode(context, this); err != nil {
+		return memory.Value{}, err
+	}
+	// Script-element execution identity is not yet part of the Host contract.
+	// Null is the standards-defined value whenever no classic script is active.
+	return memory.NullValue(), nil
+}
+
+func (realm *Realm) documentStyleSheets(context *browserruntime.TaskContext, this memory.Value, _ []memory.Value) (memory.Value, error) {
+	root, err := realm.unwrapNode(context, this)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	host, ok := realm.host.(browser.DOMElementHost)
+	if !ok {
+		return memory.Value{}, fmt.Errorf("nativeengine: browser host does not expose stylesheet traversal")
+	}
+	styles, err := host.QuerySelector(root, "style", true)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	links, err := host.QuerySelector(root, "link", true)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	for _, link := range links {
+		rel, found, err := realm.host.GetAttribute(link, "rel")
+		if err != nil {
+			return memory.Value{}, err
+		}
+		if found && containsASCIIToken(rel, "stylesheet") {
+			styles = append(styles, link)
+		}
+	}
+	result, err := context.NewArray(uint32(len(styles)))
+	if err != nil {
+		return memory.Value{}, err
+	}
+	for index, owner := range styles {
+		metadata, err := host.NodeMetadata(owner)
+		if err != nil {
+			return memory.Value{}, err
+		}
+		ownerValue, err := realm.wrappedNodeValue(context, owner)
+		if err != nil {
+			return memory.Value{}, err
+		}
+		sheet, err := context.NewHeapObject()
+		if err != nil {
+			return memory.Value{}, err
+		}
+		rules, err := context.NewArray(0)
+		if err != nil {
+			return memory.Value{}, err
+		}
+		media, err := context.NewHeapObject()
+		if err != nil {
+			return memory.Value{}, err
+		}
+		mediaText, _, err := realm.host.GetAttribute(owner, "media")
+		if err != nil {
+			return memory.Value{}, err
+		}
+		mediaValue, err := newString(context, mediaText)
+		if err != nil {
+			return memory.Value{}, err
+		}
+		if err := defineData(context, media, "mediaText", mediaValue, true, true, true); err != nil {
+			return memory.Value{}, err
+		}
+		if err := defineData(context, media, "length", memory.NumberValue(0), false, false, true); err != nil {
+			return memory.Value{}, err
+		}
+		href := memory.NullValue()
+		if metadata.LocalName == "link" {
+			value, found, err := realm.host.GetAttribute(owner, "href")
+			if err != nil {
+				return memory.Value{}, err
+			}
+			if found {
+				href, err = newString(context, value)
+				if err != nil {
+					return memory.Value{}, err
+				}
+			}
+		}
+		title, _, err := realm.host.GetAttribute(owner, "title")
+		if err != nil {
+			return memory.Value{}, err
+		}
+		titleValue, err := newString(context, title)
+		if err != nil {
+			return memory.Value{}, err
+		}
+		typeValue, err := newString(context, "text/css")
+		if err != nil {
+			return memory.Value{}, err
+		}
+		for _, property := range []struct {
+			name  string
+			value memory.Value
+		}{
+			{"ownerNode", ownerValue}, {"href", href}, {"title", titleValue}, {"type", typeValue},
+			{"disabled", memory.BoolValue(false)}, {"media", memory.RefValue(media)}, {"cssRules", memory.RefValue(rules)},
+		} {
+			if err := defineData(context, sheet, property.name, property.value, property.name == "disabled", true, true); err != nil {
+				return memory.Value{}, err
+			}
+		}
+		if err := context.SetArrayElement(result, uint32(index), memory.RefValue(sheet)); err != nil {
+			return memory.Value{}, err
+		}
+	}
+	return memory.RefValue(result), nil
+}
+
+func (realm *Realm) documentTitleGet(context *browserruntime.TaskContext, this memory.Value, _ []memory.Value) (memory.Value, error) {
+	if _, err := realm.unwrapNode(context, this); err != nil {
+		return memory.Value{}, err
+	}
+	host, ok := realm.host.(browser.DocumentPresentationHost)
+	if !ok {
+		return memory.Value{}, fmt.Errorf("nativeengine: browser host does not expose document title")
+	}
+	title, err := host.DocumentTitle()
+	if err != nil {
+		return memory.Value{}, err
+	}
+	return newString(context, title)
+}
+
+func (realm *Realm) documentTitleSet(context *browserruntime.TaskContext, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+	if _, err := realm.unwrapNode(context, this); err != nil {
+		return memory.Value{}, err
+	}
+	title, err := stringArgument(context, arguments, 0)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	host, ok := realm.host.(browser.DocumentPresentationHost)
+	if !ok {
+		return memory.Value{}, fmt.Errorf("nativeengine: browser host does not expose document title")
+	}
+	if err := host.SetDocumentTitle(title); err != nil {
+		return memory.Value{}, err
+	}
+	return memory.UndefinedValue(), nil
+}
+
+func containsASCIIToken(value, token string) bool {
+	for _, candidate := range strings.Fields(value) {
+		if strings.EqualFold(candidate, token) {
+			return true
+		}
+	}
+	return false
 }
 
 func (realm *Realm) documentMetadata() (browser.DocumentMetadata, error) {

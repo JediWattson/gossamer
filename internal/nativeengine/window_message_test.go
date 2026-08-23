@@ -307,12 +307,28 @@ func TestNativePerformanceTimelineExposesNavigationEntry(t *testing.T) {
 	}
 	defer browserRuntime.Close()
 	location, _ := url.Parse("https://parent.test/")
-	page, err := browserRuntime.NewPage(dom.NewDocument(), location)
+	root, err := htmlparser.Parse(strings.NewReader(`<!doctype html><html><head><style media="screen">body { color: red }</style></head><body></body></html>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := browserRuntime.NewPage(root, location)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := page.QueueScript(browser.ScriptSource{URL: location.String(), Source: `
 		const entries = performance.getEntries();
+		if (Node.ELEMENT_NODE !== 1 || Node.TEXT_NODE !== 3 || document.createTextNode("x").nodeType !== Node.TEXT_NODE ||
+			document.scripts.length !== 0 || document.currentScript !== null) {
+			throw new Error("Node constants or Document script reflection failed");
+		}
+		const sheet = document.styleSheets[0];
+		if (document.styleSheets.length !== 1 || sheet.ownerNode.tagName !== "STYLE" || sheet.href !== null ||
+			sheet.type !== "text/css" || sheet.media.mediaText !== "screen" || sheet.cssRules.length !== 0) {
+			throw new Error("Document styleSheets projection failed");
+		}
+		if (document.title !== "") throw new Error("initial document title was not empty");
+		document.title = "Native title";
+		if (document.title !== "Native title") throw new Error("document title did not round trip");
 		const reflected = document.createElement("div");
 		reflected.setAttribute("data-state", "ready");
 		if (document.visibilityState !== "visible" || document.hidden !== false || reflected.tagName !== "DIV") {
@@ -321,6 +337,31 @@ func TestNativePerformanceTimelineExposesNavigationEntry(t *testing.T) {
 		if (reflected.attributes.length !== 1 || reflected.attributes[0].name !== "data-state" ||
 			reflected.attributes.item(0).value !== "ready" || reflected.attributes.getNamedItem("data-state").ownerElement !== reflected) {
 			throw new Error("Element attributes reflection failed");
+		}
+		const span = document.createElement("span");
+		const emphasis = document.createElement("em");
+		span.appendChild(document.createTextNode("text"));
+		span.appendChild(emphasis);
+		reflected.appendChild(span);
+		const walker = document.createTreeWalker(reflected, NodeFilter.SHOW_ELEMENT);
+		if (!(walker instanceof TreeWalker) || walker.root !== reflected || walker.currentNode !== reflected ||
+			walker.whatToShow !== NodeFilter.SHOW_ELEMENT || walker.filter !== null || walker.nextNode() !== span ||
+			walker.nextNode() !== emphasis || walker.nextNode() !== null) {
+			throw new Error("TreeWalker element traversal failed");
+		}
+		walker.currentNode = reflected;
+		const filtered = document.createTreeWalker(reflected, NodeFilter.SHOW_ELEMENT, function (node) {
+			return node.tagName === "EM" ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
+		});
+		if (filtered.nextNode() !== emphasis || document.referrer !== "") {
+			throw new Error("TreeWalker filtering or document referrer failed");
+		}
+		const iterator = document.createNodeIterator(reflected, NodeFilter.SHOW_ELEMENT);
+		if (!(iterator instanceof NodeIterator) || iterator.root !== reflected || iterator.referenceNode !== reflected ||
+			iterator.pointerBeforeReferenceNode !== true || iterator.nextNode() !== reflected ||
+			iterator.pointerBeforeReferenceNode !== false || iterator.nextNode() !== span || iterator.nextNode() !== emphasis ||
+			iterator.nextNode() !== null || iterator.detach() !== undefined) {
+			throw new Error("NodeIterator traversal failed");
 		}
 		if (entries.length !== 1 || entries[0].entryType !== "navigation" || entries[0].type !== "navigate") {
 			throw new Error("performance timeline omitted navigation");
