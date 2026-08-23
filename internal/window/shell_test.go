@@ -99,19 +99,19 @@ func TestGraphiteRootScrollbarPaintsAndDragsThroughPageQueue(t *testing.T) {
 		t.Fatal(err)
 	}
 	verticalCenter := center(bars.verticalThumb)
-	if got := color.NRGBAModel.Convert(canvas.At(verticalCenter.X, verticalCenter.Y)).(color.NRGBA); got != (color.NRGBA{R: 0x58, G: 0x65, B: 0x70, A: 0xff}) {
-		t.Fatalf("vertical thumb pixel = %#v", got)
+	if got := color.NRGBAModel.Convert(canvas.At(verticalCenter.X, verticalCenter.Y)).(color.NRGBA); got == graphitePalette.dim || got == graphitePalette.muted {
+		t.Fatalf("idle root scrollbar remained visible: %#v", got)
 	}
-	state := inputState{}
+	state := shell.activeInputState()
 	if handled, _, _, err := shell.handleEvent(context.Background(), page, Event{
 		Kind: EventPointerDown, X: float64(verticalCenter.X), Y: float64(verticalCenter.Y), Button: 0,
-	}, &state); err != nil || !handled {
+	}, state); err != nil || !handled {
 		t.Fatalf("scrollbar pointer down handled=%t err=%v", handled, err)
 	}
-	dragY := bars.verticalTrack.Max.Y - bars.verticalThumb.Dy()/2 - 1
+	dragY := bars.verticalTrack.Max.Y - bars.verticalThumb.Dy()/2
 	if handled, _, _, err := shell.handleEvent(context.Background(), page, Event{
 		Kind: EventPointerMove, X: float64(verticalCenter.X), Y: float64(dragY), Buttons: 1,
-	}, &state); err != nil || !handled {
+	}, state); err != nil || !handled {
 		t.Fatalf("scrollbar drag handled=%t err=%v", handled, err)
 	}
 	if _, err := pumpPageTasks(context.Background(), page); err != nil {
@@ -119,7 +119,7 @@ func TestGraphiteRootScrollbarPaintsAndDragsThroughPageQueue(t *testing.T) {
 	}
 	if handled, _, _, err := shell.handleEvent(context.Background(), page, Event{
 		Kind: EventPointerUp, X: float64(verticalCenter.X), Y: float64(dragY), Button: 0,
-	}, &state); err != nil || !handled {
+	}, state); err != nil || !handled {
 		t.Fatalf("scrollbar pointer up handled=%t err=%v", handled, err)
 	}
 	after, err := page.ViewportGeometry()
@@ -132,6 +132,107 @@ func TestGraphiteRootScrollbarPaintsAndDragsThroughPageQueue(t *testing.T) {
 	endBars := graphiteScrollbars(layout.content, after)
 	if endBars.verticalThumb.Max.Y != endBars.verticalTrack.Max.Y {
 		t.Fatalf("thumb at maximum = %v in %v", endBars.verticalThumb, endBars.verticalTrack)
+	}
+
+	now := time.Unix(1_000, 0)
+	shell.now = func() time.Time { return now }
+	state.scrollbarHoverRoot = false
+	shell.markScrollbarActivity(state, browser.NodeHandle{})
+	visible, err := shell.compose(image.NewRGBA(image.Rect(0, 0, 800, 600)), page)
+	if err != nil {
+		t.Fatal(err)
+	}
+	visibleBars := graphiteScrollbars(layout.content, after)
+	visibleCenter := center(visibleBars.verticalThumb)
+	if got := color.NRGBAModel.Convert(visible.At(visibleCenter.X, visibleCenter.Y)).(color.NRGBA); got != graphitePalette.dim {
+		t.Fatalf("active root thumb pixel = %#v, want %#v", got, graphitePalette.dim)
+	}
+	now = now.Add(graphiteScrollbarHold + time.Millisecond)
+	if handled, _, _, err := shell.handleEvent(context.Background(), page, Event{Kind: EventNone}, state); err != nil || !handled {
+		t.Fatalf("scrollbar expiry handled=%t err=%v", handled, err)
+	}
+	faded, err := shell.compose(image.NewRGBA(image.Rect(0, 0, 800, 600)), page)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := color.NRGBAModel.Convert(faded.At(visibleCenter.X, visibleCenter.Y)).(color.NRGBA); got == graphitePalette.dim || got == graphitePalette.muted {
+		t.Fatalf("expired root scrollbar remained visible: %#v", got)
+	}
+}
+
+func TestGraphiteNestedScrollbarResolvesDescendantHoverAndDragsThroughPageQueue(t *testing.T) {
+	t.Parallel()
+
+	page, closePage := newShellTestPage(t, shellTestLoader{document: `<html><body style="margin:0"><div id="scroll" style="display:block;width:180px;height:100px;overflow:auto"><button id="child" style="display:block;width:420px;height:480px">inside</button></div></body></html>`})
+	defer closePage()
+	shell, err := newGraphiteShell(page, ShellConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer shell.close()
+	shell.initialWindowSize(page.Frame().Viewport)
+	layout := shell.layout()
+	childID, found := page.Document().ElementByID("child")
+	if !found {
+		t.Fatal("missing child")
+	}
+	child := browser.NodeHandle{Document: page.DocumentGeneration(), Node: childID}
+	childGeometry, err := page.ElementGeometry(child)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := shell.activeInputState()
+	hover := Event{
+		Kind: EventPointerMove,
+		X:    float64(layout.content.Min.X) + childGeometry.Rect.X + 8,
+		Y:    float64(layout.content.Min.Y) + childGeometry.Rect.Y + 8,
+	}
+	if handled, _, _, err := shell.handleEvent(context.Background(), page, hover, state); err != nil || handled {
+		t.Fatalf("nested hover handled=%t err=%v", handled, err)
+	}
+	if state.scrollbarHover.Node == 0 || state.scrollbarHover == child {
+		t.Fatalf("nearest nested scrollbar target = %#v", state.scrollbarHover)
+	}
+	bars, err := elementScrollbars(visibleScrollbarContent(layout), layout, page, state.scrollbarHover)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bars.verticalThumb.Empty() || bars.horizontalThumb.Empty() {
+		t.Fatalf("nested scrollbar geometry = %#v", bars)
+	}
+	canvas, err := shell.compose(image.NewRGBA(image.Rect(0, 0, 800, 600)), page)
+	if err != nil {
+		t.Fatal(err)
+	}
+	thumbCenter := center(bars.verticalThumb)
+	if got := color.NRGBAModel.Convert(canvas.At(thumbCenter.X, thumbCenter.Y)).(color.NRGBA); got != graphitePalette.muted {
+		t.Fatalf("nested thumb pixel = %#v, want %#v", got, graphitePalette.muted)
+	}
+	if handled, _, _, err := shell.handleEvent(context.Background(), page, Event{
+		Kind: EventPointerDown, X: float64(thumbCenter.X), Y: float64(thumbCenter.Y), Button: 0,
+	}, state); err != nil || !handled {
+		t.Fatalf("nested scrollbar pointer down handled=%t err=%v", handled, err)
+	}
+	dragY := bars.verticalTrack.Max.Y - bars.verticalThumb.Dy()/2
+	if handled, _, _, err := shell.handleEvent(context.Background(), page, Event{
+		Kind: EventPointerMove, X: float64(thumbCenter.X), Y: float64(dragY), Buttons: 1,
+	}, state); err != nil || !handled {
+		t.Fatalf("nested scrollbar drag handled=%t err=%v", handled, err)
+	}
+	if _, err := pumpPageTasks(context.Background(), page); err != nil {
+		t.Fatal(err)
+	}
+	if handled, _, _, err := shell.handleEvent(context.Background(), page, Event{
+		Kind: EventPointerUp, X: float64(thumbCenter.X), Y: float64(dragY), Button: 0,
+	}, state); err != nil || !handled {
+		t.Fatalf("nested scrollbar pointer up handled=%t err=%v", handled, err)
+	}
+	after, err := page.ElementGeometry(state.scrollbarHover)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.ScrollTop < after.ScrollHeight-after.ClientHeight-1 {
+		t.Fatalf("nested dragged scrollTop = %v, want near maximum %v", after.ScrollTop, after.ScrollHeight-after.ClientHeight)
 	}
 }
 

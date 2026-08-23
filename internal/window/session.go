@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"time"
 
 	"github.com/JediWattson/gossamer/internal/browser"
 	"github.com/JediWattson/gossamer/internal/dom"
@@ -256,11 +257,16 @@ func routeClipboardShortcut(page *browser.Page, backend Backend, event Event, st
 }
 
 type inputState struct {
-	focusTarget   browser.NodeHandle
-	hoverTarget   browser.NodeHandle
-	pressedTarget browser.NodeHandle
-	pressedButton int
-	pressed       bool
+	focusTarget            browser.NodeHandle
+	hoverTarget            browser.NodeHandle
+	pressedTarget          browser.NodeHandle
+	scrollbarActivity      browser.NodeHandle
+	scrollbarActivityUntil time.Time
+	scrollbarActivityRoot  bool
+	scrollbarHover         browser.NodeHandle
+	scrollbarHoverRoot     bool
+	pressedButton          int
+	pressed                bool
 }
 
 func pumpPageTasks(ctx context.Context, page *browser.Page) (int, error) {

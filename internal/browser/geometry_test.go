@@ -1,6 +1,7 @@
 package browser
 
 import (
+	"context"
 	"testing"
 
 	"github.com/JediWattson/gossamer/internal/dom"
@@ -175,6 +176,34 @@ func TestElementOverflowScrollTranslatesClipsAndHitTestsWithoutRelayout(t *testi
 	}
 	if hit, ok := page.HitTest(10, 45); ok && hit == buttonHandle {
 		t.Fatal("hit testing escaped the overflow clip")
+	}
+}
+
+func TestNearestScrollableElementAndQueuedAbsoluteScroll(t *testing.T) {
+	engine, page, _ := computedStyleTestPage(t, `<html><body style="margin:0"><div id="scroll" style="display:block;width:120px;height:80px;overflow:auto"><button id="target" style="display:block;width:40px;height:240px">child</button></div></body></html>`)
+	defer engine.Close()
+
+	scroll := NodeHandle{Document: page.DocumentGeneration(), Node: mustPageElementID(t, page, "scroll")}
+	child := NodeHandle{Document: page.DocumentGeneration(), Node: mustPageElementID(t, page, "target")}
+	target, geometry, found, err := page.NearestScrollableElement(child)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found || target != scroll || geometry.ScrollHeight <= geometry.ClientHeight {
+		t.Fatalf("nearest scrollable = %#v %#v found=%t", target, geometry, found)
+	}
+	if _, err := page.QueueElementScrollTo(scroll, 0, 120); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	after, err := page.ElementGeometry(scroll)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.ScrollTop != 120 {
+		t.Fatalf("queued absolute scrollTop = %v, want 120", after.ScrollTop)
 	}
 }
 

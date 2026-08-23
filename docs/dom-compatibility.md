@@ -72,9 +72,10 @@ and ownership barriers before a separate render task publishes a frame.
 - The AppKit backend is an Apple Silicon macOS milestone surface. Graphite
   currently supports one window with up to eight functional tabs, independent
   Page history/input state, a bounded two-document back-forward cache,
-  address/history/reload chrome, root overlay scrollbars, native text
-  clipboard shortcuts, AppKit composition, mouse, wheel, keyboard, focus,
-  blur, and resize events. Element scrollbar widgets, Clipboard API and
+  address/history/reload chrome, transient root and nearest-ancestor element
+  scrollbar overlays, native text clipboard shortcuts, AppKit composition,
+  mouse, wheel, keyboard, focus, blur, and resize events. Author-defined
+  scrollbar styling, layout-affecting scrollbar chrome, Clipboard API and
   clipboard DOM events, marked-text candidate UI, touch, drag-and-drop,
   accessibility, and non-macOS backends remain future work.
 - Initial scripts run after the document and represented render resources are
@@ -99,7 +100,7 @@ and ownership barriers before a separate render task publishes a frame.
   passed directly between iframe globals; cross-Realm data uses the native
   structured-clone/`postMessage` seam and fresh target wrappers.
 - This gate does not claim Shadow DOM, custom elements, multipart/file form
-  submission, every validation constraint, element scrollbar UI,
+  submission, every validation constraint, author-defined scrollbar styling,
   accessibility, or the complete Web Platform test surface. Overflow now
   clips and scrolls block boxes, but inline overflow fragmentation, scroll
   anchoring, snap points, overscroll behavior, and scrollbar layout remain.

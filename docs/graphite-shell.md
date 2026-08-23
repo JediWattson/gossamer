@@ -44,10 +44,13 @@ Graphite handles native input before the existing Page router:
 4. DOM listeners, default actions, microtasks, observer work, and rendering
    retain their established order.
 
-Root scrollbars are Graphite overlays, so they do not change CSS layout or DOM
-viewport metrics. Thumb and track input is consumed before page hit testing;
-drag positions become absolute root offsets through the same Page queue used
-by wheel scrolling.
+Root and nested scrollbars are transient Graphite thumb overlays, so they do
+not change CSS layout or DOM viewport metrics. The root thumb appears while
+scrolling, hovering its edge, or dragging. Nested thumbs resolve from the
+nearest scrollable ancestor even while a descendant is under the pointer.
+Their invisible track hit areas are consumed before page hit testing; drag
+positions become absolute offsets through the same Page queue used by wheel
+scrolling.
 
 The native backend still sees only a copied `image.RGBA` and normalized values.
 It receives no DOM node, JavaScript handle, Go region reference, or callback.
@@ -105,8 +108,9 @@ go run ./cmd/gossamer-window --engine=strand https://example.com
 ## Deliberate next boundaries
 
 Graphite does not yet claim page security-state derivation, downloads,
-bookmarks, element scrollbar widgets, clipboard DOM events or Clipboard API,
-complete marked-text candidate UI, drag-and-drop, touch, accessibility, GPU
-compositing, or a non-macOS backend. Those features should extend the shell and
-backend-neutral event contracts without moving browser object ownership into
-the active JavaScript engine.
+bookmarks, author-defined scrollbar styling or layout-affecting scrollbar
+chrome, clipboard DOM events or Clipboard API, complete marked-text candidate
+UI, drag-and-drop, touch, accessibility, GPU compositing, or a non-macOS
+backend. Those features should extend the shell and backend-neutral event
+contracts without moving browser object ownership into the active JavaScript
+engine.

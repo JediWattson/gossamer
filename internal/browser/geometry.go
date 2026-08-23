@@ -66,6 +66,40 @@ func (page *Page) QueueViewportScrollTo(x, y float64) (browserruntime.TaskID, er
 	return task, err
 }
 
+// QueueElementScrollTo publishes an absolute element-scroll update through the
+// same ordered Page task boundary used by wheel input and root scrollbar
+// dragging. The generation-safe handle is resolved when the task executes.
+func (page *Page) QueueElementScrollTo(handle NodeHandle, x, y float64) (browserruntime.TaskID, error) {
+	if page == nil {
+		return 0, fmt.Errorf("browser: nil page")
+	}
+	if handle.Document == 0 || handle.Node == dom.InvalidNodeID {
+		return 0, ErrStaleNodeHandle
+	}
+	if math.IsNaN(x) || math.IsNaN(y) || math.IsInf(x, 0) || math.IsInf(y, 0) {
+		return 0, fmt.Errorf("browser: invalid scroll offset")
+	}
+	task, _, err := page.browser.scheduler.EnqueueExternalTask(page.Realm, func(context *browserruntime.TaskContext) error {
+		page.mutex.RLock()
+		if page.closed {
+			page.mutex.RUnlock()
+			return ErrPageClosed
+		}
+		generation := page.documentGeneration
+		page.mutex.RUnlock()
+		if handle.Document != generation {
+			return nil
+		}
+		host := beginTaskHost(&taskHost{page: page, task: context, generation: generation, autoRender: true})
+		changed, scrollErr := host.ScrollElement(handle, x, y)
+		if scrollErr != nil || !changed {
+			return scrollErr
+		}
+		return host.finish()
+	})
+	return task, err
+}
+
 // QueueScrollAt routes wheel/trackpad deltas to the nearest scrollable element
 // under the pointer, falling back to the root viewport. Hit testing and the
 // scroll mutation execute together on the ordered Page task queue.
@@ -146,6 +180,57 @@ func (page *Page) ElementGeometry(handle NodeHandle) (DOMElementGeometry, error)
 	page.mutex.Lock()
 	defer page.mutex.Unlock()
 	return page.elementGeometryLocked(handle)
+}
+
+// NearestScrollableElement returns the nearest element at or above handle
+// whose visible scrollbar axis overflows. The root viewport is deliberately
+// excluded because Graphite and other embedders represent it separately.
+func (page *Page) NearestScrollableElement(handle NodeHandle) (NodeHandle, DOMElementGeometry, bool, error) {
+	if page == nil {
+		return NodeHandle{}, DOMElementGeometry{}, false, fmt.Errorf("browser: nil page")
+	}
+	page.mutex.Lock()
+	defer page.mutex.Unlock()
+	if page.closed {
+		return NodeHandle{}, DOMElementGeometry{}, false, ErrPageClosed
+	}
+	if handle.Document != page.documentGeneration || handle.Node == dom.InvalidNodeID {
+		return NodeHandle{}, DOMElementGeometry{}, false, ErrStaleNodeHandle
+	}
+	if _, err := page.elementGeometryLocked(handle); err != nil {
+		return NodeHandle{}, DOMElementGeometry{}, false, err
+	}
+	rootID, _, err := page.document.RelatedNode(page.document.RootID(), dom.DocumentElement)
+	if err != nil {
+		return NodeHandle{}, DOMElementGeometry{}, false, err
+	}
+	for candidate := handle.Node; candidate != dom.InvalidNodeID && candidate != rootID; {
+		style, found := page.computedStyle.snapshot.LookupID(candidate)
+		if found {
+			showsX := style.OverflowX() == computed.OverflowAuto || style.OverflowX() == computed.OverflowScroll
+			showsY := style.OverflowY() == computed.OverflowAuto || style.OverflowY() == computed.OverflowScroll
+			if showsX || showsY {
+				candidateHandle := NodeHandle{Document: handle.Document, Node: candidate}
+				geometry, geometryErr := page.elementGeometryLocked(candidateHandle)
+				if geometryErr != nil {
+					return NodeHandle{}, DOMElementGeometry{}, false, geometryErr
+				}
+				if (showsX && geometry.ScrollWidth > geometry.ClientWidth) ||
+					(showsY && geometry.ScrollHeight > geometry.ClientHeight) {
+					return candidateHandle, geometry, true, nil
+				}
+			}
+		}
+		parent, found, parentErr := page.document.RelatedNode(candidate, dom.ParentElement)
+		if parentErr != nil {
+			return NodeHandle{}, DOMElementGeometry{}, false, parentErr
+		}
+		if !found {
+			break
+		}
+		candidate = parent
+	}
+	return NodeHandle{}, DOMElementGeometry{}, false, nil
 }
 
 func (page *Page) elementGeometryLocked(handle NodeHandle) (DOMElementGeometry, error) {

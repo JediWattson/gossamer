@@ -170,28 +170,51 @@ func (shell *graphiteShell) drawScrollbars(canvas *image.RGBA, layout shellLayou
 	if page == nil {
 		return nil
 	}
-	content := layout.content
-	if !layout.inspector.Empty() && layout.inspector.Min.X < content.Max.X {
-		content.Max.X = layout.inspector.Min.X
+	state := shell.activeInputState()
+	if state == nil {
+		return nil
 	}
+	content := visibleScrollbarContent(layout)
 	geometry, err := page.ViewportGeometry()
 	if err != nil {
 		return err
 	}
-	bars := graphiteScrollbars(content, geometry)
-	trackColor := color.NRGBA{R: 0x08, G: 0x0c, B: 0x11, A: 0xff}
-	thumbColor := color.NRGBA{R: 0x58, G: 0x65, B: 0x70, A: 0xff}
-	for _, track := range []image.Rectangle{bars.horizontalTrack, bars.verticalTrack} {
-		if !track.Empty() {
-			fillRoundedRect(canvas, track, graphiteScrollbarSize/2, trackColor)
+	activity := shell.scrollbarActivityActive(state)
+	draggingRoot := shell.scrollbarDrag.axis != shellScrollbarNone && shell.scrollbarDrag.target.Node == 0
+	if state.scrollbarHoverRoot || draggingRoot || activity && state.scrollbarActivityRoot {
+		rootColor := graphitePalette.dim
+		if state.scrollbarHoverRoot || draggingRoot {
+			rootColor = graphitePalette.muted
+		}
+		drawScrollbarThumbs(canvas, graphiteScrollbars(content, geometry), rootColor)
+	}
+
+	target := state.scrollbarHover
+	if activity && state.scrollbarActivity.Node != 0 {
+		target = state.scrollbarActivity
+	}
+	if shell.scrollbarDrag.axis != shellScrollbarNone && shell.scrollbarDrag.target.Node != 0 {
+		target = shell.scrollbarDrag.target
+	}
+	if target.Node != 0 {
+		bars, targetErr := elementScrollbars(content, layout, page, target)
+		if targetErr == nil {
+			thumbColor := graphitePalette.dim
+			if target == state.scrollbarHover || target == shell.scrollbarDrag.target {
+				thumbColor = graphitePalette.muted
+			}
+			drawScrollbarThumbs(canvas, bars, thumbColor)
 		}
 	}
+	return nil
+}
+
+func drawScrollbarThumbs(canvas *image.RGBA, bars shellScrollbars, thumbColor color.NRGBA) {
 	for _, thumb := range []image.Rectangle{bars.horizontalThumb, bars.verticalThumb} {
 		if !thumb.Empty() {
 			fillRoundedRect(canvas, thumb, graphiteScrollbarSize/2, thumbColor)
 		}
 	}
-	return nil
 }
 
 func (shell *graphiteShell) drawTabs(canvas *image.RGBA, layout shellLayout) error {
@@ -352,9 +375,6 @@ func (shell *graphiteShell) drawInteractionOverlay(canvas *image.RGBA, layout sh
 	if state == nil {
 		return nil
 	}
-	if state.hoverTarget.Node != 0 {
-		shell.drawElementScrollbarOverlay(canvas, layout, page, state.hoverTarget)
-	}
 	focus := state.focusTarget
 	if focus.Node == 0 {
 		if active, ok := page.ActiveElementHandle(); ok {
@@ -412,25 +432,6 @@ func (shell *graphiteShell) drawInteractionOverlay(canvas *image.RGBA, layout sh
 	}
 	baseline := minInt(inner.Max.Y-2, inner.Min.Y+15)
 	return shell.fonts.draw(canvas, inner, value, inner.Min.X, baseline, 12, graphitePalette.pearl, false)
-}
-
-func (shell *graphiteShell) drawElementScrollbarOverlay(canvas *image.RGBA, layout shellLayout, page *browser.Page, handle browser.NodeHandle) {
-	geometry, err := page.ElementGeometry(handle)
-	if err != nil || geometry.Rect.Width <= 0 || geometry.Rect.Height <= 0 || geometry.ScrollHeight <= geometry.ClientHeight {
-		return
-	}
-	track := image.Rect(
-		layout.content.Min.X+int(math.Round(geometry.Rect.X+geometry.Rect.Width))-7,
-		layout.content.Min.Y+int(math.Round(geometry.Rect.Y))+2,
-		layout.content.Min.X+int(math.Round(geometry.Rect.X+geometry.Rect.Width))-2,
-		layout.content.Min.Y+int(math.Round(geometry.Rect.Y+geometry.Rect.Height))-2,
-	).Intersect(layout.content)
-	if track.Empty() {
-		return
-	}
-	thumb := scrollbarThumb(track, geometry.ClientHeight, geometry.ScrollHeight, geometry.ScrollTop, true)
-	fillRoundedRect(canvas, track, 2, graphitePalette.ink)
-	fillRoundedRect(canvas, thumb, 2, graphitePalette.dim)
 }
 
 func drawScaledImage(destination *image.RGBA, bounds image.Rectangle, source image.Image) {

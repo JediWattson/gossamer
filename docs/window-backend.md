@@ -99,8 +99,9 @@ ownership after Page teardown.
 This is still an early browser shell. Graphite has up to eight functional tabs,
 independent Page history and input state, address navigation, history
 traversal, reload, a bounded region-aware back-forward cache, root overlay
-scrollbars, native text clipboard and composition foundations, and an
-engine/kernel telemetry rail. It does not yet have element scrollbar chrome,
+scrollbars, nearest-ancestor element scrollbar overlays, native text clipboard
+and composition foundations, and an engine/kernel telemetry rail. It does not
+yet have author-defined scrollbar styling or layout-affecting scrollbar chrome,
 clipboard DOM events or `navigator.clipboard`, complete marked-text candidate
 UI, touch, drag-and-drop, accessibility tree, GPU compositor, or non-macOS
 backend. Event polling and CPU rasterization are intentionally serial until

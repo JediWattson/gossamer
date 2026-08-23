@@ -150,10 +150,10 @@ An optional title can be supplied before the URL:
 The initial page is loaded before the native window opens. Close the last tab
 or press Control-C in the launching terminal to stop the process. Graphite
 provides multiple tabs, editable address navigation, back/forward/reload,
-root scrollbars, clipboard and IME text input, a two-document back-forward
-cache, and the collapsible engine/kernel telemetry rail. Page JavaScript runs
-in stock V8 while DOM, CSS, layout, browser objects, regions, and queue ARC stay
-owned by Go.
+transient root and nested scrollbar overlays, clipboard and IME text input, a
+two-document back-forward cache, and the collapsible engine/kernel telemetry
+rail. Page JavaScript runs in stock V8 while DOM, CSS, layout, browser objects,
+regions, and queue ARC stay owned by Go.
 
 Verify the tagged native launcher and backend without opening a window:
 
@@ -527,9 +527,9 @@ performance budgets; see
 
 The following are intentionally still outside the current milestone:
 
-- General Web APIs beyond the current V8 DOM slice, element scrollbar chrome,
-  Clipboard API and clipboard DOM events, complete marked-text UI, and
-  non-macOS interactive backends
+- General Web APIs beyond the current V8 DOM slice, author-defined scrollbar
+  styling and layout-affecting scrollbar chrome, Clipboard API and clipboard
+  DOM events, complete marked-text UI, and non-macOS interactive backends
 - Full HTML error recovery beyond the current table insertion modes and foster
   parenting, including formatting-element reconstruction, complete template
   modes, SVG/MathML, and encoding sniffing
