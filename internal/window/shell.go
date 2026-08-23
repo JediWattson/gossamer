@@ -40,6 +40,9 @@ type ShellConfig struct {
 	OpenTab  PageOpener
 	Download DownloadHandler
 	Session  SessionStore
+	// Startup observes the initial window and navigation milestones. The
+	// callback is optional and each milestone is emitted at most once.
+	Startup StartupObserver
 	// Checkpoint observes a Page after its task queue is drained and any
 	// engine-owned deterministic collection has completed.
 	Checkpoint func(*browser.Page) error
@@ -169,6 +172,16 @@ func newGraphiteShell(page *browser.Page, config ShellConfig) (*graphiteShell, e
 	if page != nil && page.URL() != nil {
 		location = page.URL().String()
 	}
+	snapshot := page.Navigation()
+	address := location
+	if address == "" && snapshot.RequestedURL != nil {
+		address = snapshot.RequestedURL.String()
+	}
+	loading := snapshot.ID != 0 && !navigationTerminal(snapshot.State)
+	trackedNavigation := browser.NavigationID(0)
+	if loading {
+		trackedNavigation = snapshot.ID
+	}
 	shell := &graphiteShell{
 		loader:         config.Loader,
 		opener:         config.OpenTab,
@@ -177,11 +190,13 @@ func newGraphiteShell(page *browser.Page, config ShellConfig) (*graphiteShell, e
 		checkpoint:     config.Checkpoint,
 		now:            time.Now,
 		fonts:          fonts,
-		address:        location,
+		address:        address,
 		lastPageURL:    location,
+		loading:        loading,
+		navigation:     trackedNavigation,
 		canGoBack:      page.CanGoBack(),
 		canGoForward:   page.CanGoForward(),
-		navigationView: shellNavigationLabel(page.Navigation()),
+		navigationView: shellNavigationLabel(snapshot),
 		suppressedKeys: make(map[string]bool),
 		revision:       1,
 		activeTab:      0,

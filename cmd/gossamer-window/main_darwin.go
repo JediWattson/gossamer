@@ -26,6 +26,7 @@ func main() {
 	// AppKit must be initialized and pumped from the process main thread.
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
+	launchStarted := time.Now()
 
 	icuData := flag.String("icu-data", os.Getenv("GOSSAMER_V8_ICU_DATA"), "path to the pinned V8 build's icudtl.dat")
 	engineName := flag.String("engine", "v8", "JavaScript engine: strand or v8")
@@ -38,6 +39,7 @@ func main() {
 	maxCallDepth := flag.Uint("max-call-depth", 0, "optional Strand synchronous call-depth budget (zero uses the runtime default)")
 	profileInstructions := flag.Bool("strand-instruction-profile", false, "include Strand bytecode hotspots when an instruction budget is exhausted")
 	executionSampleInterval := flag.Uint64("strand-execution-sample-interval", 1_000_000, "raw Strand instructions between active-render memory samples (zero disables)")
+	startupTimings := flag.Bool("startup-timings", false, "print initial browser startup milestones to stderr")
 	flag.Parse()
 	if flag.NArg() != 1 {
 		fatalf("usage: gossamer-window [flags] <absolute-http-or-https-url>")
@@ -78,18 +80,24 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	documentLoader := loader.New(nil)
-	page, err = browserRuntime.LoadPage(ctx, rawURL, documentLoader)
+	page, err = browserRuntime.NewBlankPage(ctx)
 	if err != nil {
 		_ = recorder.Close()
 		_ = browserRuntime.Close()
-		fatalf("load page: %v", err)
+		fatalf("create initial page: %v", err)
 	}
-	if err := recorder.Record("loaded", page, true); err != nil {
+	page.SetNavigationLoader(documentLoader)
+	page.SetFormNavigationLoader(documentLoader)
+	if err := recorder.Record("page-created", page, true); err != nil {
 		_ = recorder.Close()
 		_ = browserRuntime.Close()
-		fatalf("record loaded memory profile: %v", err)
+		fatalf("record initial memory profile: %v", err)
 	}
-	page.SetFormNavigationLoader(documentLoader)
+	if _, err := page.Navigate(ctx, rawURL, documentLoader); err != nil {
+		_ = recorder.Close()
+		_ = browserRuntime.Close()
+		fatalf("begin navigation: %v", err)
+	}
 	windowTitle := strings.TrimSpace(*title)
 	if windowTitle == "" {
 		windowTitle = "Gossamer — " + rawURL
@@ -103,6 +111,12 @@ func main() {
 		Loader:  documentLoader,
 		OpenTab: browserRuntime.NewBlankPage,
 		Session: sessionStore,
+		Startup: func(current *browser.Page, observation window.StartupObservation) error {
+			if *startupTimings {
+				_, _ = fmt.Fprintf(os.Stderr, "gossamer-window startup: %-23s %s\n", observation.Milestone, time.Since(launchStarted).Round(time.Millisecond))
+			}
+			return recorder.Record(string(observation.Milestone), current, true)
+		},
 		Checkpoint: func(current *browser.Page) error {
 			return recorder.Record("task-checkpoint", current, false)
 		},

@@ -105,6 +105,13 @@ The ordinary macOS build can launch Strand without the V8 build tag:
 go run ./cmd/gossamer-window --engine=strand https://example.com
 ```
 
+The shell presents its blank initial frame before pumping navigation tasks, so
+a slow document or a long first script cannot prevent the native window from
+appearing. `--startup-timings` prints the window-open, first-present,
+document/resource/script, navigation-complete, and first-content-present
+milestones. The same labels are forced checkpoints when `--memory-profile` is
+enabled.
+
 ## Deliberate next boundaries
 
 Graphite does not yet claim page security-state derivation, downloads,

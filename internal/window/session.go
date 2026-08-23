@@ -18,7 +18,7 @@ const maximumTasksPerPump = 4096
 // context is canceled. It serializes native UI access on the caller's OS
 // thread while Page tasks continue to own all DOM, script, and frame changes.
 func Run(ctx context.Context, page *browser.Page, backend Backend, title string) (result error) {
-	return runSession(ctx, page, backend, Config{Title: title}, nil)
+	return runSession(ctx, page, backend, Config{Title: title}, nil, nil)
 }
 
 // RunBrowser presents page inside Gossamer's browser-owned Graphite shell.
@@ -37,11 +37,11 @@ func RunBrowser(ctx context.Context, page *browser.Page, backend Backend, config
 	if title == "" {
 		title = "Gossamer"
 	}
-	result = runSession(ctx, page, backend, Config{Title: title}, shell)
+	result = runSession(ctx, page, backend, Config{Title: title}, shell, config.Startup)
 	return errors.Join(result, shell.saveSession(context.WithoutCancel(ctx)))
 }
 
-func runSession(ctx context.Context, page *browser.Page, backend Backend, config Config, shell *graphiteShell) (result error) {
+func runSession(ctx context.Context, page *browser.Page, backend Backend, config Config, shell *graphiteShell, startupObserver StartupObserver) (result error) {
 	if page == nil || page.Realm == nil {
 		return fmt.Errorf("window: nil page")
 	}
@@ -60,6 +60,18 @@ func runSession(ctx context.Context, page *browser.Page, backend Backend, config
 			return fmt.Errorf("window: restore session: %w", err)
 		}
 	}
+	startupPage := page
+	if shell != nil {
+		startupPage = shell.activePage()
+	}
+	if startupPage == nil || startupPage.Frame() == nil {
+		return fmt.Errorf("window: browser shell has no initial frame")
+	}
+	startupFrame := startupPage.Frame()
+	startup := newStartupTracker(time.Now(), startupPage, startupObserver)
+	if err := startup.observeNavigation(startupPage.Navigation()); err != nil {
+		return fmt.Errorf("window: observe startup navigation: %w", err)
+	}
 	config.Width = width
 	config.Height = height
 	runtime.LockOSThread()
@@ -68,6 +80,9 @@ func runSession(ctx context.Context, page *browser.Page, backend Backend, config
 		return err
 	}
 	defer func() { result = errors.Join(result, backend.Close()) }()
+	if err := startup.observe(StartupWindowOpen, startupPage.Navigation()); err != nil {
+		return fmt.Errorf("window: observe window open: %w", err)
+	}
 
 	var presented *render.Frame
 	var presentedShellRevision uint64
@@ -77,8 +92,38 @@ func runSession(ctx context.Context, page *browser.Page, backend Backend, config
 	lastWindowTitle := config.Title
 	lastCursor := CursorDefault
 	state := inputState{}
+
+	// Present the already-rendered initial Page before running any queued page
+	// work. In particular, a production navigation can no longer keep the
+	// native window invisible while its first large script task executes.
+	activePage := startupPage
+	if shell != nil {
+		shell.syncPage(activePage)
+	}
+	frame = activePage.Frame()
+	canvas, err := compositor.pageCanvas(activePage, frame)
+	if err != nil {
+		return fmt.Errorf("window: rasterize initial frame: %w", err)
+	}
+	if shell != nil {
+		canvas, err = shell.compose(canvas, activePage)
+		if err != nil {
+			return fmt.Errorf("window: compose initial Graphite shell: %w", err)
+		}
+	}
+	if err := backend.Present(canvas); err != nil {
+		return fmt.Errorf("window: present initial frame: %w", err)
+	}
+	presented = frame
+	if shell != nil {
+		presentedShellRevision = shell.revision
+	}
+	if err := startup.observe(StartupFirstPresent, startupPage.Navigation()); err != nil {
+		return fmt.Errorf("window: observe first presentation: %w", err)
+	}
+
 	for {
-		activePage := page
+		activePage = page
 		activeState := &state
 		pages := []*browser.Page{page}
 		if shell != nil {
@@ -91,11 +136,20 @@ func runSession(ctx context.Context, page *browser.Page, backend Backend, config
 		}
 		compositor.prune(pages)
 		for _, currentPage := range pages {
-			if _, err := pumpPageTasks(ctx, currentPage); err != nil {
+			var afterTask func() error
+			if currentPage == startupPage {
+				afterTask = func() error { return startup.observeNavigation(currentPage.Navigation()) }
+			}
+			if _, err := pumpPageTasksObserved(ctx, currentPage, afterTask); err != nil {
 				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 					return nil
 				}
 				return err
+			}
+			if currentPage == startupPage {
+				if err := startup.observeNavigation(currentPage.Navigation()); err != nil {
+					return fmt.Errorf("window: observe startup navigation: %w", err)
+				}
 			}
 			if shell != nil && shell.checkpoint != nil {
 				if err := shell.checkpoint(currentPage); err != nil {
@@ -142,6 +196,11 @@ func runSession(ctx context.Context, page *browser.Page, backend Backend, config
 			presented = frame
 			if shell != nil {
 				presentedShellRevision = shell.revision
+			}
+			if activePage == startupPage && frame != startupFrame && startupPage.Navigation().State == browser.NavigationComplete {
+				if err := startup.observe(StartupFirstContentPresent, startupPage.Navigation()); err != nil {
+					return fmt.Errorf("window: observe first content presentation: %w", err)
+				}
 			}
 		}
 
@@ -270,6 +329,10 @@ type inputState struct {
 }
 
 func pumpPageTasks(ctx context.Context, page *browser.Page) (int, error) {
+	return pumpPageTasksObserved(ctx, page, nil)
+}
+
+func pumpPageTasksObserved(ctx context.Context, page *browser.Page, afterTask func() error) (int, error) {
 	count := 0
 	for ; page.Realm.Tasks.Len() != 0; count++ {
 		if count >= maximumTasksPerPump {
@@ -277,6 +340,11 @@ func pumpPageTasks(ctx context.Context, page *browser.Page) (int, error) {
 		}
 		if err := page.Realm.RunOne(ctx); err != nil {
 			return count, err
+		}
+		if afterTask != nil {
+			if err := afterTask(); err != nil {
+				return count + 1, fmt.Errorf("window: observe page task: %w", err)
+			}
 		}
 	}
 	if _, err := page.CollectScriptMemoryAtCheckpoint(); err != nil {

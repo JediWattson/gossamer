@@ -104,6 +104,17 @@ To use Strand interactively against a live service, launch:
 go run ./cmd/gossamer-window --engine=strand https://example.com
 ```
 
+Graphite presents a rendered blank tab immediately and completes the initial
+navigation through the Page queue after the native window is visible. Print
+the generic launch milestones while diagnosing startup with:
+
+```sh
+go run ./cmd/gossamer-window \
+  --engine=strand \
+  --startup-timings \
+  https://example.com
+```
+
 Record an engine-neutral JSONL timeline plus a Go heap profile while exercising
 the live page with:
 
@@ -148,8 +159,8 @@ An optional title can be supplied before the URL:
 ./tools/v8/window.sh --title "Gossamer Dev" "https://example.com/?mode=dev&panel=1"
 ```
 
-The initial page is loaded before the native window opens. Close the last tab
-or press Control-C in the launching terminal to stop the process. Graphite
+The initial page loads asynchronously after the native window opens. Close the
+last tab or press Control-C in the launching terminal to stop the process. Graphite
 provides multiple tabs, editable address navigation, back/forward/reload,
 transient root and nested scrollbar overlays, clipboard and IME text input, a
 two-document back-forward cache, and the collapsible engine/kernel telemetry

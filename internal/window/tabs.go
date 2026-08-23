@@ -53,14 +53,26 @@ func newShellPageState(page *browser.Page, focusAddress bool) shellPageState {
 	if page != nil && page.URL() != nil {
 		location = page.URL().String()
 	}
+	snapshot := page.Navigation()
+	address := location
+	if address == "" && snapshot.RequestedURL != nil {
+		address = snapshot.RequestedURL.String()
+	}
+	loading := snapshot.ID != 0 && !navigationTerminal(snapshot.State)
+	trackedNavigation := browser.NavigationID(0)
+	if loading {
+		trackedNavigation = snapshot.ID
+	}
 	return shellPageState{
-		address:        location,
+		address:        address,
 		lastPageURL:    location,
 		addressFocused: focusAddress,
 		selectAll:      focusAddress,
+		loading:        loading,
 		canGoBack:      page.CanGoBack(),
 		canGoForward:   page.CanGoForward(),
-		navigationView: shellNavigationLabel(page.Navigation()),
+		navigation:     trackedNavigation,
+		navigationView: shellNavigationLabel(snapshot),
 	}
 }
 
