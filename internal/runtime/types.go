@@ -984,6 +984,8 @@ func (context *TaskContext) NewError(kind memory.ErrorKind, message memory.Value
 		prototype = context.intrinsics.RangeErrorPrototype
 	case memory.ErrorReference:
 		prototype = context.intrinsics.ReferenceErrorPrototype
+	case memory.ErrorURI:
+		prototype = context.intrinsics.URIErrorPrototype
 	}
 	if err := context.SetPrototype(ref, memory.RefValue(prototype)); err != nil {
 		return memory.Ref{}, err

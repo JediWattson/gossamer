@@ -224,6 +224,49 @@ func TestNativeWindowBase64GlobalsUseBinaryStrings(t *testing.T) {
 	}
 }
 
+func TestNativeWindowURIGlobalsEncodeDecodeAndRejectMalformedInput(t *testing.T) {
+	t.Parallel()
+
+	engine := nativeengine.New(nativeengine.Config{})
+	browserRuntime, err := browser.NewWithEngine(engine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer browserRuntime.Close()
+	location, _ := url.Parse("https://parent.test/")
+	page, err := browserRuntime.NewPage(dom.NewDocument(), location)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := page.QueueScript(browser.ScriptSource{URL: location.String(), Source: `
+		if (window.encodeURI !== encodeURI || window.decodeURI !== decodeURI ||
+			window.encodeURIComponent !== encodeURIComponent || window.decodeURIComponent !== decodeURIComponent) {
+			throw new Error("URI globals lost Window identity");
+		}
+		if (encodeURI("https://example.test/a b?x=y#z") !== "https://example.test/a%20b?x=y#z") {
+			throw new Error("encodeURI escaped reserved characters");
+		}
+		if (encodeURIComponent(";/?:@&=+$,#") !== "%3B%2F%3F%3A%40%26%3D%2B%24%2C%23") {
+			throw new Error("encodeURIComponent preserved reserved characters");
+		}
+		if (encodeURIComponent("✓") !== "%E2%9C%93" || decodeURIComponent("%E2%9C%93") !== "✓") {
+			throw new Error("URI component UTF-8 round trip failed");
+		}
+		if (decodeURI("%41%20%3F") !== "A %3F") throw new Error("decodeURI did not preserve a reserved escape");
+		if (typeof URIError !== "function" || window.URIError !== URIError) throw new Error("URIError global is unavailable");
+		let malformed = 0;
+		for (const value of ["%", "%C0%AF", "%ED%A0%80", "%F4%90%80%80"]) {
+			try { decodeURIComponent(value); } catch (error) { if (error.name === "URIError" && error instanceof URIError) malformed++; }
+		}
+		if (malformed !== 4) throw new Error("malformed URI input did not throw URIError");
+	`}); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestNativeBigIntGlobalConvertsCorePrimitiveInputs(t *testing.T) {
 	t.Parallel()
 

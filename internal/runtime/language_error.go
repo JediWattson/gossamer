@@ -62,6 +62,8 @@ func classifyLanguageError(err error) (memory.ErrorKind, bool) {
 		return memory.ErrorReference, true
 	case errors.Is(err, memory.ErrInvalidIndex):
 		return memory.ErrorRange, true
+	case errors.Is(err, errMalformedURI):
+		return memory.ErrorURI, true
 	case errors.Is(err, ErrOperandType), errors.Is(err, ErrNotCallable), errors.Is(err, ErrNotConstructor),
 		errors.Is(err, memory.ErrTypeMismatch), errors.Is(err, memory.ErrImmutableBinding),
 		errors.Is(err, memory.ErrReadOnlyProperty), errors.Is(err, memory.ErrNonConfigurable),

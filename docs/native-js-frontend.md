@@ -75,8 +75,10 @@ and ordinary task release invalidates every unpromoted loaded Ref.
 - `return`, `throw`, `try`, `catch`, and `finally`, with general abrupt
   completions routing return, throw, break, and continue through nested
   finally blocks;
-- native ReferenceError, TypeError, and RangeError values for classified
-  language failures, routed through the same `catch`/`finally` machinery.
+- native ReferenceError, TypeError, RangeError, and URIError values for
+  classified language failures, routed through the same `catch`/`finally`
+  machinery; the four URI encode/decode globals use strict UTF-8 validation
+  and preserve URI-reserved escapes where ECMAScript requires it;
 - static ES modules with default, named, namespace, and side-effect imports;
   local, indirect, namespace, and star exports; cyclic graph linking; immutable
   live import bindings; canonical namespace objects; strict top-level and
@@ -200,9 +202,11 @@ that same RegionStore callback graph. Browser input walks stable Go DOM parent
 handles and synchronously invokes capture, target, and bubble listeners with
 the canonical wrapper as `this`. The native Event value exposes normalized
 input fields, cancellation state, current target, phase, and propagation
-controls. Listener registration also uses the browser's independent event
-target lifetime claim, so a detached target cannot disappear while it still
-has a listener.
+controls. A thrown JavaScript listener exception is reported at the browser
+callback boundary without aborting later listeners or the Realm actor; native
+storage and ownership failures still fail the task. Listener registration also
+uses the browser's independent event target lifetime claim, so a detached target
+cannot disappear while it still has a listener.
 
 Script-created `Event` and `CustomEvent` values use that same dispatch path.
 They retain type, initialization flags, cancellation state, target identity,

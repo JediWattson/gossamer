@@ -706,7 +706,9 @@ func (realm *Realm) invokeEventTargetLocked(
 		state.passive = listener.Passive
 		_, callErr := realm.interpreter.CallWithoutCheckpoint(context, callback.Ref(), targetValue, memory.RefValue(event))
 		state.passive = false
-		result = errors.Join(result, callErr)
+		if callErr != nil && !realm.reportCallbackExceptionLocked(context, "event listener", callErr) {
+			result = errors.Join(result, callErr)
+		}
 		if state.immediateStopped {
 			break
 		}

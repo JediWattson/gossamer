@@ -205,6 +205,9 @@ const (
 	nativeReflectApply
 	nativeStringConcat
 	nativeBigIntConstructor
+	nativeEncodeURI
+	nativeDecodeURI
+	nativeURIErrorConstructor
 )
 
 // Intrinsics is one task-local instantiation of the native ECMAScript
@@ -222,6 +225,7 @@ type Intrinsics struct {
 	TypeErrorPrototype      memory.Ref
 	RangeErrorPrototype     memory.Ref
 	ReferenceErrorPrototype memory.Ref
+	URIErrorPrototype       memory.Ref
 	MapPrototype            memory.Ref
 	SetPrototype            memory.Ref
 	PromisePrototype        memory.Ref
@@ -245,6 +249,7 @@ type Intrinsics struct {
 	TypeErrorConstructor      memory.Ref
 	RangeErrorConstructor     memory.Ref
 	ReferenceErrorConstructor memory.Ref
+	URIErrorConstructor       memory.Ref
 	SymbolConstructor         memory.Ref
 	SymbolRegistry            memory.Ref
 	SymbolIterator            memory.Ref
@@ -258,7 +263,7 @@ type Intrinsics struct {
 	WeakSetConstructor        memory.Ref
 }
 
-const intrinsicRootCount = 43
+const intrinsicRootCount = 45
 
 // Roots returns every Ref needed to carry one intrinsic environment across an
 // explicit ownership boundary. The ordering is private to this package and is
@@ -334,6 +339,8 @@ func (intrinsics *Intrinsics) rootArray() [intrinsicRootCount]memory.Ref {
 		intrinsics.WeakSetConstructor,
 		intrinsics.SymbolToStringTag,
 		intrinsics.BigIntConstructor,
+		intrinsics.URIErrorPrototype,
+		intrinsics.URIErrorConstructor,
 	}
 }
 
@@ -392,6 +399,8 @@ func RestoreIntrinsics(roots []memory.Ref) (*Intrinsics, error) {
 		WeakSetConstructor:        roots[40],
 		SymbolToStringTag:         roots[41],
 		BigIntConstructor:         roots[42],
+		URIErrorPrototype:         roots[43],
+		URIErrorConstructor:       roots[44],
 	}, nil
 }
 
@@ -450,6 +459,7 @@ func (interpreter *Interpreter) Bootstrap(context *TaskContext) (*Intrinsics, er
 		&intrinsics.TypeErrorPrototype,
 		&intrinsics.RangeErrorPrototype,
 		&intrinsics.ReferenceErrorPrototype,
+		&intrinsics.URIErrorPrototype,
 		&intrinsics.MapPrototype,
 		&intrinsics.SetPrototype,
 		&intrinsics.PromisePrototype,
@@ -470,7 +480,7 @@ func (interpreter *Interpreter) Bootstrap(context *TaskContext) (*Intrinsics, er
 			return nil, err
 		}
 	}
-	for _, target := range []memory.Ref{intrinsics.TypeErrorPrototype, intrinsics.RangeErrorPrototype, intrinsics.ReferenceErrorPrototype} {
+	for _, target := range []memory.Ref{intrinsics.TypeErrorPrototype, intrinsics.RangeErrorPrototype, intrinsics.ReferenceErrorPrototype, intrinsics.URIErrorPrototype} {
 		if err := context.SetPrototype(target, memory.RefValue(intrinsics.ErrorPrototype)); err != nil {
 			return nil, err
 		}
@@ -567,6 +577,7 @@ func (interpreter *Interpreter) Bootstrap(context *TaskContext) (*Intrinsics, er
 		{"TypeError", memory.RefValue(intrinsics.TypeErrorConstructor)},
 		{"RangeError", memory.RefValue(intrinsics.RangeErrorConstructor)},
 		{"ReferenceError", memory.RefValue(intrinsics.ReferenceErrorConstructor)},
+		{"URIError", memory.RefValue(intrinsics.URIErrorConstructor)},
 		{"Symbol", memory.RefValue(intrinsics.SymbolConstructor)},
 		{"Math", memory.RefValue(intrinsics.MathObject)},
 		{"Date", memory.RefValue(intrinsics.DateConstructor)},
@@ -745,6 +756,9 @@ func (interpreter *Interpreter) registerBuiltinCallbacks() error {
 		nativeFinalizationRegistryUnregister:  builtinFinalizationRegistryUnregister,
 		nativeEncodeURIComponent:              builtinEncodeURIComponent,
 		nativeDecodeURIComponent:              builtinDecodeURIComponent,
+		nativeEncodeURI:                       builtinEncodeURI,
+		nativeDecodeURI:                       builtinDecodeURI,
+		nativeURIErrorConstructor:             builtinErrorConstructor(memory.ErrorURI),
 		nativeBooleanConstructor:              builtinBooleanConstructor,
 		nativeArraySort:                       builtinArraySort,
 		nativeArrayFrom:                       builtinArrayFrom,
@@ -822,6 +836,7 @@ func (intrinsics *Intrinsics) installConstructors(context *TaskContext) error {
 		{"TypeError", 1, nativeTypeErrorConstructor, intrinsics.TypeErrorPrototype, &intrinsics.TypeErrorConstructor},
 		{"RangeError", 1, nativeRangeErrorConstructor, intrinsics.RangeErrorPrototype, &intrinsics.RangeErrorConstructor},
 		{"ReferenceError", 1, nativeReferenceErrorConstructor, intrinsics.ReferenceErrorPrototype, &intrinsics.ReferenceErrorConstructor},
+		{"URIError", 1, nativeURIErrorConstructor, intrinsics.URIErrorPrototype, &intrinsics.URIErrorConstructor},
 		{"Date", 7, nativeDateConstructor, intrinsics.DatePrototype, &intrinsics.DateConstructor},
 		{"RegExp", 2, nativeRegExpConstructor, intrinsics.RegExpPrototype, &intrinsics.RegExpConstructor},
 		{"WeakMap", 0, nativeWeakMapConstructor, intrinsics.WeakMapPrototype, &intrinsics.WeakMapConstructor},
@@ -993,6 +1008,7 @@ func (intrinsics *Intrinsics) installErrorPrototypes(context *TaskContext) error
 		{intrinsics.TypeErrorPrototype, "TypeError", intrinsics.TypeErrorConstructor},
 		{intrinsics.RangeErrorPrototype, "RangeError", intrinsics.RangeErrorConstructor},
 		{intrinsics.ReferenceErrorPrototype, "ReferenceError", intrinsics.ReferenceErrorConstructor},
+		{intrinsics.URIErrorPrototype, "URIError", intrinsics.URIErrorConstructor},
 	} {
 		name, err := newStringValue(context, item.name)
 		if err != nil {

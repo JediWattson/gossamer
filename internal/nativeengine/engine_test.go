@@ -603,6 +603,55 @@ func TestNativeRealmReportsTimerExceptionsAndContinuesTheEventLoop(t *testing.T)
 	}
 }
 
+func TestNativeRealmReportsEventListenerExceptionsAndContinuesDispatch(t *testing.T) {
+	t.Parallel()
+
+	var mutex sync.Mutex
+	var messages []nativeengine.ConsoleMessage
+	scriptEngine := nativeengine.New(nativeengine.Config{ConsoleSink: func(message nativeengine.ConsoleMessage) {
+		mutex.Lock()
+		messages = append(messages, message)
+		mutex.Unlock()
+	}})
+	browserRuntime, err := browser.NewWithEngine(scriptEngine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer browserRuntime.Close()
+	location, _ := url.Parse("https://gossamer.test/native-listener-error/")
+	page, err := browserRuntime.NewPage(dom.NewDocument(), location)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer page.Close()
+	if _, err := page.QueueScript(browser.ScriptSource{URL: "listeners.js", Source: `
+		let completedAfterListenerError = 0;
+		window.addEventListener("probe", function () { throw new Error("expected listener failure"); });
+		window.addEventListener("probe", function () { completedAfterListenerError++; });
+		window.dispatchEvent(new Event("probe"));
+	`}); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := page.QueueScript(browser.ScriptSource{URL: "verify.js", Source: `
+		if (completedAfterListenerError !== 1) {
+			throw new Error("dispatch stopped after listener exception");
+		}
+	`}); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	mutex.Lock()
+	defer mutex.Unlock()
+	if len(messages) != 1 || messages[0].Method != "error" || !strings.Contains(strings.Join(messages[0].Arguments, " "), "expected listener failure") {
+		t.Fatalf("reported listener messages = %#v", messages)
+	}
+}
+
 func TestNativeRealmDispatchesGoDOMEventsToPersistentListeners(t *testing.T) {
 	t.Parallel()
 
