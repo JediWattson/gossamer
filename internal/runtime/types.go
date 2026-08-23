@@ -5,6 +5,7 @@ package runtime
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/JediWattson/gossamer/internal/runtime/memory"
 	"github.com/JediWattson/gossamer/internal/runtime/ownership"
@@ -16,6 +17,25 @@ type QueueID uint64
 
 // TaskFunc executes on a realm's single logical executor.
 type TaskFunc func(*TaskContext) error
+
+const (
+	taskStringInternMaxBytes = 64
+	taskStringInternMaxCount = 16 * 1024
+)
+
+// taskStringIntern is deliberately weak with respect to the RegionStore: its
+// Refs are not visited as roots. A collection may reclaim an otherwise-unused
+// string, and the next lookup validates its generation before reuse. Bounding
+// both key size and count prevents unique application data from becoming a
+// parallel Go heap for the lifetime of a long task.
+type taskStringIntern struct {
+	refs map[taskStringInternKey]memory.Ref
+}
+
+type taskStringInternKey struct {
+	region memory.RegionID
+	text   string
+}
 
 // Task is one queued unit of ordered realm work.
 type Task struct {
@@ -39,9 +59,53 @@ type TaskContext struct {
 	MemoryRegion memory.RegionID
 	Refs         []memory.Ref
 
-	intrinsics *Intrinsics
-	stack      *Stack
-	jobs       *taskJobs
+	intrinsics           *Intrinsics
+	stack                *Stack
+	jobs                 *taskJobs
+	nativeRoots          [][]memory.Ref
+	pinNativeAllocations bool
+	stringIntern         *taskStringIntern
+}
+
+func (context *TaskContext) beginNativeRoots() bool {
+	previous := context.pinNativeAllocations
+	context.nativeRoots = append(context.nativeRoots, nil)
+	context.pinNativeAllocations = true
+	return previous
+}
+
+func (context *TaskContext) endNativeRoots(previous bool) {
+	if context == nil || len(context.nativeRoots) == 0 {
+		return
+	}
+	index := len(context.nativeRoots) - 1
+	clear(context.nativeRoots[index])
+	context.nativeRoots[index] = nil
+	context.nativeRoots = context.nativeRoots[:index]
+	context.pinNativeAllocations = previous
+}
+
+func (context *TaskContext) trackNativeAllocation(ref memory.Ref, err error) (memory.Ref, error) {
+	if err == nil && ref != (memory.Ref{}) && context != nil && context.pinNativeAllocations && len(context.nativeRoots) != 0 {
+		index := len(context.nativeRoots) - 1
+		context.nativeRoots[index] = append(context.nativeRoots[index], ref)
+	}
+	return ref, err
+}
+
+// trackNativeValue keeps a Ref held only by native Go code visible to active
+// scratch collection for the remainder of the current native invocation.
+// Native locals do not otherwise appear in the interpreter frame graph.
+func (context *TaskContext) trackNativeValue(value memory.Value) {
+	if context == nil || !context.pinNativeAllocations || len(context.nativeRoots) == 0 || !value.IsRef() {
+		return
+	}
+	index := len(context.nativeRoots) - 1
+	context.nativeRoots[index] = append(context.nativeRoots[index], value.Ref())
+}
+
+func (context *TaskContext) trackNativeResult(value memory.Value) {
+	context.trackNativeValue(value)
 }
 
 func (context *TaskContext) NewObject() (ownership.ObjectID, error) {
@@ -56,15 +120,43 @@ func (context *TaskContext) NewCell() (memory.Ref, error) {
 	if context == nil || context.Realm == nil {
 		return memory.Ref{}, fmt.Errorf("runtime: nil task context")
 	}
-	return context.Realm.store.AllocCell(context.Owner, context.MemoryRegion)
+	ref, err := context.Realm.store.AllocCell(context.Owner, context.MemoryRegion)
+	return context.trackNativeAllocation(ref, err)
 }
 
-// NewString allocates an immutable native string in the task's private region.
+// NewString returns a canonical short immutable string within this task. The
+// low-level Store allocator remains explicit; this weak execution cache only
+// avoids repeatedly materializing primitive property names and small values.
 func (context *TaskContext) NewString(text string) (memory.Ref, error) {
 	if context == nil || context.Realm == nil {
 		return memory.Ref{}, fmt.Errorf("runtime: nil task context")
 	}
-	return context.Realm.store.AllocString(context.Owner, context.MemoryRegion, text)
+	if len(text) <= taskStringInternMaxBytes {
+		if context.stringIntern == nil {
+			context.stringIntern = &taskStringIntern{}
+		}
+		intern := context.stringIntern
+		key := taskStringInternKey{region: context.MemoryRegion, text: text}
+		if ref, found := intern.refs[key]; found {
+			if current, err := context.Realm.store.DerefString(context.Owner, ref); err == nil && current == text {
+				return context.trackNativeAllocation(ref, nil)
+			}
+			delete(intern.refs, key)
+		}
+		if len(intern.refs) < taskStringInternMaxCount {
+			ref, err := context.Realm.store.AllocString(context.Owner, context.MemoryRegion, text)
+			if err != nil {
+				return memory.Ref{}, err
+			}
+			if intern.refs == nil {
+				intern.refs = make(map[taskStringInternKey]memory.Ref)
+			}
+			intern.refs[taskStringInternKey{region: context.MemoryRegion, text: strings.Clone(text)}] = ref
+			return context.trackNativeAllocation(ref, nil)
+		}
+	}
+	ref, err := context.Realm.store.AllocString(context.Owner, context.MemoryRegion, text)
+	return context.trackNativeAllocation(ref, err)
 }
 
 func (context *TaskContext) Deref(ref memory.Ref) (memory.Cell, error) {
@@ -98,7 +190,7 @@ func (context *TaskContext) NewHeapObject() (memory.Ref, error) {
 	if err == nil && context.intrinsics != nil {
 		err = context.SetPrototype(ref, memory.RefValue(context.intrinsics.ObjectPrototype))
 	}
-	return ref, err
+	return context.trackNativeAllocation(ref, err)
 }
 
 func (context *TaskContext) DerefObject(ref memory.Ref) (memory.Object, error) {
@@ -172,7 +264,7 @@ func (context *TaskContext) NewArray(length uint32) (memory.Ref, error) {
 	if err == nil && context.intrinsics != nil {
 		err = context.SetPrototype(ref, memory.RefValue(context.intrinsics.ArrayPrototype))
 	}
-	return ref, err
+	return context.trackNativeAllocation(ref, err)
 }
 
 func (context *TaskContext) DerefArray(ref memory.Ref) (memory.Array, error) {
@@ -214,7 +306,8 @@ func (context *TaskContext) NewContext(parent memory.Value) (memory.Ref, error) 
 	if context == nil || context.Realm == nil {
 		return memory.Ref{}, fmt.Errorf("runtime: nil task context")
 	}
-	return context.Realm.store.AllocContext(context.Owner, context.MemoryRegion, parent)
+	ref, err := context.Realm.store.AllocContext(context.Owner, context.MemoryRegion, parent)
+	return context.trackNativeAllocation(ref, err)
 }
 
 func (context *TaskContext) DerefContext(ref memory.Ref) (memory.Context, error) {
@@ -310,13 +403,13 @@ func (context *TaskContext) NewBytecodeFunctionWithLocations(name, environment m
 		err = context.Realm.store.SetFunctionLocations(context.Owner, ref, locations)
 	}
 	if err != nil || context.intrinsics == nil {
-		return ref, err
+		return context.trackNativeAllocation(ref, err)
 	}
 	if err := context.intrinsics.initializeFunction(context, ref, name, arity, true); err != nil {
 		_ = context.Realm.store.Free(context.Owner, ref)
 		return memory.Ref{}, err
 	}
-	return ref, nil
+	return context.trackNativeAllocation(ref, nil)
 }
 
 func (context *TaskContext) NewArrowBytecodeFunctionWithLocations(name, environment, lexicalThis memory.Value, arity uint32, code []byte, constants []memory.Value, locations []memory.SourceSpan) (memory.Ref, error) {
@@ -328,13 +421,13 @@ func (context *TaskContext) NewArrowBytecodeFunctionWithLocations(name, environm
 		err = context.Realm.store.SetFunctionLocations(context.Owner, ref, locations)
 	}
 	if err != nil || context.intrinsics == nil {
-		return ref, err
+		return context.trackNativeAllocation(ref, err)
 	}
 	if err := context.intrinsics.initializeFunction(context, ref, name, arity, false); err != nil {
 		_ = context.Realm.store.Free(context.Owner, ref)
 		return memory.Ref{}, err
 	}
-	return ref, nil
+	return context.trackNativeAllocation(ref, nil)
 }
 
 func (context *TaskContext) NewBytecodeClosure(template memory.Ref, environment memory.Value) (memory.Ref, error) {
@@ -343,7 +436,7 @@ func (context *TaskContext) NewBytecodeClosure(template memory.Ref, environment 
 	}
 	ref, err := context.Realm.store.AllocBytecodeClosure(context.Owner, context.MemoryRegion, template, environment)
 	if err != nil || context.intrinsics == nil {
-		return ref, err
+		return context.trackNativeAllocation(ref, err)
 	}
 	descriptor, err := context.LoadFunction(ref)
 	if err != nil {
@@ -354,7 +447,7 @@ func (context *TaskContext) NewBytecodeClosure(template memory.Ref, environment 
 		_ = context.Realm.store.Free(context.Owner, ref)
 		return memory.Ref{}, err
 	}
-	return ref, nil
+	return context.trackNativeAllocation(ref, nil)
 }
 
 func (context *TaskContext) NewArrowBytecodeClosure(template memory.Ref, environment, lexicalThis memory.Value) (memory.Ref, error) {
@@ -363,7 +456,7 @@ func (context *TaskContext) NewArrowBytecodeClosure(template memory.Ref, environ
 	}
 	ref, err := context.Realm.store.AllocArrowBytecodeClosure(context.Owner, context.MemoryRegion, template, environment, lexicalThis)
 	if err != nil || context.intrinsics == nil {
-		return ref, err
+		return context.trackNativeAllocation(ref, err)
 	}
 	descriptor, err := context.LoadFunction(ref)
 	if err != nil {
@@ -374,7 +467,7 @@ func (context *TaskContext) NewArrowBytecodeClosure(template memory.Ref, environ
 		_ = context.Realm.store.Free(context.Owner, ref)
 		return memory.Ref{}, err
 	}
-	return ref, nil
+	return context.trackNativeAllocation(ref, nil)
 }
 
 func (context *TaskContext) NewNativeFunction(name, environment memory.Value, arity uint32, nativeID uint64) (memory.Ref, error) {
@@ -383,13 +476,13 @@ func (context *TaskContext) NewNativeFunction(name, environment memory.Value, ar
 	}
 	ref, err := context.Realm.store.AllocNativeFunction(context.Owner, context.MemoryRegion, name, environment, arity, nativeID)
 	if err != nil || context.intrinsics == nil {
-		return ref, err
+		return context.trackNativeAllocation(ref, err)
 	}
 	if err := context.intrinsics.initializeFunction(context, ref, name, arity, false); err != nil {
 		_ = context.Realm.store.Free(context.Owner, ref)
 		return memory.Ref{}, err
 	}
-	return ref, nil
+	return context.trackNativeAllocation(ref, nil)
 }
 
 func (context *TaskContext) NewNativeConstructor(name, environment memory.Value, arity uint32, nativeID uint64) (memory.Ref, error) {
@@ -398,13 +491,13 @@ func (context *TaskContext) NewNativeConstructor(name, environment memory.Value,
 	}
 	ref, err := context.Realm.store.AllocNativeConstructor(context.Owner, context.MemoryRegion, name, environment, arity, nativeID)
 	if err != nil || context.intrinsics == nil {
-		return ref, err
+		return context.trackNativeAllocation(ref, err)
 	}
 	if err := context.intrinsics.initializeFunction(context, ref, name, arity, true); err != nil {
 		_ = context.Realm.store.Free(context.Owner, ref)
 		return memory.Ref{}, err
 	}
-	return ref, nil
+	return context.trackNativeAllocation(ref, nil)
 }
 
 func (context *TaskContext) NewBoundNativeFunction(name, environment memory.Value, arity uint32, nativeID uint64, captures ...memory.Value) (memory.Ref, error) {
@@ -413,13 +506,13 @@ func (context *TaskContext) NewBoundNativeFunction(name, environment memory.Valu
 	}
 	ref, err := context.Realm.store.AllocBoundNativeFunction(context.Owner, context.MemoryRegion, name, environment, arity, nativeID, captures)
 	if err != nil || context.intrinsics == nil {
-		return ref, err
+		return context.trackNativeAllocation(ref, err)
 	}
 	if err := context.intrinsics.initializeFunction(context, ref, name, arity, false); err != nil {
 		_ = context.Realm.store.Free(context.Owner, ref)
 		return memory.Ref{}, err
 	}
-	return ref, nil
+	return context.trackNativeAllocation(ref, nil)
 }
 
 func (context *TaskContext) DerefFunction(ref memory.Ref) (memory.Function, error) {
@@ -446,7 +539,7 @@ func (context *TaskContext) NewPromise() (memory.Ref, error) {
 	if err == nil && context.intrinsics != nil {
 		err = context.SetPrototype(ref, memory.RefValue(context.intrinsics.PromisePrototype))
 	}
-	return ref, err
+	return context.trackNativeAllocation(ref, err)
 }
 
 func (context *TaskContext) DerefPromise(ref memory.Ref) (memory.Promise, error) {
@@ -495,14 +588,16 @@ func (context *TaskContext) NewBigInt(negative bool, magnitude []byte) (memory.R
 	if context == nil || context.Realm == nil {
 		return memory.Ref{}, fmt.Errorf("runtime: nil task context")
 	}
-	return context.Realm.store.AllocBigInt(context.Owner, context.MemoryRegion, negative, magnitude)
+	ref, err := context.Realm.store.AllocBigInt(context.Owner, context.MemoryRegion, negative, magnitude)
+	return context.trackNativeAllocation(ref, err)
 }
 
 func (context *TaskContext) ParseBigInt(text string, base int) (memory.Ref, error) {
 	if context == nil || context.Realm == nil {
 		return memory.Ref{}, fmt.Errorf("runtime: nil task context")
 	}
-	return context.Realm.store.ParseBigInt(context.Owner, context.MemoryRegion, text, base)
+	ref, err := context.Realm.store.ParseBigInt(context.Owner, context.MemoryRegion, text, base)
+	return context.trackNativeAllocation(ref, err)
 }
 
 func (context *TaskContext) DerefBigInt(ref memory.Ref) (memory.BigInt, error) {
@@ -516,7 +611,8 @@ func (context *TaskContext) NewSymbol(description memory.Value) (memory.Ref, err
 	if context == nil || context.Realm == nil {
 		return memory.Ref{}, fmt.Errorf("runtime: nil task context")
 	}
-	return context.Realm.store.AllocSymbol(context.Owner, context.MemoryRegion, description)
+	ref, err := context.Realm.store.AllocSymbol(context.Owner, context.MemoryRegion, description)
+	return context.trackNativeAllocation(ref, err)
 }
 
 func (context *TaskContext) DerefSymbol(ref memory.Ref) (memory.Symbol, error) {
@@ -530,7 +626,8 @@ func (context *TaskContext) NewArrayBuffer(bytes []byte) (memory.Ref, error) {
 	if context == nil || context.Realm == nil {
 		return memory.Ref{}, fmt.Errorf("runtime: nil task context")
 	}
-	return context.Realm.store.AllocArrayBuffer(context.Owner, context.MemoryRegion, bytes)
+	ref, err := context.Realm.store.AllocArrayBuffer(context.Owner, context.MemoryRegion, bytes)
+	return context.trackNativeAllocation(ref, err)
 }
 
 func (context *TaskContext) DerefArrayBuffer(ref memory.Ref) (memory.ArrayBuffer, error) {
@@ -565,7 +662,8 @@ func (context *TaskContext) NewTypedArray(buffer memory.Ref, element memory.Elem
 	if context == nil || context.Realm == nil {
 		return memory.Ref{}, fmt.Errorf("runtime: nil task context")
 	}
-	return context.Realm.store.AllocTypedArray(context.Owner, context.MemoryRegion, buffer, element, byteOffset, length)
+	ref, err := context.Realm.store.AllocTypedArray(context.Owner, context.MemoryRegion, buffer, element, byteOffset, length)
+	return context.trackNativeAllocation(ref, err)
 }
 
 func (context *TaskContext) DerefTypedArray(ref memory.Ref) (memory.TypedArray, error) {
@@ -597,7 +695,7 @@ func (context *TaskContext) NewMap() (memory.Ref, error) {
 	if err == nil && context.intrinsics != nil {
 		err = context.SetPrototype(ref, memory.RefValue(context.intrinsics.MapPrototype))
 	}
-	return ref, err
+	return context.trackNativeAllocation(ref, err)
 }
 
 func (context *TaskContext) DerefMap(ref memory.Ref) (memory.Map, error) {
@@ -643,7 +741,7 @@ func (context *TaskContext) NewSet() (memory.Ref, error) {
 	if err == nil && context.intrinsics != nil {
 		err = context.SetPrototype(ref, memory.RefValue(context.intrinsics.SetPrototype))
 	}
-	return ref, err
+	return context.trackNativeAllocation(ref, err)
 }
 
 func (context *TaskContext) DerefSet(ref memory.Ref) (memory.Set, error) {
@@ -689,7 +787,7 @@ func (context *TaskContext) NewIterator(target memory.Ref, kind memory.IteratorK
 	if err == nil && context.intrinsics != nil {
 		err = context.SetPrototype(ref, memory.RefValue(context.intrinsics.IteratorPrototype))
 	}
-	return ref, err
+	return context.trackNativeAllocation(ref, err)
 }
 
 func (context *TaskContext) DerefIterator(ref memory.Ref) (memory.Iterator, error) {
@@ -710,7 +808,8 @@ func (context *TaskContext) NewWeakMap() (memory.Ref, error) {
 	if context == nil || context.Realm == nil {
 		return memory.Ref{}, fmt.Errorf("runtime: nil task context")
 	}
-	return context.Realm.store.AllocWeakMap(context.Owner, context.MemoryRegion)
+	ref, err := context.Realm.store.AllocWeakMap(context.Owner, context.MemoryRegion)
+	return context.trackNativeAllocation(ref, err)
 }
 
 func (context *TaskContext) DerefWeakMap(ref memory.Ref) (memory.WeakMap, error) {
@@ -752,7 +851,8 @@ func (context *TaskContext) NewWeakSet() (memory.Ref, error) {
 	if context == nil || context.Realm == nil {
 		return memory.Ref{}, fmt.Errorf("runtime: nil task context")
 	}
-	return context.Realm.store.AllocWeakSet(context.Owner, context.MemoryRegion)
+	ref, err := context.Realm.store.AllocWeakSet(context.Owner, context.MemoryRegion)
+	return context.trackNativeAllocation(ref, err)
 }
 
 func (context *TaskContext) DerefWeakSet(ref memory.Ref) (memory.WeakSet, error) {
@@ -794,7 +894,8 @@ func (context *TaskContext) NewHostObject(value memory.HostObject) (memory.Ref, 
 	if context == nil || context.Realm == nil {
 		return memory.Ref{}, fmt.Errorf("runtime: nil task context")
 	}
-	return context.Realm.store.AllocHostObject(context.Owner, context.MemoryRegion, value)
+	ref, err := context.Realm.store.AllocHostObject(context.Owner, context.MemoryRegion, value)
+	return context.trackNativeAllocation(ref, err)
 }
 
 func (context *TaskContext) DerefHostObject(ref memory.Ref) (memory.HostObject, error) {
@@ -808,7 +909,8 @@ func (context *TaskContext) NewDate(milliseconds float64) (memory.Ref, error) {
 	if context == nil || context.Realm == nil {
 		return memory.Ref{}, fmt.Errorf("runtime: nil task context")
 	}
-	return context.Realm.store.AllocDate(context.Owner, context.MemoryRegion, milliseconds)
+	ref, err := context.Realm.store.AllocDate(context.Owner, context.MemoryRegion, milliseconds)
+	return context.trackNativeAllocation(ref, err)
 }
 
 func (context *TaskContext) DerefDate(ref memory.Ref) (memory.Date, error) {
@@ -829,7 +931,8 @@ func (context *TaskContext) NewRegExp(pattern memory.Ref, flags string) (memory.
 	if context == nil || context.Realm == nil {
 		return memory.Ref{}, fmt.Errorf("runtime: nil task context")
 	}
-	return context.Realm.store.AllocRegExp(context.Owner, context.MemoryRegion, pattern, flags)
+	ref, err := context.Realm.store.AllocRegExp(context.Owner, context.MemoryRegion, pattern, flags)
+	return context.trackNativeAllocation(ref, err)
 }
 
 func (context *TaskContext) DerefRegExp(ref memory.Ref) (memory.RegExp, error) {
@@ -852,7 +955,7 @@ func (context *TaskContext) NewError(kind memory.ErrorKind, message memory.Value
 	}
 	ref, err := context.Realm.store.AllocError(context.Owner, context.MemoryRegion, kind, message)
 	if err != nil || context.intrinsics == nil {
-		return ref, err
+		return context.trackNativeAllocation(ref, err)
 	}
 	prototype := context.intrinsics.ErrorPrototype
 	switch kind {
@@ -871,7 +974,7 @@ func (context *TaskContext) NewError(kind memory.ErrorKind, message memory.Value
 			return memory.Ref{}, err
 		}
 	}
-	return ref, nil
+	return context.trackNativeAllocation(ref, nil)
 }
 
 func (context *TaskContext) DerefError(ref memory.Ref) (memory.ErrorObject, error) {

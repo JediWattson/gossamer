@@ -64,6 +64,40 @@ func (document *Document) MutationRecordsSince(sequence uint64) ([]MutationRecor
 	return document.mutationRecordsSinceLocked(sequence)
 }
 
+// BeginMutationJournalRetention keeps the complete mutation suffix produced
+// by an active browser task. MutationObserver delivery happens only at the
+// task's microtask checkpoint, so the ordinary bounded history must not evict
+// records while that task is still running.
+func (document *Document) BeginMutationJournalRetention() {
+	if document == nil || document.store == nil {
+		return
+	}
+	document.store.mutex.Lock()
+	defer document.store.mutex.Unlock()
+	document.mutationRetainers++
+}
+
+// EndMutationJournalRetention releases one active task's journal lease and
+// returns the passive document history to its bounded size.
+func (document *Document) EndMutationJournalRetention() {
+	if document == nil || document.store == nil {
+		return
+	}
+	document.store.mutex.Lock()
+	defer document.store.mutex.Unlock()
+	if document.mutationRetainers == 0 {
+		return
+	}
+	document.mutationRetainers--
+	if document.mutationRetainers != 0 || len(document.mutations) <= maxMutationJournalRecords {
+		return
+	}
+	start := len(document.mutations) - maxMutationJournalRecords
+	copy(document.mutations, document.mutations[start:])
+	clear(document.mutations[maxMutationJournalRecords:])
+	document.mutations = document.mutations[:maxMutationJournalRecords]
+}
+
 func (document *Document) mutationRecordsSinceLocked(sequence uint64) ([]MutationRecord, uint64, error) {
 	if len(document.mutations) != 0 {
 		oldest := document.mutations[0].Sequence
@@ -90,7 +124,7 @@ func (document *Document) appendMutationLocked(record MutationRecord) {
 	if record.Type == MutationChildList {
 		document.treeSequence = record.Sequence
 	}
-	if len(document.mutations) == maxMutationJournalRecords {
+	if len(document.mutations) == maxMutationJournalRecords && document.mutationRetainers == 0 {
 		copy(document.mutations, document.mutations[1:])
 		document.mutations[len(document.mutations)-1] = record
 		return

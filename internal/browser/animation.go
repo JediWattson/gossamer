@@ -142,7 +142,7 @@ func (page *Page) runAnimationFrameBatch(context *browserruntime.TaskContext, ba
 	script := page.script
 	page.mutex.Unlock()
 
-	host := &taskHost{page: page, task: context, generation: generation, autoRender: true}
+	host := beginTaskHost(&taskHost{page: page, task: context, generation: generation, autoRender: true})
 	var result error
 	for index, frame := range batch {
 		record, err := context.DerefHostObject(context.Refs[index])
@@ -219,7 +219,7 @@ func (page *Page) QueueViewportResize(viewport render.Viewport) (browserruntime.
 		if !changed || rootErr != nil || !found {
 			return rootErr
 		}
-		host := &taskHost{page: page, task: context, generation: generation, autoRender: true, resized: true}
+		host := beginTaskHost(&taskHost{page: page, task: context, generation: generation, autoRender: true, resized: true})
 		if script == nil {
 			return host.finish()
 		}

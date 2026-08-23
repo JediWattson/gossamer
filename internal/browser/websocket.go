@@ -241,7 +241,7 @@ func (page *Page) dispatchWebSocket(task *browserruntime.TaskContext, generation
 	if !ok {
 		return fmt.Errorf("browser: JavaScript engine does not support WebSocket events")
 	}
-	host := &taskHost{page: page, task: task, generation: generation, autoRender: true, styleChanged: pendingStyle}
+	host := beginTaskHost(&taskHost{page: page, task: task, generation: generation, autoRender: true, styleChanged: pendingStyle})
 	dispatchErr := realm.DispatchWebSocket(host, id, event)
 	microtaskErr := script.DrainMicrotasks(host)
 	finishErr := host.finish()

@@ -119,6 +119,23 @@ func (realm *Realm) CollectNative(roots ...memory.Ref) (memory.Collection, error
 	return realm.store.Collect(realm.owner, roots...)
 }
 
+// CollectNativeWithOptionalRoots retains external browser envelopes that are
+// still Realm-owned at the instant of collection. A timer firing, queue
+// transfer, or cancellation may race the checkpoint, so stale or no-longer
+// owned optional roots do not invalidate the required script root set.
+func (realm *Realm) CollectNativeWithOptionalRoots(optional []memory.Ref, roots ...memory.Ref) (memory.Collection, error) {
+	if realm == nil {
+		return memory.Collection{}, fmt.Errorf("runtime: nil realm")
+	}
+	if realm.closed.Load() {
+		return memory.Collection{}, ErrRealmClosed
+	}
+	if realm.executing.Load() {
+		return memory.Collection{}, ErrRealmRunning
+	}
+	return realm.store.CollectWithOptionalRoots(realm.owner, optional, roots...)
+}
+
 // EnqueueTask adds externally initiated work that carries no shadow objects.
 func (realm *Realm) EnqueueTask(run TaskFunc) (TaskID, error) {
 	return realm.enqueue(realm.Tasks, run, ownership.OwnerID{}, nil)
@@ -338,6 +355,7 @@ func (realm *Realm) execute(task Task) (result error) {
 		Refs:         append([]memory.Ref(nil), task.refs...),
 		stack:        &Stack{},
 		jobs:         &taskJobs{},
+		stringIntern: &taskStringIntern{},
 	}
 	defer func() {
 		if stackErr := context.finishStack(); stackErr != nil {

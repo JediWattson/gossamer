@@ -136,6 +136,16 @@ func (execution *execution) appendIterableToArray(array memory.Ref, iterable mem
 	if _, err := execution.context.DerefArray(array); err != nil {
 		return err
 	}
+	return execution.forEachIterableValue(iterable, func(value memory.Value) error {
+		snapshot, err := execution.context.DerefArray(array)
+		if err != nil {
+			return err
+		}
+		return execution.context.SetArrayElement(array, snapshot.Length, value)
+	})
+}
+
+func (execution *execution) forEachIterableValue(iterable memory.Value, visit func(memory.Value) error) error {
 	iterator, next, err := execution.getIteratorRecord(iterable)
 	if err != nil {
 		return err
@@ -160,30 +170,26 @@ func (execution *execution) appendIterableToArray(array memory.Ref, iterable mem
 		}
 		done, found, err := execution.getProperty(result, memory.RefValue(doneName))
 		if err != nil {
-			return err
+			return abrupt(err)
 		}
 		if !found {
 			done = memory.UndefinedValue()
 		}
 		finished, err := valueTruthy(execution.context, done)
 		if err != nil {
-			return err
+			return abrupt(err)
 		}
 		if finished {
 			return nil
 		}
 		value, found, err := execution.getProperty(result, memory.RefValue(valueName))
 		if err != nil {
-			return err
+			return abrupt(err)
 		}
 		if !found {
 			value = memory.UndefinedValue()
 		}
-		snapshot, err := execution.context.DerefArray(array)
-		if err != nil {
-			return abrupt(err)
-		}
-		if err := execution.context.SetArrayElement(array, snapshot.Length, value); err != nil {
+		if err := visit(value); err != nil {
 			return abrupt(err)
 		}
 	}

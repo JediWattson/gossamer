@@ -114,6 +114,119 @@ counter;
 	}
 }
 
+func TestLongTaskCollectsUnreachableScratchAtInterpreterSafepoints(t *testing.T) {
+	t.Parallel()
+
+	scriptEngine := nativeengine.New(nativeengine.Config{ActiveCollectionInterval: 1})
+	browserRuntime, err := browser.NewWithEngine(scriptEngine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer browserRuntime.Close()
+	page, err := browserRuntime.NewPage(dom.NewDocument(), &url.URL{Scheme: "https", Host: "active-collection.test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scriptRealm, ok := scriptEngine.LatestRealm()
+	if !ok {
+		t.Fatal("native engine did not create a JSRealm")
+	}
+	run := func(label, source string) {
+		t.Helper()
+		if _, err := page.QueueScript(browser.ScriptSource{URL: label + ".js", Source: source}); err != nil {
+			t.Fatal(err)
+		}
+		if err := page.Realm.RunOne(context.Background()); err != nil {
+			t.Fatalf("RunOne(%s): %v", label, err)
+		}
+	}
+	run("bootstrap", `let retained = "";`)
+	run("churn", `
+for (let index = 0; index < 20000; index = index + 1) {
+  let temporary = "temporary-" + index;
+  if (index === 19999) retained = temporary;
+}
+`)
+	run("reentrant", `
+let source = [];
+for (let index = 0; index < 12000; index = index + 1) source.push(index);
+let mapped = source.map(function (value) {
+  let temporary = "mapped-" + value;
+  return value + 1;
+});
+retained = retained + ":" + mapped[11999];
+`)
+	run("mutated-native-snapshot", `
+let mutationSource = [{ marker: "first" }, { marker: "future" }];
+let mutationVisited = [];
+mutationSource.forEach(function (value, index) {
+  if (index === 0) {
+	delete mutationSource[1];
+    for (let churn = 0; churn < 30000; churn = churn + 1) {
+      let temporary = "native-snapshot-" + churn;
+    }
+  }
+	mutationVisited.push(value.marker);
+});
+retained = retained + ":" + mutationVisited.length;
+`)
+	run("mutated-sort-snapshot", `
+let sortSource = [{ rank: 3 }, { rank: 2 }, { rank: 1 }];
+let firstComparison = true;
+sortSource.sort(function (left, right) {
+  if (firstComparison) {
+    firstComparison = false;
+    sortSource.length = 0;
+    for (let churn = 0; churn < 30000; churn = churn + 1) {
+      let temporary = "sort-snapshot-" + churn;
+    }
+  }
+  return left.rank - right.rank;
+});
+retained = retained + ":" + sortSource[0].rank + sortSource[1].rank + sortSource[2].rank;
+`)
+	run("mutated-map-set-snapshots", `
+let secondMapKey = { id: "k2" };
+let mapSource = new Map([[{ id: "k1" }, { id: "v1" }], [secondMapKey, { id: "v2" }]]);
+let mapVisited = [];
+mapSource.forEach(function (value, key) {
+  if (mapVisited.length === 0) {
+    mapSource.delete(secondMapKey);
+    for (let churn = 0; churn < 30000; churn = churn + 1) {
+      let temporary = "map-snapshot-" + churn;
+    }
+  }
+  mapVisited.push(key.id + value.id);
+});
+if (mapVisited.length < 1 || mapVisited.length > 2) throw new Error("Map forEach mutation count");
+
+let setSource = new Set([{ id: "s1" }, { id: "s2" }]);
+let setVisited = [];
+setSource.forEach(function (value) {
+  if (setVisited.length === 0) {
+    setSource.clear();
+    for (let churn = 0; churn < 30000; churn = churn + 1) {
+      let temporary = "set-snapshot-" + churn;
+    }
+  }
+  setVisited.push(value.id);
+});
+if (setVisited.length < 1 || setVisited.length > 2) throw new Error("Set forEach mutation count");
+`)
+	run("verify", `if (retained !== "temporary-19999:12000:1:123") throw new Error("live scratch value was collected");`)
+
+	profile, err := scriptRealm.ScriptMemoryProfile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if profile.ActiveCollections == 0 || profile.ActiveCollectedSlots == 0 {
+		t.Fatalf("active scratch collection profile = %#v", profile)
+	}
+	if err := page.Realm.Store().CheckInvariants(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestTaskScratchEvacuatesFinalMutableState(t *testing.T) {
 	t.Parallel()
 
@@ -632,6 +745,51 @@ func TestCheckpointCollectionReleasesDetachedWeakWrapper(t *testing.T) {
 		t.Fatalf("Strand memory profile = %#v, stats=%#v", profile, after)
 	}
 	if err := page.Realm.Store().CheckInvariants(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCheckpointCollectionPreservesPendingTimerEnvelope(t *testing.T) {
+	t.Parallel()
+
+	scriptEngine := nativeengine.New(nativeengine.Config{CheckpointCollectionInterval: 1})
+	browserRuntime, err := browser.NewWithEngine(scriptEngine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer browserRuntime.Close()
+	page, err := browserRuntime.NewPage(dom.NewDocument(), &url.URL{Scheme: "https", Host: "gossamer.test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := page.QueueScript(browser.ScriptSource{URL: "pending-timer.js", Source: `
+let timerEnvelopeFired = false;
+setTimeout(function () { timerEnvelopeFired = true; }, 100);
+`}); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	collected, err := page.CollectScriptMemoryAtCheckpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !collected {
+		t.Fatal("allocation threshold did not trigger checkpoint collection")
+	}
+
+	timerContext, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := page.Realm.RunOne(timerContext); err != nil {
+		t.Fatalf("run timer retained across collection: %v", err)
+	}
+	if _, err := page.QueueScript(browser.ScriptSource{URL: "verify-timer-envelope.js", Source: `
+if (!timerEnvelopeFired) throw new Error("pending timer envelope was lost");
+`}); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 }

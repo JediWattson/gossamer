@@ -3,11 +3,82 @@ package runtime_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	browserruntime "github.com/JediWattson/gossamer/internal/runtime"
 	"github.com/JediWattson/gossamer/internal/runtime/memory"
 )
+
+func TestTaskContextWeaklyInternsOnlyBoundedShortStrings(t *testing.T) {
+	t.Parallel()
+
+	realm, err := browserruntime.NewRealm(1001, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer realm.Close()
+	_, err = realm.EnqueueTask(func(task *browserruntime.TaskContext) error {
+		first, err := task.NewString("repeated-property")
+		if err != nil {
+			return err
+		}
+		second, err := task.NewString("repeated-property")
+		if err != nil {
+			return err
+		}
+		if second != first {
+			t.Fatalf("short string refs = %s and %s, want one canonical task ref", first, second)
+		}
+		if err := task.Realm.Store().Free(task.Owner, first); err != nil {
+			return err
+		}
+		reused, err := task.NewString("repeated-property")
+		if err != nil {
+			return err
+		}
+		if reused == first || reused.Slot != first.Slot || reused.Gen == first.Gen {
+			t.Fatalf("stale intern replacement = %s after %s", reused, first)
+		}
+		otherRegion, err := task.Realm.Store().NewRegion(task.Owner)
+		if err != nil {
+			return err
+		}
+		otherScope, err := task.WithMemoryRegion(otherRegion, nil)
+		if err != nil {
+			return err
+		}
+		other, err := otherScope.NewString("repeated-property")
+		if err != nil {
+			return err
+		}
+		if other.Region != otherRegion || other == reused {
+			t.Fatalf("region-local intern ref = %s, want a new ref in R%d", other, otherRegion)
+		}
+		if err := task.Realm.Store().DestroyRegion(task.Owner, otherRegion); err != nil {
+			return err
+		}
+		long := strings.Repeat("x", 65)
+		longFirst, err := task.NewString(long)
+		if err != nil {
+			return err
+		}
+		longSecond, err := task.NewString(long)
+		if err != nil {
+			return err
+		}
+		if longFirst == longSecond {
+			t.Fatalf("long application string unexpectedly interned as %s", longFirst)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestTaskContextWithMemoryRegionRequiresCurrentTaskOwnership(t *testing.T) {
 	t.Parallel()

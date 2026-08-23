@@ -44,9 +44,10 @@ type Document struct {
 
 	version atomic.Uint64
 
-	mutationSequence uint64
-	treeSequence     uint64
-	mutations        []MutationRecord
+	mutationSequence  uint64
+	treeSequence      uint64
+	mutations         []MutationRecord
+	mutationRetainers uint32
 }
 
 // NodeStore resolves logical identity in both directions. Backing nodes may

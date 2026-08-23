@@ -29,7 +29,7 @@ func (page *Page) QueueViewportScrollBy(deltaX, deltaY float64) (browserruntime.
 		x, y := page.scrollX, page.scrollY
 		generation := page.documentGeneration
 		page.mutex.RUnlock()
-		host := &taskHost{page: page, task: context, generation: generation, autoRender: true}
+		host := beginTaskHost(&taskHost{page: page, task: context, generation: generation, autoRender: true})
 		changed, scrollErr := host.ScrollViewport(x+deltaX, y+deltaY)
 		if scrollErr != nil || !changed {
 			return scrollErr
@@ -56,7 +56,7 @@ func (page *Page) QueueViewportScrollTo(x, y float64) (browserruntime.TaskID, er
 		}
 		generation := page.documentGeneration
 		page.mutex.RUnlock()
-		host := &taskHost{page: page, task: context, generation: generation, autoRender: true}
+		host := beginTaskHost(&taskHost{page: page, task: context, generation: generation, autoRender: true})
 		changed, scrollErr := host.ScrollViewport(x, y)
 		if scrollErr != nil || !changed {
 			return scrollErr
@@ -114,7 +114,7 @@ func (page *Page) QueueScrollAt(x, y, deltaX, deltaY float64) (browserruntime.Ta
 			}
 		}
 		page.mutex.Unlock()
-		host := &taskHost{page: page, task: context, generation: generation, autoRender: true}
+		host := beginTaskHost(&taskHost{page: page, task: context, generation: generation, autoRender: true})
 		if scrollTarget.Node != dom.InvalidNodeID {
 			changed, scrollErr := host.ScrollElement(scrollTarget, scrollX+deltaX, scrollY+deltaY)
 			if scrollErr != nil || !changed {

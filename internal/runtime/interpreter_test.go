@@ -55,6 +55,66 @@ func TestInstructionLimitProfileAggregatesHotBytecode(t *testing.T) {
 	}
 }
 
+func TestInstructionLimitChargesControlFlowInsteadOfLoweringWidth(t *testing.T) {
+	t.Parallel()
+
+	realm, err := browserruntime.NewRealm(698, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer realm.Close()
+	var samples []browserruntime.ExecutionSample
+	interpreter := browserruntime.NewInterpreter(browserruntime.InterpreterConfig{
+		MaxInstructions:         2,
+		ExecutionSampleInterval: 1024,
+		ExecutionSample: func(_ *browserruntime.TaskContext, sample browserruntime.ExecutionSample) error {
+			samples = append(samples, sample)
+			return nil
+		},
+	})
+	_, err = realm.EnqueueTask(func(task *browserruntime.TaskContext) error {
+		instructions := make([]browserruntime.Instruction, 0, 4098)
+		for index := 0; index < 2048; index++ {
+			instructions = append(instructions,
+				browserruntime.Instruction{Op: browserruntime.OpUndefined},
+				browserruntime.Instruction{Op: browserruntime.OpPop},
+			)
+		}
+		instructions = append(instructions,
+			browserruntime.Instruction{Op: browserruntime.OpUndefined},
+			browserruntime.Instruction{Op: browserruntime.OpReturn},
+		)
+		function, err := task.NewBytecodeFunction(
+			memory.NullValue(), memory.NullValue(), 0, browserruntime.Assemble(instructions...), nil,
+		)
+		if err != nil {
+			return err
+		}
+		result, err := interpreter.Execute(task, function)
+		if err != nil {
+			return err
+		}
+		if result.Kind() != memory.ValueUndefined {
+			t.Fatalf("result = %#v, want undefined", result)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(samples) != 4 {
+		t.Fatalf("execution samples = %d, want 4", len(samples))
+	}
+	for index, sample := range samples {
+		if sample.TaskID == 0 || sample.RawInstructions != uint64(index+1)*1024 || sample.ControlSteps != 1 || sample.StackDepth != 1 || sample.Function == (memory.Ref{}) || sample.FunctionHash == 0 {
+			t.Fatalf("execution sample %d = %#v", index, sample)
+		}
+	}
+}
+
 func TestInterpreterExecutesCoreFrameAndStackVerbs(t *testing.T) {
 	t.Parallel()
 

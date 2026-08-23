@@ -13,6 +13,8 @@ import (
 	"github.com/JediWattson/gossamer/internal/dom"
 	"github.com/JediWattson/gossamer/internal/memoryprofile"
 	"github.com/JediWattson/gossamer/internal/nativeengine"
+	browserruntime "github.com/JediWattson/gossamer/internal/runtime"
+	"github.com/JediWattson/gossamer/internal/runtime/memory"
 	"github.com/JediWattson/gossamer/internal/runtime/ownership"
 )
 
@@ -90,5 +92,68 @@ func TestRecorderWritesEngineNeutralPhysicalTimeline(t *testing.T) {
 	if snapshots[0].Physical.AttributedBytes == 0 || snapshots[0].Realm.OwnershipPhysical.LiveEdgeEntries != baselineEdges+1 ||
 		snapshots[0].Realm.OwnershipPhysical.EdgeArenaReservedBytes == 0 {
 		t.Fatalf("initial snapshot omitted attributed heap gauges: %#v", snapshots[0])
+	}
+	if len(snapshots[0].Regions) == 0 {
+		t.Fatalf("initial snapshot omitted physical region attribution: %#v", snapshots[0])
+	}
+}
+
+func TestRecorderWritesActiveExecutionRegionCensus(t *testing.T) {
+	browserRuntime, err := browser.NewWithEngine(nativeengine.New(nativeengine.Config{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer browserRuntime.Close()
+	page, err := browserRuntime.NewPage(dom.NewDocument(), &url.URL{Scheme: "https", Host: "active-profile.test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "active.jsonl")
+	recorder, err := memoryprofile.New(path, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = page.Realm.EnqueueTask(func(context *browserruntime.TaskContext) error {
+		function, err := context.NewString("sampled")
+		if err != nil {
+			return err
+		}
+		return recorder.RecordExecution(page, context, browserruntime.ExecutionSample{
+			TaskID: context.TaskID, RawInstructions: 1_000_000, ControlSteps: 42,
+			StackDepth: 3, Function: function, FunctionName: "render",
+			FunctionHash: 0x1234, Instruction: 17, Opcode: browserruntime.OpLoadBinding,
+		})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := page.Realm.RunOne(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := recorder.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	var snapshot memoryprofile.Snapshot
+	if err := json.NewDecoder(file).Decode(&snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Label != "active-execution" || snapshot.Execution == nil {
+		t.Fatalf("active snapshot = %#v", snapshot)
+	}
+	active := snapshot.Execution
+	if active.RawInstructions != 1_000_000 || active.ControlSteps != 42 || active.FunctionHash != "0000000000001234" || active.Opcode != browserruntime.OpLoadBinding.String() {
+		t.Fatalf("execution metadata = %#v", active)
+	}
+	if active.ActiveRegion.ID == 0 || active.ActiveRegion.Live.LiveStrings != 1 || active.ActiveRegion.Live.LiveBytes != 7 || active.PersistentRegion != nil {
+		t.Fatalf("active region census = %#v", active.ActiveRegion)
+	}
+	if active.Function == (memory.Ref{}) || snapshot.Script.Engine != "strand" || snapshot.Script.LiveValues == 0 {
+		t.Fatalf("active script attribution = %#v", snapshot)
 	}
 }

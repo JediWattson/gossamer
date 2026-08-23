@@ -261,3 +261,116 @@ func TestDetachedEventTargetOutlivesWrapperUntilFinalListenerRelease(t *testing.
 		t.Fatalf("listener lifetime ownership = before:%#v after:%#v", baseline, after)
 	}
 }
+
+func TestDetachedObserverTargetOutlivesWrapperUntilFinalRegistrationRelease(t *testing.T) {
+	browserRuntime, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer browserRuntime.Close()
+	page, err := browserRuntime.NewPage(dom.NewDocument(), &url.URL{Scheme: "https", Host: "gossamer.test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	document := page.Document()
+	baselineNodes := document.Store().LiveLen()
+	baseline := browserRuntime.Ledger().Stats()
+	var target NodeHandle
+
+	if _, err := page.Realm.EnqueueTask(func(task *browserruntime.TaskContext) error {
+		host := &taskHost{page: page, task: task, generation: page.DocumentGeneration()}
+		target, err = host.CreateElement("section")
+		if err != nil {
+			return err
+		}
+		if err := host.RetainNodeWrapper(target); err != nil {
+			return err
+		}
+		if err := host.RetainNodeObserverTarget(target); err != nil {
+			return err
+		}
+		return host.RetainNodeObserverTarget(target)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.ReleaseNodeWrappers([]NodeHandle{target}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := document.Resolve(target.Node); !ok {
+		t.Fatal("observer-owned detached target died with its weak wrapper")
+	}
+	if err := page.ReleaseNodeObserverTarget(target); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := document.Resolve(target.Node); !ok {
+		t.Fatal("first observer release removed a target with another registration")
+	}
+	if err := page.ReleaseNodeObserverTarget(target); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := document.Resolve(target.Node); ok || document.Store().LiveLen() != baselineNodes {
+		t.Fatal("detached target survived its final observer claim")
+	}
+	after := browserRuntime.Ledger().Stats()
+	if after.LiveObjects != baseline.LiveObjects ||
+		after.ObjectsDestroyed-baseline.ObjectsDestroyed != 1 {
+		t.Fatalf("observer lifetime ownership = before:%#v after:%#v", baseline, after)
+	}
+}
+
+func TestConnectedObserverTargetActivatesBeforeDocumentDetachment(t *testing.T) {
+	rootNode := dom.NewDocument()
+	html := dom.NewElement("html")
+	body := dom.NewElement("body")
+	targetNode := dom.NewElement("section")
+	rootNode.AppendChild(html)
+	html.AppendChild(body)
+	body.AppendChild(targetNode)
+
+	browserRuntime, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer browserRuntime.Close()
+	page, err := browserRuntime.NewPage(rootNode, &url.URL{Scheme: "https", Host: "gossamer.test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	document := page.Document()
+	bodyID, _ := document.ID(body)
+	targetID, _ := document.ID(targetNode)
+	bodyHandle := NodeHandle{Document: page.DocumentGeneration(), Node: bodyID}
+	target := NodeHandle{Document: page.DocumentGeneration(), Node: targetID}
+	baselineNodes := document.Store().LiveLen()
+	if err := page.RetainNodeWrapper(target); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.RetainNodeObserverTarget(target); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := page.Realm.EnqueueTask(func(task *browserruntime.TaskContext) error {
+		host := &taskHost{page: page, task: task, generation: page.DocumentGeneration()}
+		return host.RemoveChild(bodyHandle, target)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.ReleaseNodeWrappers([]NodeHandle{target}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := document.Resolve(target.Node); !ok || document.Store().LiveLen() != baselineNodes {
+		t.Fatal("observer registration did not retain target across document detachment")
+	}
+	if err := page.ReleaseNodeObserverTarget(target); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := document.Resolve(target.Node); ok || document.Store().LiveLen() != baselineNodes-1 {
+		t.Fatal("detached target survived its final observer registration")
+	}
+}

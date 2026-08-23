@@ -28,6 +28,7 @@ type evacuatedMutationObserver struct {
 	callback browser.ValueHandle
 	wrapper  memory.Ref
 	function memory.Ref
+	resize   bool
 }
 
 type evacuatedEventListener struct {
@@ -46,11 +47,19 @@ func (realm *Realm) CollectGarbage(lifetimes ...browser.NodeWrapperLifetimeHost)
 		return ErrRealmClosed
 	}
 	var listenerLifetime browser.NodeEventListenerLifetimeHost
+	var observerLifetime browser.NodeObserverLifetimeHost
 	if len(lifetimes) != 0 {
 		listenerLifetime, _ = lifetimes[0].(browser.NodeEventListenerLifetimeHost)
+		observerLifetime, _ = lifetimes[0].(browser.NodeObserverLifetimeHost)
+	}
+	var externalRoots []memory.Ref
+	if len(lifetimes) != 0 {
+		if roots, ok := lifetimes[0].(browser.NativeMemoryRootHost); ok {
+			externalRoots = roots.NativeMemoryRoots()
+		}
 	}
 	realm.mutex.Lock()
-	handles, err := realm.collectGarbageLocked(len(lifetimes) != 0, listenerLifetime)
+	handles, err := realm.collectGarbageLocked(len(lifetimes) != 0, listenerLifetime, observerLifetime, externalRoots)
 	realm.mutex.Unlock()
 	if err != nil {
 		return err
@@ -64,7 +73,12 @@ func (realm *Realm) CollectGarbage(lifetimes ...browser.NodeWrapperLifetimeHost)
 	return lifetimes[0].ReleaseNodeWrappers(handles)
 }
 
-func (realm *Realm) collectGarbageLocked(drainWrappers bool, listenerLifetime browser.NodeEventListenerLifetimeHost) ([]browser.NodeHandle, error) {
+func (realm *Realm) collectGarbageLocked(
+	drainWrappers bool,
+	listenerLifetime browser.NodeEventListenerLifetimeHost,
+	observerLifetime browser.NodeObserverLifetimeHost,
+	externalRoots []memory.Ref,
+) ([]browser.NodeHandle, error) {
 	if realm.closed {
 		return nil, ErrRealmClosed
 	}
@@ -103,9 +117,9 @@ func (realm *Realm) collectGarbageLocked(drainWrappers bool, listenerLifetime br
 		return nil, err
 	}
 
-	_, collectErr := realm.runtime.CollectNative(realm.persistent.Roots()...)
+	_, collectErr := realm.runtime.CollectNativeWithOptionalRoots(externalRoots, realm.persistent.Roots()...)
 	collected, restoreErr := realm.restoreCanonicalCachesLocked(caches)
-	observerRestoreErr := realm.restoreMutationObserversLocked(store, owner, observers)
+	observerRestoreErr := realm.restoreMutationObserversLocked(store, owner, observers, observerLifetime)
 	listenerRestoreErr := realm.restoreEventListenersLocked(store, owner, listeners, listenerLifetime)
 	if collectErr != nil || restoreErr != nil || observerRestoreErr != nil || listenerRestoreErr != nil {
 		return nil, errors.Join(collectErr, restoreErr, observerRestoreErr, listenerRestoreErr)
@@ -123,7 +137,7 @@ func (realm *Realm) collectGarbageLocked(drainWrappers bool, listenerLifetime br
 }
 
 func (realm *Realm) evacuateMutationObserversLocked(store *memory.Store, owner ownership.OwnerID) ([]evacuatedMutationObserver, error) {
-	observers := make([]evacuatedMutationObserver, 0, len(realm.mutationObservers))
+	observers := make([]evacuatedMutationObserver, 0, len(realm.mutationObservers)+len(realm.resizeObservers))
 	for id, state := range realm.mutationObservers {
 		observerKey := memory.NumberValue(float64(id))
 		wrapper, found, err := store.MapGet(owner, realm.persistentObserverCache, observerKey)
@@ -142,25 +156,78 @@ func (realm *Realm) evacuateMutationObserversLocked(store *memory.Store, owner o
 			return nil, err
 		}
 	}
+	for id, state := range realm.resizeObservers {
+		observerKey := resizeObserverCacheKey(id)
+		wrapper, found, err := store.MapGet(owner, realm.persistentObserverCache, observerKey)
+		if err != nil || !found || !wrapper.IsRef() {
+			return nil, errors.Join(err, fmt.Errorf("nativeengine: ResizeObserver %d lost its wrapper", id))
+		}
+		callbackKey := memory.NumberValue(float64(state.Callback))
+		function, found, err := store.MapGet(owner, realm.persistentCallbackCache, callbackKey)
+		if err != nil || !found || !function.IsRef() {
+			return nil, errors.Join(err, fmt.Errorf("nativeengine: ResizeObserver %d lost callback %d", id, state.Callback))
+		}
+		observers = append(observers, evacuatedMutationObserver{
+			id: id, callback: state.Callback, wrapper: wrapper.Ref(), function: function.Ref(), resize: true,
+		})
+		if _, err := store.MapDelete(owner, realm.persistentCallbackCache, callbackKey); err != nil {
+			return nil, err
+		}
+	}
 	if err := store.MapClear(owner, realm.persistentObserverCache); err != nil {
 		return nil, err
 	}
 	return observers, nil
 }
 
-func (realm *Realm) restoreMutationObserversLocked(store *memory.Store, owner ownership.OwnerID, observers []evacuatedMutationObserver) error {
+func (realm *Realm) restoreMutationObserversLocked(
+	store *memory.Store,
+	owner ownership.OwnerID,
+	observers []evacuatedMutationObserver,
+	lifetime browser.NodeObserverLifetimeHost,
+) error {
 	for _, observer := range observers {
 		if _, err := store.Kind(owner, observer.wrapper); err != nil {
 			if errors.Is(err, memory.ErrStaleRef) {
-				delete(realm.mutationObservers, observer.id)
+				if observer.resize {
+					state := realm.resizeObservers[observer.id]
+					delete(realm.resizeObservers, observer.id)
+					if state != nil && len(state.Observations) != 0 {
+						if lifetime == nil {
+							return fmt.Errorf("nativeengine: browser host does not expose observer target lifetimes")
+						}
+						for _, observation := range state.Observations {
+							if releaseErr := lifetime.ReleaseNodeObserverTarget(observation.Target); releaseErr != nil {
+								return releaseErr
+							}
+						}
+					}
+				} else {
+					state := realm.mutationObservers[observer.id]
+					delete(realm.mutationObservers, observer.id)
+					if state != nil && state.Target != (browser.NodeHandle{}) {
+						if lifetime == nil {
+							return fmt.Errorf("nativeengine: browser host does not expose observer target lifetimes")
+						}
+						if releaseErr := lifetime.ReleaseNodeObserverTarget(state.Target); releaseErr != nil {
+							return releaseErr
+						}
+					}
+				}
 				continue
 			}
 			return err
 		}
-		if _, err := store.Kind(owner, observer.function); err != nil {
-			return fmt.Errorf("nativeengine: live MutationObserver %d lost callback: %w", observer.id, err)
+		label := "MutationObserver"
+		observerKey := memory.NumberValue(float64(observer.id))
+		if observer.resize {
+			label = "ResizeObserver"
+			observerKey = resizeObserverCacheKey(observer.id)
 		}
-		if err := store.MapSet(owner, realm.persistentObserverCache, memory.NumberValue(float64(observer.id)), memory.RefValue(observer.wrapper)); err != nil {
+		if _, err := store.Kind(owner, observer.function); err != nil {
+			return fmt.Errorf("nativeengine: live %s %d lost callback: %w", label, observer.id, err)
+		}
+		if err := store.MapSet(owner, realm.persistentObserverCache, observerKey, memory.RefValue(observer.wrapper)); err != nil {
 			return err
 		}
 		if err := store.MapSet(owner, realm.persistentCallbackCache, memory.NumberValue(float64(observer.callback)), memory.RefValue(observer.function)); err != nil {

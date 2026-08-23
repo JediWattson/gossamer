@@ -37,6 +37,16 @@ func (context *TaskContext) StackDepth() int {
 	return context.stack.Depth()
 }
 
+// IntrinsicsRegion reports the region holding the active Realm roots. During
+// an ordinary browser task this is the persistent region while MemoryRegion
+// is the shorter-lived allocation scratch region.
+func (context *TaskContext) IntrinsicsRegion() memory.RegionID {
+	if context == nil || context.intrinsics == nil {
+		return 0
+	}
+	return context.intrinsics.Global.Region
+}
+
 // VisitRefs visits host-held intrinsics, queue-delivered refs, active frames,
 // and task jobs without retaining, publishing, transferring, or otherwise
 // changing their ownership.
@@ -53,6 +63,16 @@ func (context *TaskContext) VisitRefs(visit func(memory.Ref) error) error {
 		}
 		if err := visit(ref); err != nil {
 			return err
+		}
+	}
+	for _, scope := range context.nativeRoots {
+		for _, ref := range scope {
+			if ref == (memory.Ref{}) {
+				continue
+			}
+			if err := visit(ref); err != nil {
+				return err
+			}
 		}
 	}
 	if err := context.stack.VisitRefs(visit); err != nil {

@@ -136,7 +136,8 @@ func (page *Page) requestSubmitFromTask(
 	if err != nil {
 		return err
 	}
-	host := &taskHost{page: page, task: task, generation: form.Document, autoRender: false}
+	host := beginTaskHost(&taskHost{page: page, task: task, generation: form.Document, autoRender: false})
+	defer host.releaseMutationJournal()
 	if validate || dispatchSubmit {
 		if err := host.MarkFormUserValidityForSubmission(form); err != nil {
 			return err

@@ -216,9 +216,13 @@ type ScriptMemoryProfile struct {
 	Intervals              uint64 `json:"intervals"`
 	AnimationFrames        uint64 `json:"animationFrames"`
 	MutationObservers      uint64 `json:"mutationObservers"`
+	ResizeObservers        uint64 `json:"resizeObservers"`
 	Modules                uint64 `json:"modules"`
 	Collections            uint64 `json:"collections"`
 	CheckpointCollections  uint64 `json:"checkpointCollections"`
+	ActiveCollections      uint64 `json:"activeCollections"`
+	ActiveCollectedSlots   uint64 `json:"activeCollectedSlots"`
+	ReportedExceptions     uint64 `json:"reportedExceptions"`
 }
 
 // JSMemoryProfiler exposes engine-owned retention counters without requiring
@@ -415,6 +419,21 @@ type NodeFacadeHost interface {
 type NodeEventListenerLifetimeHost interface {
 	RetainNodeEventTarget(NodeHandle) error
 	ReleaseNodeEventTarget(NodeHandle) error
+}
+
+// NodeObserverLifetimeHost lets an engine publish native observer target
+// registrations independently from weak wrappers and event listener roots.
+type NodeObserverLifetimeHost interface {
+	RetainNodeObserverTarget(NodeHandle) error
+	ReleaseNodeObserverTarget(NodeHandle) error
+}
+
+// NativeMemoryRootHost exposes browser-owned RegionStore envelopes that must
+// survive an engine collection checkpoint. The roots are optional snapshots:
+// asynchronous cancellation or queue transfer may make one stale before the
+// collector acquires the Store lock.
+type NativeMemoryRootHost interface {
+	NativeMemoryRoots() []memory.Ref
 }
 
 // JSCheckpointCollector lets an engine run a deterministic, thresholded

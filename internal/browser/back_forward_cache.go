@@ -343,7 +343,7 @@ func (page *Page) restoreBackForwardCacheDocument(
 		return cleanupErr
 	}
 
-	host := &taskHost{page: page, task: task, generation: restored.generation, autoRender: true}
+	host := beginTaskHost(&taskHost{page: page, task: task, generation: restored.generation, autoRender: true})
 	if restored.script != nil {
 		_, lifecycleErr := restored.script.DispatchEvent(host, InputEvent{
 			Type: InputPageShow, Target: NodeHandle{Document: restored.generation}, Persisted: true,

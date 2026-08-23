@@ -17,13 +17,32 @@ Every instruction is deliberately explicit and fixed-width:
 `Assemble` and `DecodeBytecode` are exact inverses. Decode rejects partial or
 unknown instructions, and Function loading verifies constant indexes, branch
 targets, binding flags, and exception handler kinds before execution. One
-execution shares a bounded instruction counter and call-depth counter across
-all nested bytecode calls.
+execution shares a bounded control-flow counter and call-depth counter across
+all nested bytecode calls. The control budget charges Function activation,
+completion, and loop backedges rather than every stack-machine micro-op, so a
+compiler peephole fusion cannot silently change the runaway-script policy. The
+optional instruction profiler still counts every executed bytecode opcode.
 
 Frames retain a Function Ref, captured Context, `this`, arguments, and an
 operand stack. All frame Values are borrowed. `Frame.VisitRefs` exposes these
-temporary roots for deterministic future collection checkpoints without
-adding ownership claims or reference-count traffic.
+temporary roots for deterministic collection checkpoints without adding
+ownership claims or reference-count traffic. Long browser callbacks collect
+their private task scratch at explicit interpreter safepoints after a bounded
+number of RegionStore allocations. The collector traces frames, jobs,
+intrinsics, queue-delivered Refs, and native-call root scopes; reentrant native
+built-ins pin Go-local allocations while they invoke JavaScript callbacks.
+This bounds temporary render churn before ResizeObserver and microtask
+checkpoints can run while preserving the ordinary bulk-release boundary.
+Browser task hosts likewise retain the complete DOM mutation-journal suffix
+until MutationObserver delivery finishes, then compact it back to the normal
+bounded history; large renders therefore neither lose observer records nor
+retain an unbounded journal between tasks.
+
+The same safepoints can emit sparse active-execution samples. Each sample
+records raw instructions, policy control steps, stack depth, Function identity,
+bytecode offset/opcode, process memory, DOM node counts, and separate censuses
+for the active task and persistent Realm regions. Sampling is diagnostic and
+does not change Ref ownership.
 
 ## Implemented synchronous verbs
 

@@ -39,6 +39,13 @@ if (!(target instanceof URL) || target.href !== "https://user:pass@example.test:
     target.search !== "?q=one" || target.hash !== "#old") {
   throw new Error("URL read parity failed: " + target.href);
 }
+const objectBase = new URL("https://router.test/app/index.html");
+const routed = new URL("/global", objectBase);
+const cloned = new URL(routed);
+if (routed.href !== "https://router.test/global" || cloned.href !== routed.href ||
+    !URL.canParse("/messages", objectBase)) {
+  throw new Error("URL object coercion parity failed");
+}
 const params = target.searchParams;
 if (params !== target.searchParams || params.get("q") !== "one") throw new Error("URL searchParams identity failed");
 params.append("tag", "two words");

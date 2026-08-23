@@ -58,6 +58,7 @@ type Frame struct {
 
 	function          memory.Function
 	instructions      []Instruction
+	programHash       uint64
 	ip                uint32
 	handlers          []exceptionHandler
 	environments      []memory.Value
@@ -65,6 +66,7 @@ type Frame struct {
 	current           *ThrownError
 	call              *frameCall
 	profile           *instructionProgramStats
+	budgetStarted     bool
 	bindings          []frameBinding
 	stackLocals       bool
 	localBindings     []frameLocalBinding
@@ -204,6 +206,7 @@ func (frame *Frame) reset() {
 	frame.Stack = frame.Stack[:0]
 	frame.function = memory.Function{}
 	frame.instructions = nil
+	frame.programHash = 0
 	frame.ip = 0
 	clear(frame.handlers)
 	frame.handlers = frame.handlers[:0]
@@ -213,6 +216,7 @@ func (frame *Frame) reset() {
 	frame.current = nil
 	frame.call = nil
 	frame.profile = nil
+	frame.budgetStarted = false
 	clear(frame.bindings)
 	frame.bindings = frame.bindings[:0]
 	frame.stackLocals = false

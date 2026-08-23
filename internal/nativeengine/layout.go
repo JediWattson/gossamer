@@ -192,6 +192,15 @@ func (realm *Realm) elementScrollSet(vertical bool) browserruntime.NativeFunctio
 	}
 }
 
+func (realm *Realm) elementScrollIntoView(context *browserruntime.TaskContext, this memory.Value, _ []memory.Value) (memory.Value, error) {
+	handle, host, err := realm.geometryOperands(context, this)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	_, err = host.ScrollIntoView(handle)
+	return memory.UndefinedValue(), err
+}
+
 func (realm *Realm) windowGeometryValue(property string) browserruntime.NativeFunction {
 	return func(_ *browserruntime.TaskContext, _ memory.Value, _ []memory.Value) (memory.Value, error) {
 		host, ok := realm.host.(browser.DOMGeometryHost)

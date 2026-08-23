@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/JediWattson/gossamer/internal/runtime/memory"
+	"github.com/JediWattson/gossamer/internal/runtime/ownership"
 )
 
 func TestCollectReclaimsUnreachableCyclesAtOwnerCheckpoint(t *testing.T) {
@@ -86,6 +87,50 @@ func TestCollectWithoutRootsReclaimsWholePrivateHeap(t *testing.T) {
 		t.Fatalf("collected string = %v, want stale", err)
 	}
 	assertStoreInvariants(t, store, "rootless collection")
+}
+
+func TestCollectOptionalRootsRetainsOwnedValuesAndIgnoresAsyncRaces(t *testing.T) {
+	t.Parallel()
+
+	store := memory.NewStore(nil)
+	defer store.Close()
+	owner := realmOwner(954)
+	queue := ownership.OwnerID{Kind: ownership.OwnerQueue, Value: 954}
+	liveRegion := mustRegion(t, store, owner)
+	live := mustAlloc(t, store, owner, liveRegion)
+	unreachable := mustAlloc(t, store, owner, liveRegion)
+	staleRegion := mustRegion(t, store, owner)
+	stale := mustAlloc(t, store, owner, staleRegion)
+	queuedRegion := mustRegion(t, store, owner)
+	queued := mustAlloc(t, store, owner, queuedRegion)
+	if err := store.DestroyRegion(owner, staleRegion); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Transfer(owner, queue, queued); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := store.CollectWithOptionalRoots(owner, []memory.Ref{live, stale, queued})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Roots != 1 || result.MarkedSlots != 1 || result.ReclaimedSlots != 1 {
+		t.Fatalf("collection = %#v", result)
+	}
+	if _, err := store.Deref(owner, live); err != nil {
+		t.Fatalf("optional owned root after collection: %v", err)
+	}
+	if _, err := store.Deref(owner, unreachable); !errors.Is(err, memory.ErrStaleRef) {
+		t.Fatalf("unreachable sibling = %v, want stale", err)
+	}
+	region, err := store.Region(queued.Region)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if region.State != memory.RegionInTransit || region.Owner != queue {
+		t.Fatalf("queued optional root = %#v", region)
+	}
+	assertStoreInvariants(t, store, "after optional-root collection")
 }
 
 func TestCollectRegionPreservesSiblingOwnerRegionsAndTheirIncomingEdges(t *testing.T) {

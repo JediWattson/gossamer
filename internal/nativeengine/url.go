@@ -119,13 +119,13 @@ func (realm *Realm) urlConstructor(context *browserruntime.TaskContext, this mem
 	if !this.IsRef() {
 		return memory.Value{}, fmt.Errorf("%w: URL constructor requires new", browserruntime.ErrOperandType)
 	}
-	input, err := valueString(context, argument(arguments, 0))
+	input, err := urlValueString(context, argument(arguments, 0))
 	if err != nil {
 		return memory.Value{}, err
 	}
 	var base *string
 	if argument(arguments, 1).Kind() != memory.ValueUndefined {
-		value, err := valueString(context, argument(arguments, 1))
+		value, err := urlValueString(context, argument(arguments, 1))
 		if err != nil {
 			return memory.Value{}, err
 		}
@@ -139,13 +139,13 @@ func (realm *Realm) urlConstructor(context *browserruntime.TaskContext, this mem
 }
 
 func (realm *Realm) urlCanParse(context *browserruntime.TaskContext, _ memory.Value, arguments []memory.Value) (memory.Value, error) {
-	input, err := valueString(context, argument(arguments, 0))
+	input, err := urlValueString(context, argument(arguments, 0))
 	if err != nil {
 		return memory.BoolValue(false), nil
 	}
 	var base *string
 	if argument(arguments, 1).Kind() != memory.ValueUndefined {
-		value, err := valueString(context, argument(arguments, 1))
+		value, err := urlValueString(context, argument(arguments, 1))
 		if err != nil {
 			return memory.BoolValue(false), nil
 		}
@@ -153,6 +153,15 @@ func (realm *Realm) urlCanParse(context *browserruntime.TaskContext, _ memory.Va
 	}
 	_, err = webapi.ParseURL(input, base)
 	return memory.BoolValue(err == nil), nil
+}
+
+func urlValueString(context *browserruntime.TaskContext, value memory.Value) (string, error) {
+	if value.IsRef() {
+		if parsed, _, err := urlState(context, value); err == nil {
+			return parsed.String(), nil
+		}
+	}
+	return valueString(context, value)
 }
 
 func urlState(context *browserruntime.TaskContext, this memory.Value) (webapi.URL, memory.Ref, error) {

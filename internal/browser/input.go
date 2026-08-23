@@ -139,7 +139,7 @@ func (page *Page) dispatchInput(context *browserruntime.TaskContext, event Input
 	script := page.script
 	generation := page.documentGeneration
 	page.mutex.Unlock()
-	host := &taskHost{page: page, task: context, generation: generation, autoRender: true, styleChanged: selectorStateChanged}
+	host := beginTaskHost(&taskHost{page: page, task: context, generation: generation, autoRender: true, styleChanged: selectorStateChanged})
 	clearPressed := func() {
 		if !clearPressedAfterDispatch {
 			return
@@ -336,7 +336,7 @@ func (page *Page) invokeScript(
 	if script == nil {
 		return ErrScriptDisabled
 	}
-	host := &taskHost{page: page, task: context, generation: generation, autoRender: autoRender, styleChanged: pendingStyle}
+	host := beginTaskHost(&taskHost{page: page, task: context, generation: generation, autoRender: autoRender, styleChanged: pendingStyle})
 	invokeErr := script.Invoke(host, callback)
 	microtaskErr := script.DrainMicrotasks(host)
 	return errors.Join(invokeErr, microtaskErr, host.finish())
@@ -376,7 +376,7 @@ func (page *Page) evaluateScript(
 	if script == nil {
 		return ErrScriptDisabled
 	}
-	host := &taskHost{page: page, task: context, generation: generation, autoRender: true}
+	host := beginTaskHost(&taskHost{page: page, task: context, generation: generation, autoRender: true})
 	evaluateErr := script.Evaluate(host, source)
 	microtaskErr := script.DrainMicrotasks(host)
 	return errors.Join(evaluateErr, microtaskErr, host.finish())
@@ -386,6 +386,7 @@ type taskHost struct {
 	page               *Page
 	task               *browserruntime.TaskContext
 	generation         DocumentGeneration
+	mutationDocument   *dom.Document
 	mutated            bool
 	scrolled           bool
 	scrollTargets      map[NodeHandle]struct{}
@@ -394,6 +395,34 @@ type taskHost struct {
 	styleChanged       bool
 	followupQueued     bool
 	autoRender         bool
+}
+
+func beginTaskHost(host *taskHost) *taskHost {
+	host.retainMutationJournal()
+	return host
+}
+
+func (host *taskHost) retainMutationJournal() {
+	if host == nil || host.page == nil {
+		return
+	}
+	if host.mutationDocument != nil {
+		return
+	}
+	host.page.mutex.RLock()
+	if !host.page.closed && host.page.documentGeneration == host.generation {
+		host.mutationDocument = host.page.document
+		host.mutationDocument.BeginMutationJournalRetention()
+	}
+	host.page.mutex.RUnlock()
+}
+
+func (host *taskHost) releaseMutationJournal() {
+	if host == nil || host.mutationDocument == nil {
+		return
+	}
+	host.mutationDocument.EndMutationJournalRetention()
+	host.mutationDocument = nil
 }
 
 func (host *taskHost) RuntimeTaskContext() *browserruntime.TaskContext {
@@ -541,7 +570,7 @@ func (page *Page) dispatchFetch(
 	if !ok {
 		return fmt.Errorf("browser: JavaScript engine does not support fetch completions")
 	}
-	host := &taskHost{page: page, task: task, generation: generation, autoRender: true, styleChanged: pendingStyle}
+	host := beginTaskHost(&taskHost{page: page, task: task, generation: generation, autoRender: true, styleChanged: pendingStyle})
 	dispatchErr := realm.DispatchFetch(host, handle, response, fetchErr)
 	microtaskErr := script.DrainMicrotasks(host)
 	finishErr := host.finish()
@@ -1996,6 +2025,14 @@ func (host *taskHost) ReleaseNodeEventTarget(handle NodeHandle) error {
 	return host.page.ReleaseNodeEventTarget(handle)
 }
 
+func (host *taskHost) RetainNodeObserverTarget(handle NodeHandle) error {
+	return host.page.RetainNodeObserverTarget(handle)
+}
+
+func (host *taskHost) ReleaseNodeObserverTarget(handle NodeHandle) error {
+	return host.page.ReleaseNodeObserverTarget(handle)
+}
+
 func (page *Page) queueScrollEventsFromTask(context *browserruntime.TaskContext, targets map[NodeHandle]struct{}) error {
 	page.mutex.RLock()
 	generation := page.documentGeneration
@@ -2027,7 +2064,7 @@ func (page *Page) queueScrollEventsFromTask(context *browserruntime.TaskContext,
 		if script == nil {
 			return nil
 		}
-		eventHost := &taskHost{page: page, task: next, generation: generation, autoRender: true}
+		eventHost := beginTaskHost(&taskHost{page: page, task: next, generation: generation, autoRender: true})
 		var dispatchErr error
 		for _, target := range ordered {
 			_, eventErr := script.DispatchEvent(eventHost, InputEvent{Type: InputScroll, Target: target})
@@ -2040,26 +2077,37 @@ func (page *Page) queueScrollEventsFromTask(context *browserruntime.TaskContext,
 }
 
 func (host *taskHost) finish() error {
+	host.releaseMutationJournal()
 	var err error
 	if host.mutated {
-		err = errors.Join(err, host.page.syncAndLoadStylesheets())
-		err = errors.Join(err, host.page.syncAndLoadImages())
+		if syncErr := host.page.syncAndLoadStylesheets(); syncErr != nil {
+			err = errors.Join(err, fmt.Errorf("browser: synchronize dynamic stylesheets: %w", syncErr))
+		}
+		if syncErr := host.page.syncAndLoadImages(); syncErr != nil {
+			err = errors.Join(err, fmt.Errorf("browser: synchronize dynamic images: %w", syncErr))
+		}
+	}
+	if host.scrolled {
+		if queueErr := host.page.queueScrollEventsFromTask(host.task, host.scrollTargets); queueErr != nil {
+			err = errors.Join(err, fmt.Errorf("browser: queue scroll events: %w", queueErr))
+		}
+	}
+	if host.animationRequested {
+		if queueErr := host.page.queueAnimationFrameFromTask(); queueErr != nil {
+			err = errors.Join(err, fmt.Errorf("browser: queue animation frame: %w", queueErr))
+		}
 	}
 	if !host.autoRender {
 		return err
-	}
-	if host.scrolled {
-		err = errors.Join(err, host.page.queueScrollEventsFromTask(host.task, host.scrollTargets))
-	}
-	if host.animationRequested {
-		err = errors.Join(err, host.page.queueAnimationFrameFromTask())
 	}
 	shouldRender := host.mutated || host.scrolled || host.resized || host.styleChanged
 	if host.followupQueued && host.styleChanged && !host.mutated && !host.scrolled && !host.resized {
 		shouldRender = false
 	}
 	if shouldRender {
-		err = errors.Join(err, host.page.queueRenderFromTask(host.task))
+		if queueErr := host.page.queueRenderFromTask(host.task); queueErr != nil {
+			err = errors.Join(err, fmt.Errorf("browser: queue render: %w", queueErr))
+		}
 	}
 	return err
 }

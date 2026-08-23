@@ -399,7 +399,7 @@ func (page *Page) finishSameDocumentNavigation(
 	script := page.script
 	state := page.sessionHistorySnapshotLocked().StateJSON
 	page.mutex.RUnlock()
-	host := &taskHost{page: page, task: task, generation: generation, autoRender: true, styleChanged: true}
+	host := beginTaskHost(&taskHost{page: page, task: task, generation: generation, autoRender: true, styleChanged: true})
 	var dispatchErr error
 	windowTarget := NodeHandle{Document: generation}
 	if script != nil && popState {

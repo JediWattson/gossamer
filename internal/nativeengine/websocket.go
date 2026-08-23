@@ -394,7 +394,9 @@ func (realm *Realm) DispatchWebSocket(host browser.Host, id browser.WebSocketID,
 		result = errors.Join(result, fmt.Errorf("nativeengine: read WebSocket %d on%s handler: %w", id, eventType, lookupErr))
 	} else if found && handler.IsRef() {
 		if _, callErr := realm.interpreter.CallWithoutCheckpoint(context, handler.Ref(), value, memory.RefValue(eventObject)); callErr != nil {
-			result = errors.Join(result, fmt.Errorf("nativeengine: call WebSocket %d on%s handler %s: %w", id, eventType, handler.Ref(), callErr))
+			if !realm.reportCallbackExceptionLocked(context, "WebSocket on"+eventType+" handler", callErr) {
+				result = errors.Join(result, fmt.Errorf("nativeengine: call WebSocket %d on%s handler %s: %w", id, eventType, handler.Ref(), callErr))
+			}
 		}
 	}
 	listeners, listenerErr := webSocketListenerArray(context, object, eventType, false)
@@ -415,7 +417,9 @@ func (realm *Realm) DispatchWebSocket(host browser.Host, id browser.WebSocketID,
 				if readErr == nil && found && callback.IsRef() {
 					_, callErr := realm.interpreter.CallWithoutCheckpoint(context, callback.Ref(), value, memory.RefValue(eventObject))
 					if callErr != nil {
-						result = errors.Join(result, fmt.Errorf("nativeengine: call WebSocket %d %s listener %d %s: %w", id, eventType, index, callback.Ref(), callErr))
+						if !realm.reportCallbackExceptionLocked(context, "WebSocket "+eventType+" listener", callErr) {
+							result = errors.Join(result, fmt.Errorf("nativeengine: call WebSocket %d %s listener %d %s: %w", id, eventType, index, callback.Ref(), callErr))
+						}
 					}
 				}
 			}

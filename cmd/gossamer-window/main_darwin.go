@@ -34,25 +34,43 @@ func main() {
 	memoryProfile := flag.String("memory-profile", "", "optional JSONL browser memory timeline path")
 	heapProfile := flag.String("heap-profile", "", "optional Go heap profile path written when the window closes")
 	memoryProfileInterval := flag.Duration("memory-profile-interval", time.Second, "minimum interval between memory timeline checkpoints")
-	maxInstructions := flag.Uint64("max-instructions", 0, "optional Strand instruction budget per top-level call (zero uses the runtime default)")
+	maxInstructions := flag.Uint64("max-instructions", 0, "optional Strand control-flow budget per top-level call (zero uses the runtime default)")
 	maxCallDepth := flag.Uint("max-call-depth", 0, "optional Strand synchronous call-depth budget (zero uses the runtime default)")
 	profileInstructions := flag.Bool("strand-instruction-profile", false, "include Strand bytecode hotspots when an instruction budget is exhausted")
+	executionSampleInterval := flag.Uint64("strand-execution-sample-interval", 1_000_000, "raw Strand instructions between active-render memory samples (zero disables)")
 	flag.Parse()
 	if flag.NArg() != 1 {
 		fatalf("usage: gossamer-window [flags] <absolute-http-or-https-url>")
 	}
 	rawURL := flag.Arg(0)
 
-	engine, err := selectEngineWithInterpreter(*engineName, *icuData, browserruntime.InterpreterConfig{
+	recorder, err := memoryprofile.New(strings.TrimSpace(*memoryProfile), strings.TrimSpace(*heapProfile), *memoryProfileInterval)
+	if err != nil {
+		fatalf("initialize memory profile: %v", err)
+	}
+	var page *browser.Page
+	interpreter := browserruntime.InterpreterConfig{
 		MaxInstructions:     *maxInstructions,
 		MaxCallDepth:        uint32(*maxCallDepth),
 		ProfileInstructions: *profileInstructions,
-	})
+	}
+	if strings.EqualFold(strings.TrimSpace(*engineName), "strand") && strings.TrimSpace(*memoryProfile) != "" && *executionSampleInterval != 0 {
+		interpreter.ExecutionSampleInterval = *executionSampleInterval
+		interpreter.ExecutionSample = func(context *browserruntime.TaskContext, sample browserruntime.ExecutionSample) error {
+			if page == nil {
+				return nil
+			}
+			return recorder.RecordExecution(page, context, sample)
+		}
+	}
+	engine, err := selectEngineWithInterpreter(*engineName, *icuData, interpreter)
 	if err != nil {
+		_ = recorder.Close()
 		fatalf("initialize %s engine: %v", strings.TrimSpace(*engineName), err)
 	}
 	browserRuntime, err := browser.NewWithEngine(engine)
 	if err != nil {
+		_ = recorder.Close()
 		_ = engine.Close()
 		fatalf("initialize browser runtime: %v", err)
 	}
@@ -60,15 +78,11 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	documentLoader := loader.New(nil)
-	page, err := browserRuntime.LoadPage(ctx, rawURL, documentLoader)
+	page, err = browserRuntime.LoadPage(ctx, rawURL, documentLoader)
 	if err != nil {
+		_ = recorder.Close()
 		_ = browserRuntime.Close()
 		fatalf("load page: %v", err)
-	}
-	recorder, err := memoryprofile.New(strings.TrimSpace(*memoryProfile), strings.TrimSpace(*heapProfile), *memoryProfileInterval)
-	if err != nil {
-		_ = browserRuntime.Close()
-		fatalf("initialize memory profile: %v", err)
 	}
 	if err := recorder.Record("loaded", page, true); err != nil {
 		_ = recorder.Close()
@@ -109,7 +123,14 @@ func selectEngine(name, icuData string) (browser.Engine, error) {
 func selectEngineWithInterpreter(name, icuData string, interpreter browserruntime.InterpreterConfig) (browser.Engine, error) {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "strand":
-		return nativeengine.New(nativeengine.Config{Interpreter: interpreter}), nil
+		return nativeengine.New(nativeengine.Config{
+			Interpreter: interpreter,
+			ConsoleSink: func(message nativeengine.ConsoleMessage) {
+				if message.Method == "error" {
+					_, _ = fmt.Fprintf(os.Stderr, "strand console.error: %s\n", strings.Join(message.Arguments, " "))
+				}
+			},
+		}), nil
 	case "v8":
 		return newStockV8Engine(icuData)
 	default:

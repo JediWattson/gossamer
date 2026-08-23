@@ -104,7 +104,13 @@ go run github.com/google/pprof@latest /tmp/efchat-strand-heap.pprof
 
 The timeline samples Go heap usage, RegionStore physical attribution, ownership
 counters, DOM node counts, and engine cache roots after drained browser task
-checkpoints. `--memory-profile-interval` controls its sampling frequency.
+checkpoints. Strand profiles also include sparse `active-execution` records
+while a long script is still running. Those records identify the current
+Function/bytecode offset and separately census its task scratch and persistent
+Realm regions, which distinguishes temporary render churn from retained DOM or
+Realm state. `--memory-profile-interval` controls wall-clock throttling and
+`--strand-execution-sample-interval` controls the raw-instruction spacing of
+those active samples; pass zero to disable them.
 
 Messages submitted in that window use the real efchat backend and are public;
 the compatibility gate above remains entirely local.

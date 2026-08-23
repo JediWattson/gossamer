@@ -23,3 +23,19 @@ func TestStockV8AsyncFunctionParity(t *testing.T) {
 	}
 	runAsyncFunctionParity(t, engine)
 }
+
+func TestStockV8VirtualizedResizeObserverParity(t *testing.T) {
+	engine, err := v8engine.New(v8engine.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runVirtualizedResizeObserverParity(t, engine)
+}
+
+func TestStockV8ObserverExceptionBoundaryParity(t *testing.T) {
+	engine, err := v8engine.New(v8engine.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runObserverExceptionBoundaryParity(t, engine)
+}

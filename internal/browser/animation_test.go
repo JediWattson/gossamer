@@ -74,6 +74,48 @@ func TestAnimationFramesBatchCancelAndShareMonotonicTimestamp(t *testing.T) {
 	}
 }
 
+func TestAnimationFrameRequestedDuringNonRenderingTaskStillQueues(t *testing.T) {
+	script := &timerTestRealm{}
+	engine, err := NewWithEngine(&timerTestEngine{realm: script})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer engine.Close()
+	root, err := html.Parse(strings.NewReader(`<!doctype html><html><body></body></html>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	location, _ := url.Parse("https://animation.test/non-rendering-task")
+	page, err := engine.NewPage(root, location)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := page.Realm.EnqueueTask(func(task *browserruntime.TaskContext) error {
+		host := beginTaskHost(&taskHost{
+			page: page, task: task, generation: page.documentGeneration, autoRender: false,
+		})
+		if _, err := host.RequestAnimationFrame(17); err != nil {
+			return err
+		}
+		return host.finish()
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := page.Realm.Tasks.Len(); got != 1 {
+		t.Fatalf("frame tasks = %d, want one after non-rendering task", got)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(script.animationInvoked, []ValueHandle{17}) {
+		t.Fatalf("animation callbacks = %v, want [17]", script.animationInvoked)
+	}
+}
+
 func TestQueueViewportResizeDispatchesThenPublishesOneFrame(t *testing.T) {
 	script := &timerTestRealm{}
 	engine, err := NewWithEngine(&timerTestEngine{realm: script})

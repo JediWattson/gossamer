@@ -59,8 +59,9 @@ func (intrinsics *Intrinsics) installCollectionBuiltins(context *TaskContext) er
 		{"includes", 1, nativeStringIncludes},
 		{"endsWith", 1, nativeStringEndsWith},
 		{"startsWith", 1, nativeStringStartsWith}, {"replace", 2, nativeStringReplace},
+		{"replaceAll", 2, nativeStringReplaceAll},
 		{"padStart", 1, nativeStringPadStart}, {"padEnd", 1, nativeStringPadEnd},
-		{"match", 1, nativeStringMatch}, {"search", 1, nativeStringSearch},
+		{"match", 1, nativeStringMatch}, {"matchAll", 1, nativeStringMatchAll}, {"search", 1, nativeStringSearch},
 		{"at", 1, nativeStringAt},
 		{"indexOf", 1, nativeStringIndexOf}, {"slice", 2, nativeStringSlice},
 		{"substring", 2, nativeStringSubstring},
@@ -385,6 +386,14 @@ func builtinStringPad(execution *execution, this memory.Value, arguments []memor
 }
 
 func builtinStringReplace(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+	return builtinStringReplaceMode(execution, this, arguments, false)
+}
+
+func builtinStringReplaceAll(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+	return builtinStringReplaceMode(execution, this, arguments, true)
+}
+
+func builtinStringReplaceMode(execution *execution, this memory.Value, arguments []memory.Value, replaceAll bool) (memory.Value, error) {
 	text, err := requireString(execution.context, this)
 	if err != nil {
 		return memory.Value{}, err
@@ -392,7 +401,7 @@ func builtinStringReplace(execution *execution, _ memory.Ref, _ memory.Function,
 	search := argument(arguments, 0)
 	replacement := argument(arguments, 1)
 	var matches [][]int
-	global := false
+	global := replaceAll
 	if search.IsRef() {
 		kind, kindErr := execution.context.HeapKind(search.Ref())
 		if kindErr != nil {
@@ -402,6 +411,9 @@ func builtinStringReplace(execution *execution, _ memory.Ref, _ memory.Function,
 			_, expression, expressionErr := requireRegExp(execution.context, search)
 			if expressionErr != nil {
 				return memory.Value{}, expressionErr
+			}
+			if replaceAll && expression.Flags&memory.RegExpGlobal == 0 {
+				return memory.Value{}, fmt.Errorf("%w: String.prototype.replaceAll requires a global RegExp", ErrOperandType)
 			}
 			compiled, compileErr := compileRegExp(execution.context, expression)
 			if compileErr != nil {
@@ -425,7 +437,9 @@ func builtinStringReplace(execution *execution, _ memory.Ref, _ memory.Function,
 		if stringErr != nil {
 			return memory.Value{}, stringErr
 		}
-		if index := strings.Index(text, needle); index >= 0 {
+		if replaceAll {
+			matches = allStringMatchIndices(text, needle)
+		} else if index := strings.Index(text, needle); index >= 0 {
 			matches = [][]int{{index, index + len(needle)}}
 		}
 	}
@@ -482,6 +496,29 @@ func builtinStringReplace(execution *execution, _ memory.Ref, _ memory.Function,
 	}
 	result.WriteString(text[previous:])
 	return newStringValue(execution.context, result.String())
+}
+
+func allStringMatchIndices(text, needle string) [][]int {
+	if needle == "" {
+		matches := make([][]int, 0, utf8.RuneCountInString(text)+1)
+		for index := range text {
+			matches = append(matches, []int{index, index})
+		}
+		matches = append(matches, []int{len(text), len(text)})
+		return matches
+	}
+	matches := make([][]int, 0)
+	for start := 0; start <= len(text); {
+		relative := strings.Index(text[start:], needle)
+		if relative < 0 {
+			break
+		}
+		matchStart := start + relative
+		matchEnd := matchStart + len(needle)
+		matches = append(matches, []int{matchStart, matchEnd})
+		start = matchEnd
+	}
+	return matches
 }
 
 func builtinStringMatch(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, arguments []memory.Value) (memory.Value, error) {
@@ -553,6 +590,95 @@ func builtinStringMatch(execution *execution, _ memory.Ref, _ memory.Function, t
 		}
 	}
 	return memory.RefValue(result), nil
+}
+
+func builtinStringMatchAll(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+	text, err := requireString(execution.context, this)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	search := argument(arguments, 0)
+	var expression memory.RegExp
+	if search.IsRef() {
+		kind, kindErr := execution.context.HeapKind(search.Ref())
+		if kindErr != nil {
+			return memory.Value{}, kindErr
+		}
+		if kind == memory.HeapRegExp {
+			_, expression, err = requireRegExp(execution.context, search)
+			if err != nil {
+				return memory.Value{}, err
+			}
+			if expression.Flags&memory.RegExpGlobal == 0 {
+				return memory.Value{}, fmt.Errorf("%w: String.prototype.matchAll requires a global RegExp", ErrOperandType)
+			}
+		}
+	}
+	if expression.Pattern == (memory.Ref{}) {
+		pattern := ""
+		if search.Kind() != memory.ValueUndefined {
+			pattern, err = execution.toString(search)
+			if err != nil {
+				return memory.Value{}, err
+			}
+		}
+		patternRef, allocationErr := execution.context.NewString(pattern)
+		if allocationErr != nil {
+			return memory.Value{}, allocationErr
+		}
+		expressionRef, allocationErr := execution.context.NewRegExp(patternRef, "g")
+		if allocationErr != nil {
+			return memory.Value{}, allocationErr
+		}
+		expression, err = execution.context.DerefRegExp(expressionRef)
+		if err != nil {
+			return memory.Value{}, err
+		}
+	}
+	compiled, err := compileRegExp(execution.context, expression)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	startByte, validStart := regexpRuneIndexToByteOffset(text, expression.LastIndex)
+	var matches [][]int
+	if validStart {
+		matches, err = compiled.FindAllStringSubmatchIndex(text[startByte:], -1)
+		if err != nil {
+			return memory.Value{}, err
+		}
+	}
+	result, err := execution.context.NewArray(uint32(len(matches)))
+	if err != nil {
+		return memory.Value{}, err
+	}
+	resultIndex := uint32(0)
+	previousEnd := 0
+	for _, match := range matches {
+		if expression.Flags&memory.RegExpSticky != 0 && match[0] != previousEnd {
+			break
+		}
+		previousEnd = match[1]
+		for index := range match {
+			if match[index] >= 0 {
+				match[index] += startByte
+			}
+		}
+		entry, entryErr := newRegExpMatchArray(execution, text, match)
+		if entryErr != nil {
+			return memory.Value{}, entryErr
+		}
+		if err := execution.context.SetArrayElement(result, resultIndex, entry); err != nil {
+			return memory.Value{}, err
+		}
+		resultIndex++
+	}
+	if resultIndex != uint32(len(matches)) {
+		if err := execution.context.SetArrayLength(result, resultIndex); err != nil {
+			return memory.Value{}, err
+		}
+	}
+	iterator, err := execution.context.NewIterator(result, memory.IteratorArrayValues)
+	return memory.RefValue(iterator), err
 }
 
 func builtinStringSearch(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, arguments []memory.Value) (memory.Value, error) {
@@ -905,12 +1031,19 @@ func builtinArrayMap(execution *execution, _ memory.Ref, _ memory.Function, this
 		return memory.Value{}, err
 	}
 	thisArg := argument(arguments, 1)
-	for _, element := range snapshot.Elements {
-		mapped, err := execution.call(callback, thisArg, []memory.Value{element.Value, memory.NumberValue(float64(element.Index)), this}, callAny)
+	for index := uint32(0); index < snapshot.Length; index++ {
+		value, found, err := execution.context.ArrayElement(array, index)
 		if err != nil {
 			return memory.Value{}, err
 		}
-		if err := execution.context.SetArrayElement(result, element.Index, mapped); err != nil {
+		if !found {
+			continue
+		}
+		mapped, err := execution.call(callback, thisArg, []memory.Value{value, memory.NumberValue(float64(index)), this}, callAny)
+		if err != nil {
+			return memory.Value{}, err
+		}
+		if err := execution.context.SetArrayElement(result, index, mapped); err != nil {
 			return memory.Value{}, err
 		}
 	}
@@ -968,6 +1101,7 @@ func builtinArraySort(execution *execution, _ memory.Ref, _ memory.Function, thi
 	values := make([]memory.Value, len(snapshot.Elements))
 	for index, element := range snapshot.Elements {
 		values[index] = element.Value
+		execution.context.trackNativeValue(element.Value)
 	}
 	less := func(left, right memory.Value) (bool, error) {
 		// Array.prototype.sort always places undefined values after every
@@ -1195,8 +1329,15 @@ func builtinArrayFilter(execution *execution, _ memory.Ref, _ memory.Function, t
 	}
 	thisArg := argument(arguments, 1)
 	next := uint32(0)
-	for _, element := range snapshot.Elements {
-		selected, err := execution.call(callback, thisArg, []memory.Value{element.Value, memory.NumberValue(float64(element.Index)), this}, callAny)
+	for index := uint32(0); index < snapshot.Length; index++ {
+		value, found, err := execution.context.ArrayElement(array, index)
+		if err != nil {
+			return memory.Value{}, err
+		}
+		if !found {
+			continue
+		}
+		selected, err := execution.call(callback, thisArg, []memory.Value{value, memory.NumberValue(float64(index)), this}, callAny)
 		if err != nil {
 			return memory.Value{}, err
 		}
@@ -1205,7 +1346,7 @@ func builtinArrayFilter(execution *execution, _ memory.Ref, _ memory.Function, t
 			return memory.Value{}, err
 		}
 		if truthy {
-			if err := execution.context.SetArrayElement(result, next, element.Value); err != nil {
+			if err := execution.context.SetArrayElement(result, next, value); err != nil {
 				return memory.Value{}, err
 			}
 			next++
@@ -1228,8 +1369,15 @@ func builtinArrayForEach(execution *execution, _ memory.Ref, _ memory.Function, 
 		return memory.Value{}, err
 	}
 	thisArg := argument(arguments, 1)
-	for _, element := range snapshot.Elements {
-		if _, err := execution.call(callback, thisArg, []memory.Value{element.Value, memory.NumberValue(float64(element.Index)), this}, callAny); err != nil {
+	for index := uint32(0); index < snapshot.Length; index++ {
+		value, found, err := execution.context.ArrayElement(array, index)
+		if err != nil {
+			return memory.Value{}, err
+		}
+		if !found {
+			continue
+		}
+		if _, err := execution.call(callback, thisArg, []memory.Value{value, memory.NumberValue(float64(index)), this}, callAny); err != nil {
 			return memory.Value{}, err
 		}
 	}
@@ -1249,20 +1397,38 @@ func builtinArrayReduce(execution *execution, _ memory.Ref, _ memory.Function, t
 	if err != nil {
 		return memory.Value{}, err
 	}
-	start := 0
+	index := uint32(0)
 	accumulator := memory.UndefinedValue()
 	if len(arguments) > 1 {
 		accumulator = arguments[1]
 	} else {
-		if len(snapshot.Elements) == 0 {
+		found := false
+		for index < snapshot.Length {
+			value, present, elementErr := execution.context.ArrayElement(array, index)
+			index++
+			if elementErr != nil {
+				return memory.Value{}, elementErr
+			}
+			if present {
+				accumulator = value
+				found = true
+				break
+			}
+		}
+		if !found {
 			return memory.Value{}, fmt.Errorf("%w: reduce of empty Array with no initial value", ErrOperandType)
 		}
-		accumulator = snapshot.Elements[0].Value
-		start = 1
 	}
-	for _, element := range snapshot.Elements[start:] {
+	for ; index < snapshot.Length; index++ {
+		value, found, elementErr := execution.context.ArrayElement(array, index)
+		if elementErr != nil {
+			return memory.Value{}, elementErr
+		}
+		if !found {
+			continue
+		}
 		accumulator, err = execution.call(callback, memory.UndefinedValue(), []memory.Value{
-			accumulator, element.Value, memory.NumberValue(float64(element.Index)), this,
+			accumulator, value, memory.NumberValue(float64(index)), this,
 		}, callAny)
 		if err != nil {
 			return memory.Value{}, err
@@ -1293,8 +1459,15 @@ func (execution *execution) arrayPredicate(this memory.Value, arguments []memory
 		return memory.Value{}, err
 	}
 	thisArg := argument(arguments, 1)
-	for _, element := range snapshot.Elements {
-		selected, err := execution.call(callback, thisArg, []memory.Value{element.Value, memory.NumberValue(float64(element.Index)), this}, callAny)
+	for index := uint32(0); index < snapshot.Length; index++ {
+		value, found, err := execution.context.ArrayElement(array, index)
+		if err != nil {
+			return memory.Value{}, err
+		}
+		if !found {
+			continue
+		}
+		selected, err := execution.call(callback, thisArg, []memory.Value{value, memory.NumberValue(float64(index)), this}, callAny)
 		if err != nil {
 			return memory.Value{}, err
 		}
@@ -1312,32 +1485,32 @@ func (execution *execution) arrayPredicate(this memory.Value, arguments []memory
 func builtinArrayFind(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, arguments []memory.Value) (memory.Value, error) {
 	array, err := execution.arrayReceiver(this)
 	if err != nil {
-		return memory.Value{}, err
+		return memory.Value{}, fmt.Errorf("Array.prototype.find receiver: %w", err)
 	}
 	callback, err := requireCallable(execution.context, argument(arguments, 0))
 	if err != nil {
-		return memory.Value{}, err
+		return memory.Value{}, fmt.Errorf("Array.prototype.find predicate: %w", err)
 	}
 	snapshot, err := execution.context.DerefArray(array)
 	if err != nil {
-		return memory.Value{}, err
+		return memory.Value{}, fmt.Errorf("Array.prototype.find length from %s: %w", array, err)
 	}
 	thisArg := argument(arguments, 1)
 	for index := uint32(0); index < snapshot.Length; index++ {
 		value, found, err := execution.context.ArrayElement(array, index)
 		if err != nil {
-			return memory.Value{}, err
+			return memory.Value{}, fmt.Errorf("Array.prototype.find element %d from %s: %w", index, array, err)
 		}
 		if !found {
 			value = memory.UndefinedValue()
 		}
 		selected, err := execution.call(callback, thisArg, []memory.Value{value, memory.NumberValue(float64(index)), this}, callAny)
 		if err != nil {
-			return memory.Value{}, err
+			return memory.Value{}, fmt.Errorf("Array.prototype.find predicate at index %d with value %v: %w", index, value, err)
 		}
 		truthy, err := valueTruthy(execution.context, selected)
 		if err != nil {
-			return memory.Value{}, err
+			return memory.Value{}, fmt.Errorf("Array.prototype.find predicate result at index %d value %v: %w", index, selected, err)
 		}
 		if truthy {
 			return value, nil
@@ -1483,36 +1656,40 @@ func builtinMapConstructor(execution *execution, _ memory.Ref, _ memory.Function
 		return memory.Value{}, err
 	}
 	if len(arguments) != 0 && arguments[0].Kind() != memory.ValueUndefined && arguments[0].Kind() != memory.ValueNull {
-		iterable, err := requireArray(execution.context, arguments[0])
+		keyName, err := execution.context.NewString("0")
 		if err != nil {
 			return memory.Value{}, err
 		}
-		snapshot, err := execution.context.DerefArray(iterable)
+		valueName, err := execution.context.NewString("1")
 		if err != nil {
 			return memory.Value{}, err
 		}
-		for _, element := range snapshot.Elements {
-			entry, err := requireArray(execution.context, element.Value)
+		err = execution.forEachIterableValue(arguments[0], func(entry memory.Value) error {
+			object, err := isObjectValue(execution.context, entry)
 			if err != nil {
-				return memory.Value{}, err
+				return err
 			}
-			key, keyFound, err := execution.context.ArrayElement(entry, 0)
+			if !object {
+				return fmt.Errorf("%w: Map constructor entry is not an Object", ErrOperandType)
+			}
+			key, keyFound, err := execution.getProperty(entry, memory.RefValue(keyName))
 			if err != nil {
-				return memory.Value{}, err
+				return err
 			}
 			if !keyFound {
 				key = memory.UndefinedValue()
 			}
-			value, valueFound, err := execution.context.ArrayElement(entry, 1)
+			value, valueFound, err := execution.getProperty(entry, memory.RefValue(valueName))
 			if err != nil {
-				return memory.Value{}, err
+				return err
 			}
 			if !valueFound {
 				value = memory.UndefinedValue()
 			}
-			if err := execution.context.MapSet(result, key, value); err != nil {
-				return memory.Value{}, err
-			}
+			return execution.context.MapSet(result, key, value)
+		})
+		if err != nil {
+			return memory.Value{}, err
 		}
 	}
 	return memory.RefValue(result), nil
@@ -1599,6 +1776,10 @@ func builtinMapForEach(execution *execution, _ memory.Ref, _ memory.Function, th
 	if err != nil {
 		return memory.Value{}, err
 	}
+	for _, entry := range value.Entries {
+		execution.context.trackNativeValue(entry.Key)
+		execution.context.trackNativeValue(entry.Value)
+	}
 	thisArg := argument(arguments, 1)
 	for _, entry := range value.Entries {
 		if _, err := execution.call(callback, thisArg, []memory.Value{entry.Value, entry.Key, this}, callAny); err != nil {
@@ -1614,25 +1795,10 @@ func builtinSetConstructor(execution *execution, _ memory.Ref, _ memory.Function
 		return memory.Value{}, err
 	}
 	if len(arguments) != 0 && arguments[0].Kind() != memory.ValueUndefined && arguments[0].Kind() != memory.ValueNull {
-		iterable, err := requireArray(execution.context, arguments[0])
-		if err != nil {
+		if err := execution.forEachIterableValue(arguments[0], func(value memory.Value) error {
+			return execution.context.SetAdd(result, value)
+		}); err != nil {
 			return memory.Value{}, err
-		}
-		snapshot, err := execution.context.DerefArray(iterable)
-		if err != nil {
-			return memory.Value{}, err
-		}
-		for index := uint32(0); index < snapshot.Length; index++ {
-			value, found, err := execution.context.ArrayElement(iterable, index)
-			if err != nil {
-				return memory.Value{}, err
-			}
-			if !found {
-				value = memory.UndefinedValue()
-			}
-			if err := execution.context.SetAdd(result, value); err != nil {
-				return memory.Value{}, err
-			}
 		}
 	}
 	return memory.RefValue(result), nil
@@ -1703,6 +1869,9 @@ func builtinSetForEach(execution *execution, _ memory.Ref, _ memory.Function, th
 	value, err := execution.context.DerefSet(ref)
 	if err != nil {
 		return memory.Value{}, err
+	}
+	for _, member := range value.Values {
+		execution.context.trackNativeValue(member)
 	}
 	thisArg := argument(arguments, 1)
 	for _, member := range value.Values {

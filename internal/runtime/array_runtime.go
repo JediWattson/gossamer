@@ -142,9 +142,16 @@ func builtinArrayFlatMap(execution *execution, _ memory.Ref, _ memory.Function, 
 	}
 	next := uint64(0)
 	thisArg := argument(arguments, 1)
-	for _, element := range snapshot.Elements {
+	for index := uint32(0); index < snapshot.Length; index++ {
+		value, found, err := execution.context.ArrayElement(arrayRef, index)
+		if err != nil {
+			return memory.Value{}, err
+		}
+		if !found {
+			continue
+		}
 		mapped, err := execution.call(callback, thisArg, []memory.Value{
-			element.Value, memory.NumberValue(float64(element.Index)), this,
+			value, memory.NumberValue(float64(index)), this,
 		}, callAny)
 		if err != nil {
 			return memory.Value{}, err

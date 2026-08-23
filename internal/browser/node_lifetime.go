@@ -34,6 +34,7 @@ type nodeLifetimeState struct {
 	wrappers      map[dom.NodeID]struct{}
 	wrapperRoots  map[dom.NodeID]struct{}
 	listeners     map[dom.NodeID]uint64
+	observers     map[dom.NodeID]uint64
 
 	documentOwner  ownership.OwnerID
 	documentRegion ownership.RegionID
@@ -69,6 +70,7 @@ func newNodeLifetimeState(
 		wrappers:      make(map[dom.NodeID]struct{}),
 		wrapperRoots:  make(map[dom.NodeID]struct{}),
 		listeners:     make(map[dom.NodeID]uint64),
+		observers:     make(map[dom.NodeID]uint64),
 		facades:       make(map[dom.NodeID]memory.Ref),
 		nodes:         make(map[dom.NodeID]ownership.ObjectID),
 		reverse:       make(map[ownership.ObjectID]dom.NodeID),
@@ -343,13 +345,66 @@ func (state *nodeLifetimeState) releaseEventTarget(handle NodeHandle) error {
 	return state.reclaim(destroyed)
 }
 
+func (state *nodeLifetimeState) retainObserverTarget(handle NodeHandle) error {
+	if state == nil || handle.Document != state.generation || handle.Node == dom.InvalidNodeID {
+		return ErrStaleNodeHandle
+	}
+	if state.nodes[handle.Node] == 0 {
+		return dom.ErrUnknownNode
+	}
+	state.observers[handle.Node]++
+	changed, err := state.reconcileWrapperRoots()
+	if err != nil {
+		state.observers[handle.Node]--
+		if state.observers[handle.Node] == 0 {
+			delete(state.observers, handle.Node)
+		}
+		return err
+	}
+	if !changed {
+		return nil
+	}
+	return nil
+}
+
+func (state *nodeLifetimeState) releaseObserverTarget(handle NodeHandle) error {
+	if state == nil || handle.Document != state.generation || handle.Node == dom.InvalidNodeID {
+		return ErrStaleNodeHandle
+	}
+	count := state.observers[handle.Node]
+	if count == 0 {
+		return nil
+	}
+	if count == 1 {
+		delete(state.observers, handle.Node)
+	} else {
+		state.observers[handle.Node] = count - 1
+	}
+	changed, err := state.reconcileWrapperRoots()
+	if err != nil {
+		state.observers[handle.Node] = count
+		return err
+	}
+	if !changed {
+		return nil
+	}
+	destroyed, err := state.ledger.ReconcileRegion(state.wrapperOwner, []ownership.ObjectID{state.wrapperRoot})
+	if err != nil {
+		return err
+	}
+	return state.reclaim(destroyed)
+}
+
 func (state *nodeLifetimeState) reconcileWrapperRoots() (bool, error) {
 	changed := false
-	candidates := make(map[dom.NodeID]struct{}, len(state.wrappers)+len(state.listeners)+len(state.wrapperRoots))
+	candidates := make(map[dom.NodeID]struct{}, len(state.wrappers)+len(state.listeners)+len(state.observers)+len(state.wrapperRoots))
 	for node := range state.wrappers {
 		candidates[node] = struct{}{}
 	}
 	for node := range state.listeners {
+		candidates[node] = struct{}{}
+	}
+	for node := range state.observers {
 		candidates[node] = struct{}{}
 	}
 	for node := range state.wrapperRoots {
@@ -358,7 +413,7 @@ func (state *nodeLifetimeState) reconcileWrapperRoots() (bool, error) {
 	for node := range candidates {
 		_, rooted := state.wrapperRoots[node]
 		_, wrapped := state.wrappers[node]
-		needsRoot := !state.connected(node) && (wrapped || state.listeners[node] != 0)
+		needsRoot := !state.connected(node) && (wrapped || state.listeners[node] != 0 || state.observers[node] != 0)
 		if needsRoot == rooted {
 			continue
 		}
@@ -455,6 +510,7 @@ func (state *nodeLifetimeState) reclaim(objects []ownership.ObjectID) error {
 		delete(state.wrappers, node)
 		delete(state.wrapperRoots, node)
 		delete(state.listeners, node)
+		delete(state.observers, node)
 	}
 	return nil
 }

@@ -25,8 +25,9 @@ func (page *Page) dispatchDepartureLifecycle(
 	if script == nil {
 		return true, nil
 	}
-	host := &taskHost{page: page, task: task, generation: generation, autoRender: false}
+	host := beginTaskHost(&taskHost{page: page, task: task, generation: generation, autoRender: false})
 	dispatch := func(eventType InputEventType, eventPersisted bool) (EventDispatchResult, error) {
+		host.retainMutationJournal()
 		result, dispatchErr := script.DispatchEvent(host, InputEvent{
 			Type: eventType, Target: NodeHandle{Document: generation}, Persisted: eventPersisted,
 		})
@@ -71,7 +72,7 @@ func (page *Page) dispatchWindowNavigationLifecycleEvent(
 	if script == nil {
 		return nil
 	}
-	host := &taskHost{page: page, task: task, generation: generation, autoRender: false}
+	host := beginTaskHost(&taskHost{page: page, task: task, generation: generation, autoRender: false})
 	_, dispatchErr := script.DispatchEvent(host, InputEvent{
 		Type: eventType, Target: NodeHandle{Document: generation}, Persisted: persisted,
 	})

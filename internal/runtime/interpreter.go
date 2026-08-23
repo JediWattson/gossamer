@@ -28,12 +28,34 @@ const (
 )
 
 type InterpreterConfig struct {
-	// MaxInstructions applies independently to a top-level call and to each
-	// microtask job. MaxMicrotasks bounds the complete checkpoint.
+	// MaxInstructions bounds control-flow progress independently for a
+	// top-level call and each microtask job. Function activations, completions,
+	// and loop backedges are charged; compiler lowering details are not.
+	// MaxMicrotasks bounds the complete checkpoint.
 	MaxInstructions     uint64
 	MaxMicrotasks       uint64
 	MaxCallDepth        uint32
 	ProfileInstructions bool
+	// ExecutionSample is an optional sparse diagnostic hook. It observes the
+	// current borrowed execution state without retaining any Ref. A zero
+	// interval disables sampling.
+	ExecutionSampleInterval uint64
+	ExecutionSample         func(*TaskContext, ExecutionSample) error
+}
+
+// ExecutionSample identifies one sparse point inside a running bytecode call.
+// RawInstructions is deliberately a diagnostic counter rather than the
+// lowering-independent runaway-script budget.
+type ExecutionSample struct {
+	TaskID          TaskID
+	RawInstructions uint64
+	ControlSteps    uint64
+	StackDepth      int
+	Function        memory.Ref
+	FunctionName    string
+	FunctionHash    uint64
+	Instruction     uint32
+	Opcode          Opcode
 }
 
 // NativeFunction is an explicitly registered host callback. Native Function
@@ -176,6 +198,7 @@ type execution struct {
 	interpreter *Interpreter
 	context     *TaskContext
 	steps       uint64
+	budgetSteps uint64
 	profile     *instructionProfile
 }
 
@@ -242,7 +265,15 @@ func (interpreter *Interpreter) DiscardJobs(task TaskID) {
 	interpreter.jobMutex.Unlock()
 }
 
-func (execution *execution) call(function memory.Ref, this memory.Value, arguments []memory.Value, mode callMode) (memory.Value, error) {
+func (execution *execution) call(function memory.Ref, this memory.Value, arguments []memory.Value, mode callMode) (result memory.Value, resultErr error) {
+	pinning := execution.context.pinNativeAllocations
+	execution.context.pinNativeAllocations = false
+	defer func() {
+		execution.context.pinNativeAllocations = pinning
+		if pinning && resultErr == nil {
+			execution.context.trackNativeResult(result)
+		}
+	}()
 	stack := execution.context.stack
 	if stack == nil {
 		stack = &Stack{}
@@ -299,7 +330,9 @@ func (execution *execution) invokeNative(stack *Stack, function memory.Ref, desc
 	if err != nil {
 		return memory.Value{}, err
 	}
+	previousPinning := execution.context.beginNativeRoots()
 	defer func() {
+		execution.context.endNativeRoots(previousPinning)
 		if err := stack.pop(frame); err != nil {
 			resultErr = errors.Join(resultErr, err)
 			return
@@ -331,6 +364,7 @@ func (execution *execution) acquireBytecodeFrame(stack *Stack, function memory.R
 		return nil, err
 	}
 	frame.instructions = program.instructions
+	frame.programHash = program.key.hash
 	if execution.profile != nil {
 		execution.profile.bind(frame, program, execution.context)
 	}
@@ -501,16 +535,37 @@ func (execution *execution) thrownSummary(err error) string {
 func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 	context := execution.context
 	for {
-		if execution.steps >= execution.interpreter.config.MaxInstructions {
-			return memory.Value{}, execution.instructionLimitError()
-		}
-		execution.steps++
 		instruction, err := frame.next()
 		if err != nil {
 			return memory.Value{}, err
 		}
+		instructionIndex := frame.ip - 1
+		if chargeExecutionBudget(frame, instructionIndex, instruction) {
+			if execution.budgetSteps >= execution.interpreter.config.MaxInstructions {
+				return memory.Value{}, execution.instructionLimitError()
+			}
+			execution.budgetSteps++
+		}
+		execution.steps++
 		if execution.profile != nil {
 			execution.profile.record(frame, instruction.Op)
+		}
+		if interval := execution.interpreter.config.ExecutionSampleInterval; interval != 0 &&
+			execution.interpreter.config.ExecutionSample != nil && execution.steps%interval == 0 {
+			sample := ExecutionSample{
+				TaskID:          context.TaskID,
+				RawInstructions: execution.steps,
+				ControlSteps:    execution.budgetSteps,
+				StackDepth:      context.StackDepth(),
+				Function:        frame.Function,
+				FunctionName:    instructionFunctionName(context, frame.Function, frame.function),
+				FunctionHash:    frame.programHash,
+				Instruction:     instructionIndex,
+				Opcode:          instruction.Op,
+			}
+			if err := execution.interpreter.config.ExecutionSample(context, sample); err != nil {
+				return memory.Value{}, fmt.Errorf("runtime: execution sample: %w", err)
+			}
 		}
 		switch instruction.Op {
 		case OpConstant:
@@ -1548,6 +1603,35 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 		default:
 			return memory.Value{}, fmt.Errorf("%w: unimplemented %s", ErrInvalidBytecode, instruction.Op)
 		}
+	}
+}
+
+// chargeExecutionBudget keeps the runaway-script guard independent from
+// bytecode lowering. A finite expression may expand into several explicit
+// stack operations, while the control behavior that can execute without bound
+// is function activation or a backward transfer. Completions are charged too
+// so even tiny call chains consume a visible amount of the budget.
+func chargeExecutionBudget(frame *Frame, instructionIndex uint32, instruction Instruction) bool {
+	if frame == nil {
+		return true
+	}
+	if !frame.budgetStarted {
+		frame.budgetStarted = true
+		return true
+	}
+	switch instruction.Op {
+	case OpReturn, OpThrow, OpRethrow:
+		return true
+	case OpJump, OpJumpIfTrue, OpJumpIfFalse, OpJumpIfNullish,
+		OpLogicalAndValue, OpLogicalOrValue, OpLogicalNullishValue,
+		OpJumpIfBindingTrue, OpJumpIfBindingFalse,
+		OpJumpIfBindingPropertyTrue, OpJumpIfBindingPropertyFalse,
+		OpJumpIfThisPropertyTrue, OpJumpIfThisPropertyFalse,
+		OpJumpIfPropertyConstantTrue, OpJumpIfPropertyConstantFalse,
+		OpBreak, OpContinue:
+		return instruction.A <= instructionIndex
+	default:
+		return false
 	}
 }
 

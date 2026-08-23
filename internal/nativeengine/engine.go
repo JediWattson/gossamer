@@ -31,6 +31,7 @@ var (
 type Config struct {
 	Interpreter                  browserruntime.InterpreterConfig
 	CheckpointCollectionInterval uint64
+	ActiveCollectionInterval     uint64
 	ConsoleSink                  func(ConsoleMessage)
 }
 
@@ -43,6 +44,7 @@ type EngineProfile struct {
 	Checkpoints           uint64
 	SourceBytes           uint64
 	CheckpointCollections uint64
+	ReportedExceptions    uint64
 }
 
 type RealmProfile struct {
@@ -54,6 +56,7 @@ type RealmProfile struct {
 	ActiveTask            browserruntime.TaskID
 	Closed                bool
 	CheckpointCollections uint64
+	ReportedExceptions    uint64
 }
 
 type Engine struct {
@@ -95,6 +98,8 @@ type Realm struct {
 	animationCallbacks           map[browser.AnimationFrameID]browser.ValueHandle
 	mutationObservers            map[uint64]*mutationObserverState
 	nextMutationObserver         uint64
+	resizeObservers              map[uint64]*resizeObserverState
+	nextResizeObserver           uint64
 	collectedWrappers            []browser.NodeHandle
 	listeners                    map[eventListenerKey][]eventListener
 	listenerTargets              map[eventTargetID]uint64
@@ -104,7 +109,16 @@ type Realm struct {
 	checkpointCollectionInterval uint64
 	lastCheckpointCollection     uint64
 	checkpointCollections        uint64
+	activeCollectionInterval     uint64
+	lastActiveCollection         uint64
+	activeCollections            uint64
+	activeCollectedSlots         uint64
+	executionSampleInterval      uint64
+	executionSample              func(*browserruntime.TaskContext, browserruntime.ExecutionSample) error
+	lastExecutionSampleTask      browserruntime.TaskID
+	lastExecutionSampleRaw       uint64
 	consoleSink                  func(ConsoleMessage)
+	reportedExceptions           uint64
 
 	evaluations        uint64
 	moduleCompilations uint64
@@ -130,9 +144,12 @@ func (engine *Engine) NewRealm() (browser.JSRealm, error) {
 	if collectionInterval == 0 {
 		collectionInterval = DefaultCheckpointCollectionInterval
 	}
+	activeCollectionInterval := engine.config.ActiveCollectionInterval
+	if activeCollectionInterval == 0 {
+		activeCollectionInterval = DefaultActiveCollectionInterval
+	}
 	realm := &Realm{
 		engine:                       engine,
-		interpreter:                  browserruntime.NewInterpreter(engine.config.Interpreter),
 		timerCallbacks:               make(map[browser.TimerID]browser.ValueHandle),
 		intervalCallbacks:            make(map[browser.TimerID]browser.ValueHandle),
 		intervalTimers:               make(map[browser.TimerID]browser.TimerID),
@@ -140,13 +157,24 @@ func (engine *Engine) NewRealm() (browser.JSRealm, error) {
 		intervalDelays:               make(map[browser.TimerID]time.Duration),
 		animationCallbacks:           make(map[browser.AnimationFrameID]browser.ValueHandle),
 		mutationObservers:            make(map[uint64]*mutationObserverState),
+		resizeObservers:              make(map[uint64]*resizeObserverState),
 		listeners:                    make(map[eventListenerKey][]eventListener),
 		listenerTargets:              make(map[eventTargetID]uint64),
 		modules:                      make(map[string]*nativeModule),
 		moduleResolutions:            make(map[moduleResolutionKey]string),
 		checkpointCollectionInterval: collectionInterval,
+		activeCollectionInterval:     activeCollectionInterval,
+		executionSampleInterval:      engine.config.Interpreter.ExecutionSampleInterval,
+		executionSample:              engine.config.Interpreter.ExecutionSample,
 		consoleSink:                  engine.config.ConsoleSink,
 	}
+	interpreterConfig := engine.config.Interpreter
+	interpreterConfig.ExecutionSampleInterval = activeCollectionCheckInstructions
+	if realm.executionSample != nil && realm.executionSampleInterval != 0 && realm.executionSampleInterval < interpreterConfig.ExecutionSampleInterval {
+		interpreterConfig.ExecutionSampleInterval = realm.executionSampleInterval
+	}
+	interpreterConfig.ExecutionSample = realm.observeExecutionLocked
+	realm.interpreter = browserruntime.NewInterpreter(interpreterConfig)
 	if err := realm.installBrowserNatives(); err != nil {
 		return nil, err
 	}
@@ -181,6 +209,7 @@ func (engine *Engine) Profile() EngineProfile {
 		Checkpoints:           engine.closedProfile.Checkpoints,
 		SourceBytes:           engine.closedProfile.SourceBytes,
 		CheckpointCollections: engine.closedProfile.CheckpointCollections,
+		ReportedExceptions:    engine.closedProfile.ReportedExceptions,
 	}
 	for realm := range engine.realms {
 		realmProfile := realm.profile()
@@ -189,6 +218,7 @@ func (engine *Engine) Profile() EngineProfile {
 		profile.Checkpoints += realmProfile.Checkpoints
 		profile.SourceBytes += realmProfile.SourceBytes
 		profile.CheckpointCollections += realmProfile.CheckpointCollections
+		profile.ReportedExceptions += realmProfile.ReportedExceptions
 	}
 	return profile
 }
@@ -228,6 +258,7 @@ func (engine *Engine) forget(realm *Realm, profile RealmProfile) {
 		engine.closedProfile.Evaluations += profile.Evaluations
 		engine.closedProfile.Checkpoints += profile.Checkpoints
 		engine.closedProfile.SourceBytes += profile.SourceBytes
+		engine.closedProfile.ReportedExceptions += profile.ReportedExceptions
 	}
 	engine.mutex.Unlock()
 }
@@ -322,18 +353,18 @@ func (realm *Realm) DrainMicrotasks(host browser.Host) error {
 		realm.clearActiveLocked()
 		return errors.Join(err, releaseErr)
 	}
-	observerErr := realm.deliverMutationObserversLocked(scope)
+	observerErr := realm.deliverObserversLocked(scope)
 	if observerErr != nil {
-		observerErr = fmt.Errorf("nativeengine: deliver initial mutation observers in task %d: %w", task.TaskID, observerErr)
+		observerErr = fmt.Errorf("nativeengine: deliver initial observers in task %d: %w", task.TaskID, observerErr)
 	}
 	jobErr := realm.interpreter.DrainJobs(scope)
 	if jobErr != nil {
 		jobErr = fmt.Errorf("nativeengine: drain initial jobs in task %d: %w", task.TaskID, jobErr)
 	}
 	if observerErr == nil && jobErr == nil {
-		observerErr = realm.deliverMutationObserversLocked(scope)
+		observerErr = realm.deliverObserversLocked(scope)
 		if observerErr != nil {
-			observerErr = fmt.Errorf("nativeengine: deliver follow-up mutation observers in task %d: %w", task.TaskID, observerErr)
+			observerErr = fmt.Errorf("nativeengine: deliver follow-up observers in task %d: %w", task.TaskID, observerErr)
 		}
 	}
 	if observerErr == nil && jobErr == nil {
@@ -347,6 +378,16 @@ func (realm *Realm) DrainMicrotasks(host browser.Host) error {
 		persistErr = fmt.Errorf("nativeengine: persist task %d: %w", task.TaskID, persistErr)
 	}
 	return errors.Join(jobErr, observerErr, persistErr)
+}
+
+func (realm *Realm) deliverObserversLocked(scope *browserruntime.TaskContext) error {
+	if err := realm.deliverMutationObserversLocked(scope); err != nil {
+		return fmt.Errorf("MutationObserver delivery: %w", err)
+	}
+	if err := realm.deliverResizeObserversLocked(scope); err != nil {
+		return fmt.Errorf("ResizeObserver delivery: %w", err)
+	}
+	return nil
 }
 
 func (realm *Realm) DispatchEvent(host browser.Host, event browser.InputEvent) (browser.EventDispatchResult, error) {
@@ -450,6 +491,7 @@ func (realm *Realm) profileLocked() RealmProfile {
 		ActiveTask:            realm.activeTask,
 		Closed:                realm.closed,
 		CheckpointCollections: realm.checkpointCollections,
+		ReportedExceptions:    realm.reportedExceptions,
 	}
 }
 
@@ -481,6 +523,7 @@ func (realm *Realm) Close() error {
 	realm.intervalDelays = nil
 	realm.animationCallbacks = nil
 	realm.mutationObservers = nil
+	realm.resizeObservers = nil
 	realm.collectedWrappers = nil
 	realm.listeners = nil
 	realm.listenerTargets = nil
@@ -545,6 +588,7 @@ func (realm *Realm) beginTaskLocked(task *browserruntime.TaskContext) (*browserr
 	realm.active = realm.persistent
 	realm.activeRegion = scratchRegion
 	realm.activeTask = task.TaskID
+	realm.lastActiveCollection = task.Realm.Store().Stats().Allocations
 	if err := realm.prepareBrowserBindingsLocked(scope); err != nil {
 		releaseErr := task.Realm.Store().DestroyRegion(realm.runtime.Owner(), scratchRegion)
 		realm.clearActiveLocked()
@@ -672,6 +716,9 @@ func (realm *Realm) clearActiveLocked() {
 	realm.activeRegion = 0
 	realm.activeTask = 0
 	realm.bindings = nil
+	realm.lastActiveCollection = 0
+	realm.lastExecutionSampleTask = 0
+	realm.lastExecutionSampleRaw = 0
 }
 
 func runtimeTask(host browser.Host) (*browserruntime.TaskContext, error) {

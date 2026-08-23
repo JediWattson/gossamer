@@ -68,6 +68,10 @@ func regexpExec(execution *execution, expressionRef memory.Ref, expression memor
 			return memory.Value{}, err
 		}
 	}
+	return newRegExpMatchArray(execution, text, match)
+}
+
+func newRegExpMatchArray(execution *execution, text string, match []int) (memory.Value, error) {
 	result, err := execution.context.NewArray(uint32(len(match) / 2))
 	if err != nil {
 		return memory.Value{}, err
@@ -93,6 +97,9 @@ func regexpExec(execution *execution, expressionRef memory.Ref, expression memor
 		return memory.Value{}, err
 	}
 	if err := defineData(execution.context, result, "input", input, true, false, true); err != nil {
+		return memory.Value{}, err
+	}
+	if err := defineData(execution.context, result, "groups", memory.UndefinedValue(), true, false, true); err != nil {
 		return memory.Value{}, err
 	}
 	return memory.RefValue(result), nil

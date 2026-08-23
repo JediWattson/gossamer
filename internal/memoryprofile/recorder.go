@@ -43,7 +43,25 @@ type Snapshot struct {
 	Process       ProcessStats                `json:"process"`
 	Realm         browserruntime.RealmProfile `json:"realm"`
 	Physical      memory.PhysicalStats        `json:"physical"`
+	Regions       []memory.RegionCensus       `json:"regions,omitempty"`
 	Script        browser.ScriptMemoryProfile `json:"script"`
+	Execution     *ExecutionSnapshot          `json:"execution,omitempty"`
+}
+
+// ExecutionSnapshot attributes memory while Strand is still inside one long
+// bytecode call and ordinary browser task checkpoints cannot run.
+type ExecutionSnapshot struct {
+	TaskID           browserruntime.TaskID `json:"taskId"`
+	RawInstructions  uint64                `json:"rawInstructions"`
+	ControlSteps     uint64                `json:"controlSteps"`
+	StackDepth       int                   `json:"stackDepth"`
+	Function         memory.Ref            `json:"function"`
+	FunctionName     string                `json:"functionName"`
+	FunctionHash     string                `json:"functionHash"`
+	Instruction      uint32                `json:"instruction"`
+	Opcode           string                `json:"opcode"`
+	ActiveRegion     memory.RegionCensus   `json:"activeRegion"`
+	PersistentRegion *memory.RegionCensus  `json:"persistentRegion,omitempty"`
 }
 
 type Recorder struct {
@@ -102,12 +120,39 @@ func (recorder *Recorder) Record(label string, page *browser.Page, force bool) e
 	return nil
 }
 
+// RecordExecution appends one sparse in-task sample. The caller invokes it at
+// an interpreter safepoint, so it reads RegionStore and DOM counters directly
+// without trying to re-enter the active script Realm.
+func (recorder *Recorder) RecordExecution(page *browser.Page, context *browserruntime.TaskContext, sample browserruntime.ExecutionSample) error {
+	if recorder == nil || recorder.encoder == nil || page == nil || context == nil || context.Realm == nil {
+		return nil
+	}
+	recorder.mutex.Lock()
+	defer recorder.mutex.Unlock()
+	if recorder.closed {
+		return errors.New("memoryprofile: recorder is closed")
+	}
+	now := time.Now()
+	if !recorder.last.IsZero() && now.Sub(recorder.last) < recorder.interval {
+		return nil
+	}
+	recorder.sequence++
+	snapshot, err := CaptureExecution(page, context, sample, recorder.sequence, now.Sub(recorder.started))
+	if err != nil {
+		return err
+	}
+	if err := recorder.encoder.Encode(snapshot); err != nil {
+		return fmt.Errorf("memoryprofile: encode execution checkpoint: %w", err)
+	}
+	recorder.last = now
+	return nil
+}
+
 func Capture(page *browser.Page, sequence uint64, label string, elapsed time.Duration) (Snapshot, error) {
 	if page == nil || page.Realm == nil {
 		return Snapshot{}, fmt.Errorf("memoryprofile: nil page")
 	}
-	var process runtime.MemStats
-	runtime.ReadMemStats(&process)
+	process := captureProcessStats()
 	script, err := page.ScriptMemoryProfile()
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("memoryprofile: script profile: %w", err)
@@ -127,25 +172,82 @@ func Capture(page *browser.Page, sequence uint64, label string, elapsed time.Dur
 		PageID:        page.ID,
 		DocumentNodes: documentNodes,
 		LiveNodes:     liveNodes,
-		Process: ProcessStats{
-			HeapAlloc:       process.HeapAlloc,
-			HeapInuse:       process.HeapInuse,
-			HeapIdle:        process.HeapIdle,
-			HeapReleased:    process.HeapReleased,
-			HeapObjects:     process.HeapObjects,
-			StackInuse:      process.StackInuse,
-			MSpanInuse:      process.MSpanInuse,
-			MCacheInuse:     process.MCacheInuse,
-			NextGC:          process.NextGC,
-			Sys:             process.Sys,
-			NumGC:           process.NumGC,
-			PauseTotalNanos: process.PauseTotalNs,
-			GCCPUFraction:   process.GCCPUFraction,
-		},
-		Realm:    page.Realm.Profile(),
-		Physical: physical,
-		Script:   script,
+		Process:       process,
+		Realm:         page.Realm.Profile(),
+		Physical:      physical,
+		Regions:       page.Realm.Store().RegionCensuses(),
+		Script:        script,
 	}, nil
+}
+
+// CaptureExecution is the in-task counterpart to Capture. It deliberately
+// avoids Page.ScriptMemoryProfile because Strand's Realm mutex is already held
+// by the executing callback.
+func CaptureExecution(page *browser.Page, context *browserruntime.TaskContext, sample browserruntime.ExecutionSample, sequence uint64, elapsed time.Duration) (Snapshot, error) {
+	if page == nil || page.Realm == nil || context == nil || context.Realm == nil {
+		return Snapshot{}, fmt.Errorf("memoryprofile: nil active execution")
+	}
+	store := context.Realm.Store()
+	active, err := store.RegionCensus(context.MemoryRegion)
+	if err != nil {
+		return Snapshot{}, fmt.Errorf("memoryprofile: active region census: %w", err)
+	}
+	var persistent *memory.RegionCensus
+	if region := context.IntrinsicsRegion(); region != 0 && region != context.MemoryRegion {
+		value, censusErr := store.RegionCensus(region)
+		if censusErr != nil {
+			return Snapshot{}, fmt.Errorf("memoryprofile: persistent region census: %w", censusErr)
+		}
+		persistent = &value
+	}
+	documentNodes, liveNodes := documentCounts(page)
+	stats := store.Stats()
+	return Snapshot{
+		Sequence:      sequence,
+		Label:         "active-execution",
+		ElapsedNanos:  elapsed.Nanoseconds(),
+		PageID:        page.ID,
+		DocumentNodes: documentNodes,
+		LiveNodes:     liveNodes,
+		Process:       captureProcessStats(),
+		Realm:         page.Realm.Profile(),
+		Physical:      store.PhysicalStats(),
+		Script: browser.ScriptMemoryProfile{
+			Engine: "strand", LiveValues: stats.LiveSlots, LiveWrappers: stats.LiveHostObjects,
+		},
+		Execution: &ExecutionSnapshot{
+			TaskID: sample.TaskID, RawInstructions: sample.RawInstructions,
+			ControlSteps: sample.ControlSteps, StackDepth: sample.StackDepth,
+			Function: sample.Function, FunctionName: sample.FunctionName,
+			FunctionHash: fmt.Sprintf("%016x", sample.FunctionHash),
+			Instruction:  sample.Instruction, Opcode: sample.Opcode.String(),
+			ActiveRegion: active, PersistentRegion: persistent,
+		},
+	}, nil
+}
+
+func documentCounts(page *browser.Page) (int, int) {
+	if page == nil {
+		return 0, 0
+	}
+	document := page.Document()
+	if document == nil || document.Store() == nil {
+		return 0, 0
+	}
+	return document.Store().Len(), document.Store().LiveLen()
+}
+
+func captureProcessStats() ProcessStats {
+	var process runtime.MemStats
+	runtime.ReadMemStats(&process)
+	return ProcessStats{
+		HeapAlloc: process.HeapAlloc, HeapInuse: process.HeapInuse,
+		HeapIdle: process.HeapIdle, HeapReleased: process.HeapReleased,
+		HeapObjects: process.HeapObjects, StackInuse: process.StackInuse,
+		MSpanInuse: process.MSpanInuse, MCacheInuse: process.MCacheInuse,
+		NextGC: process.NextGC, Sys: process.Sys, NumGC: process.NumGC,
+		PauseTotalNanos: process.PauseTotalNs, GCCPUFraction: process.GCCPUFraction,
+	}
 }
 
 // WriteHeapProfile forces one Go collection and writes the live process heap.

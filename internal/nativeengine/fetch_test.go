@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -118,7 +119,12 @@ func TestNativeStorageAndCookiesSurviveDocumentNavigation(t *testing.T) {
 func TestNativeWebSocketQueuesOpenMessageAndCloseEvents(t *testing.T) {
 	t.Parallel()
 
-	engine := nativeengine.New(nativeengine.Config{})
+	var reported uint64
+	engine := nativeengine.New(nativeengine.Config{ConsoleSink: func(message nativeengine.ConsoleMessage) {
+		if message.Method == "error" && len(message.Arguments) == 1 && strings.Contains(message.Arguments[0], "reported websocket exception") {
+			atomic.AddUint64(&reported, 1)
+		}
+	}})
 	runtime, err := browser.NewWithEngine(engine)
 	if err != nil {
 		t.Fatal(err)
@@ -174,6 +180,9 @@ func TestNativeWebSocketQueuesOpenMessageAndCloseEvents(t *testing.T) {
 	if text != "hello:1000:done" {
 		t.Fatalf("websocket result = %q", text)
 	}
+	if got := atomic.LoadUint64(&reported); got != 1 {
+		t.Fatalf("reported WebSocket handler exceptions = %d, want 1", got)
+	}
 }
 
 type nativeSocketDocumentLoader struct{}
@@ -185,6 +194,7 @@ func (nativeSocketDocumentLoader) Load(_ context.Context, rawURL string) (*loade
 		Body: io.NopCloser(strings.NewReader(`<!doctype html><html><body><div id="result">pending</div><script>
 const socket = new WebSocket("/socket", "chat");
 socket.onopen = function () { document.getElementById("result").textContent = "open"; socket.send("ping"); };
+socket.onmessage = function () { throw new Error("reported websocket exception"); };
 socket.addEventListener("message", function (event) { document.getElementById("result").textContent = event.data; socket.close(1000, "done"); });
 socket.onclose = function (event) { document.getElementById("result").textContent += ":" + event.code + ":" + event.reason; };
 </script></body></html>`)),

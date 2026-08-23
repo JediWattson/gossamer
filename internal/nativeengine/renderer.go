@@ -539,7 +539,7 @@ func classTokenArgument(context *browserruntime.TaskContext, arguments []memory.
 		return "", err
 	}
 	if token == "" || strings.IndexFunc(token, unicode.IsSpace) >= 0 {
-		return "", fmt.Errorf("%w: class token must be non-empty and contain no whitespace", browserruntime.ErrOperandType)
+		return "", fmt.Errorf("%w: class token %q must be non-empty and contain no whitespace", browserruntime.ErrOperandType, token)
 	}
 	return token, nil
 }

@@ -20,6 +20,26 @@ func (page *Page) releaseAsyncRef(ref memory.Ref) error {
 	return page.Realm.Store().DestroyRegion(page.Realm.Owner(), ref.Region)
 }
 
+// NativeMemoryRoots snapshots Realm-owned asynchronous records. Queued
+// records are included as well because their ownership transfer can race a
+// between-task collection; the Store atomically ignores records that have
+// already moved to a queue or firing task.
+func (page *Page) NativeMemoryRoots() []memory.Ref {
+	if page == nil {
+		return nil
+	}
+	page.mutex.RLock()
+	defer page.mutex.RUnlock()
+	refs := make([]memory.Ref, 0, len(page.timers)+len(page.animationFrames))
+	for _, timer := range page.timers {
+		refs = append(refs, timer.ref)
+	}
+	for _, frame := range page.animationFrames {
+		refs = append(refs, frame.ref)
+	}
+	return refs
+}
+
 func (page *Page) invokeAsyncScript(
 	context *browserruntime.TaskContext,
 	class memory.HostClass,

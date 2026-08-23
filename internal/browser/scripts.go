@@ -337,7 +337,7 @@ func (page *Page) applyNavigationScript(
 	scriptErr := result.err
 	if scriptErr == nil && script != nil {
 		phase = "evaluate"
-		host := &taskHost{page: page, task: task, generation: generation, autoRender: false}
+		host := beginTaskHost(&taskHost{page: page, task: task, generation: generation, autoRender: false})
 		if result.script.kind == navigationModuleScript {
 			moduleRealm, ok := script.(JSModuleRealm)
 			if !ok {
@@ -411,7 +411,7 @@ func (page *Page) dispatchNavigationLifecycleEvent(
 	if script == nil {
 		return nil
 	}
-	host := &taskHost{page: page, task: task, generation: generation, autoRender: false}
+	host := beginTaskHost(&taskHost{page: page, task: task, generation: generation, autoRender: false})
 	_, dispatchErr := script.DispatchEvent(host, InputEvent{Type: eventType, Target: target})
 	return errors.Join(dispatchErr, script.DrainMicrotasks(host), host.finish())
 }

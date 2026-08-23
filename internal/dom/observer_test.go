@@ -204,6 +204,36 @@ func TestMutationJournalFailsClosedAfterRetentionGap(t *testing.T) {
 	}
 }
 
+func TestMutationJournalRetentionPreservesOneLargeTaskThenRebounds(t *testing.T) {
+	root := NewDocument()
+	element := NewElement("div")
+	root.AppendChild(element)
+	document, err := IndexDocument(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	elementID := mustNodeID(t, document, element)
+	baseline := document.MutationSequence()
+	document.BeginMutationJournalRetention()
+	for index := 0; index < maxMutationJournalRecords+257; index++ {
+		if err := document.SetAttribute(elementID, "data-sequence", fmt.Sprint(index)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	records, latest, err := document.MutationRecordsSince(baseline)
+	if err != nil || len(records) != maxMutationJournalRecords+257 {
+		t.Fatalf("retained task journal = %d records, latest %d, err %v", len(records), latest, err)
+	}
+	document.EndMutationJournalRetention()
+	if records, gotLatest, err := document.MutationRecordsSince(baseline); !errors.Is(err, ErrMutationJournalOverflow) || records != nil || gotLatest != latest {
+		t.Fatalf("bounded post-task journal = %#v, %d, %v; want overflow at %d", records, gotLatest, err, latest)
+	}
+	records, gotLatest, err := document.MutationRecordsSince(latest - maxMutationJournalRecords)
+	if err != nil || gotLatest != latest || len(records) != maxMutationJournalRecords {
+		t.Fatalf("bounded post-task suffix = %d records, latest %d, err %v", len(records), gotLatest, err)
+	}
+}
+
 func TestDocumentAppendChildWritesEffectiveJournalRecords(t *testing.T) {
 	root := NewDocument()
 	first := NewElement("div")

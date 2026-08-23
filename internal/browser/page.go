@@ -373,6 +373,45 @@ func (page *Page) ReleaseNodeEventTarget(handle NodeHandle) error {
 	return page.nodeLifetimes.releaseEventTarget(handle)
 }
 
+// RetainNodeObserverTarget adds one native observer registration claim. The
+// claim is separate from the weak JavaScript wrapper and from event listeners,
+// so a detached observation target remains resolvable until the registration
+// is removed or its observer is collected.
+func (page *Page) RetainNodeObserverTarget(handle NodeHandle) error {
+	if page == nil {
+		return fmt.Errorf("browser: nil page")
+	}
+	page.mutex.Lock()
+	defer page.mutex.Unlock()
+	if page.closed {
+		return ErrPageClosed
+	}
+	if page.nodeLifetimes == nil || handle.Document != page.documentGeneration {
+		return ErrStaleNodeHandle
+	}
+	if _, ok := page.document.Resolve(handle.Node); !ok {
+		return dom.ErrUnknownNode
+	}
+	return page.nodeLifetimes.retainObserverTarget(handle)
+}
+
+// ReleaseNodeObserverTarget removes one native observer registration claim
+// and immediately reconciles an otherwise unreachable detached component.
+func (page *Page) ReleaseNodeObserverTarget(handle NodeHandle) error {
+	if page == nil {
+		return fmt.Errorf("browser: nil page")
+	}
+	page.mutex.Lock()
+	defer page.mutex.Unlock()
+	if page.closed {
+		return ErrPageClosed
+	}
+	if page.nodeLifetimes == nil || handle.Document != page.documentGeneration {
+		return ErrStaleNodeHandle
+	}
+	return page.nodeLifetimes.releaseObserverTarget(handle)
+}
+
 // Render synchronously renders the current document through the existing
 // style/layout/display-list pipeline.
 func (page *Page) Render() error {

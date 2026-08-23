@@ -6654,13 +6654,15 @@ bool DeliverMutationObservers(gossamer_v8_realm *realm,
       v8::Local<v8::Object> observer = weak->object.Get(realm->isolate);
       v8::Local<v8::Value> arguments[] = {records, observer};
       v8::TryCatch caught(realm->isolate);
+      delivered = true;
       if (state->callback.Get(realm->isolate)
               ->Call(context, v8::Undefined(realm->isolate), 2, arguments)
               .IsEmpty()) {
-        *error = DescribeException(realm->isolate, context, caught);
-        return false;
+        // Web observer callbacks report JavaScript exceptions without aborting
+        // delivery of the remaining observers or the browser task checkpoint.
+        caught.Reset();
+        continue;
       }
-      delivered = true;
     }
     if (!delivered)
       return true;
@@ -10015,8 +10017,10 @@ bool DeliverLayoutObservers(gossamer_v8_realm *realm,
       v8::Local<v8::Value> ignored;
       if (!callback->Call(context, v8::Undefined(realm->isolate), 2, arguments)
                .ToLocal(&ignored)) {
-        *error = DescribeException(realm->isolate, context, caught);
-        return false;
+        // Match the browser observer boundary: a thrown callback does not stop
+        // later observers or turn the enclosing task into a failed host call.
+        caught.Reset();
+        continue;
       }
     }
     if (!delivered)

@@ -176,6 +176,7 @@ const (
 	nativeNodeLastElementChild
 	nativeNodePreviousElementSibling
 	nativeNodeNextElementSibling
+	nativeElementScrollIntoView
 )
 
 const (
@@ -189,6 +190,7 @@ const (
 	hostClassFormElements
 	hostClassSelectOptions
 	hostClassLocation
+	hostClassResizeObserver
 )
 
 const (
@@ -220,6 +222,8 @@ const (
 	bindingDOMRectPrototype                = "\x00gossamer.dom-rect.prototype"
 	bindingMutationObserverPrototype       = "\x00gossamer.mutation-observer.prototype"
 	bindingMutationObserverConstructor     = "\x00gossamer.mutation-observer.constructor"
+	bindingResizeObserverPrototype         = "\x00gossamer.resize-observer.prototype"
+	bindingResizeObserverConstructor       = "\x00gossamer.resize-observer.constructor"
 	bindingIntersectionObserverPrototype   = "\x00gossamer.intersection-observer.prototype"
 	bindingIntersectionObserverConstructor = "\x00gossamer.intersection-observer.constructor"
 	bindingDOMException                    = "DOMException"
@@ -236,6 +240,7 @@ const (
 	bindingHistory                         = "history"
 	bindingLocation                        = "location"
 	bindingMutationObserver                = "MutationObserver"
+	bindingResizeObserver                  = "ResizeObserver"
 	bindingIntersectionObserver            = "IntersectionObserver"
 	bindingRangePrototype                  = "\x00gossamer.range.prototype"
 	bindingSelectionPrototype              = "\x00gossamer.selection.prototype"
@@ -285,6 +290,8 @@ type browserBindings struct {
 	domRectPrototype                memory.Ref
 	mutationObserverPrototype       memory.Ref
 	mutationObserverConstructor     memory.Ref
+	resizeObserverPrototype         memory.Ref
+	resizeObserverConstructor       memory.Ref
 	intersectionObserverPrototype   memory.Ref
 	intersectionObserverConstructor memory.Ref
 	domExceptionPrototype           memory.Ref
@@ -449,6 +456,7 @@ func (realm *Realm) installBrowserNatives() error {
 		{nativeElementScrollLeftSet, realm.elementScrollSet(false)},
 		{nativeElementScrollTopGet, realm.elementGeometryValue("scrollTop")},
 		{nativeElementScrollTopSet, realm.elementScrollSet(true)},
+		{nativeElementScrollIntoView, realm.elementScrollIntoView},
 		{nativeWindowInnerWidth, realm.windowGeometryValue("innerWidth")},
 		{nativeWindowInnerHeight, realm.windowGeometryValue("innerHeight")},
 		{nativeWindowScrollX, realm.windowGeometryValue("scrollX")},
@@ -469,6 +477,10 @@ func (realm *Realm) installBrowserNatives() error {
 		{nativeMutationObserverObserve, realm.mutationObserverObserve},
 		{nativeMutationObserverDisconnect, realm.mutationObserverDisconnect},
 		{nativeMutationObserverTakeRecords, realm.mutationObserverTakeRecords},
+		{nativeResizeObserverConstructor, realm.resizeObserverConstructor},
+		{nativeResizeObserverObserve, realm.resizeObserverObserve},
+		{nativeResizeObserverUnobserve, realm.resizeObserverUnobserve},
+		{nativeResizeObserverDisconnect, realm.resizeObserverDisconnect},
 		{nativeIntersectionObserverConstructor, realm.intersectionObserverConstructor},
 		{nativeIntersectionObserverObserve, realm.intersectionObserverObserve},
 		{nativeIntersectionObserverUnobserve, realm.intersectionObserverUnobserve},
@@ -702,6 +714,8 @@ func (realm *Realm) prepareBrowserBindingsLocked(context *browserruntime.TaskCon
 			{bindingDOMRectPrototype, &bindings.domRectPrototype},
 			{bindingMutationObserverPrototype, &bindings.mutationObserverPrototype},
 			{bindingMutationObserverConstructor, &bindings.mutationObserverConstructor},
+			{bindingResizeObserverPrototype, &bindings.resizeObserverPrototype},
+			{bindingResizeObserverConstructor, &bindings.resizeObserverConstructor},
 			{bindingIntersectionObserverPrototype, &bindings.intersectionObserverPrototype},
 			{bindingIntersectionObserverConstructor, &bindings.intersectionObserverConstructor},
 			{bindingDOMExceptionPrototype, &bindings.domExceptionPrototype},
@@ -826,6 +840,10 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		return err
 	}
 	bindings.mutationObserverConstructor, bindings.mutationObserverPrototype, err = realm.newMutationObserverConstructor(context)
+	if err != nil {
+		return err
+	}
+	bindings.resizeObserverConstructor, bindings.resizeObserverPrototype, err = realm.newResizeObserverConstructor(context)
 	if err != nil {
 		return err
 	}
@@ -1022,6 +1040,7 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{"sessionStorage", memory.RefValue(bindings.sessionStorage)},
 		{"WebSocket", memory.RefValue(bindings.webSocketConstructor)},
 		{"MutationObserver", memory.RefValue(bindings.mutationObserverConstructor)},
+		{"ResizeObserver", memory.RefValue(bindings.resizeObserverConstructor)},
 		{"IntersectionObserver", memory.RefValue(bindings.intersectionObserverConstructor)},
 		{bindingDOMException, memory.RefValue(bindings.domExceptionConstructor)},
 		{"URLSearchParams", memory.RefValue(bindings.urlSearchParamsConstructor)},
@@ -1081,6 +1100,8 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{bindingDOMRectPrototype, bindings.domRectPrototype, false},
 		{bindingMutationObserverPrototype, bindings.mutationObserverPrototype, false},
 		{bindingMutationObserverConstructor, bindings.mutationObserverConstructor, false},
+		{bindingResizeObserverPrototype, bindings.resizeObserverPrototype, false},
+		{bindingResizeObserverConstructor, bindings.resizeObserverConstructor, false},
 		{bindingIntersectionObserverPrototype, bindings.intersectionObserverPrototype, false},
 		{bindingIntersectionObserverConstructor, bindings.intersectionObserverConstructor, false},
 		{bindingDOMExceptionPrototype, bindings.domExceptionPrototype, false},
@@ -1131,6 +1152,7 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{"console", console, false},
 		{"crypto", cryptoObject, false},
 		{bindingMutationObserver, bindings.mutationObserverConstructor, false},
+		{bindingResizeObserver, bindings.resizeObserverConstructor, false},
 		{bindingIntersectionObserver, bindings.intersectionObserverConstructor, true},
 		{bindingDOMException, bindings.domExceptionConstructor, true},
 		{"URLSearchParams", bindings.urlSearchParamsConstructor, true},
@@ -1239,6 +1261,7 @@ func (realm *Realm) installDOMPrototypeProperties(context *browserruntime.TaskCo
 		{realm.bindings.htmlCollectionPrototype, "namedItem", 1, nativeHTMLCollectionNamedItem},
 		{realm.bindings.elementPrototype, "getBoundingClientRect", 0, nativeElementGetBoundingClientRect},
 		{realm.bindings.elementPrototype, "getClientRects", 0, nativeElementGetClientRects},
+		{realm.bindings.elementPrototype, "scrollIntoView", 0, nativeElementScrollIntoView},
 		{realm.bindings.classListPrototype, "add", 1, nativeClassListAdd},
 		{realm.bindings.classListPrototype, "remove", 1, nativeClassListRemove},
 		{realm.bindings.classListPrototype, "contains", 1, nativeClassListContains},
@@ -1257,6 +1280,9 @@ func (realm *Realm) installDOMPrototypeProperties(context *browserruntime.TaskCo
 		{realm.bindings.mutationObserverPrototype, "observe", 2, nativeMutationObserverObserve},
 		{realm.bindings.mutationObserverPrototype, "disconnect", 0, nativeMutationObserverDisconnect},
 		{realm.bindings.mutationObserverPrototype, "takeRecords", 0, nativeMutationObserverTakeRecords},
+		{realm.bindings.resizeObserverPrototype, "observe", 1, nativeResizeObserverObserve},
+		{realm.bindings.resizeObserverPrototype, "unobserve", 1, nativeResizeObserverUnobserve},
+		{realm.bindings.resizeObserverPrototype, "disconnect", 0, nativeResizeObserverDisconnect},
 		{realm.bindings.intersectionObserverPrototype, "observe", 1, nativeIntersectionObserverObserve},
 		{realm.bindings.intersectionObserverPrototype, "unobserve", 1, nativeIntersectionObserverUnobserve},
 		{realm.bindings.intersectionObserverPrototype, "disconnect", 0, nativeIntersectionObserverDisconnect},

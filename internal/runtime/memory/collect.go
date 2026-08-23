@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"sort"
@@ -32,7 +33,21 @@ func (store *Store) Collect(owner ownership.OwnerID, roots ...Ref) (Collection, 
 	}
 	store.mutex.Lock()
 	defer store.mutex.Unlock()
-	return store.collectLocked(owner, 0, roots...)
+	return store.collectLocked(owner, 0, roots, nil)
+}
+
+// CollectWithOptionalRoots is the owner-local collection boundary for roots
+// retained by an external subsystem. Required roots still fail loudly when
+// stale or inaccessible. Optional roots are retained when they still belong
+// to owner and ignored when a concurrent queue handoff or cancellation has
+// already moved or released them.
+func (store *Store) CollectWithOptionalRoots(owner ownership.OwnerID, optional []Ref, roots ...Ref) (Collection, error) {
+	if store == nil {
+		return Collection{}, fmt.Errorf("memory: nil store")
+	}
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+	return store.collectLocked(owner, 0, roots, optional)
 }
 
 // CollectRegion reclaims unreachable slots from one private physical region.
@@ -55,10 +70,10 @@ func (store *Store) CollectRegion(owner ownership.OwnerID, regionID RegionID, ro
 	if region.State != RegionPrivate || region.Owner != owner {
 		return Collection{}, store.accessError(region, owner)
 	}
-	return store.collectLocked(owner, regionID, roots...)
+	return store.collectLocked(owner, regionID, roots, nil)
 }
 
-func (store *Store) collectLocked(owner ownership.OwnerID, regionID RegionID, roots ...Ref) (Collection, error) {
+func (store *Store) collectLocked(owner ownership.OwnerID, regionID RegionID, roots, optionalRoots []Ref) (Collection, error) {
 	if store.closed {
 		return Collection{}, ErrStoreClosed
 	}
@@ -98,6 +113,23 @@ func (store *Store) collectLocked(owner ownership.OwnerID, regionID RegionID, ro
 		}
 		if region.State == RegionPrivate && region.Owner != owner {
 			return Collection{}, store.accessError(region, owner)
+		}
+		rootSet[root] = struct{}{}
+		queue = append(queue, root)
+	}
+	for _, root := range uniqueRefs(optionalRoots) {
+		region, _, err := store.slotLocked(root)
+		if err != nil {
+			if errors.Is(err, ErrStaleRef) {
+				continue
+			}
+			return Collection{}, err
+		}
+		if region.State != RegionPrivate || region.Owner != owner || regionID != 0 && region.ID != regionID {
+			continue
+		}
+		if _, exists := rootSet[root]; exists {
+			continue
 		}
 		rootSet[root] = struct{}{}
 		queue = append(queue, root)

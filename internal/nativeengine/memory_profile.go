@@ -4,12 +4,86 @@ import (
 	"fmt"
 
 	"github.com/JediWattson/gossamer/internal/browser"
+	browserruntime "github.com/JediWattson/gossamer/internal/runtime"
 	"github.com/JediWattson/gossamer/internal/runtime/memory"
 )
 
 // DefaultCheckpointCollectionInterval bounds persistent weak-cache growth
 // while avoiding a full native trace after every small browser task.
 const DefaultCheckpointCollectionInterval uint64 = 4096
+
+// DefaultActiveCollectionInterval bounds temporary values created by one long
+// browser callback before it can reach an ordinary task checkpoint.
+const DefaultActiveCollectionInterval uint64 = 250_000
+
+// Sampling the allocation counter at explicit interpreter safepoints keeps the
+// policy deterministic without placing a Store lock on every allocation.
+const activeCollectionCheckInstructions uint64 = 100_000
+
+// observeExecutionLocked runs only between bytecode instructions while the
+// Realm executor and native-engine mutex are already held.
+func (realm *Realm) observeExecutionLocked(context *browserruntime.TaskContext, sample browserruntime.ExecutionSample) error {
+	if realm == nil || context == nil || context.Realm == nil {
+		return nil
+	}
+	if err := realm.collectActiveScratchLocked(context); err != nil {
+		return err
+	}
+	if realm.executionSample == nil || realm.executionSampleInterval == 0 {
+		return nil
+	}
+	if realm.lastExecutionSampleTask != sample.TaskID || sample.RawInstructions < realm.lastExecutionSampleRaw {
+		realm.lastExecutionSampleTask = sample.TaskID
+		realm.lastExecutionSampleRaw = 0
+	}
+	if sample.RawInstructions-realm.lastExecutionSampleRaw < realm.executionSampleInterval {
+		return nil
+	}
+	realm.lastExecutionSampleRaw = sample.RawInstructions
+	return realm.executionSample(context, sample)
+}
+
+func (realm *Realm) collectActiveScratchLocked(context *browserruntime.TaskContext) error {
+	if realm.persistentRegion == 0 || realm.activeRegion == 0 || realm.activeRegion == realm.persistentRegion ||
+		context.MemoryRegion != realm.activeRegion || realm.activeCollectionInterval == 0 {
+		return nil
+	}
+	store := context.Realm.Store()
+	allocations := store.Stats().Allocations
+	if realm.lastActiveCollection == 0 {
+		realm.lastActiveCollection = allocations
+	}
+	if allocations >= realm.lastActiveCollection && allocations-realm.lastActiveCollection < realm.activeCollectionInterval {
+		return nil
+	}
+	roots := make([]memory.Ref, 0, context.StackDepth()*8+32)
+	metadata := make(map[memory.RegionID]memory.RegionMetadata)
+	if err := context.VisitRefs(func(ref memory.Ref) error {
+		region, found := metadata[ref.Region]
+		if !found {
+			var err error
+			region, err = store.RegionMetadata(ref.Region)
+			if err != nil {
+				return err
+			}
+			metadata[ref.Region] = region
+		}
+		if region.State != memory.RegionPrivate || region.Owner == context.Owner {
+			roots = append(roots, ref)
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("nativeengine: visit active scratch roots: %w", err)
+	}
+	collection, err := store.CollectRegion(context.Owner, realm.activeRegion, roots...)
+	if err != nil {
+		return fmt.Errorf("nativeengine: collect active scratch region R%d: %w", realm.activeRegion, err)
+	}
+	realm.activeCollections++
+	realm.activeCollectedSlots += collection.ReclaimedSlots
+	realm.lastActiveCollection = store.Stats().Allocations
+	return nil
+}
 
 // CollectCheckpoint runs Strand's existing weak-cache-aware collector after a
 // deterministic number of RegionStore allocations. The browser invokes this
@@ -67,8 +141,12 @@ func (realm *Realm) ScriptMemoryProfile() (browser.ScriptMemoryProfile, error) {
 		Intervals:             uint64(len(realm.intervalCallbacks)),
 		AnimationFrames:       uint64(len(realm.animationCallbacks)),
 		MutationObservers:     uint64(len(realm.mutationObservers)),
+		ResizeObservers:       uint64(len(realm.resizeObservers)),
 		Modules:               uint64(len(realm.modules)),
 		CheckpointCollections: realm.checkpointCollections,
+		ActiveCollections:     realm.activeCollections,
+		ActiveCollectedSlots:  realm.activeCollectedSlots,
+		ReportedExceptions:    realm.reportedExceptions,
 	}
 	for _, listeners := range realm.listeners {
 		profile.EventListeners += uint64(len(listeners))

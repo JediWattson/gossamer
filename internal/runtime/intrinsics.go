@@ -199,6 +199,8 @@ const (
 	nativeArrayFlat
 	nativeArrayFlatMap
 	nativeStringSearch
+	nativeStringReplaceAll
+	nativeStringMatchAll
 )
 
 // Intrinsics is one task-local instantiation of the native ECMAScript
@@ -622,6 +624,8 @@ func (interpreter *Interpreter) registerBuiltinCallbacks() error {
 		nativeArrayFlat:                       builtinArrayFlat,
 		nativeArrayFlatMap:                    builtinArrayFlatMap,
 		nativeStringSearch:                    builtinStringSearch,
+		nativeStringReplaceAll:                builtinStringReplaceAll,
+		nativeStringMatchAll:                  builtinStringMatchAll,
 		nativeStringIncludes:                  builtinStringIncludes,
 		nativeStringEndsWith:                  builtinStringEndsWith,
 		nativeStringIndexOf:                   builtinStringIndexOf,
