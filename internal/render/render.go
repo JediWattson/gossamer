@@ -904,10 +904,7 @@ func paintBoxBorders(list *DisplayList, box *Box, style computedStyle) {
 		visible := false
 		for index, side := range sides {
 			command.BorderStyles[index] = side.Style()
-			command.BorderColors[index] = style.Color()
-			if explicit, ok := side.Color(); ok {
-				command.BorderColors[index] = explicit
-			}
+			command.BorderColors[index] = side.ResolveColor(style.Color())
 			width := []float64{borders.Top, borders.Right, borders.Bottom, borders.Left}[index]
 			visible = visible || width > 0 && command.BorderColors[index].A > 0 && side.Style() == borderStyleSolid
 		}
@@ -948,10 +945,7 @@ const (
 const maxBorderPatternSegments = 4096
 
 func paintBorderSide(list *DisplayList, node *dom.Node, pseudo computed.PseudoElement, rectangle Rect, side borderSide, currentColor color.NRGBA, edge borderPaintEdge) {
-	edgeColor := currentColor
-	if explicit, ok := side.Color(); ok {
-		edgeColor = explicit
-	}
+	edgeColor := side.ResolveColor(currentColor)
 	paintBorderPattern(list, node, pseudo, rectangle, side.Style(), edgeColor, edge)
 }
 

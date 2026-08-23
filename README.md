@@ -417,9 +417,12 @@ performance budgets; see
   invalidation
 - Screen media queries for viewport width, height, orientation, media types,
   comma alternatives, `not`, and `only`
-- SVG/CSS named colors, hex, `rgb()`/`rgba()`, `hsl()`/`hsla()`, `hwb()`, and
-  `currentcolor` across text, backgrounds, and borders; absolute, percentage,
-  em/rem, and modern viewport length units; and bounded typed length math
+- SVG/CSS named colors, hex, `rgb()`/`rgba()`, `hsl()`/`hsla()`, `hwb()`,
+  `oklab()`, `oklch()`, and `currentcolor`; bounded two-color `color-mix()` in
+  sRGB, linear sRGB, Lab, or OKLab retains nested/current-color expressions and
+  resolves them into the shared sRGB paint model across text, backgrounds,
+  borders, shadows, and gradients; absolute, percentage, em/rem, and modern
+  viewport length units; and bounded typed length math
 - Block flow, inline text wrapping, inline and block images, and signed vertical
   margin collapsing across siblings, eligible parent edges, and collapse-through
   empty blocks without crossing flex, overflow, border, or padding barriers;
@@ -536,8 +539,10 @@ The following are intentionally still outside the current milestone:
 - The remaining CSS math grammar beyond the current bounded length
   `calc()`/`min()`/`max()`/`clamp()` slice; advanced CSS Images geometry such
   as background sizing/positioning/repetition and gradient hints/color spaces;
-  non-solid curved-border paths, 3D transforms, counters, quotation marks, and
-  generated images
+  wide-gamut `color()`, Lab/LCH and relative-color functions, cylindrical or
+  wide-gamut color mixing and missing-component propagation, non-solid
+  curved-border paths, 3D transforms, counters, quotation marks, and generated
+  images
 - Escaped literal dots in layer-name segments, `@font-face`, keyframes,
   arbitrary or repeated non-leading `&` nesting selectors, and the remaining
   media-query and `@supports` syntax beyond the current

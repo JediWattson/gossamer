@@ -384,7 +384,7 @@ const (
 type BorderSide struct {
 	width    Length
 	style    BorderStyle
-	color    color.NRGBA
+	color    computedColorValue
 	hasColor bool
 }
 
@@ -559,7 +559,21 @@ func (side BorderSide) Width() Length { return side.width }
 
 func (side BorderSide) Style() BorderStyle { return side.style }
 
-func (side BorderSide) Color() (color.NRGBA, bool) { return side.color, side.hasColor }
+func (side BorderSide) Color() (color.NRGBA, bool) {
+	if !side.hasColor || side.color.usesCurrentColor() {
+		return color.NRGBA{}, false
+	}
+	return side.color.resolve(color.NRGBA{}), true
+}
+
+// ResolveColor returns the used border color after substituting the element's
+// computed color for any currentcolor term retained inside a color mix.
+func (side BorderSide) ResolveColor(current color.NRGBA) color.NRGBA {
+	if !side.hasColor {
+		return current
+	}
+	return side.color.resolve(current)
+}
 
 // FontWeight selects the currently available normal and bold font faces.
 type FontWeight uint8
@@ -707,9 +721,7 @@ type ComputedStyle struct {
 	gridTemplateCols  GridTrackList
 	gridTemplateRows  GridTrackList
 	color             color.NRGBA
-	background        color.NRGBA
-	hasBackground     bool
-	backgroundCurrent bool
+	background        computedColorValue
 	backgroundImages  BackgroundImageList
 	boxShadows        BoxShadowList
 	fontSize          float64
@@ -882,10 +894,8 @@ func (computed ComputedStyle) GridTemplateColumns() GridTrackList {
 func (computed ComputedStyle) GridTemplateRows() GridTrackList { return computed.gridTemplateRows }
 func (computed ComputedStyle) Color() color.NRGBA              { return computed.color }
 func (computed ComputedStyle) Background() (color.NRGBA, bool) {
-	if computed.backgroundCurrent {
-		return computed.color, computed.color.A != 0
-	}
-	return computed.background, computed.hasBackground
+	background := computed.background.resolve(computed.color)
+	return background, background.A != 0
 }
 func (computed ComputedStyle) BackgroundImages() BackgroundImageList {
 	return computed.backgroundImages
@@ -2685,7 +2695,7 @@ func parseBorderStyles(source string) ([4]borderStyle, bool) {
 }
 
 type borderColor struct {
-	value    color.NRGBA
+	value    computedColorValue
 	explicit bool
 }
 
@@ -2702,11 +2712,8 @@ func parseBorderColor(source string) (borderColor, bool) {
 }
 
 func parseBorderColorComponent(component css.ComponentValue) (borderColor, bool) {
-	if keyword, ok := componentKeyword(component); ok && keyword == "currentcolor" {
-		return borderColor{}, true
-	}
-	parsed, ok := parseColorComponent(component)
-	return borderColor{value: parsed, explicit: ok}, ok
+	parsed, ok := parseComputedColorComponent(component)
+	return borderColor{value: parsed, explicit: ok && !parsed.currentColor}, ok
 }
 
 func parseBorderColors(source string) ([4]borderColor, bool) {
@@ -2863,6 +2870,7 @@ func parseColor(source string) (color.NRGBA, bool) {
 type computedColorValue struct {
 	value        color.NRGBA
 	currentColor bool
+	mix          *computedColorMix
 }
 
 func parseComputedColor(source string) (computedColorValue, bool) {
@@ -2878,11 +2886,7 @@ func parseComputedColor(source string) (computedColorValue, bool) {
 }
 
 func parseComputedColorComponent(component css.ComponentValue) (computedColorValue, bool) {
-	if keyword, ok := componentKeyword(component); ok && keyword == "currentcolor" {
-		return computedColorValue{currentColor: true}, true
-	}
-	parsed, ok := parseColorComponent(component)
-	return computedColorValue{value: parsed}, ok
+	return parseComputedColorTerm(component, 0, true)
 }
 
 func parseFirstComputedColor(source string) (computedColorValue, bool) {

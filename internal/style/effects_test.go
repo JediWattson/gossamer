@@ -66,6 +66,76 @@ func TestPaintEffectsComputeThroughVariablesAndSerialize(t *testing.T) {
 	}
 }
 
+func TestModernColorsFlowThroughTailwindShapedPaintValues(t *testing.T) {
+	t.Parallel()
+
+	document := dom.NewDocument()
+	html := dom.NewElement("html")
+	body := dom.NewElement("body")
+	styleNode := dom.NewElement("style")
+	styleNode.AppendChild(dom.NewText(`
+		@supports (color:color-mix(in lab,red,red)) {
+			#target {
+				--accent:oklch(62.3% .214 259.815);
+				--accent-faded:color-mix(in oklab,var(--accent) 40%,transparent);
+				color:red;
+				background-color:var(--accent-faded);
+				border:1px solid color-mix(in srgb,currentcolor 25%,blue);
+				box-shadow:0 0 2px color-mix(in oklab,currentcolor 50%,transparent);
+				background-image:linear-gradient(color-mix(in oklab,currentcolor 50%,transparent),var(--accent));
+			}
+		}
+	`))
+	target := dom.NewElement("div", dom.Attribute{Name: "id", Value: "target"})
+	body.AppendChild(styleNode)
+	body.AppendChild(target)
+	html.AppendChild(body)
+	document.AppendChild(html)
+
+	snapshot := Compute(document, Input{Environment: Environment{Width: 200, Height: 100, InitialFontSize: 16}})
+	computed, ok := snapshot.Lookup(target)
+	if !ok {
+		t.Fatal("snapshot does not contain modern-color target")
+	}
+	if got, want := computed.Color(), (color.NRGBA{R: 255, A: 255}); got != want {
+		t.Fatalf("color = %#v, want %#v", got, want)
+	}
+	if got, painted := computed.Background(); !painted || got != (color.NRGBA{R: 43, G: 127, B: 255, A: 102}) {
+		t.Fatalf("mixed background = %#v, %t", got, painted)
+	}
+	if got := computed.BorderTop().ResolveColor(computed.Color()); got != (color.NRGBA{R: 64, B: 191, A: 255}) {
+		t.Fatalf("mixed border = %#v", got)
+	}
+	shadow, ok := computed.BoxShadows().At(0)
+	if !ok || shadow.Color(computed.Color()) != (color.NRGBA{R: 255, A: 128}) {
+		t.Fatalf("mixed shadow = %#v, %t", shadow, ok)
+	}
+	background, ok := computed.BackgroundImages().At(0)
+	if !ok || background.StopCount() != 2 {
+		t.Fatalf("gradient = %#v, %t", background, ok)
+	}
+	first, _ := background.Stop(0)
+	second, _ := background.Stop(1)
+	if got := first.Color(computed.Color()); got != (color.NRGBA{R: 255, A: 128}) {
+		t.Fatalf("first gradient stop = %#v", got)
+	}
+	if got := second.Color(computed.Color()); got != (color.NRGBA{R: 43, G: 127, B: 255, A: 255}) {
+		t.Fatalf("second gradient stop = %#v", got)
+	}
+
+	wants := map[string]string{
+		"background-color": "rgba(43, 127, 255, 0.4)",
+		"border-top-color": "rgb(64, 0, 191)",
+		"box-shadow":       "0px 0px 2px rgba(255, 0, 0, 0.5)",
+	}
+	for property, want := range wants {
+		got, found := ComputedPropertyValue(computed, property)
+		if !found || got != want {
+			t.Errorf("ComputedPropertyValue(%q) = %q, %t; want %q, true", property, got, found, want)
+		}
+	}
+}
+
 func TestPaintEffectGrammarsRejectUnboundedOrInvalidValues(t *testing.T) {
 	t.Parallel()
 

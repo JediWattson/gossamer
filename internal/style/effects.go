@@ -24,8 +24,7 @@ type BoxShadow struct {
 	offsetY      Length
 	blurRadius   Length
 	spreadRadius Length
-	color        color.NRGBA
-	currentColor bool
+	color        computedColorValue
 	inset        bool
 }
 
@@ -35,13 +34,11 @@ func (shadow BoxShadow) BlurRadius() Length   { return shadow.blurRadius }
 func (shadow BoxShadow) SpreadRadius() Length { return shadow.spreadRadius }
 func (shadow BoxShadow) Inset() bool          { return shadow.inset }
 func (shadow BoxShadow) Color(current color.NRGBA) color.NRGBA {
-	if shadow.currentColor {
-		return current
-	}
-	return shadow.color
+	return shadow.color.resolve(current)
 }
 
-// BoxShadowList is a bounded, allocation-free computed shadow list.
+// BoxShadowList is a bounded computed shadow list. Literal colors stay inline;
+// only currentcolor-dependent color mixes retain their bounded expression.
 type BoxShadowList struct {
 	items [maxBoxShadows]BoxShadow
 	count uint8
@@ -69,17 +66,13 @@ const (
 // GradientStop is one computed color stop. An omitted position remains
 // omitted until paint distributes the stop between its neighbors.
 type GradientStop struct {
-	color        color.NRGBA
-	currentColor bool
-	position     Length
-	hasPosition  bool
+	color       computedColorValue
+	position    Length
+	hasPosition bool
 }
 
 func (stop GradientStop) Color(current color.NRGBA) color.NRGBA {
-	if stop.currentColor {
-		return current
-	}
-	return stop.color
+	return stop.color.resolve(current)
 }
 func (stop GradientStop) Position() (Length, bool) { return stop.position, stop.hasPosition }
 
@@ -238,7 +231,7 @@ func parseBoxShadowList(source string, emBase float64, viewport Viewport) (BoxSh
 }
 
 func parseBoxShadowLayer(terms []css.ComponentValue, source string, emBase float64, viewport Viewport) (BoxShadow, bool) {
-	shadow := BoxShadow{blurRadius: px(0), spreadRadius: px(0), currentColor: true}
+	shadow := BoxShadow{blurRadius: px(0), spreadRadius: px(0), color: computedColorValue{currentColor: true}}
 	lengths := make([]Length, 0, 4)
 	colorSeen := false
 	for _, term := range terms {
@@ -253,7 +246,7 @@ func parseBoxShadowLayer(terms []css.ComponentValue, source string, emBase float
 			if colorSeen {
 				return BoxShadow{}, false
 			}
-			shadow.color, shadow.currentColor, colorSeen = parsed.value, parsed.currentColor, true
+			shadow.color, colorSeen = parsed, true
 			continue
 		}
 		parsed, ok := parseLengthComponent(term, source, emBase, viewport)
@@ -279,7 +272,7 @@ func parseBoxShadowLayer(terms []css.ComponentValue, source string, emBase float
 	return shadow, true
 }
 
-func serializeBoxShadowList(shadows BoxShadowList) string {
+func serializeBoxShadowList(shadows BoxShadowList, current color.NRGBA) string {
 	if shadows.count == 0 {
 		return "none"
 	}
@@ -293,10 +286,10 @@ func serializeBoxShadowList(shadows BoxShadowList) string {
 		if shadow.spreadRadius != px(0) {
 			parts = append(parts, serializeComputedLength(shadow.spreadRadius))
 		}
-		if shadow.currentColor {
+		if shadow.color.currentColor {
 			parts = append(parts, "currentcolor")
 		} else {
-			parts = append(parts, serializeComputedColor(shadow.color))
+			parts = append(parts, serializeComputedColor(shadow.color.resolve(current)))
 		}
 		if shadow.inset {
 			parts = append(parts, "inset")
@@ -406,7 +399,7 @@ func parseGradientStop(terms []css.ComponentValue, source string, emBase float64
 	if !ok {
 		return GradientStop{}, false
 	}
-	stop := GradientStop{color: parsed.value, currentColor: parsed.currentColor}
+	stop := GradientStop{color: parsed}
 	if len(terms) == 2 {
 		position, ok := parseLengthComponent(terms[1], source, emBase, viewport)
 		if !ok || position.unit == lengthAuto {
@@ -472,7 +465,7 @@ func parseLinearGradientDirection(terms []css.ComponentValue) (float64, bool) {
 	return normalizeDegrees(math.Atan2(float64(x), float64(-y)) * 180 / math.Pi), true
 }
 
-func serializeBackgroundImageList(images BackgroundImageList) string {
+func serializeBackgroundImageList(images BackgroundImageList, current color.NRGBA) string {
 	if images.count == 0 {
 		return "none"
 	}
@@ -495,8 +488,8 @@ func serializeBackgroundImageList(images BackgroundImageList) string {
 		for stopIndex := 0; stopIndex < int(image.stopCount); stopIndex++ {
 			stop := image.stops[stopIndex]
 			part := "currentcolor"
-			if !stop.currentColor {
-				part = serializeComputedColor(stop.color)
+			if !stop.color.currentColor {
+				part = serializeComputedColor(stop.color.resolve(current))
 			}
 			if stop.hasPosition {
 				part += " " + serializeComputedLength(stop.position)

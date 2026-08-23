@@ -98,11 +98,7 @@ func serializeComputedColor(value color.NRGBA) string {
 }
 
 func serializeComputedBorderColor(side BorderSide, currentColor color.NRGBA) string {
-	value, explicit := side.Color()
-	if !explicit {
-		value = currentColor
-	}
-	return serializeComputedColor(value)
+	return serializeComputedColor(side.ResolveColor(currentColor))
 }
 
 func serializeComputedBorderWidth(side BorderSide) string {

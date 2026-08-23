@@ -113,6 +113,20 @@ func TestColorFunctionsAndNamedColorsComputeToSRGB(t *testing.T) {
 		{source: "hsla(240, 100%, 50%, 25%)", want: color.NRGBA{B: 255, A: 64}},
 		{source: "hwb(0 20% 30%)", want: color.NRGBA{R: 179, G: 51, B: 51, A: 255}},
 		{source: "hwb(0 80% 40%)", want: color.NRGBA{R: 170, G: 170, B: 170, A: 255}},
+		{source: "oklab(62.795536% 0.224863 0.125846)", want: color.NRGBA{R: 255, A: 255}},
+		{source: "oklab(62.795536% 56.21575% 31.4615% / 50%)", want: color.NRGBA{R: 255, A: 128}},
+		{source: "oklch(62.795536% 0.257683 29.2339)", want: color.NRGBA{R: 255, A: 255}},
+		{source: "oklch(62.3% .214 259.815)", want: color.NRGBA{R: 43, G: 127, B: 255, A: 255}},
+		{source: "color-mix(in srgb, red 25%, blue)", want: color.NRGBA{R: 64, B: 191, A: 255}},
+		{source: "color-mix(red 25%, blue)", want: color.NRGBA{R: 81, G: 71, B: 210, A: 255}},
+		{source: "color-mix(in srgb-linear, black, white)", want: color.NRGBA{R: 188, G: 188, B: 188, A: 255}},
+		{source: "color-mix(in lab, red, red)", want: color.NRGBA{R: 255, A: 255}},
+		{source: "color-mix(in lab, purple, plum)", want: color.NRGBA{R: 175, G: 92, B: 174, A: 255}},
+		{source: "color-mix(in oklab, red 50%, transparent)", want: color.NRGBA{R: 255, A: 128}},
+		{source: "color-mix(in srgb, rgb(100% 0% 0% / .7) 25%, rgb(0% 100% 0% / .2))", want: color.NRGBA{R: 137, G: 118, A: 83}},
+		{source: "color-mix(in srgb, rgb(100% 0% 0% / .7) 20%, rgb(0% 100% 0% / .2) 60%)", want: color.NRGBA{R: 137, G: 118, A: 66}},
+		{source: "color-mix(in oklab, oklch(62.3% .214 259.815) 40%, transparent)", want: color.NRGBA{R: 43, G: 127, B: 255, A: 102}},
+		{source: "color-mix(in oklab, color-mix(in oklab, black 15%, transparent) 50%, transparent)", want: color.NRGBA{A: 19}},
 		{source: "aliceblue", want: color.NRGBA{R: 240, G: 248, B: 255, A: 255}},
 		{source: "rebeccapurple", want: color.NRGBA{R: 102, G: 51, B: 153, A: 255}},
 		{source: "#0f08", want: color.NRGBA{G: 255, A: 136}},
@@ -143,11 +157,53 @@ func TestColorFunctionsRejectMixedOrMalformedGrammars(t *testing.T) {
 		"hsl(20foo 100% 50%)",
 		"hwb(0, 0%, 0%)",
 		"hwb(0 0% 0% / .5 / .5)",
+		"oklab(1, 0, 0)",
+		"oklab(1 0)",
+		"oklab(1 0 0 0)",
+		"oklch(1 .2 1px)",
+		"color-mix(in oklch, red, blue)",
+		"color-mix(in oklab, red 101%, blue)",
+		"color-mix(in oklab, red -1%, blue)",
+		"color-mix(in oklab, red 0%, blue 0%)",
+		"color-mix(in oklab, red, green, blue)",
+		"color-mix(in oklab, currentcolor, transparent)",
 		"color(display-p3 1 0 0)",
 	} {
 		if parsed, ok := parseColor(source); ok {
 			t.Errorf("parseColor(%q) = %#v, true; want rejection", source, parsed)
 		}
+	}
+}
+
+func TestColorMixNestingIsBounded(t *testing.T) {
+	t.Parallel()
+
+	source := "red"
+	for range maxColorMixDepth {
+		source = "color-mix(in oklab," + source + ",transparent)"
+	}
+	if _, ok := parseColor(source); !ok {
+		t.Fatalf("color mix at depth %d was rejected", maxColorMixDepth)
+	}
+	source = "color-mix(in oklab," + source + ",transparent)"
+	if parsed, ok := parseColor(source); ok {
+		t.Fatalf("color mix beyond depth %d = %#v, true; want rejection", maxColorMixDepth, parsed)
+	}
+}
+
+func TestColorMixOnlyRetainsCurrentColorDependentExpressions(t *testing.T) {
+	t.Parallel()
+
+	literal, ok := parseComputedColor("color-mix(in oklab,red 40%,transparent)")
+	if !ok || literal.mix != nil || literal.value != (color.NRGBA{R: 255, A: 102}) {
+		t.Fatalf("literal color mix = %#v, %t; want collapsed sRGB value", literal, ok)
+	}
+	dependent, ok := parseComputedColor("color-mix(in oklab,currentcolor 40%,transparent)")
+	if !ok || dependent.mix == nil || !dependent.usesCurrentColor() {
+		t.Fatalf("currentcolor mix = %#v, %t; want retained bounded expression", dependent, ok)
+	}
+	if got := dependent.resolve(color.NRGBA{R: 12, G: 34, B: 56, A: 255}); got != (color.NRGBA{R: 12, G: 34, B: 56, A: 102}) {
+		t.Fatalf("resolved currentcolor mix = %#v", got)
 	}
 }
 

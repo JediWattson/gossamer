@@ -28,8 +28,7 @@ func TestComputedPropertyValueSerializesEverySupportedLonghand(t *testing.T) {
 		flexBasis:       Length{value: 25, unit: LengthPercent},
 		order:           -1,
 		color:           color.NRGBA{R: 0x12, G: 0x34, B: 0x56, A: 0xff},
-		background:      color.NRGBA{R: 10, G: 20, B: 30, A: 128},
-		hasBackground:   true,
+		background:      computedColorValue{value: color.NRGBA{R: 10, G: 20, B: 30, A: 128}},
 		fontFamily:      FontFamilyMonospace,
 		fontFamilyValue: `"Go Mono", monospace`,
 		fontSize:        18.5,
@@ -56,7 +55,7 @@ func TestComputedPropertyValueSerializesEverySupportedLonghand(t *testing.T) {
 		borderTop: BorderSide{
 			width:    Length{value: 1, unit: LengthPX},
 			style:    BorderStyleSolid,
-			color:    color.NRGBA{R: 255, A: 255},
+			color:    computedColorValue{value: color.NRGBA{R: 255, A: 255}},
 			hasColor: true,
 		},
 		borderRight: BorderSide{
@@ -66,7 +65,7 @@ func TestComputedPropertyValueSerializesEverySupportedLonghand(t *testing.T) {
 		borderBottom: BorderSide{
 			width:    Length{value: 3, unit: LengthVH},
 			style:    BorderStyleNone,
-			color:    color.NRGBA{G: 128, A: 255},
+			color:    computedColorValue{value: color.NRGBA{G: 128, A: 255}},
 			hasColor: true,
 		},
 		borderLeft: BorderSide{

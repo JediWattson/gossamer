@@ -297,11 +297,7 @@ func (clone *layoutPaintClone) patchBorderPaint(paint *boxPaintRect) {
 	default:
 		side = style.BorderTop()
 	}
-	value, explicit := side.Color()
-	if !explicit {
-		value = style.Color()
-	}
-	paint.Color = value
+	paint.Color = side.ResolveColor(style.Color())
 }
 
 func layoutStyleDamageRects(

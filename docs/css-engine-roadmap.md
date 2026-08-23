@@ -146,9 +146,13 @@ the current single horizontal viewport model, with `vmin`/`vmax` retained as
 typed terms. Color values now cover the SVG/CSS named set, all hex forms, and
 legacy/modern `rgb()`/`rgba()`, `hsl()`/`hsla()`, and `hwb()` syntax with
 token-correct comma, whitespace, slash, angle, clamping, and alpha behavior.
-The typed `currentcolor` reference resolves against the final element color
-for backgrounds and borders, while `color: currentcolor` resolves from the
-parent; CSS-wide inheritance preserves the reference rather than freezing an
+OKLab and OKLCH functions convert through bounded CSS sRGB gamut mapping.
+Two-color `color-mix()` accepts sRGB, linear sRGB, Lab, and OKLab rectangular
+interpolation, normalizes explicit or omitted percentages, premultiplies alpha,
+and caps nesting. The typed `currentcolor` reference can remain inside a mix
+until backgrounds, borders, shadows, and gradient stops resolve against the
+final element color, while `color: currentcolor` resolves from the parent;
+CSS-wide inheritance preserves the reference rather than freezing an
 ancestor's paint value.
 The central property registry and layout now also carry `box-sizing`,
 `min-height`, and `max-height`; block and replaced content apply constraints to
@@ -191,8 +195,9 @@ inheritance across differently oriented parent and child boxes.
 - Extend CSS math beyond the current length-percentage subset as number,
   angle, time, resolution, transform, and color consumers arrive.
 - Expand font-relative units and add angle, time, and resolution consumers.
-- Add system colors, wide-gamut `color()`, Lab/LCH/OKLab/OKLCH, and
-  relative/color-mix functions.
+- Add system colors, wide-gamut `color()`, Lab/LCH and relative-color
+  functions, plus cylindrical and wide-gamut color-mix interpolation and
+  missing-component propagation.
 - Add URLs, background images and gradients, curved border strokes, rounded
   overflow clipping, shadows, transforms, and generated content as their
   consumers become available.

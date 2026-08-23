@@ -270,10 +270,7 @@ func (context *layoutContext) considerCollapsedBox(grid *collapsedBorderGrid, no
 }
 
 func (context *layoutContext) collapsedBorderCandidate(node *styledNode, side borderSide, source collapsedBorderSource, logicalRow, logicalColumn int) collapsedBorder {
-	borderColor, explicit := side.Color()
-	if !explicit {
-		borderColor = node.style.Color()
-	}
+	borderColor := side.ResolveColor(node.style.Color())
 	if node.style.Visibility() != visibilityVisible {
 		borderColor = color.NRGBA{}
 	}

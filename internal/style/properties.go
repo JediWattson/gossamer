@@ -384,8 +384,6 @@ func (definition propertyDefinition) copy(destination *computedStyle, source com
 		destination.alignSelfOvf = source.alignSelfOvf
 	case propertyBackgroundColor:
 		destination.background = source.background
-		destination.hasBackground = source.hasBackground
-		destination.backgroundCurrent = source.backgroundCurrent
 	case propertyBackgroundImage:
 		destination.backgroundImages = source.backgroundImages
 	case propertyBorderColor:
@@ -791,9 +789,7 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 		}
 	case propertyBackgroundColor:
 		if parsed, ok := parseComputedColor(source); ok {
-			style.background = parsed.value
-			style.backgroundCurrent = parsed.currentColor
-			style.hasBackground = !parsed.currentColor && parsed.value.A != 0
+			style.background = parsed
 		}
 	case propertyBackgroundImage:
 		if parsed, ok := parseBackgroundImageList(source, style.fontSize, context.viewport); ok {
@@ -845,11 +841,7 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 		}
 	case propertyColor:
 		if parsed, ok := parseComputedColor(source); ok {
-			if parsed.currentColor {
-				style.color = context.parentColor
-			} else {
-				style.color = parsed.value
-			}
+			style.color = parsed.resolve(context.parentColor)
 		}
 	case propertyContent:
 		if parsed, ok := parseContentValue(source); ok {
@@ -1269,7 +1261,7 @@ func (definition propertyDefinition) serialize(computed ComputedStyle) string {
 		background, _ := computed.Background()
 		return serializeComputedColor(background)
 	case propertyBackgroundImage:
-		return serializeBackgroundImageList(computed.backgroundImages)
+		return serializeBackgroundImageList(computed.backgroundImages, computed.color)
 	case propertyBorderColor:
 		return serializeComputedBorderColor(*definition.borderSide(&computed), computed.color)
 	case propertyBorderCollapse:
@@ -1296,7 +1288,7 @@ func (definition propertyDefinition) serialize(computed ComputedStyle) string {
 		}
 		return "content-box"
 	case propertyBoxShadow:
-		return serializeBoxShadowList(computed.boxShadows)
+		return serializeBoxShadowList(computed.boxShadows, computed.color)
 	case propertyCaptionSide:
 		if computed.captionSide == CaptionSideBottom {
 			return "bottom"
@@ -1984,9 +1976,7 @@ func applyDeclaration(style *computedStyle, property, source string, context pro
 	switch property {
 	case "background":
 		if parsed, ok := parseFirstComputedColor(source); ok {
-			style.background = parsed.value
-			style.backgroundCurrent = parsed.currentColor
-			style.hasBackground = !parsed.currentColor && parsed.value.A != 0
+			style.background = parsed
 		}
 	case "padding":
 		if values, ok := parsePaddingLengths(source, style.fontSize, context.viewport); ok {
