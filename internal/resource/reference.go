@@ -19,6 +19,7 @@ const (
 	Stylesheet
 	Image
 	Script
+	Font
 )
 
 func (kind Kind) String() string {
@@ -29,6 +30,8 @@ func (kind Kind) String() string {
 		return "image"
 	case Script:
 		return "script"
+	case Font:
+		return "font"
 	default:
 		return "unknown"
 	}
@@ -42,6 +45,8 @@ func (kind Kind) destination() loader.Destination {
 		return loader.ImageDestination
 	case Script:
 		return loader.ScriptDestination
+	case Font:
+		return loader.FontDestination
 	default:
 		return loader.DocumentDestination
 	}

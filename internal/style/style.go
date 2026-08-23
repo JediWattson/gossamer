@@ -905,6 +905,10 @@ func (computed ComputedStyle) FontSize() float64         { return computed.fontS
 func (computed ComputedStyle) FontFamily() FontFamily {
 	return computed.fontFamily
 }
+
+// FontFamilyValue returns the normalized computed fallback list. Renderers use
+// it to select loaded web fonts before falling back to the bundled family.
+func (computed ComputedStyle) FontFamilyValue() string { return computed.fontFamilyValue }
 func (computed ComputedStyle) FontWeight() FontWeight {
 	if computed.fontWeightValue >= 600 {
 		return FontWeightBold

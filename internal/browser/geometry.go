@@ -244,7 +244,7 @@ func (page *Page) elementGeometryLocked(handle NodeHandle) (DOMElementGeometry, 
 		return DOMElementGeometry{}, err
 	}
 
-	resources := page.resources.rendererResources(page.document, page.script != nil)
+	resources := page.resources.rendererResources(page.document, page.script != nil, page.viewport)
 	rootID, _, _ := page.document.RelatedNode(page.document.RootID(), dom.DocumentElement)
 	var result DOMElementGeometry
 	err := page.document.WithReadView(func(view dom.ReadView) error {

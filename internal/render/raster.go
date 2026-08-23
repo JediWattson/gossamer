@@ -190,6 +190,7 @@ func rasterize(displayList DisplayList, fonts *fontBook) (*image.RGBA, error) {
 					command.FontStyle,
 					command.FontFamily,
 					command.Color,
+					command.WebFont,
 				)
 			}
 			if err != nil {
@@ -720,7 +721,7 @@ func drawSidewaysText(destination *image.RGBA, fonts *fontBook, command Command,
 	source := image.NewRGBA(image.Rect(0, 0, width, height))
 	if err := fonts.draw(
 		source, command.Text, 0, command.textBaseline,
-		command.FontSize, command.FontWeight, command.FontStyle, command.FontFamily, command.Color,
+		command.FontSize, command.FontWeight, command.FontStyle, command.FontFamily, command.Color, command.WebFont,
 	); err != nil {
 		return err
 	}
@@ -768,7 +769,7 @@ func drawUprightText(destination *image.RGBA, fonts *fontBook, command Command) 
 		return fmt.Errorf("render: invalid upright text advance %g", advance)
 	}
 	for index, unit := range units {
-		metrics, err := fonts.metrics(unit, command.FontSize, command.FontWeight, command.FontStyle, command.FontFamily)
+		metrics, err := fonts.metrics(unit, command.FontSize, command.FontWeight, command.FontStyle, command.FontFamily, command.WebFont)
 		if err != nil {
 			return err
 		}
@@ -778,7 +779,7 @@ func drawUprightText(destination *image.RGBA, fonts *fontBook, command Command) 
 		x := command.textBounds.X + (command.textBounds.Width-metrics.width)/2
 		if err := fonts.draw(
 			destination, unit, x, baseline,
-			command.FontSize, command.FontWeight, command.FontStyle, command.FontFamily, command.Color,
+			command.FontSize, command.FontWeight, command.FontStyle, command.FontFamily, command.Color, command.WebFont,
 		); err != nil {
 			return err
 		}

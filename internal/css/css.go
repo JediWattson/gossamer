@@ -1,5 +1,5 @@
 // Package css parses and matches the CSS subset used by Gossamer's rendering
-// pipeline. It supports complex selectors, attribute selectors, logical and
+// pipeline. It supports complex selectors, @font-face, attribute selectors, logical and
 // structural and linguistic pseudo-classes, common CSS nesting forms, nested
 // cascade layers, viewport media queries, escaped selector identifiers, and
 // tokenized declarations consumed by the renderer. Selector namespaces,
@@ -26,7 +26,45 @@ type Stylesheet struct {
 	LayerOrder        []string
 	LayerDeclarations []LayerDeclaration
 	Imports           []ImportRule
+	FontFaces         []FontFaceRule
 	selectorIndex     *stylesheetSelectorIndex
+}
+
+// FontFaceRule is one usable @font-face rule. Sources retain their authored
+// order so the browser can try supported formats without changing fallback
+// semantics. Media and Supports contain enclosing conditional group rules.
+type FontFaceRule struct {
+	Family        string
+	Sources       []FontSource
+	Style         string
+	Weight        FontFaceWeight
+	Display       string
+	Media         []string
+	Supports      []string
+	UnicodeRanges []UnicodeRange
+	Order         int
+}
+
+// UnicodeRange is one inclusive code-point interval from a font face's
+// unicode-range descriptor.
+type UnicodeRange struct {
+	Start rune
+	End   rune
+}
+
+// FontSource is one fetchable URL from a font face's src descriptor. Local
+// sources are intentionally omitted until the browser has a portable local
+// font lookup contract. Format is the normalized first format() hint, if any.
+type FontSource struct {
+	URL    string
+	Format string
+}
+
+// FontFaceWeight is the inclusive weight range advertised by a font face.
+// Static faces have equal Min and Max values.
+type FontFaceWeight struct {
+	Min int
+	Max int
 }
 
 // LayerDeclaration is one appearance of a layer identity in source order.

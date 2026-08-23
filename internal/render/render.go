@@ -24,7 +24,7 @@ func Render(document *dom.Node, viewport Viewport) (*Frame, error) {
 // RenderWithResources computes a frame using decoded external stylesheets and
 // images associated with their initiating DOM elements.
 func RenderWithResources(document *dom.Node, viewport Viewport, resources Resources) (*Frame, error) {
-	fonts, err := newFontBook()
+	fonts, err := newFontBook(resources.Fonts)
 	if err != nil {
 		return nil, err
 	}
@@ -121,7 +121,7 @@ func RestyleStyleSnapshotFromReadView(
 // computed immutable style snapshot. The snapshot must belong to document and
 // the supplied viewport; decoded images continue to come from resources.
 func RenderWithStyleSnapshot(document *dom.Node, viewport Viewport, resources Resources, snapshot *computed.Snapshot) (*Frame, error) {
-	fonts, err := newFontBook()
+	fonts, err := newFontBook(resources.Fonts)
 	if err != nil {
 		return nil, err
 	}
@@ -133,7 +133,7 @@ func RenderWithStyleSnapshot(document *dom.Node, viewport Viewport, resources Re
 // display list. The result can serve synchronous resolved-style reads and can
 // later be painted without repeating layout.
 func ComputeLayoutSnapshotWithStyleSnapshot(document *dom.Node, viewport Viewport, resources Resources, snapshot *computed.Snapshot) (*LayoutSnapshot, error) {
-	fonts, err := newFontBook()
+	fonts, err := newFontBook(resources.Fonts)
 	if err != nil {
 		return nil, err
 	}
@@ -149,7 +149,7 @@ func ComputeLayoutSnapshotFromReadView(view dom.ReadView, viewport Viewport, res
 		return nil, err
 	}
 	defer access.Close()
-	fonts, err := newFontBook()
+	fonts, err := newFontBook(resources.Fonts)
 	if err != nil {
 		return nil, err
 	}
@@ -190,7 +190,7 @@ func RenderReadViewWithStyleSnapshot(view dom.ReadView, viewport Viewport, resou
 		return nil, err
 	}
 	defer access.Close()
-	fonts, err := newFontBook()
+	fonts, err := newFontBook(resources.Fonts)
 	if err != nil {
 		return nil, err
 	}
@@ -209,7 +209,7 @@ func RenderPNGWithResources(writer io.Writer, document *dom.Node, viewport Viewp
 	if writer == nil {
 		return fmt.Errorf("render: nil PNG writer")
 	}
-	fonts, err := newFontBook()
+	fonts, err := newFontBook(resources.Fonts)
 	if err != nil {
 		return err
 	}
@@ -267,7 +267,7 @@ func computeLayoutWithStyleSnapshotAndFonts(document *dom.Node, viewport Viewpor
 	if err != nil {
 		return nil, err
 	}
-	return newPointerLayoutSnapshot(document, rootBox, styles, resources.BackgroundImages, viewport, snapshot), nil
+	return newPointerLayoutSnapshot(document, rootBox, styles, resources.BackgroundImages, viewport, snapshot, resources.Fonts), nil
 }
 
 func renderReadAccessWithStyleSnapshotAndFonts(access *dom.ReadAccess, viewport Viewport, resources Resources, snapshot *computed.Snapshot, fonts *fontBook) (*Frame, error) {
@@ -311,7 +311,7 @@ func computeReadAccessLayoutWithStyleSnapshotAndFonts(access *dom.ReadAccess, vi
 	if err != nil {
 		return nil, err
 	}
-	return newStableLayoutSnapshot(access, rootBox, styles, resources.BackgroundImages, viewport, snapshot)
+	return newStableLayoutSnapshot(access, rootBox, styles, resources.BackgroundImages, viewport, snapshot, resources.Fonts)
 }
 
 func layoutProjectedStyles(styledRoot *styledNode, viewport Viewport, resources Resources, fonts *fontBook) (*Box, map[*dom.Node]computedStyle, error) {
@@ -331,6 +331,7 @@ func frameFromLayout(document *dom.Node, layout *LayoutSnapshot) *Frame {
 		Layout:         layout,
 		ComputedStyles: layout.computedStyles,
 		DisplayList:    displayList,
+		Fonts:          layout.fonts,
 	}
 }
 
@@ -1117,7 +1118,7 @@ func paintTextFragment(list *DisplayList, fragment TextFragment, styles map[*dom
 		Kind: DrawTextCommand, Node: fragment.Node, Pseudo: fragment.Pseudo, Color: fragment.Color, Text: fragment.Text,
 		X: fragment.X, BaselineY: fragment.BaselineY,
 		FontSize: fragment.FontSize, FontFamily: fragment.FontFamily,
-		FontWeight: fragment.FontWeight, FontStyle: fragment.FontStyle,
+		FontWeight: fragment.FontWeight, FontStyle: fragment.FontStyle, WebFont: fragment.WebFont,
 	}
 	if fragment.paintOrientation != textPaintHorizontal {
 		command.Rect = fragment.paintBounds
@@ -1189,7 +1190,7 @@ func RasterizeAtScale(frame *Frame, scale float64) (*image.RGBA, error) {
 	if err != nil {
 		return nil, err
 	}
-	fonts, err := newFontBook()
+	fonts, err := newFontBook(frame.Fonts)
 	if err != nil {
 		return nil, err
 	}

@@ -91,6 +91,7 @@ type LayoutSnapshot struct {
 	styles           map[*dom.Node]computedStyle
 	backgroundImages map[*dom.Node]map[string]image.Image
 	computedStyles   *computed.Snapshot
+	fonts            []WebFontFace
 	rootNode         *dom.Node
 	rootID           dom.NodeID
 	document         dom.DocumentIdentity
@@ -208,6 +209,7 @@ func newPointerLayoutSnapshot(
 	backgroundImages map[*dom.Node]map[string]image.Image,
 	viewport Viewport,
 	computedStyles *computed.Snapshot,
+	fonts []WebFontFace,
 ) *LayoutSnapshot {
 	snapshot := &LayoutSnapshot{
 		viewport:         viewport,
@@ -215,6 +217,7 @@ func newPointerLayoutSnapshot(
 		styles:           styles,
 		backgroundImages: backgroundImages,
 		computedStyles:   computedStyles,
+		fonts:            cloneWebFonts(fonts),
 		rootNode:         document,
 		byNode:           make(map[*dom.Node]LayoutGeometry),
 		byPseudoNode:     make(map[pointerPseudoGeometryKey]LayoutGeometry),
@@ -230,6 +233,7 @@ func newStableLayoutSnapshot(
 	backgroundImages map[*dom.Node]map[string]image.Image,
 	viewport Viewport,
 	computedStyles *computed.Snapshot,
+	fonts []WebFontFace,
 ) (*LayoutSnapshot, error) {
 	document := access.Root()
 	rootID, ok := access.ID(document)
@@ -242,6 +246,7 @@ func newStableLayoutSnapshot(
 		styles:           styles,
 		backgroundImages: backgroundImages,
 		computedStyles:   computedStyles,
+		fonts:            cloneWebFonts(fonts),
 		rootID:           rootID,
 		document:         access.Identity(),
 		version:          access.Version(),

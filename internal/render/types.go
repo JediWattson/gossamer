@@ -35,6 +35,22 @@ type Resources struct {
 	// BackgroundImages is keyed by element and authored URL so layered CSS
 	// backgrounds can retain more than one decoded resource per element.
 	BackgroundImages map[*dom.Node]map[string]image.Image
+	// Fonts contains validated, normalized SFNT data loaded from @font-face
+	// rules. Slice order is stable across layout and display-list replay.
+	Fonts []WebFontFace
+}
+
+// WebFontFace is one loaded @font-face source. Data must contain normalized
+// TrueType or OpenType SFNT bytes and is treated as immutable while retained
+// by a frame.
+type WebFontFace struct {
+	Family        string
+	Style         FontStyle
+	WeightMin     int
+	WeightMax     int
+	Source        string
+	Data          []byte
+	UnicodeRanges []css.UnicodeRange
 }
 
 // Rect is an axis-aligned rectangle in CSS pixels.
@@ -190,6 +206,7 @@ type TextFragment struct {
 	FontFamily     FontFamily
 	FontWeight     FontWeight
 	FontStyle      FontStyle
+	WebFont        uint32
 	Color          color.NRGBA
 	Visible        bool
 	Underline      bool
@@ -370,6 +387,7 @@ type Command struct {
 	FontFamily       FontFamily
 	FontWeight       FontWeight
 	FontStyle        FontStyle
+	WebFont          uint32
 	Opacity          float64
 	Image            image.Image
 	HasClip          bool
@@ -417,6 +435,7 @@ type Frame struct {
 	Layout         *LayoutSnapshot
 	ComputedStyles *computed.Snapshot
 	DisplayList    DisplayList
+	Fonts          []WebFontFace
 }
 
 // ScrollDisplayList returns a shallow frame copy whose paint commands are

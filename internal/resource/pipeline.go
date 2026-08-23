@@ -128,7 +128,7 @@ func (pipeline *Pipeline) Fetch(ctx context.Context, reference Reference) (*Asse
 	if reference.URL == nil {
 		return nil, fmt.Errorf("resource: nil reference URL")
 	}
-	if reference.Kind != Stylesheet && reference.Kind != Image && reference.Kind != Script {
+	if reference.Kind != Stylesheet && reference.Kind != Image && reference.Kind != Script && reference.Kind != Font {
 		return nil, fmt.Errorf("resource: unsupported kind %d", reference.Kind)
 	}
 

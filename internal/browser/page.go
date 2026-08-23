@@ -572,6 +572,7 @@ func (page *Page) Close() error {
 	page.documentCancel = nil
 	page.documentContext = nil
 	page.frame = nil
+	page.resources = pageResources{}
 	page.scrollX = 0
 	page.scrollY = 0
 	page.elementScroll = nil
@@ -628,7 +629,7 @@ func (page *Page) renderLocked(onlyIfDirty bool) error {
 	if _, err := page.syncStylesheetsLocked(); err != nil {
 		return err
 	}
-	resources := page.resources.rendererResources(page.document, page.script != nil)
+	resources := page.resources.rendererResources(page.document, page.script != nil, page.viewport)
 	var frame *render.Frame
 	var renderedVersion uint64
 	var backgroundRequests []navigationResourceRequest
@@ -644,7 +645,7 @@ func (page *Page) renderLocked(onlyIfDirty bool) error {
 		backgroundRequests = requests
 		if changed {
 			page.invalidateLayoutLocked()
-			resources = page.resources.rendererResources(page.document, page.script != nil)
+			resources = page.resources.rendererResources(page.document, page.script != nil, page.viewport)
 		}
 		layout, layoutErr := page.layoutSnapshotForViewLocked(view, resources, snapshot)
 		if layoutErr != nil {
@@ -690,7 +691,7 @@ func (page *Page) ComputedStyle(handle NodeHandle) (computed.ComputedStyle, erro
 	if _, err := page.syncStylesheetsLocked(); err != nil {
 		return computed.ComputedStyle{}, err
 	}
-	resources := page.resources.rendererResources(page.document, page.script != nil)
+	resources := page.resources.rendererResources(page.document, page.script != nil, page.viewport)
 	var result computed.ComputedStyle
 	err := page.document.WithReadView(func(view dom.ReadView) error {
 		node, ok := view.Resolve(handle.Node)
@@ -735,7 +736,7 @@ func (page *Page) ComputedPseudoStyle(handle NodeHandle, pseudo computed.PseudoE
 	if _, err := page.syncStylesheetsLocked(); err != nil {
 		return computed.ComputedStyle{}, err
 	}
-	resources := page.resources.rendererResources(page.document, page.script != nil)
+	resources := page.resources.rendererResources(page.document, page.script != nil, page.viewport)
 	var result computed.ComputedStyle
 	err := page.document.WithReadView(func(view dom.ReadView) error {
 		node, ok := view.Resolve(handle.Node)
@@ -779,7 +780,7 @@ func (page *Page) ComputedStyleProperty(handle NodeHandle, property string) (str
 	if _, err := page.syncStylesheetsLocked(); err != nil {
 		return "", false, err
 	}
-	resources := page.resources.rendererResources(page.document, page.script != nil)
+	resources := page.resources.rendererResources(page.document, page.script != nil, page.viewport)
 	var value string
 	var found bool
 	err := page.document.WithReadView(func(view dom.ReadView) error {
@@ -886,7 +887,7 @@ func (page *Page) ComputedPseudoStyleProperty(handle NodeHandle, pseudo computed
 	if _, err := page.syncStylesheetsLocked(); err != nil {
 		return "", false, err
 	}
-	resources := page.resources.rendererResources(page.document, page.script != nil)
+	resources := page.resources.rendererResources(page.document, page.script != nil, page.viewport)
 	var value string
 	var found bool
 	err := page.document.WithReadView(func(view dom.ReadView) error {

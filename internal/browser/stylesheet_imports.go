@@ -73,6 +73,7 @@ func expandStylesheetImports(
 	}
 
 	parsed, _ := css.Parse(source)
+	resolveStylesheetFontSources(&parsed, base)
 	flattened := css.Stylesheet{}
 	layerDeclarations := parsed.LayerDeclarations
 	parsed.LayerDeclarations = nil
@@ -168,6 +169,12 @@ func applyImportRuleContext(stylesheet css.Stylesheet, imported css.ImportRule, 
 			rule.Media = append([]string{imported.Media}, rule.Media...)
 		}
 	}
+	for index := range stylesheet.FontFaces {
+		face := &stylesheet.FontFaces[index]
+		if imported.Media != "" {
+			face.Media = append([]string{imported.Media}, face.Media...)
+		}
+	}
 	return stylesheet
 }
 
@@ -214,6 +221,44 @@ func appendFlattenedStylesheet(destination *css.Stylesheet, source css.Styleshee
 	for _, rule := range source.Rules {
 		rule.Order = len(destination.Rules)
 		destination.Rules = append(destination.Rules, rule)
+	}
+	for _, face := range source.FontFaces {
+		face.Order = len(destination.FontFaces)
+		destination.FontFaces = append(destination.FontFaces, face)
+	}
+}
+
+func resolveStylesheetFontSources(stylesheet *css.Stylesheet, base *url.URL) {
+	if stylesheet == nil || base == nil {
+		return
+	}
+	for faceIndex := range stylesheet.FontFaces {
+		face := &stylesheet.FontFaces[faceIndex]
+		resolvedSources := face.Sources[:0]
+		for _, source := range face.Sources {
+			raw := strings.TrimSpace(source.URL)
+			if raw == "" {
+				continue
+			}
+			if strings.HasPrefix(strings.ToLower(raw), "data:") {
+				source.URL = raw
+				resolvedSources = append(resolvedSources, source)
+				continue
+			}
+			parsed, err := url.Parse(raw)
+			if err != nil {
+				continue
+			}
+			resolved := base.ResolveReference(parsed)
+			if (!strings.EqualFold(resolved.Scheme, "http") && !strings.EqualFold(resolved.Scheme, "https")) || resolved.Hostname() == "" {
+				continue
+			}
+			resolved.Scheme = strings.ToLower(resolved.Scheme)
+			resolved.Fragment = ""
+			source.URL = resolved.String()
+			resolvedSources = append(resolvedSources, source)
+		}
+		face.Sources = resolvedSources
 	}
 }
 

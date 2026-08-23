@@ -1441,7 +1441,7 @@ func (context *layoutContext) addListMarker(node *styledNode, box *Box) error {
 	if markerText == "" {
 		return nil
 	}
-	metrics, err := context.fonts.metrics(markerText, node.style.FontSize(), node.style.FontWeight(), node.style.FontStyle(), node.style.FontFamily())
+	metrics, err := context.fonts.metricsForStyle(markerText, node.style)
 	if err != nil {
 		return err
 	}
@@ -1479,6 +1479,7 @@ func (context *layoutContext) addListMarker(node *styledNode, box *Box) error {
 		FontFamily:          node.style.FontFamily(),
 		FontWeight:          node.style.FontWeight(),
 		FontStyle:           node.style.FontStyle(),
+		WebFont:             context.fonts.resolveWebFont(node.style.FontFamilyValue(), node.style.FontWeightValue(), node.style.FontStyle(), markerText),
 		Color:               node.style.Color(),
 		Visible:             node.style.Visibility() == visibilityVisible,
 		Underline:           node.style.Underline(),
@@ -1598,7 +1599,7 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 	if len(builder.tokens) == 0 {
 		return inlineLayout{}, nil
 	}
-	containerMetrics, err := context.fonts.metrics("M", containerStyle.FontSize(), containerStyle.FontWeight(), containerStyle.FontStyle(), containerStyle.FontFamily())
+	containerMetrics, err := context.fonts.metricsForStyle("M", containerStyle)
 	if err != nil {
 		return inlineLayout{}, err
 	}
@@ -1606,7 +1607,7 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 	containerLeading := math.Max(0, containerLineHeight-containerMetrics.ascent-containerMetrics.descent)
 	containerBaseline := containerLeading/2 + containerMetrics.ascent
 	containerDescent := containerLineHeight - containerBaseline
-	containerXHeight, err := context.fonts.xHeight(containerStyle.FontSize(), containerStyle.FontWeight(), containerStyle.FontStyle(), containerStyle.FontFamily())
+	containerXHeight, err := context.fonts.xHeightForStyle(containerStyle)
 	if err != nil {
 		return inlineLayout{}, err
 	}
@@ -1637,6 +1638,7 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 					previous.Text.FontFamily == text.FontFamily &&
 					previous.Text.FontWeight == text.FontWeight &&
 					previous.Text.FontStyle == text.FontStyle &&
+					previous.Text.WebFont == text.WebFont &&
 					previous.Text.Color == text.Color &&
 					previous.Text.verticalOrientation == text.verticalOrientation &&
 					previous.Text.X+previous.Text.Width == text.X {
@@ -1759,6 +1761,7 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 				FontFamily:          piece.style.FontFamily(),
 				FontWeight:          piece.style.FontWeight(),
 				FontStyle:           piece.style.FontStyle(),
+				WebFont:             context.fonts.resolveWebFont(piece.style.FontFamilyValue(), piece.style.FontWeightValue(), piece.style.FontStyle(), piece.text),
 				Color:               textColor,
 				Visible:             piece.style.Visibility() == visibilityVisible,
 				Underline:           piece.style.Underline(),
@@ -1818,7 +1821,7 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 			}
 		} else {
 			var err error
-			wordMetrics, err = context.fonts.metrics(token.text, token.style.FontSize(), token.style.FontWeight(), token.style.FontStyle(), token.style.FontFamily())
+			wordMetrics, err = context.fonts.metricsForStyle(token.text, token.style)
 			if err != nil {
 				return inlineLayout{}, err
 			}
@@ -1826,7 +1829,7 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 		prefix := ""
 		prefixWidth := 0.0
 		if token.leadingSpace && len(line) != 0 {
-			spaceMetrics, err := context.fonts.metrics(" ", token.style.FontSize(), token.style.FontWeight(), token.style.FontStyle(), token.style.FontFamily())
+			spaceMetrics, err := context.fonts.metricsForStyle(" ", token.style)
 			if err != nil {
 				return inlineLayout{}, err
 			}
@@ -1876,7 +1879,7 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 		}
 		if verticalTextLayout {
 			if prefix != "" {
-				spaceMetrics, err := context.fonts.metrics(" ", token.style.FontSize(), token.style.FontWeight(), token.style.FontStyle(), token.style.FontFamily())
+				spaceMetrics, err := context.fonts.metricsForStyle(" ", token.style)
 				if err != nil {
 					return inlineLayout{}, err
 				}
@@ -1898,7 +1901,7 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 			continue
 		}
 		pieceText := prefix + token.text
-		pieceMetrics, err := context.fonts.metrics(pieceText, token.style.FontSize(), token.style.FontWeight(), token.style.FontStyle(), token.style.FontFamily())
+		pieceMetrics, err := context.fonts.metricsForStyle(pieceText, token.style)
 		if err != nil {
 			return inlineLayout{}, err
 		}
@@ -1919,7 +1922,7 @@ func (context *layoutContext) measureVerticalTextRuns(token inlineToken) ([]meas
 	measured := make([]measuredVerticalTextRun, 0, len(runs))
 	combined := textMetrics{}
 	for _, run := range runs {
-		metrics, err := context.fonts.metrics(run.text, token.style.FontSize(), token.style.FontWeight(), token.style.FontStyle(), token.style.FontFamily())
+		metrics, err := context.fonts.metricsForStyle(run.text, token.style)
 		if err != nil {
 			return nil, textMetrics{}, err
 		}
@@ -2046,7 +2049,7 @@ func (context *layoutContext) intrinsicContentWidthsUncached(node *styledNode, a
 			}
 			return intrinsicWidths{minimum: metrics.width, preferred: metrics.width}, nil
 		}
-		metrics, err := context.fonts.metrics(node.generatedText, node.style.FontSize(), node.style.FontWeight(), node.style.FontStyle(), node.style.FontFamily())
+		metrics, err := context.fonts.metricsForStyle(node.generatedText, node.style)
 		if err != nil {
 			return intrinsicWidths{}, err
 		}
@@ -2189,7 +2192,7 @@ func (context *layoutContext) intrinsicInlineWidths(nodes []*styledNode, availab
 				}
 				measured = intrinsicWidths{minimum: metrics.width, preferred: metrics.width}
 			} else {
-				metrics, err := context.fonts.metrics(token.text, token.style.FontSize(), token.style.FontWeight(), token.style.FontStyle(), token.style.FontFamily())
+				metrics, err := context.fonts.metricsForStyle(token.text, token.style)
 				if err != nil {
 					return intrinsicWidths{}, err
 				}
@@ -2198,7 +2201,7 @@ func (context *layoutContext) intrinsicInlineWidths(nodes []*styledNode, availab
 		}
 		spaceWidth := 0.0
 		if token.leadingSpace && lineWidth != 0 {
-			metrics, err := context.fonts.metrics(" ", token.style.FontSize(), token.style.FontWeight(), token.style.FontStyle(), token.style.FontFamily())
+			metrics, err := context.fonts.metricsForStyle(" ", token.style)
 			if err != nil {
 				return intrinsicWidths{}, err
 			}

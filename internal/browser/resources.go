@@ -35,6 +35,7 @@ type pageResources struct {
 	backgroundImages       map[backgroundImageResourceKey]image.Image
 	backgroundImageSources map[backgroundImageResourceKey]imageResourceEntry
 	nextImageGeneration    uint64
+	fonts                  []render.WebFontFace
 }
 
 type backgroundImageResourceKey struct {
@@ -67,6 +68,7 @@ type navigationResourceResult struct {
 	kind                 resource.Kind
 	stylesheet           css.Stylesheet
 	stylesheetGeneration uint64
+	fonts                []loadedFontFace
 	image                image.Image
 	imageGeneration      uint64
 	imageSource          string
@@ -115,14 +117,16 @@ func (resources *pageResources) apply(result navigationResourceResult) bool {
 	return false
 }
 
-func (resources pageResources) rendererResources(document *dom.Document, scriptingEnabled bool) render.Resources {
+func (resources pageResources) rendererResources(document *dom.Document, scriptingEnabled bool, viewport render.Viewport) render.Resources {
 	resolved := render.Resources{
 		Stylesheets:          resources.stylesheets.resolvedStylesheets(document),
 		UserStylesheets:      append([]css.Stylesheet(nil), resources.userStylesheets...),
 		UserAgentStylesheets: append([]css.Stylesheet(nil), resources.userAgentStylesheets...),
 		Images:               make(map[*dom.Node]image.Image, len(resources.images)),
 		BackgroundImages:     make(map[*dom.Node]map[string]image.Image),
+		Fonts:                append([]render.WebFontFace(nil), resources.fonts...),
 	}
+	resolved.Fonts = append(resolved.Fonts, resources.stylesheets.resolvedFonts(viewport)...)
 	if scriptingEnabled {
 		resolved.UserAgentStylesheets = append(resolved.UserAgentStylesheets, scriptingEnabledUserAgentStylesheet)
 	}
@@ -148,6 +152,7 @@ func pageResourcesFromRenderer(document *dom.Document, resources render.Resource
 	stable := newPageResources()
 	stable.userStylesheets = append([]css.Stylesheet(nil), resources.UserStylesheets...)
 	stable.userAgentStylesheets = append([]css.Stylesheet(nil), resources.UserAgentStylesheets...)
+	stable.fonts = cloneWebFontFaces(resources.Fonts)
 	for node, declarations := range resources.InlineDeclarations {
 		id, ok := document.ID(node)
 		if !ok {
@@ -287,6 +292,7 @@ func loadNavigationResourceSequence(
 	decodedImages := make(map[string]image.Image)
 	failedImages := make(map[string]error)
 	var decodedPixels int64
+	fontBudget := newFontLoadBudget()
 
 	for _, request := range requests {
 		if err := ctx.Err(); err != nil {
@@ -305,6 +311,9 @@ func loadNavigationResourceSequence(
 			result.stylesheet, result.err = loadStylesheetSourceWithImports(
 				ctx, pipeline, request.stylesheetBase, request.stylesheetSource,
 			)
+			if result.err == nil {
+				result.fonts, result.err = loadStylesheetFonts(ctx, pipeline, result.stylesheet, fontBudget)
+			}
 			if err := deliver(result); err != nil {
 				return err
 			}
@@ -389,6 +398,9 @@ func loadNavigationResourceSequence(
 			decodedPixels += pixels
 			decodedImages[imageKey] = decoded.Image
 			result.image = decoded.Image
+		}
+		if result.err == nil && request.kind == resource.Stylesheet {
+			result.fonts, result.err = loadStylesheetFonts(ctx, pipeline, result.stylesheet, fontBudget)
 		}
 		if err := deliver(result); err != nil {
 			return err

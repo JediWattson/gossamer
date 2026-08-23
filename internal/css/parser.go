@@ -2,6 +2,7 @@ package css
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -225,12 +226,274 @@ func (parser *stylesheetParser) parseAtRule() error {
 				supports:        supports,
 				parentSelectors: append([]Selector(nil), parser.context.parentSelectors...),
 			})
+		case "font-face":
+			if strings.TrimSpace(prelude) != "" || len(parser.context.parentSelectors) != 0 {
+				return nil
+			}
+			if face, ok := parseFontFaceRule(parser.original[blockStart:blockStart+len(block)], parser.context); ok {
+				face.Order = len(parser.stylesheet.FontFaces)
+				parser.stylesheet.FontFaces = append(parser.stylesheet.FontFaces, face)
+			}
+			return nil
 		default:
 			return nil
 		}
 	default:
 		return nil
 	}
+}
+
+func parseFontFaceRule(block string, context ruleContext) (FontFaceRule, bool) {
+	declarations, _ := ParseRawDeclarationList(block)
+	face := FontFaceRule{
+		Style: "normal", Weight: FontFaceWeight{Min: 400, Max: 400}, Display: "auto",
+		Media: append([]string(nil), context.media...), Supports: append([]string(nil), context.supports...),
+	}
+	for _, declaration := range declarations {
+		switch declaration.Property {
+		case "font-family":
+			if family, ok := parseFontFaceFamily(declaration.Value); ok {
+				face.Family = family
+			}
+		case "src":
+			if sources := parseFontFaceSources(declaration.Value); len(sources) != 0 {
+				face.Sources = sources
+			}
+		case "font-style":
+			if style, ok := parseFontFaceStyle(declaration.Value); ok {
+				face.Style = style
+			}
+		case "font-weight":
+			if weight, ok := parseFontFaceWeight(declaration.Value); ok {
+				face.Weight = weight
+			}
+		case "font-display":
+			if display, ok := parseFontDisplay(declaration.Value); ok {
+				face.Display = display
+			}
+		case "unicode-range":
+			if ranges, ok := parseFontUnicodeRanges(declaration.Value); ok {
+				face.UnicodeRanges = ranges
+			}
+		}
+	}
+	return face, face.Family != "" && len(face.Sources) != 0
+}
+
+func parseFontUnicodeRanges(source string) ([]UnicodeRange, bool) {
+	groups := strings.Split(source, ",")
+	ranges := make([]UnicodeRange, 0, len(groups))
+	for _, group := range groups {
+		value := strings.TrimSpace(group)
+		if len(value) < 3 || !strings.EqualFold(value[:2], "u+") {
+			return nil, false
+		}
+		body := value[2:]
+		if strings.Contains(body, "?") {
+			if strings.Contains(body, "-") || len(body) > 6 {
+				return nil, false
+			}
+			firstWildcard := strings.IndexByte(body, '?')
+			if firstWildcard < 0 || strings.Trim(body[firstWildcard:], "?") != "" {
+				return nil, false
+			}
+			startText := body[:firstWildcard] + strings.Repeat("0", len(body)-firstWildcard)
+			endText := body[:firstWildcard] + strings.Repeat("f", len(body)-firstWildcard)
+			start, startOK := parseUnicodeRangeCodePoint(startText)
+			end, endOK := parseUnicodeRangeCodePoint(endText)
+			if !startOK || !endOK {
+				return nil, false
+			}
+			ranges = append(ranges, UnicodeRange{Start: start, End: end})
+			continue
+		}
+		startText, endText, hasRange := strings.Cut(body, "-")
+		start, startOK := parseUnicodeRangeCodePoint(startText)
+		if !startOK {
+			return nil, false
+		}
+		end := start
+		if hasRange {
+			var endOK bool
+			end, endOK = parseUnicodeRangeCodePoint(endText)
+			if !endOK || end < start {
+				return nil, false
+			}
+		}
+		ranges = append(ranges, UnicodeRange{Start: start, End: end})
+	}
+	return ranges, len(ranges) != 0
+}
+
+func parseUnicodeRangeCodePoint(source string) (rune, bool) {
+	if len(source) == 0 || len(source) > 6 {
+		return 0, false
+	}
+	value, err := strconv.ParseUint(source, 16, 32)
+	return rune(value), err == nil && value <= 0x10ffff
+}
+
+func parseFontFaceFamily(source string) (string, bool) {
+	values, err := ParseComponentValues(source)
+	if err != nil {
+		return "", false
+	}
+	values = trimComponentWhitespace(values)
+	if len(values) == 1 && values[0].Kind == ComponentToken && values[0].Token.Kind == TokenString && !values[0].Token.Incomplete {
+		return values[0].Token.Value, values[0].Token.Value != ""
+	}
+	parts := make([]string, 0, len(values))
+	for _, value := range values {
+		if isWhitespaceComponent(value) {
+			continue
+		}
+		if value.Kind != ComponentToken || value.Token.Kind != TokenIdent || value.Token.Incomplete {
+			return "", false
+		}
+		parts = append(parts, value.Token.Value)
+	}
+	return strings.Join(parts, " "), len(parts) != 0
+}
+
+func parseFontFaceSources(source string) []FontSource {
+	values, err := ParseComponentValues(source)
+	if err != nil {
+		return nil
+	}
+	groups := splitComponentValues(values, TokenComma)
+	sources := make([]FontSource, 0, len(groups))
+	for _, group := range groups {
+		group = trimComponentWhitespace(group)
+		if len(group) == 0 {
+			continue
+		}
+		candidate, ok := fontSourceURL(group[0])
+		if !ok || candidate == "" {
+			continue
+		}
+		for _, value := range group[1:] {
+			if value.Kind != ComponentFunction || !equalASCIIFold(value.Token.Value, "format") {
+				continue
+			}
+			arguments := trimComponentWhitespace(value.Values)
+			if len(arguments) == 1 && arguments[0].Kind == ComponentToken && (arguments[0].Token.Kind == TokenString || arguments[0].Token.Kind == TokenIdent) {
+				candidateFormat := strings.ToLower(strings.TrimSpace(arguments[0].Token.Value))
+				if candidateFormat != "" {
+					candidate = candidate + "\x00" + candidateFormat
+				}
+			}
+			break
+		}
+		urlValue, format, _ := strings.Cut(candidate, "\x00")
+		sources = append(sources, FontSource{URL: urlValue, Format: format})
+	}
+	return sources
+}
+
+func fontSourceURL(value ComponentValue) (string, bool) {
+	if value.Kind == ComponentToken && value.Token.Kind == TokenURL && !value.Token.Incomplete {
+		return value.Token.Value, true
+	}
+	if value.Kind != ComponentFunction || !equalASCIIFold(value.Token.Value, "url") {
+		return "", false
+	}
+	arguments := trimComponentWhitespace(value.Values)
+	if len(arguments) != 1 || arguments[0].Kind != ComponentToken || arguments[0].Token.Kind != TokenString || arguments[0].Token.Incomplete {
+		return "", false
+	}
+	return arguments[0].Token.Value, true
+}
+
+func parseFontFaceStyle(source string) (string, bool) {
+	values, err := ParseComponentValues(source)
+	if err != nil {
+		return "", false
+	}
+	values = trimComponentWhitespace(values)
+	if len(values) == 0 || values[0].Kind != ComponentToken || values[0].Token.Kind != TokenIdent {
+		return "", false
+	}
+	style := strings.ToLower(values[0].Token.Value)
+	if style != "normal" && style != "italic" && style != "oblique" {
+		return "", false
+	}
+	return style, true
+}
+
+func parseFontFaceWeight(source string) (FontFaceWeight, bool) {
+	values, err := ParseComponentValues(source)
+	if err != nil {
+		return FontFaceWeight{}, false
+	}
+	values = trimComponentWhitespace(values)
+	weights := make([]int, 0, 2)
+	for _, value := range values {
+		if isWhitespaceComponent(value) {
+			continue
+		}
+		if value.Kind != ComponentToken {
+			return FontFaceWeight{}, false
+		}
+		switch value.Token.Kind {
+		case TokenIdent:
+			if len(weights) != 0 {
+				return FontFaceWeight{}, false
+			}
+			switch strings.ToLower(value.Token.Value) {
+			case "normal":
+				weights = append(weights, 400)
+			case "bold":
+				weights = append(weights, 700)
+			default:
+				return FontFaceWeight{}, false
+			}
+		case TokenNumber:
+			weight := int(value.Token.Number)
+			if !value.Token.Integer || weight < 1 || weight > 1000 {
+				return FontFaceWeight{}, false
+			}
+			weights = append(weights, weight)
+		default:
+			return FontFaceWeight{}, false
+		}
+	}
+	if len(weights) == 1 {
+		return FontFaceWeight{Min: weights[0], Max: weights[0]}, true
+	}
+	if len(weights) == 2 && weights[0] <= weights[1] {
+		return FontFaceWeight{Min: weights[0], Max: weights[1]}, true
+	}
+	return FontFaceWeight{}, false
+}
+
+func parseFontDisplay(source string) (string, bool) {
+	values, err := ParseComponentValues(source)
+	if err != nil {
+		return "", false
+	}
+	values = trimComponentWhitespace(values)
+	if len(values) != 1 || values[0].Kind != ComponentToken || values[0].Token.Kind != TokenIdent {
+		return "", false
+	}
+	display := strings.ToLower(values[0].Token.Value)
+	switch display {
+	case "auto", "block", "swap", "fallback", "optional":
+		return display, true
+	default:
+		return "", false
+	}
+}
+
+func splitComponentValues(values []ComponentValue, delimiter TokenKind) [][]ComponentValue {
+	result := [][]ComponentValue{{}}
+	for _, value := range values {
+		if value.Kind == ComponentToken && value.Token.Kind == delimiter {
+			result = append(result, nil)
+			continue
+		}
+		result[len(result)-1] = append(result[len(result)-1], value)
+	}
+	return result
 }
 
 func (parser *stylesheetParser) appendRule(selectors []Selector, declarations []Declaration, sources []DeclarationSource, context ruleContext) {

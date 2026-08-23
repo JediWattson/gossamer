@@ -10,6 +10,7 @@ import (
 
 	"github.com/JediWattson/gossamer/internal/css"
 	"github.com/JediWattson/gossamer/internal/dom"
+	"github.com/JediWattson/gossamer/internal/render"
 	"github.com/JediWattson/gossamer/internal/resource"
 	browserruntime "github.com/JediWattson/gossamer/internal/runtime"
 )
@@ -29,6 +30,7 @@ type stylesheetGraphEntry struct {
 	resolved   *url.URL
 	source     string
 	stylesheet css.Stylesheet
+	fonts      []loadedFontFace
 	ready      bool
 	requested  bool
 	manual     bool
@@ -86,6 +88,26 @@ func (graph stylesheetGraph) resolvedStylesheets(document *dom.Document) map[*do
 	return result
 }
 
+func (graph stylesheetGraph) resolvedFonts(viewport render.Viewport) []render.WebFontFace {
+	var result []render.WebFontFace
+	environment := css.MediaEnvironment{
+		Type: "screen", Width: float64(viewport.Width), Height: float64(viewport.Height), InitialFontSize: 16,
+	}
+	for _, owner := range graph.order {
+		entry, ok := graph.entries[owner]
+		if !ok || !entry.ready {
+			continue
+		}
+		for _, loaded := range entry.fonts {
+			if !fontFaceConditionsMatch(loaded.rule, environment) {
+				continue
+			}
+			result = append(result, loaded.face)
+		}
+	}
+	return result
+}
+
 func (graph *stylesheetGraph) apply(result navigationResourceResult) bool {
 	graph.ensure()
 	entry, ok := graph.entries[result.target.Node]
@@ -93,6 +115,7 @@ func (graph *stylesheetGraph) apply(result navigationResourceResult) bool {
 		return false
 	}
 	entry.stylesheet = result.stylesheet
+	entry.fonts = cloneLoadedFontFaces(result.fonts)
 	entry.ready = true
 	entry.requested = true
 	entry.manual = false
@@ -182,7 +205,7 @@ func (graph *stylesheetGraph) sync(
 					kind: resource.Stylesheet, url: cloneURL(entry.resolved), node: entry.owner,
 					stylesheetGeneration: entry.generation,
 				})
-			} else if entry.kind == stylesheetOwnerEmbedded && len(entry.stylesheet.Imports) > 0 && !entry.requested && entry.resolved != nil {
+			} else if entry.kind == stylesheetOwnerEmbedded && (len(entry.stylesheet.Imports) > 0 || len(entry.stylesheet.FontFaces) > 0) && !entry.requested && entry.resolved != nil {
 				requests = append(requests, navigationResourceRequest{
 					kind: resource.Stylesheet, node: entry.owner,
 					stylesheetGeneration: entry.generation,
@@ -201,7 +224,7 @@ func (graph *stylesheetGraph) sync(
 		if descriptor.kind == stylesheetOwnerEmbedded {
 			entry.stylesheet, _ = css.Parse(descriptor.source)
 			entry.ready = true
-			if len(entry.stylesheet.Imports) > 0 && entry.resolved != nil {
+			if (len(entry.stylesheet.Imports) > 0 || len(entry.stylesheet.FontFaces) > 0) && entry.resolved != nil {
 				requests = append(requests, navigationResourceRequest{
 					kind: resource.Stylesheet, node: entry.owner,
 					stylesheetGeneration: entry.generation,
