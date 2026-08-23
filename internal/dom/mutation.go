@@ -18,6 +18,7 @@ const (
 	NamespaceError        ExceptionName = "NamespaceError"
 	SyntaxError           ExceptionName = "SyntaxError"
 	InvalidStateError     ExceptionName = "InvalidStateError"
+	NotSupportedError     ExceptionName = "NotSupportedError"
 	IndexSizeError        ExceptionName = "IndexSizeError"
 	SecurityError         ExceptionName = "SecurityError"
 	DataCloneError        ExceptionName = "DataCloneError"
@@ -307,7 +308,7 @@ func requireParentNode(node *Node, id NodeID) error {
 
 func validateNoCycles(parent *Node, nodes []*Node) error {
 	for _, node := range nodes {
-		for ancestor := parent; ancestor != nil; ancestor = ancestor.Parent {
+		for ancestor := parent; ancestor != nil; ancestor = shadowIncludingParent(ancestor) {
 			if ancestor == node {
 				return NewException(HierarchyRequestError, ErrInvalidTree, "mutation would create a cycle")
 			}

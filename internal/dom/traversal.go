@@ -26,14 +26,17 @@ const (
 
 // NodeSnapshot contains the immutable metadata needed to expose a DOM node to
 // a JavaScript engine. Connected reports whether the node reaches this
-// document's root through parent edges.
+// document's root through ordinary parent edges or a shadow-root host edge.
 type NodeSnapshot struct {
-	Type         NodeType
-	Data         string
-	Target       string
-	NamespaceURI string
-	Prefix       string
-	Connected    bool
+	Type           NodeType
+	Data           string
+	Target         string
+	NamespaceURI   string
+	Prefix         string
+	Connected      bool
+	ShadowRoot     bool
+	ShadowMode     ShadowRootMode
+	DelegatesFocus bool
 }
 
 // Snapshot returns node metadata without exposing its backing pointer.
@@ -52,19 +55,22 @@ func (document *Document) Snapshot(id NodeID) (NodeSnapshot, error) {
 		return NodeSnapshot{}, fmt.Errorf("%w: %d", ErrUnknownNode, document.root)
 	}
 	connected := false
-	for ancestor := node; ancestor != nil; ancestor = ancestor.Parent {
+	for ancestor := node; ancestor != nil; ancestor = shadowIncludingParent(ancestor) {
 		if ancestor == root {
 			connected = true
 			break
 		}
 	}
 	return NodeSnapshot{
-		Type:         node.Type,
-		Data:         node.Data,
-		Target:       node.Target,
-		NamespaceURI: node.NamespaceURI,
-		Prefix:       node.Prefix,
-		Connected:    connected,
+		Type:           node.Type,
+		Data:           node.Data,
+		Target:         node.Target,
+		NamespaceURI:   node.NamespaceURI,
+		Prefix:         node.Prefix,
+		Connected:      connected,
+		ShadowRoot:     node.ShadowHost != nil,
+		ShadowMode:     node.ShadowMode,
+		DelegatesFocus: node.DelegatesFocus,
 	}, nil
 }
 

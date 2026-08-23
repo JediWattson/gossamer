@@ -9,11 +9,15 @@ import (
 )
 
 func (execution *execution) getProperty(base, key memory.Value) (memory.Value, bool, error) {
+	return execution.getPropertyWithReceiver(base, key, base)
+}
+
+func (execution *execution) getPropertyWithReceiver(base, key, receiver memory.Value) (memory.Value, bool, error) {
 	context := execution.context
 	if target, handler, proxy, err := execution.proxyRecord(base); err != nil {
 		return memory.Value{}, false, err
 	} else if proxy {
-		return execution.proxyGet(base, target, handler, key)
+		return execution.proxyGet(base, target, handler, key, receiver)
 	}
 	if base.Kind() == memory.ValueNumber {
 		name, err := execution.propertyName(key)
@@ -23,7 +27,7 @@ func (execution *execution) getProperty(base, key memory.Value) (memory.Value, b
 		if context.intrinsics == nil {
 			return memory.Value{}, false, nil
 		}
-		return execution.getNamedProperty(base, context.intrinsics.NumberPrototype, name)
+		return execution.getNamedProperty(receiver, context.intrinsics.NumberPrototype, name)
 	}
 	if base.Kind() == memory.ValueBool {
 		// Boolean primitives have no own properties. Boolean.prototype is still
@@ -45,7 +49,7 @@ func (execution *execution) getProperty(base, key memory.Value) (memory.Value, b
 		if err != nil {
 			return memory.Value{}, false, err
 		}
-		return execution.getNamedProperty(base, ref, name)
+		return execution.getNamedProperty(receiver, ref, name)
 	case memory.HeapArray:
 		index, length, indexed, name, err := execution.arrayPropertyKey(key)
 		if err != nil {
@@ -61,7 +65,7 @@ func (execution *execution) getProperty(base, key memory.Value) (memory.Value, b
 		if indexed {
 			return context.ArrayElement(ref, index)
 		}
-		return execution.getNamedProperty(base, ref, name)
+		return execution.getNamedProperty(receiver, ref, name)
 	case memory.HeapTypedArray:
 		index, length, indexed, name, err := execution.arrayPropertyKey(key)
 		if err != nil {
@@ -132,7 +136,7 @@ func (execution *execution) getProperty(base, key memory.Value) (memory.Value, b
 		if context.intrinsics == nil {
 			return memory.Value{}, false, nil
 		}
-		return execution.getNamedProperty(base, context.intrinsics.StringPrototype, name)
+		return execution.getNamedProperty(receiver, context.intrinsics.StringPrototype, name)
 	case memory.HeapSymbol:
 		name, err := execution.propertyName(key)
 		if err != nil {
@@ -141,13 +145,13 @@ func (execution *execution) getProperty(base, key memory.Value) (memory.Value, b
 		if context.intrinsics == nil {
 			return memory.Value{}, false, nil
 		}
-		return execution.getNamedProperty(base, context.intrinsics.SymbolPrototype, name)
+		return execution.getNamedProperty(receiver, context.intrinsics.SymbolPrototype, name)
 	case memory.HeapError:
 		name, err := execution.propertyName(key)
 		if err != nil {
 			return memory.Value{}, false, err
 		}
-		if value, found, err := execution.getNamedProperty(base, ref, name); err != nil || found {
+		if value, found, err := execution.getNamedProperty(receiver, ref, name); err != nil || found {
 			return value, found, err
 		}
 		keyText, stringKey, err := execution.stringPropertyName(name)
@@ -197,7 +201,7 @@ func (execution *execution) getProperty(base, key memory.Value) (memory.Value, b
 		if context.intrinsics == nil {
 			return memory.Value{}, false, nil
 		}
-		return execution.getNamedProperty(base, context.intrinsics.RegExpPrototype, name)
+		return execution.getNamedProperty(receiver, context.intrinsics.RegExpPrototype, name)
 	case memory.HeapDate:
 		name, err := execution.propertyName(key)
 		if err != nil {
@@ -206,7 +210,7 @@ func (execution *execution) getProperty(base, key memory.Value) (memory.Value, b
 		if context.intrinsics == nil {
 			return memory.Value{}, false, nil
 		}
-		return execution.getNamedProperty(base, context.intrinsics.DatePrototype, name)
+		return execution.getNamedProperty(receiver, context.intrinsics.DatePrototype, name)
 	case memory.HeapWeakMap, memory.HeapWeakSet:
 		name, err := execution.propertyName(key)
 		if err != nil {
@@ -219,7 +223,7 @@ func (execution *execution) getProperty(base, key memory.Value) (memory.Value, b
 		if kind == memory.HeapWeakSet {
 			prototype = context.intrinsics.WeakSetPrototype
 		}
-		return execution.getNamedProperty(base, prototype, name)
+		return execution.getNamedProperty(receiver, prototype, name)
 	default:
 		return memory.Value{}, false, fmt.Errorf("%w: HeapKind(%d) has no properties", ErrOperandType, kind)
 	}

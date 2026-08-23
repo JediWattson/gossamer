@@ -182,6 +182,11 @@ const (
 	nativeScriptSourceSet
 	nativeScriptAsyncGet
 	nativeScriptAsyncSet
+	nativeElementAttachShadow
+	nativeElementShadowRoot
+	nativeShadowRootHost
+	nativeShadowRootMode
+	nativeShadowRootDelegatesFocus
 )
 
 const (
@@ -210,6 +215,7 @@ const (
 	bindingHTMLSelectElementPrototype      = "\x00gossamer.html-select-element.prototype"
 	bindingHTMLOptionElementPrototype      = "\x00gossamer.html-option-element.prototype"
 	bindingHTMLButtonElementPrototype      = "\x00gossamer.html-button-element.prototype"
+	bindingHTMLDivElementPrototype         = "\x00gossamer.html-div-element.prototype"
 	bindingHTMLIFrameElementPrototype      = "\x00gossamer.html-iframe-element.prototype"
 	bindingHTMLHeadElementPrototype        = "\x00gossamer.html-head-element.prototype"
 	bindingHTMLScriptElementPrototype      = "\x00gossamer.html-script-element.prototype"
@@ -219,6 +225,7 @@ const (
 	bindingTemplatePrototype               = "\x00gossamer.template.prototype"
 	bindingTextPrototype                   = "\x00gossamer.text.prototype"
 	bindingFragmentPrototype               = "\x00gossamer.fragment.prototype"
+	bindingShadowRootPrototype             = "\x00gossamer.shadow-root.prototype"
 	bindingEventPrototype                  = "\x00gossamer.event.prototype"
 	bindingClassListPrototype              = "\x00gossamer.class-list.prototype"
 	bindingDatasetPrototype                = "\x00gossamer.dataset.prototype"
@@ -278,6 +285,7 @@ type browserBindings struct {
 	htmlSelectElementPrototype      memory.Ref
 	htmlOptionElementPrototype      memory.Ref
 	htmlButtonElementPrototype      memory.Ref
+	htmlDivElementPrototype         memory.Ref
 	htmlIFrameElementPrototype      memory.Ref
 	htmlHeadElementPrototype        memory.Ref
 	htmlScriptElementPrototype      memory.Ref
@@ -287,6 +295,7 @@ type browserBindings struct {
 	templatePrototype               memory.Ref
 	textPrototype                   memory.Ref
 	fragmentPrototype               memory.Ref
+	shadowRootPrototype             memory.Ref
 	eventPrototype                  memory.Ref
 	classListPrototype              memory.Ref
 	datasetPrototype                memory.Ref
@@ -381,6 +390,11 @@ func (realm *Realm) installBrowserNatives() error {
 		{nativeElementQuerySelectorAll, realm.elementQuerySelector(true)},
 		{nativeElementMatches, realm.elementMatches},
 		{nativeElementClosest, realm.elementClosest},
+		{nativeElementAttachShadow, realm.elementAttachShadow},
+		{nativeElementShadowRoot, realm.elementShadowRoot},
+		{nativeShadowRootHost, realm.shadowRootHost},
+		{nativeShadowRootMode, realm.shadowRootMode},
+		{nativeShadowRootDelegatesFocus, realm.shadowRootDelegatesFocus},
 		{nativeDocumentCreateElementNS, realm.documentCreateElementNS},
 		{nativeDocumentCreateDocumentFragment, realm.documentCreateDocumentFragment},
 		{nativeDocumentDefaultView, realm.documentDefaultView},
@@ -707,6 +721,7 @@ func (realm *Realm) prepareBrowserBindingsLocked(context *browserruntime.TaskCon
 			{bindingHTMLSelectElementPrototype, &bindings.htmlSelectElementPrototype},
 			{bindingHTMLOptionElementPrototype, &bindings.htmlOptionElementPrototype},
 			{bindingHTMLButtonElementPrototype, &bindings.htmlButtonElementPrototype},
+			{bindingHTMLDivElementPrototype, &bindings.htmlDivElementPrototype},
 			{bindingHTMLIFrameElementPrototype, &bindings.htmlIFrameElementPrototype},
 			{bindingHTMLHeadElementPrototype, &bindings.htmlHeadElementPrototype},
 			{bindingHTMLScriptElementPrototype, &bindings.htmlScriptElementPrototype},
@@ -716,6 +731,7 @@ func (realm *Realm) prepareBrowserBindingsLocked(context *browserruntime.TaskCon
 			{bindingTemplatePrototype, &bindings.templatePrototype},
 			{bindingTextPrototype, &bindings.textPrototype},
 			{bindingFragmentPrototype, &bindings.fragmentPrototype},
+			{bindingShadowRootPrototype, &bindings.shadowRootPrototype},
 			{bindingEventPrototype, &bindings.eventPrototype},
 			{bindingClassListPrototype, &bindings.classListPrototype},
 			{bindingDatasetPrototype, &bindings.datasetPrototype},
@@ -1093,6 +1109,7 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{bindingHTMLSelectElementPrototype, bindings.htmlSelectElementPrototype, false},
 		{bindingHTMLOptionElementPrototype, bindings.htmlOptionElementPrototype, false},
 		{bindingHTMLButtonElementPrototype, bindings.htmlButtonElementPrototype, false},
+		{bindingHTMLDivElementPrototype, bindings.htmlDivElementPrototype, false},
 		{bindingHTMLIFrameElementPrototype, bindings.htmlIFrameElementPrototype, false},
 		{bindingHTMLHeadElementPrototype, bindings.htmlHeadElementPrototype, false},
 		{bindingHTMLScriptElementPrototype, bindings.htmlScriptElementPrototype, false},
@@ -1102,6 +1119,7 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{bindingTemplatePrototype, bindings.templatePrototype, false},
 		{bindingTextPrototype, bindings.textPrototype, false},
 		{bindingFragmentPrototype, bindings.fragmentPrototype, false},
+		{bindingShadowRootPrototype, bindings.shadowRootPrototype, false},
 		{bindingEventPrototype, bindings.eventPrototype, false},
 		{bindingClassListPrototype, bindings.classListPrototype, false},
 		{bindingDatasetPrototype, bindings.datasetPrototype, false},
@@ -1258,6 +1276,7 @@ func (realm *Realm) installDOMPrototypeProperties(context *browserruntime.TaskCo
 		{realm.bindings.elementPrototype, "querySelectorAll", 1, nativeElementQuerySelectorAll},
 		{realm.bindings.elementPrototype, "matches", 1, nativeElementMatches},
 		{realm.bindings.elementPrototype, "closest", 1, nativeElementClosest},
+		{realm.bindings.elementPrototype, "attachShadow", 1, nativeElementAttachShadow},
 		{realm.bindings.elementPrototype, "getAttributeNames", 0, nativeElementGetAttributeNames},
 		{realm.bindings.elementPrototype, "insertAdjacentHTML", 2, nativeElementInsertAdjacentHTML},
 		{realm.bindings.htmlElementPrototype, "focus", 0, nativeElementFocus},
@@ -1383,6 +1402,10 @@ func (realm *Realm) installDOMPrototypeProperties(context *browserruntime.TaskCo
 		{realm.bindings.templatePrototype, "content", nativeTemplateContent, 0},
 		{realm.bindings.textPrototype, "data", nativeNodeValueGet, nativeNodeValueSet},
 		{realm.bindings.elementPrototype, "localName", nativeElementLocalName, 0},
+		{realm.bindings.elementPrototype, "shadowRoot", nativeElementShadowRoot, 0},
+		{realm.bindings.shadowRootPrototype, "host", nativeShadowRootHost, 0},
+		{realm.bindings.shadowRootPrototype, "mode", nativeShadowRootMode, 0},
+		{realm.bindings.shadowRootPrototype, "delegatesFocus", nativeShadowRootDelegatesFocus, 0},
 		{realm.bindings.elementPrototype, "children", nativeElementChildren, 0},
 		{realm.bindings.elementPrototype, "firstElementChild", nativeNodeFirstElementChild, 0},
 		{realm.bindings.elementPrototype, "lastElementChild", nativeNodeLastElementChild, 0},
@@ -2051,6 +2074,100 @@ func (realm *Realm) templateContent(context *browserruntime.TaskContext, this me
 		return memory.Value{}, err
 	}
 	return realm.wrappedNodeValue(context, content)
+}
+
+func (realm *Realm) elementAttachShadow(context *browserruntime.TaskContext, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+	handle, err := realm.unwrapNode(context, this)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	options := argument(arguments, 0)
+	if !options.IsRef() {
+		return memory.Value{}, fmt.Errorf("%w: attachShadow options must be an object", browserruntime.ErrOperandType)
+	}
+	modeValue, found, err := ownProperty(context, options.Ref(), "mode")
+	if err != nil {
+		return memory.Value{}, err
+	}
+	if !found {
+		return memory.Value{}, fmt.Errorf("%w: attachShadow mode is required", browserruntime.ErrOperandType)
+	}
+	mode, err := valueString(context, modeValue)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	if mode != string(dom.ShadowRootOpen) && mode != string(dom.ShadowRootClosed) {
+		return memory.Value{}, fmt.Errorf("%w: %q is not a valid ShadowRootMode", browserruntime.ErrOperandType, mode)
+	}
+	delegatesFocus := false
+	if focusValue, focusFound, focusErr := ownProperty(context, options.Ref(), "delegatesFocus"); focusErr != nil {
+		return memory.Value{}, focusErr
+	} else if focusFound {
+		delegatesFocus = truthy(focusValue)
+	}
+	host, ok := realm.host.(browser.DOMElementHost)
+	if !ok {
+		return memory.Value{}, fmt.Errorf("nativeengine: browser host does not expose shadow roots")
+	}
+	root, err := host.AttachShadow(handle, browser.ShadowRootOptions{Mode: mode, DelegatesFocus: delegatesFocus})
+	if err != nil {
+		return memory.Value{}, realm.throwDOMException(context, err)
+	}
+	return realm.wrappedNodeValue(context, root)
+}
+
+func (realm *Realm) elementShadowRoot(context *browserruntime.TaskContext, this memory.Value, _ []memory.Value) (memory.Value, error) {
+	handle, err := realm.unwrapNode(context, this)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	host, ok := realm.host.(browser.DOMElementHost)
+	if !ok {
+		return memory.Value{}, fmt.Errorf("nativeengine: browser host does not expose shadow roots")
+	}
+	root, found, err := host.ElementShadowRoot(handle)
+	if err != nil || !found {
+		return memory.NullValue(), err
+	}
+	return realm.wrappedNodeValue(context, root)
+}
+
+func (realm *Realm) shadowRootHost(context *browserruntime.TaskContext, this memory.Value, _ []memory.Value) (memory.Value, error) {
+	root, err := realm.unwrapNode(context, this)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	host, ok := realm.host.(browser.DOMElementHost)
+	if !ok {
+		return memory.Value{}, fmt.Errorf("nativeengine: browser host does not expose shadow roots")
+	}
+	shadowHost, err := host.ShadowHost(root)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	return realm.wrappedNodeValue(context, shadowHost)
+}
+
+func (realm *Realm) shadowRootMode(context *browserruntime.TaskContext, this memory.Value, _ []memory.Value) (memory.Value, error) {
+	metadata, err := realm.nodeMetadata(context, this)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	if !metadata.ShadowRoot {
+		return memory.Value{}, fmt.Errorf("%w: receiver is not a ShadowRoot", browserruntime.ErrOperandType)
+	}
+	return newString(context, metadata.ShadowMode)
+}
+
+func (realm *Realm) shadowRootDelegatesFocus(context *browserruntime.TaskContext, this memory.Value, _ []memory.Value) (memory.Value, error) {
+	metadata, err := realm.nodeMetadata(context, this)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	if !metadata.ShadowRoot {
+		return memory.Value{}, fmt.Errorf("%w: receiver is not a ShadowRoot", browserruntime.ErrOperandType)
+	}
+	return memory.BoolValue(metadata.DelegatesFocus), nil
 }
 
 func (realm *Realm) nodeReplaceChild(context *browserruntime.TaskContext, this memory.Value, arguments []memory.Value) (memory.Value, error) {

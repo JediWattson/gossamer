@@ -50,6 +50,7 @@ func (realm *Realm) newDOMInterfaces(context *browserruntime.TaskContext, bindin
 		{"HTMLSelectElement", &bindings.htmlSelectElementPrototype},
 		{"HTMLOptionElement", &bindings.htmlOptionElementPrototype},
 		{"HTMLButtonElement", &bindings.htmlButtonElementPrototype},
+		{"HTMLDivElement", &bindings.htmlDivElementPrototype},
 		{"HTMLTemplateElement", &bindings.templatePrototype},
 		{"HTMLIFrameElement", &bindings.htmlIFrameElementPrototype},
 		{"HTMLHeadElement", &bindings.htmlHeadElementPrototype},
@@ -86,6 +87,9 @@ func (realm *Realm) newDOMInterfaces(context *browserruntime.TaskContext, bindin
 			return nil, err
 		}
 	}
+	if err := add("ShadowRoot", bindings.fragmentPrototype, &bindings.shadowRootPrototype); err != nil {
+		return nil, err
+	}
 	if err := add("HTMLCollection", realm.active.ObjectPrototype, &bindings.htmlCollectionPrototype); err != nil {
 		return nil, err
 	}
@@ -102,6 +106,9 @@ func (bindings *browserBindings) prototypeForNode(metadata browser.NodeMetadata)
 	case browser.DOMTextNode:
 		return bindings.textPrototype, nil
 	case browser.DOMDocumentFragmentNode:
+		if metadata.ShadowRoot {
+			return bindings.shadowRootPrototype, nil
+		}
 		return bindings.fragmentPrototype, nil
 	case browser.DOMElementNode:
 		if metadata.NamespaceURI != dom.HTMLNamespace {
@@ -120,6 +127,8 @@ func (bindings *browserBindings) prototypeForNode(metadata browser.NodeMetadata)
 			return bindings.htmlOptionElementPrototype, nil
 		case "button":
 			return bindings.htmlButtonElementPrototype, nil
+		case "div":
+			return bindings.htmlDivElementPrototype, nil
 		case "template":
 			return bindings.templatePrototype, nil
 		case "iframe":

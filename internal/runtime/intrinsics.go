@@ -201,6 +201,9 @@ const (
 	nativeStringSearch
 	nativeStringReplaceAll
 	nativeStringMatchAll
+	nativeReflectGet
+	nativeReflectApply
+	nativeStringConcat
 )
 
 // Intrinsics is one task-local instantiation of the native ECMAScript
@@ -692,6 +695,9 @@ func (interpreter *Interpreter) registerBuiltinCallbacks() error {
 		nativeProxyConstructor:                builtinProxyConstructor,
 		nativeReflectOwnKeys:                  builtinReflectOwnKeys,
 		nativeReflectGetOwnPropertyDescriptor: builtinReflectGetOwnPropertyDescriptor,
+		nativeReflectGet:                      builtinReflectGet,
+		nativeReflectApply:                    builtinReflectApply,
+		nativeStringConcat:                    builtinStringConcat,
 		nativeArrayReduce:                     builtinArrayReduce,
 		nativeArraySome:                       builtinArraySome,
 		nativeArrayEvery:                      builtinArrayEvery,

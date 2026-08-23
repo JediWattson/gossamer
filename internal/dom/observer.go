@@ -233,8 +233,8 @@ func (document *Document) nodeConnectedLocked(node *Node) bool {
 	if !found {
 		return false
 	}
-	for node.Parent != nil {
-		node = node.Parent
+	for shadowIncludingParent(node) != nil {
+		node = shadowIncludingParent(node)
 	}
 	return node == root
 }

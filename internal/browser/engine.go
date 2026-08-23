@@ -488,12 +488,21 @@ const (
 
 // NodeMetadata is the scalar node state exposed through JavaScript traversal.
 type NodeMetadata struct {
-	Type         DOMNodeType
-	NodeName     string
-	LocalName    string
-	NamespaceURI string
-	Prefix       string
-	Connected    bool
+	Type           DOMNodeType
+	NodeName       string
+	LocalName      string
+	NamespaceURI   string
+	Prefix         string
+	Connected      bool
+	ShadowRoot     bool
+	ShadowMode     string
+	DelegatesFocus bool
+}
+
+// ShadowRootOptions is the pointer-free browser seam for Element.attachShadow.
+type ShadowRootOptions struct {
+	Mode           string
+	DelegatesFocus bool
 }
 
 type DocumentMetadata struct {
@@ -546,6 +555,9 @@ type DOMElementHost interface {
 	ClosestSelector(NodeHandle, string) (NodeHandle, bool, error)
 	CloneNode(NodeHandle, bool) (NodeHandle, error)
 	TemplateContent(NodeHandle) (NodeHandle, error)
+	AttachShadow(NodeHandle, ShadowRootOptions) (NodeHandle, error)
+	ElementShadowRoot(NodeHandle) (NodeHandle, bool, error)
+	ShadowHost(NodeHandle) (NodeHandle, error)
 	SplitText(NodeHandle, int) (NodeHandle, error)
 	Normalize(NodeHandle) error
 	AdoptNode(NodeHandle) (NodeHandle, error)
@@ -679,7 +691,12 @@ type DOMDocumentHost interface {
 }
 
 func domNodeMetadata(snapshot dom.NodeSnapshot) NodeMetadata {
-	metadata := NodeMetadata{Connected: snapshot.Connected}
+	metadata := NodeMetadata{
+		Connected:      snapshot.Connected,
+		ShadowRoot:     snapshot.ShadowRoot,
+		ShadowMode:     string(snapshot.ShadowMode),
+		DelegatesFocus: snapshot.DelegatesFocus,
+	}
 	switch snapshot.Type {
 	case dom.ElementNode:
 		metadata.Type = DOMElementNode

@@ -428,6 +428,9 @@ func (document *Document) IdentitySnapshots() []IdentitySnapshot {
 		if node != nil && node.TemplateContent != nil {
 			semanticParents[node.TemplateContent] = node
 		}
+		if node != nil && node.ShadowRoot != nil {
+			semanticParents[node.ShadowRoot] = node
+		}
 	}
 	result := make([]IdentitySnapshot, 0, len(document.store.nodes))
 	for index, node := range document.store.nodes {
@@ -469,7 +472,7 @@ func (document *Document) Reclaim(ids []NodeID) error {
 		if !ok {
 			return fmt.Errorf("%w: %d", ErrUnknownNode, id)
 		}
-		for ancestor := node; ancestor != nil; ancestor = ancestor.Parent {
+		for ancestor := node; ancestor != nil; ancestor = shadowIncludingParent(ancestor) {
 			if ancestor == root {
 				return fmt.Errorf("%w: cannot reclaim connected node %d", ErrInvalidTree, id)
 			}
@@ -492,6 +495,16 @@ func (document *Document) Reclaim(ids []NodeID) error {
 				child.Parent = nil
 			}
 		}
+		if node.ShadowHost != nil {
+			if _, hostReclaimed := reclaiming[node.ShadowHost]; !hostReclaimed {
+				return fmt.Errorf("%w: cannot reclaim shadow root retained by a live host", ErrInvalidTree)
+			}
+		}
+		if node.ShadowRoot != nil {
+			if _, rootReclaimed := reclaiming[node.ShadowRoot]; !rootReclaimed {
+				return fmt.Errorf("%w: cannot reclaim host while its shadow root remains live", ErrInvalidTree)
+			}
+		}
 	}
 	for _, node := range nodes {
 		id := document.store.ids[node]
@@ -499,6 +512,8 @@ func (document *Document) Reclaim(ids []NodeID) error {
 		document.store.nodes[int(id)-1] = nil
 		node.Parent = nil
 		node.Children = nil
+		node.ShadowRoot = nil
+		node.ShadowHost = nil
 	}
 	return nil
 }
@@ -820,7 +835,7 @@ func (document *Document) AppendChild(parentID NodeID, child *Node) (NodeID, err
 	if !ok {
 		return InvalidNodeID, fmt.Errorf("%w: %d", ErrUnknownNode, parentID)
 	}
-	for ancestor := parent; ancestor != nil; ancestor = ancestor.Parent {
+	for ancestor := parent; ancestor != nil; ancestor = shadowIncludingParent(ancestor) {
 		if ancestor == child {
 			return InvalidNodeID, fmt.Errorf("%w: append would create a cycle", ErrInvalidTree)
 		}
@@ -1240,6 +1255,14 @@ func collectSubtree(root *Node) ([]*Node, error) {
 				return fmt.Errorf("%w: template content has a parent", ErrInvalidTree)
 			}
 			if err := visit(node.TemplateContent); err != nil {
+				return err
+			}
+		}
+		if node.ShadowRoot != nil {
+			if node.ShadowRoot.Parent != nil || node.ShadowRoot.ShadowHost != node {
+				return fmt.Errorf("%w: inconsistent shadow-root host link", ErrInvalidTree)
+			}
+			if err := visit(node.ShadowRoot); err != nil {
 				return err
 			}
 		}

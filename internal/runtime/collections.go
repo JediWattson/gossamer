@@ -55,6 +55,7 @@ func (intrinsics *Intrinsics) installCollectionBuiltins(context *TaskContext) er
 
 	if err := installMethods(intrinsics, context, intrinsics.StringPrototype, []builtinMethod{
 		{"toString", 0, nativeStringToString}, {"valueOf", 0, nativeStringValueOf},
+		{"concat", 1, nativeStringConcat},
 		{"charAt", 1, nativeStringCharAt}, {"charCodeAt", 1, nativeStringCharCodeAt},
 		{"includes", 1, nativeStringIncludes},
 		{"endsWith", 1, nativeStringEndsWith},
@@ -208,6 +209,26 @@ func builtinStringToString(execution *execution, _ memory.Ref, _ memory.Function
 		return memory.Value{}, err
 	}
 	return this, nil
+}
+
+func builtinStringConcat(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+	if this.Kind() == memory.ValueUndefined || this.Kind() == memory.ValueNull {
+		return memory.Value{}, fmt.Errorf("%w: String.prototype.concat receiver", ErrOperandType)
+	}
+	initial, err := execution.toString(this)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	var result strings.Builder
+	result.WriteString(initial)
+	for _, argument := range arguments {
+		part, err := execution.toString(argument)
+		if err != nil {
+			return memory.Value{}, err
+		}
+		result.WriteString(part)
+	}
+	return newStringValue(execution.context, result.String())
 }
 
 func builtinStringCharAt(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, arguments []memory.Value) (memory.Value, error) {

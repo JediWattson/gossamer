@@ -28,6 +28,16 @@ type Attribute struct {
 	Value string
 }
 
+// ShadowRootMode controls whether an element exposes its attached shadow root
+// through Element.shadowRoot. Closed roots remain addressable by the code that
+// created them, but are not discoverable from their host.
+type ShadowRootMode string
+
+const (
+	ShadowRootOpen   ShadowRootMode = "open"
+	ShadowRootClosed ShadowRootMode = "closed"
+)
+
 // Node is a node in a document tree. Data contains the doctype name, element
 // name, text, comment text, or processing-instruction data according to Type.
 type Node struct {
@@ -41,6 +51,10 @@ type Node struct {
 	Children        []*Node
 	Control         *ControlState
 	TemplateContent *Node
+	ShadowRoot      *Node
+	ShadowHost      *Node
+	ShadowMode      ShadowRootMode
+	DelegatesFocus  bool
 }
 
 // ControlState contains mutable state that is deliberately separate from
@@ -153,7 +167,7 @@ func (node *Node) AppendChild(child *Node) {
 		return
 	}
 
-	for ancestor := node; ancestor != nil; ancestor = ancestor.Parent {
+	for ancestor := node; ancestor != nil; ancestor = shadowIncludingParent(ancestor) {
 		if ancestor == child {
 			panic("dom: appending child would create a cycle")
 		}
@@ -187,7 +201,7 @@ func (node *Node) InsertBefore(child, reference *Node) {
 	if child == reference {
 		return
 	}
-	for ancestor := node; ancestor != nil; ancestor = ancestor.Parent {
+	for ancestor := node; ancestor != nil; ancestor = shadowIncludingParent(ancestor) {
 		if ancestor == child {
 			panic("dom: inserting child would create a cycle")
 		}
@@ -209,6 +223,19 @@ func (node *Node) InsertBefore(child, reference *Node) {
 	copy(node.Children[referenceIndex+1:], node.Children[referenceIndex:])
 	node.Children[referenceIndex] = child
 	child.Parent = node
+}
+
+// shadowIncludingParent follows ordinary DOM parentage and then the semantic
+// edge from a shadow root to its host. The shadow root's public parentNode is
+// still null because ShadowHost is deliberately separate from Parent.
+func shadowIncludingParent(node *Node) *Node {
+	if node == nil {
+		return nil
+	}
+	if node.Parent != nil {
+		return node.Parent
+	}
+	return node.ShadowHost
 }
 
 func (node *Node) removeChild(child *Node) {

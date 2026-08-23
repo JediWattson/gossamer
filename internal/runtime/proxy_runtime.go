@@ -29,6 +29,8 @@ func (intrinsics *Intrinsics) installProxyBuiltins(context *TaskContext) (memory
 		arity uint32
 		id    uint64
 	}{
+		{"get", 2, nativeReflectGet},
+		{"apply", 3, nativeReflectApply},
 		{"ownKeys", 1, nativeReflectOwnKeys},
 		{"getOwnPropertyDescriptor", 2, nativeReflectGetOwnPropertyDescriptor},
 	} {
@@ -88,6 +90,41 @@ func builtinReflectGetOwnPropertyDescriptor(execution *execution, _ memory.Ref, 
 	return builtinObjectGetOwnPropertyDescriptor(execution, memory.Ref{}, memory.Function{}, memory.UndefinedValue(), arguments)
 }
 
+func builtinReflectGet(execution *execution, _ memory.Ref, _ memory.Function, _ memory.Value, arguments []memory.Value) (memory.Value, error) {
+	target := argument(arguments, 0)
+	if _, err := requireObjectLike(execution.context, target, "Reflect.get target"); err != nil {
+		return memory.Value{}, err
+	}
+	receiver := target
+	if len(arguments) >= 3 {
+		receiver = arguments[2]
+	}
+	value, found, err := execution.getPropertyWithReceiver(target, argument(arguments, 1), receiver)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	if !found {
+		return memory.UndefinedValue(), nil
+	}
+	return value, nil
+}
+
+func builtinReflectApply(execution *execution, _ memory.Ref, _ memory.Function, _ memory.Value, arguments []memory.Value) (memory.Value, error) {
+	target, err := requireCallable(execution.context, argument(arguments, 0))
+	if err != nil {
+		return memory.Value{}, err
+	}
+	argumentList := argument(arguments, 2)
+	if _, err := requireObjectLike(execution.context, argumentList, "Reflect.apply argumentsList"); err != nil {
+		return memory.Value{}, err
+	}
+	callArguments, err := createListFromArrayLike(execution, argumentList)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	return execution.call(target, argument(arguments, 1), callArguments, callAny)
+}
+
 func (execution *execution) proxyRecord(value memory.Value) (target, handler memory.Value, proxy bool, err error) {
 	if !value.IsRef() {
 		return memory.Value{}, memory.Value{}, false, nil
@@ -133,16 +170,16 @@ func (execution *execution) proxyTrap(handler memory.Value, name string) (memory
 	return trap, true, nil
 }
 
-func (execution *execution) proxyGet(proxy, target, handler, key memory.Value) (memory.Value, bool, error) {
+func (execution *execution) proxyGet(proxy, target, handler, key, receiver memory.Value) (memory.Value, bool, error) {
 	trap, found, err := execution.proxyTrap(handler, "get")
 	if err != nil {
 		return memory.Value{}, false, err
 	}
 	if !found {
-		return execution.getProperty(target, key)
+		return execution.getPropertyWithReceiver(target, key, receiver)
 	}
 	callable, _ := requireRef(trap, "Proxy get trap")
-	value, err := execution.call(callable, handler, []memory.Value{target, key, proxy}, callAny)
+	value, err := execution.call(callable, handler, []memory.Value{target, key, receiver}, callAny)
 	return value, true, err
 }
 

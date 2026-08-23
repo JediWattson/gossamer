@@ -1114,6 +1114,50 @@ func (host *taskHost) TemplateContent(handle NodeHandle) (NodeHandle, error) {
 	return NodeHandle{Document: host.generation, Node: content}, nil
 }
 
+func (host *taskHost) AttachShadow(handle NodeHandle, options ShadowRootOptions) (NodeHandle, error) {
+	host.page.mutex.Lock()
+	defer host.page.mutex.Unlock()
+	if err := host.validateHandleLocked(handle); err != nil {
+		return NodeHandle{}, err
+	}
+	root, err := host.page.document.AttachShadow(handle.Node, dom.ShadowRootMode(options.Mode), options.DelegatesFocus)
+	if err != nil {
+		return NodeHandle{}, err
+	}
+	host.page.dirty = true
+	host.mutated = true
+	if err := host.page.nodeLifetimes.sync(host.task); err != nil {
+		return NodeHandle{}, err
+	}
+	return NodeHandle{Document: host.generation, Node: root}, nil
+}
+
+func (host *taskHost) ElementShadowRoot(handle NodeHandle) (NodeHandle, bool, error) {
+	host.page.mutex.RLock()
+	defer host.page.mutex.RUnlock()
+	if err := host.validateHandleLocked(handle); err != nil {
+		return NodeHandle{}, false, err
+	}
+	root, found, err := host.page.document.ShadowRootForHost(handle.Node, false)
+	if err != nil || !found {
+		return NodeHandle{}, found, err
+	}
+	return NodeHandle{Document: host.generation, Node: root}, true, nil
+}
+
+func (host *taskHost) ShadowHost(handle NodeHandle) (NodeHandle, error) {
+	host.page.mutex.RLock()
+	defer host.page.mutex.RUnlock()
+	if err := host.validateHandleLocked(handle); err != nil {
+		return NodeHandle{}, err
+	}
+	rootHost, err := host.page.document.ShadowHost(handle.Node)
+	if err != nil {
+		return NodeHandle{}, err
+	}
+	return NodeHandle{Document: host.generation, Node: rootHost}, nil
+}
+
 func (host *taskHost) SplitText(handle NodeHandle, offset int) (NodeHandle, error) {
 	var split dom.NodeID
 	err := host.mutateNodes(handle, NodeHandle{}, NodeHandle{}, func() error {

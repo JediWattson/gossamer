@@ -24,7 +24,7 @@ func TestStrandSpecializedDOMInterfaceParity(t *testing.T) {
 
 func runSpecializedDOMInterfaceParity(t *testing.T, engine browser.Engine, collect func(*browser.Page) error) {
 	t.Helper()
-	root, err := htmlparser.Parse(strings.NewReader(`<!doctype html><html><body><form id="form"><input id="input"><textarea id="textarea"></textarea><select id="select"><option id="option">one</option></select><button id="button">go</button></form><template id="template"></template><iframe id="iframe"></iframe><div id="generic"></div></body></html>`))
+	root, err := htmlparser.Parse(strings.NewReader(`<!doctype html><html><body><form id="form"><input id="input"><textarea id="textarea"></textarea><select id="select"><option id="option">one</option></select><button id="button">go</button></form><template id="template"></template><iframe id="iframe"></iframe><article id="generic"></article></body></html>`))
 	if err != nil {
 		t.Fatal(err)
 	}

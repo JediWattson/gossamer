@@ -61,6 +61,15 @@ func (document *Document) TakeNode(id NodeID) ([]byte, []NodeID, error) {
 	if node.Type == DocumentNode {
 		return nil, nil, NewException(NotFoundError, ErrWrongNodeKind, "a Document cannot be adopted")
 	}
+	ordered, err := collectSubtree(node)
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, current := range ordered {
+		if current.ShadowRoot != nil {
+			return nil, nil, NewException(NotSupportedError, ErrInvalidTree, "adopting a shadow host is not implemented")
+		}
+	}
 	count := 0
 	wire, err := encodeWireNode(node, true, 0, &count)
 	if err != nil {
@@ -74,10 +83,6 @@ func (document *Document) TakeNode(id NodeID) ([]byte, []NodeID, error) {
 		if err := document.removeChildLocked(node.Parent, node); err != nil {
 			return nil, nil, err
 		}
-	}
-	ordered, err := collectSubtree(node)
-	if err != nil {
-		return nil, nil, err
 	}
 	retired := make([]NodeID, 0, len(ordered))
 	for _, current := range ordered {
