@@ -15,6 +15,33 @@ import (
 	"github.com/JediWattson/gossamer/internal/runtime/memory"
 )
 
+func TestNativeWindowDevicePixelRatioUsesPagePresentationScale(t *testing.T) {
+	t.Parallel()
+	scriptEngine := nativeengine.New(nativeengine.Config{})
+	browserRuntime, err := browser.NewWithEngine(scriptEngine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer browserRuntime.Close()
+	location, _ := url.Parse("https://gossamer.test/device-scale/")
+	page, err := browserRuntime.NewPage(dom.NewDocument(), location)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := page.SetDeviceScaleFactor(2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := page.QueueScript(browser.ScriptSource{URL: location.String(), Source: `
+		if (window.devicePixelRatio !== 2 || window.innerWidth !== 800 || window.innerHeight !== 600)
+			throw new Error("device scale changed CSS viewport geometry");
+	`}); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestBrowserTasksExecuteNativeScriptsAcrossRealmCheckpoints(t *testing.T) {
 	t.Parallel()
 

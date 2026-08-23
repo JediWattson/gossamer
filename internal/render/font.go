@@ -6,6 +6,7 @@ import (
 	"image/color"
 	"io"
 	"math"
+	"sync"
 
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/gofont/gobold"
@@ -36,6 +37,8 @@ type fontBook struct {
 	monoBold       *opentype.Font
 	monoItalic     *opentype.Font
 	monoBoldItalic *opentype.Font
+	systemRegular  *opentype.Font
+	systemItalic   *opentype.Font
 	faces          map[faceKey]font.Face
 }
 
@@ -46,50 +49,47 @@ type textMetrics struct {
 	descent float64
 }
 
-func newFontBook() (*fontBook, error) {
-	regular, err := opentype.Parse(goregular.TTF)
-	if err != nil {
-		return nil, fmt.Errorf("parse Go Regular font: %w", err)
-	}
-	bold, err := opentype.Parse(gobold.TTF)
-	if err != nil {
-		return nil, fmt.Errorf("parse Go Bold font: %w", err)
-	}
-	italic, err := opentype.Parse(goitalic.TTF)
-	if err != nil {
-		return nil, fmt.Errorf("parse Go Italic font: %w", err)
-	}
-	boldItalic, err := opentype.Parse(gobolditalic.TTF)
-	if err != nil {
-		return nil, fmt.Errorf("parse Go Bold Italic font: %w", err)
-	}
-	monoRegular, err := opentype.Parse(gomono.TTF)
-	if err != nil {
-		return nil, fmt.Errorf("parse Go Mono font: %w", err)
-	}
-	monoBold, err := opentype.Parse(gomonobold.TTF)
-	if err != nil {
-		return nil, fmt.Errorf("parse Go Mono Bold font: %w", err)
-	}
-	monoItalic, err := opentype.Parse(gomonoitalic.TTF)
-	if err != nil {
-		return nil, fmt.Errorf("parse Go Mono Italic font: %w", err)
-	}
-	monoBoldItalic, err := opentype.Parse(gomonobolditalic.TTF)
-	if err != nil {
-		return nil, fmt.Errorf("parse Go Mono Bold Italic font: %w", err)
-	}
+type bundledFontSet struct {
+	regular, bold, italic, boldItalic *opentype.Font
+	monoRegular, monoBold             *opentype.Font
+	monoItalic, monoBoldItalic        *opentype.Font
+}
 
+var (
+	bundledFontOnce sync.Once
+	bundledFontBook bundledFontSet
+	bundledFontErr  error
+)
+
+func newFontBook() (*fontBook, error) {
+	bundledFontOnce.Do(func() {
+		parse := func(name string, data []byte) *opentype.Font {
+			if bundledFontErr != nil {
+				return nil
+			}
+			font, err := opentype.Parse(data)
+			if err != nil {
+				bundledFontErr = fmt.Errorf("parse %s font: %w", name, err)
+				return nil
+			}
+			return font
+		}
+		bundledFontBook = bundledFontSet{
+			regular: parse("Go Regular", goregular.TTF), bold: parse("Go Bold", gobold.TTF),
+			italic: parse("Go Italic", goitalic.TTF), boldItalic: parse("Go Bold Italic", gobolditalic.TTF),
+			monoRegular: parse("Go Mono", gomono.TTF), monoBold: parse("Go Mono Bold", gomonobold.TTF),
+			monoItalic: parse("Go Mono Italic", gomonoitalic.TTF), monoBoldItalic: parse("Go Mono Bold Italic", gomonobolditalic.TTF),
+		}
+	})
+	if bundledFontErr != nil {
+		return nil, bundledFontErr
+	}
 	return &fontBook{
-		regular:        regular,
-		bold:           bold,
-		italic:         italic,
-		boldItalic:     boldItalic,
-		monoRegular:    monoRegular,
-		monoBold:       monoBold,
-		monoItalic:     monoItalic,
-		monoBoldItalic: monoBoldItalic,
-		faces:          make(map[faceKey]font.Face),
+		regular: bundledFontBook.regular, bold: bundledFontBook.bold,
+		italic: bundledFontBook.italic, boldItalic: bundledFontBook.boldItalic,
+		monoRegular: bundledFontBook.monoRegular, monoBold: bundledFontBook.monoBold,
+		monoItalic: bundledFontBook.monoItalic, monoBoldItalic: bundledFontBook.monoBoldItalic,
+		faces: make(map[faceKey]font.Face),
 	}, nil
 }
 
@@ -174,7 +174,7 @@ func (book *fontBook) face(size float64, weight FontWeight, style FontStyle, fam
 	if style == FontStyleOblique {
 		style = FontStyleItalic
 	}
-	if family != FontFamilyMonospace {
+	if family != FontFamilyMonospace && family != FontFamilySystemUI {
 		family = FontFamilySansSerif
 	}
 	key := faceKey{size: int(math.Round(size * 64)), weight: weight, style: style, family: family}
@@ -183,12 +183,21 @@ func (book *fontBook) face(size float64, weight FontWeight, style FontStyle, fam
 	}
 
 	parsedFont := book.regular
+	if family == FontFamilySystemUI && book.systemRegular == nil {
+		platform := loadPlatformFonts()
+		book.systemRegular = platform.systemRegular
+		book.systemItalic = platform.systemItalic
+	}
 	if family == FontFamilyMonospace {
 		parsedFont = book.monoRegular
+	} else if family == FontFamilySystemUI && book.systemRegular != nil {
+		parsedFont = book.systemRegular
 	}
 	if style == FontStyleItalic {
 		if family == FontFamilyMonospace {
 			parsedFont = book.monoItalic
+		} else if family == FontFamilySystemUI && book.systemItalic != nil {
+			parsedFont = book.systemItalic
 		} else {
 			parsedFont = book.italic
 		}
@@ -196,12 +205,18 @@ func (book *fontBook) face(size float64, weight FontWeight, style FontStyle, fam
 	if weight == FontWeightBold && style == FontStyleItalic {
 		if family == FontFamilyMonospace {
 			parsedFont = book.monoBoldItalic
+		} else if family == FontFamilySystemUI && book.systemItalic != nil {
+			// x/image/opentype does not expose variable-font weight axes yet.
+			// Retain the native italic face rather than changing family metrics.
+			parsedFont = book.systemItalic
 		} else {
 			parsedFont = book.boldItalic
 		}
 	} else if weight == FontWeightBold {
 		if family == FontFamilyMonospace {
 			parsedFont = book.monoBold
+		} else if family == FontFamilySystemUI && book.systemRegular != nil {
+			parsedFont = book.systemRegular
 		} else {
 			parsedFont = book.bold
 		}

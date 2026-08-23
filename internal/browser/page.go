@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"strconv"
 	"strings"
@@ -52,6 +53,7 @@ type Page struct {
 	documentContext     context.Context
 	documentCancel      context.CancelFunc
 	viewport            render.Viewport
+	deviceScaleFactor   float64
 	scrollX             float64
 	scrollY             float64
 	elementScroll       map[dom.NodeID]scrollOffset
@@ -136,6 +138,7 @@ func newPage(
 		documentContext:    documentContext,
 		documentCancel:     documentCancel,
 		viewport:           render.DefaultViewport,
+		deviceScaleFactor:  1,
 		elementScroll:      make(map[dom.NodeID]scrollOffset),
 		timeOrigin:         time.Now(),
 		animationFrames:    make(map[AnimationFrameID]*pageAnimationFrame),
@@ -221,6 +224,61 @@ func (page *Page) setViewportLocked(viewport render.Viewport) bool {
 		return true
 	}
 	return false
+}
+
+// SetDeviceScaleFactor records the ratio between CSS pixels and presentation
+// pixels without changing layout geometry. The window compositor consumes the
+// value when rasterizing; script observes it as window.devicePixelRatio.
+func (page *Page) SetDeviceScaleFactor(scale float64) error {
+	if page == nil {
+		return fmt.Errorf("browser: nil page")
+	}
+	if math.IsNaN(scale) || math.IsInf(scale, 0) || scale <= 0 || scale > 8 {
+		return fmt.Errorf("browser: invalid device scale factor %g", scale)
+	}
+	page.mutex.Lock()
+	if page.closed {
+		page.mutex.Unlock()
+		return ErrPageClosed
+	}
+	changed := page.deviceScaleFactor != scale
+	page.deviceScaleFactor = scale
+	hasResponsiveImages := changed && documentHasResponsiveImages(page.document.Root())
+	page.mutex.Unlock()
+	if hasResponsiveImages {
+		return page.syncAndLoadImages()
+	}
+	return nil
+}
+
+func documentHasResponsiveImages(node *dom.Node) bool {
+	if node == nil {
+		return false
+	}
+	if node.Type == dom.ElementNode && strings.EqualFold(node.Data, "img") {
+		if srcset, ok := nodeAttribute(node, "srcset"); ok && strings.TrimSpace(srcset) != "" {
+			return true
+		}
+	}
+	for _, child := range node.Children {
+		if documentHasResponsiveImages(child) {
+			return true
+		}
+	}
+	return false
+}
+
+func (page *Page) DeviceScaleFactor() float64 {
+	if page == nil {
+		return 1
+	}
+	page.mutex.RLock()
+	scale := page.deviceScaleFactor
+	page.mutex.RUnlock()
+	if scale <= 0 {
+		return 1
+	}
+	return scale
 }
 
 func (page *Page) Frame() *render.Frame {

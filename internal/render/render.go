@@ -1175,13 +1175,24 @@ func findElement(root *dom.Node, name string) *dom.Node {
 // Rasterize paints a frame to an in-memory image. Window backends can instead
 // consume Frame.DisplayList directly.
 func Rasterize(frame *Frame) (*image.RGBA, error) {
+	return RasterizeAtScale(frame, 1)
+}
+
+// RasterizeAtScale paints CSS-pixel display-list geometry into a device-pixel
+// image. Layout and hit testing remain in CSS pixels; only this final immutable
+// paint projection is scaled for a high-density presentation surface.
+func RasterizeAtScale(frame *Frame, scale float64) (*image.RGBA, error) {
 	if frame == nil {
 		return nil, fmt.Errorf("render: nil frame")
+	}
+	displayList, err := scaledDisplayList(frame.DisplayList, scale)
+	if err != nil {
+		return nil, err
 	}
 	fonts, err := newFontBook()
 	if err != nil {
 		return nil, err
 	}
 	defer fonts.Close()
-	return rasterize(frame.DisplayList, fonts)
+	return rasterize(displayList, fonts)
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/JediWattson/gossamer/internal/browser/fake"
 	"github.com/JediWattson/gossamer/internal/dom"
 	"github.com/JediWattson/gossamer/internal/loader"
+	"github.com/JediWattson/gossamer/internal/render"
 	browserruntime "github.com/JediWattson/gossamer/internal/runtime"
 	"github.com/JediWattson/gossamer/internal/window"
 )
@@ -132,6 +133,47 @@ func TestRunRoutesNativeEventsThroughPageQueueAndPresentsFrames(t *testing.T) {
 	last := frames[len(frames)-1].Bounds()
 	if last.Dx() != 320 || last.Dy() != 240 {
 		t.Fatalf("last presented frame = %dx%d, want 320x240", last.Dx(), last.Dy())
+	}
+}
+
+func TestRunPresentsDevicePixelsWithoutChangingCSSViewport(t *testing.T) {
+	t.Parallel()
+	fakeEngine := fake.New()
+	browserRuntime, err := browser.NewWithEngine(fakeEngine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer browserRuntime.Close()
+	document := dom.NewDocument()
+	html := dom.NewElement("html")
+	body := dom.NewElement("body", dom.Attribute{Name: "style", Value: "margin:0;background:#2468ac"})
+	document.AppendChild(html)
+	html.AppendChild(body)
+	page, err := browserRuntime.NewPage(document, &url.URL{Scheme: "https", Host: "scale.test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := page.SetViewport(render.Viewport{Width: 40, Height: 30}); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.Render(); err != nil {
+		t.Fatal(err)
+	}
+	backend := window.NewMemoryBackend(window.Event{Kind: window.EventClose})
+	backend.SetDeviceScaleFactor(2)
+	if err := window.Run(context.Background(), page, backend, "Retina test"); err != nil {
+		t.Fatal(err)
+	}
+	frames := backend.Frames()
+	if len(frames) != 1 || frames[0].Bounds().Dx() != 80 || frames[0].Bounds().Dy() != 60 {
+		t.Fatalf("device frame = %#v, want one 80x60 frame", frames)
+	}
+	geometry, err := page.ViewportGeometry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if geometry.InnerWidth != 40 || geometry.InnerHeight != 30 || geometry.DevicePixelRatio != 2 {
+		t.Fatalf("CSS viewport = %#v", geometry)
 	}
 }
 

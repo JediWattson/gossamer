@@ -4,10 +4,13 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"math"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/JediWattson/gossamer/internal/dom"
+	"github.com/JediWattson/gossamer/internal/render"
 	"github.com/JediWattson/gossamer/internal/resource"
 	browserruntime "github.com/JediWattson/gossamer/internal/runtime"
 	computed "github.com/JediWattson/gossamer/internal/style"
@@ -35,14 +38,14 @@ func (resources *pageResources) markImageRequests(requests []navigationResourceR
 	return nil
 }
 
-func (resources *pageResources) decodeInitialInlineImages(document *dom.Document, location *url.URL) error {
+func (resources *pageResources) decodeInitialInlineImages(document *dom.Document, location *url.URL, deviceScale float64, viewportWidth int) error {
 	base := stylesheetBaseURL(document.Root(), location)
 	var visit func(*dom.Node) error
 	visit = func(node *dom.Node) error {
 		if node == nil {
 			return nil
 		}
-		if rawSource, consumer := imageConsumerSource(node); consumer {
+		if rawSource, consumer := imageConsumerSource(node, deviceScale, viewportWidth); consumer {
 			source, valid := resolveDocumentImageSource(rawSource, base)
 			if valid && source.inline {
 				id, ok := document.ID(node)
@@ -235,7 +238,7 @@ func (page *Page) syncImagesLocked() ([]navigationResourceRequest, bool, error) 
 		if node == nil {
 			return nil
 		}
-		rawSource, consumer := imageConsumerSource(node)
+		rawSource, consumer := imageConsumerSource(node, page.deviceScaleFactor, page.viewport.Width)
 		if consumer {
 			id, ok := page.document.ID(node)
 			if !ok {
@@ -299,14 +302,16 @@ func (page *Page) syncImagesLocked() ([]navigationResourceRequest, bool, error) 
 	return requests, changed, nil
 }
 
-func imageConsumerSource(node *dom.Node) (string, bool) {
+func imageConsumerSource(node *dom.Node, deviceScale float64, viewportWidth int) (string, bool) {
 	if node == nil || node.Type != dom.ElementNode {
 		return "", false
 	}
 	switch {
 	case strings.EqualFold(node.Data, "img"):
 		source, _ := nodeAttribute(node, "src")
-		return source, true
+		srcset, _ := nodeAttribute(node, "srcset")
+		sizes, _ := nodeAttribute(node, "sizes")
+		return selectResponsiveImageSource(source, srcset, sizes, deviceScale, viewportWidth), true
 	case strings.EqualFold(node.Data, "link"):
 		rel, _ := nodeAttribute(node, "rel")
 		if containsHTMLToken(rel, "icon") {
@@ -315,6 +320,156 @@ func imageConsumerSource(node *dom.Node) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+type responsiveImageCandidate struct {
+	source  string
+	density float64
+	width   float64
+}
+
+func selectResponsiveImageSource(fallback, srcset, sizes string, deviceScale float64, viewportWidth int) string {
+	candidates := parseResponsiveImageCandidates(srcset)
+	if len(candidates) == 0 {
+		return fallback
+	}
+	if deviceScale <= 0 {
+		deviceScale = 1
+	}
+	hasWidth := false
+	for _, candidate := range candidates {
+		if candidate.width > 0 {
+			hasWidth = true
+			break
+		}
+	}
+	target := deviceScale
+	if hasWidth {
+		target *= responsiveSourceSize(sizes, viewportWidth)
+	}
+	best := -1
+	bestValue := math.Inf(1)
+	largest := -1
+	largestValue := -1.0
+	for index, candidate := range candidates {
+		value := candidate.density
+		if hasWidth {
+			value = candidate.width
+			if value <= 0 {
+				continue
+			}
+		} else if value <= 0 {
+			value = 1
+		}
+		if value >= target && value < bestValue {
+			best, bestValue = index, value
+		}
+		if value > largestValue {
+			largest, largestValue = index, value
+		}
+	}
+	if best < 0 {
+		best = largest
+	}
+	if best < 0 {
+		return fallback
+	}
+	return candidates[best].source
+}
+
+func parseResponsiveImageCandidates(srcset string) []responsiveImageCandidate {
+	var result []responsiveImageCandidate
+	for _, raw := range strings.Split(srcset, ",") {
+		fields := strings.Fields(strings.TrimSpace(raw))
+		if len(fields) == 0 || len(fields) > 2 {
+			continue
+		}
+		candidate := responsiveImageCandidate{source: fields[0], density: 1}
+		if len(fields) == 2 {
+			descriptor := strings.ToLower(fields[1])
+			candidate.density = 0
+			var value float64
+			var err error
+			switch {
+			case strings.HasSuffix(descriptor, "x"):
+				value, err = strconv.ParseFloat(strings.TrimSuffix(descriptor, "x"), 64)
+				candidate.density = value
+			case strings.HasSuffix(descriptor, "w"):
+				value, err = strconv.ParseFloat(strings.TrimSuffix(descriptor, "w"), 64)
+				candidate.width = value
+			default:
+				err = fmt.Errorf("unsupported descriptor")
+			}
+			if err != nil || !isFinitePositive(value) {
+				continue
+			}
+		}
+		result = append(result, candidate)
+	}
+	return result
+}
+
+func responsiveSourceSize(sizes string, viewportWidth int) float64 {
+	if viewportWidth <= 0 {
+		viewportWidth = render.DefaultViewport.Width
+	}
+	for _, raw := range strings.Split(sizes, ",") {
+		candidate := strings.TrimSpace(raw)
+		if candidate == "" {
+			continue
+		}
+		fields := strings.Fields(candidate)
+		length := fields[len(fields)-1]
+		media := strings.TrimSpace(strings.TrimSuffix(candidate, length))
+		if media != "" && !responsiveMediaMatches(media, viewportWidth) {
+			continue
+		}
+		if resolved, ok := responsiveLength(length, viewportWidth); ok {
+			return resolved
+		}
+	}
+	return float64(viewportWidth)
+}
+
+func responsiveMediaMatches(media string, viewportWidth int) bool {
+	trimmed := strings.ToLower(strings.TrimSpace(media))
+	for _, rule := range []struct {
+		prefix string
+		match  func(float64) bool
+	}{
+		{"(max-width:", func(value float64) bool { return float64(viewportWidth) <= value }},
+		{"(min-width:", func(value float64) bool { return float64(viewportWidth) >= value }},
+	} {
+		if strings.HasPrefix(trimmed, rule.prefix) && strings.HasSuffix(trimmed, ")") {
+			length := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(trimmed, rule.prefix), ")"))
+			value, ok := responsiveLength(length, viewportWidth)
+			return ok && rule.match(value)
+		}
+	}
+	return false
+}
+
+func responsiveLength(value string, viewportWidth int) (float64, bool) {
+	trimmed := strings.ToLower(strings.TrimSpace(value))
+	multiplier := 1.0
+	switch {
+	case strings.HasSuffix(trimmed, "px"):
+		trimmed = strings.TrimSuffix(trimmed, "px")
+	case strings.HasSuffix(trimmed, "vw"):
+		trimmed = strings.TrimSuffix(trimmed, "vw")
+		multiplier = float64(viewportWidth) / 100
+	default:
+		return 0, false
+	}
+	number, err := strconv.ParseFloat(trimmed, 64)
+	if err != nil || !isFinitePositive(number) {
+		return 0, false
+	}
+	return number * multiplier, true
+}
+
+func isFinitePositive(value float64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0) && value > 0
 }
 
 func resolveDocumentImageSource(source string, base *url.URL) (documentImageSource, bool) {

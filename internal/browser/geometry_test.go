@@ -95,6 +95,25 @@ func TestViewportGeometryExcludesOverflowClippedByDescendantContainer(t *testing
 	}
 }
 
+func TestViewportGeometryReportsDevicePixelRatioWithoutChangingCSSSize(t *testing.T) {
+	t.Parallel()
+	engine, page, _ := computedStyleTestPage(t, `<!doctype html><html><body><div id="target"></div></body></html>`)
+	defer engine.Close()
+	if err := page.SetViewport(render.Viewport{Width: 400, Height: 240}); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.SetDeviceScaleFactor(2); err != nil {
+		t.Fatal(err)
+	}
+	geometry, err := page.ViewportGeometry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if geometry.InnerWidth != 400 || geometry.InnerHeight != 240 || geometry.DevicePixelRatio != 2 {
+		t.Fatalf("viewport geometry = %#v, want 400x240 CSS pixels at 2x", geometry)
+	}
+}
+
 func TestPageGeometryObservesCollapsedMarginMutationWithoutPublishingFrame(t *testing.T) {
 	t.Parallel()
 

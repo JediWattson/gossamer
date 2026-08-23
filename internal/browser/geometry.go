@@ -324,12 +324,16 @@ func (page *Page) viewportGeometryLocked() (DOMViewportGeometry, error) {
 		return DOMViewportGeometry{}, ErrPageClosed
 	}
 	result := DOMViewportGeometry{
-		InnerWidth:   float64(page.viewport.Width),
-		InnerHeight:  float64(page.viewport.Height),
-		ScrollX:      page.scrollX,
-		ScrollY:      page.scrollY,
-		ScrollWidth:  float64(page.viewport.Width),
-		ScrollHeight: float64(page.viewport.Height),
+		InnerWidth:       float64(page.viewport.Width),
+		InnerHeight:      float64(page.viewport.Height),
+		DevicePixelRatio: page.deviceScaleFactor,
+		ScrollX:          page.scrollX,
+		ScrollY:          page.scrollY,
+		ScrollWidth:      float64(page.viewport.Width),
+		ScrollHeight:     float64(page.viewport.Height),
+	}
+	if result.DevicePixelRatio <= 0 {
+		result.DevicePixelRatio = 1
 	}
 	rootID, found, err := page.document.RelatedNode(page.document.RootID(), dom.DocumentElement)
 	if err != nil || !found {

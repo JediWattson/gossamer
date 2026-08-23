@@ -111,6 +111,42 @@ func TestImageResourceGraphDecodesDataURLAndRejectsStaleResults(t *testing.T) {
 	}
 }
 
+func TestResponsiveImageSourceSelectsDensityAndWidthCandidates(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name, fallback, srcset, sizes string
+		scale                         float64
+		viewport                      int
+		want                          string
+	}{
+		{name: "retina density", fallback: "fallback.png", srcset: "one.png 1x, two.png 2x, three.png 3x", scale: 2, viewport: 800, want: "two.png"},
+		{name: "fractional rounds up", fallback: "fallback.png", srcset: "one.png 1x, two.png 2x", scale: 1.5, viewport: 800, want: "two.png"},
+		{name: "largest fallback", fallback: "fallback.png", srcset: "one.png 1x, two.png 2x", scale: 3, viewport: 800, want: "two.png"},
+		{name: "sizes width", fallback: "fallback.png", srcset: "small.png 400w, medium.png 800w, large.png 1200w", sizes: "50vw", scale: 2, viewport: 800, want: "medium.png"},
+		{name: "matching media size", fallback: "fallback.png", srcset: "small.png 400w, large.png 1200w", sizes: "(max-width: 600px) 100vw, 50vw", scale: 2, viewport: 500, want: "large.png"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := selectResponsiveImageSource(test.fallback, test.srcset, test.sizes, test.scale, test.viewport); got != test.want {
+				t.Fatalf("selected source = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestResponsiveImageConsumerTracksDeviceScaleChanges(t *testing.T) {
+	t.Parallel()
+	imageNode := dom.NewElement("img",
+		dom.Attribute{Name: "src", Value: "fallback.png"},
+		dom.Attribute{Name: "srcset", Value: "one.png 1x, two.png 2x"},
+	)
+	if got, ok := imageConsumerSource(imageNode, 1, 800); !ok || got != "one.png" {
+		t.Fatalf("1x source = %q, %t", got, ok)
+	}
+	if got, ok := imageConsumerSource(imageNode, 2, 800); !ok || got != "two.png" {
+		t.Fatalf("2x source = %q, %t", got, ok)
+	}
+}
+
 func TestCSSBackgroundDataURLDecodesBeforePaint(t *testing.T) {
 	t.Parallel()
 
@@ -194,7 +230,7 @@ func TestInitialDataImageIsDecodedBeforeNavigationRender(t *testing.T) {
 	}
 	location, _ := url.Parse("https://images.test/")
 	resources := newPageResources()
-	if err := resources.decodeInitialInlineImages(document, location); err != nil {
+	if err := resources.decodeInitialInlineImages(document, location, 1, render.DefaultViewport.Width); err != nil {
 		t.Fatal(err)
 	}
 	imageID, _ := document.ID(imageNode)

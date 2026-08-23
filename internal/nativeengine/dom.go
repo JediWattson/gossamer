@@ -125,6 +125,7 @@ const (
 	nativeElementScrollTopSet
 	nativeWindowInnerWidth
 	nativeWindowInnerHeight
+	nativeWindowDevicePixelRatio
 	nativeWindowScrollX
 	nativeWindowScrollY
 	nativeDOMRectToJSON
@@ -467,6 +468,7 @@ func (realm *Realm) installBrowserNatives() error {
 		{nativeScriptAsyncSet, realm.scriptAsyncSet},
 		{nativeWindowInnerWidth, realm.windowGeometryValue("innerWidth")},
 		{nativeWindowInnerHeight, realm.windowGeometryValue("innerHeight")},
+		{nativeWindowDevicePixelRatio, realm.windowGeometryValue("devicePixelRatio")},
 		{nativeWindowScrollX, realm.windowGeometryValue("scrollX")},
 		{nativeWindowScrollY, realm.windowGeometryValue("scrollY")},
 		{nativeDOMRectToJSON, realm.domRectToJSON},
@@ -1438,6 +1440,7 @@ func (realm *Realm) installDOMPrototypeProperties(context *browserruntime.TaskCo
 		{realm.bindings.computedStylePrototype, "length", nativeComputedStyleLength, 0},
 		{realm.bindings.windowPrototype, "innerWidth", nativeWindowInnerWidth, 0},
 		{realm.bindings.windowPrototype, "innerHeight", nativeWindowInnerHeight, 0},
+		{realm.bindings.windowPrototype, "devicePixelRatio", nativeWindowDevicePixelRatio, 0},
 		{realm.bindings.windowPrototype, "scrollX", nativeWindowScrollX, 0},
 		{realm.bindings.windowPrototype, "scrollY", nativeWindowScrollY, 0},
 		{realm.bindings.windowPrototype, "pageXOffset", nativeWindowScrollX, 0},

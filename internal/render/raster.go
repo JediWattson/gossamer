@@ -23,6 +23,69 @@ const (
 	rasterClipLayer
 )
 
+const maxRasterPixels = 64 * 1024 * 1024
+
+func scaledDisplayList(displayList DisplayList, scale float64) (DisplayList, error) {
+	if !isFinite(scale) || scale <= 0 || scale > 8 {
+		return DisplayList{}, fmt.Errorf("render: invalid device scale %g", scale)
+	}
+	width := int(math.Round(float64(displayList.Viewport.Width) * scale))
+	height := int(math.Round(float64(displayList.Viewport.Height) * scale))
+	if width <= 0 || height <= 0 || int64(width)*int64(height) > maxRasterPixels {
+		return DisplayList{}, fmt.Errorf("render: scaled viewport %dx%d exceeds %d pixels", width, height, maxRasterPixels)
+	}
+	if scale == 1 {
+		return displayList, nil
+	}
+	result := displayList
+	result.Viewport = Viewport{Width: width, Height: height}
+	result.Commands = make([]Command, len(displayList.Commands))
+	for index, source := range displayList.Commands {
+		command := source
+		command.Rect = scaleRect(command.Rect, scale)
+		command.Radii = scaleCornerRadii(command.Radii, scale)
+		command.BorderWidths = scaleEdges(command.BorderWidths, scale)
+		command.ShadowOffsetX *= scale
+		command.ShadowOffsetY *= scale
+		command.ShadowBlur *= scale
+		command.ShadowSpread *= scale
+		command.Transform.E *= scale
+		command.Transform.F *= scale
+		command.X *= scale
+		command.BaselineY *= scale
+		command.FontSize *= scale
+		command.Clip = scaleRect(command.Clip, scale)
+		for clipIndex := 0; clipIndex < int(command.RoundedClipCount); clipIndex++ {
+			command.RoundedClips[clipIndex].Rect = scaleRect(command.RoundedClips[clipIndex].Rect, scale)
+			command.RoundedClips[clipIndex].Radii = scaleCornerRadii(command.RoundedClips[clipIndex].Radii, scale)
+		}
+		command.textBounds = scaleRect(command.textBounds, scale)
+		command.textWidth *= scale
+		command.textHeight *= scale
+		command.textBaseline *= scale
+		result.Commands[index] = command
+	}
+	return result, nil
+}
+
+func scaleRect(rectangle Rect, scale float64) Rect {
+	return Rect{X: rectangle.X * scale, Y: rectangle.Y * scale, Width: rectangle.Width * scale, Height: rectangle.Height * scale}
+}
+
+func scaleEdges(edges Edges, scale float64) Edges {
+	return Edges{Top: edges.Top * scale, Right: edges.Right * scale, Bottom: edges.Bottom * scale, Left: edges.Left * scale}
+}
+
+func scaleCornerRadii(radii CornerRadii, scale float64) CornerRadii {
+	scaleRadius := func(radius CornerRadius) CornerRadius {
+		return CornerRadius{X: radius.X * scale, Y: radius.Y * scale}
+	}
+	return CornerRadii{
+		TopLeft: scaleRadius(radii.TopLeft), TopRight: scaleRadius(radii.TopRight),
+		BottomRight: scaleRadius(radii.BottomRight), BottomLeft: scaleRadius(radii.BottomLeft),
+	}
+}
+
 type rasterLayer struct {
 	canvas    *image.RGBA
 	kind      rasterLayerKind
@@ -52,7 +115,7 @@ func rasterize(displayList DisplayList, fonts *fontBook) (*image.RGBA, error) {
 			if !command.Radii.empty() {
 				target := draw.Image(canvas)
 				if commandNeedsScratch(command) {
-					target = image.NewRGBA(canvas.Bounds())
+					target = image.NewRGBA(commandScratchBounds(command, canvas.Bounds()))
 				}
 				paintRoundedRect(target, command.Rect, command.Radii, command.Color)
 				if scratch, ok := target.(*image.RGBA); ok && scratch != canvas {
@@ -77,7 +140,7 @@ func rasterize(displayList DisplayList, fonts *fontBook) (*image.RGBA, error) {
 			}
 			target := draw.Image(canvas)
 			if commandNeedsScratch(command) {
-				target = image.NewRGBA(canvas.Bounds())
+				target = image.NewRGBA(commandScratchBounds(command, canvas.Bounds()))
 			}
 			paintEllipse(target, command.Rect, command.Color)
 			if scratch, ok := target.(*image.RGBA); ok && scratch != canvas {
@@ -87,7 +150,7 @@ func rasterize(displayList DisplayList, fonts *fontBook) (*image.RGBA, error) {
 		case DrawTextCommand:
 			target := canvas
 			if commandNeedsScratch(command) {
-				target = image.NewRGBA(canvas.Bounds())
+				target = image.NewRGBA(commandScratchBounds(command, canvas.Bounds()))
 			}
 			var err error
 			if command.textOrientation == textPaintSidewaysRight {
@@ -157,17 +220,17 @@ func rasterize(displayList DisplayList, fonts *fontBook) (*image.RGBA, error) {
 				options = &xdraw.Options{SrcMask: image.NewUniform(color.Alpha{A: uint8(math.Round(opacity * 255))})}
 			}
 			if commandNeedsScratch(command) {
-				target := image.NewRGBA(canvas.Bounds())
-				xdraw.ApproxBiLinear.Scale(target, destination, command.Image, command.Image.Bounds(), draw.Over, options)
+				target := image.NewRGBA(commandScratchBounds(command, canvas.Bounds()))
+				scaleImage(target, destination, command.Image, options)
 				compositeCommandScratch(canvas, target, command)
 			} else {
-				xdraw.ApproxBiLinear.Scale(canvas, destination, command.Image, command.Image.Bounds(), draw.Over, options)
+				scaleImage(canvas, destination, command.Image, options)
 			}
 
 		case DrawRoundedBorderCommand:
 			target := draw.Image(canvas)
 			if commandNeedsScratch(command) {
-				target = image.NewRGBA(canvas.Bounds())
+				target = image.NewRGBA(commandScratchBounds(command, canvas.Bounds()))
 			}
 			paintRoundedBorder(target, command)
 			if scratch, ok := target.(*image.RGBA); ok && scratch != canvas {
@@ -177,7 +240,7 @@ func rasterize(displayList DisplayList, fonts *fontBook) (*image.RGBA, error) {
 		case DrawBoxShadowCommand:
 			target := draw.Image(canvas)
 			if commandNeedsScratch(command) {
-				target = image.NewRGBA(canvas.Bounds())
+				target = image.NewRGBA(commandScratchBounds(command, canvas.Bounds()))
 			}
 			paintBoxShadow(target, command)
 			if scratch, ok := target.(*image.RGBA); ok && scratch != canvas {
@@ -187,7 +250,7 @@ func rasterize(displayList DisplayList, fonts *fontBook) (*image.RGBA, error) {
 		case DrawGradientCommand:
 			target := draw.Image(canvas)
 			if commandNeedsScratch(command) {
-				target = image.NewRGBA(canvas.Bounds())
+				target = image.NewRGBA(commandScratchBounds(command, canvas.Bounds()))
 			}
 			paintGradient(target, command)
 			if scratch, ok := target.(*image.RGBA); ok && scratch != canvas {
@@ -224,8 +287,9 @@ func rasterize(displayList DisplayList, fonts *fontBook) (*image.RGBA, error) {
 			compositeRasterLayer(layers[len(layers)-1].canvas, group, bounds)
 
 		case BeginClipCommand:
+			clipBounds := rectImageBounds(command.Rect).Intersect(canvas.Bounds())
 			layers = append(layers, rasterLayer{
-				canvas: image.NewRGBA(bounds), kind: rasterClipLayer,
+				canvas: image.NewRGBA(clipBounds), kind: rasterClipLayer,
 				clip: command.Rect, radii: command.Radii,
 			})
 
@@ -284,6 +348,36 @@ func finiteTransform(transform AffineTransform) bool {
 
 func commandNeedsScratch(command Command) bool {
 	return command.HasClip || command.RoundedClipCount > 0
+}
+
+// commandScratchBounds bounds temporary paint storage to the intersection of
+// the command's retained clips. A clipped command used to allocate another
+// full-viewport RGBA image, which made a page containing many independently
+// clipped nodes consume viewport-by-command memory during rasterization.
+func commandScratchBounds(command Command, bounds image.Rectangle) image.Rectangle {
+	if command.HasClip {
+		bounds = bounds.Intersect(commandClip(command, bounds))
+	}
+	for index := 0; index < int(command.RoundedClipCount); index++ {
+		bounds = bounds.Intersect(rectImageBounds(command.RoundedClips[index].Rect))
+	}
+	return bounds
+}
+
+func scaleImage(target draw.Image, destination image.Rectangle, source image.Image, options *xdraw.Options) {
+	sourceBounds := source.Bounds()
+	if destination.Dx() == sourceBounds.Dx() && destination.Dy() == sourceBounds.Dy() {
+		xdraw.Copy(target, destination.Min, source, sourceBounds, draw.Over, options)
+		return
+	}
+	// Cubic resampling preserves considerably more detail when a large decoded
+	// image is reduced into a CSS box. Approximate bilinear remains a good,
+	// bounded choice for enlargement where cubic ringing is more visible.
+	scaler := xdraw.Scaler(xdraw.ApproxBiLinear)
+	if destination.Dx() < sourceBounds.Dx() || destination.Dy() < sourceBounds.Dy() {
+		scaler = xdraw.CatmullRom
+	}
+	scaler.Scale(target, destination, source, sourceBounds, draw.Over, options)
 }
 
 func compositeCommandScratch(destination, source *image.RGBA, command Command) {

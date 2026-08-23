@@ -80,6 +80,10 @@ func runSession(ctx context.Context, page *browser.Page, backend Backend, config
 		return err
 	}
 	defer func() { result = errors.Join(result, backend.Close()) }()
+	deviceScale, err := backendDeviceScale(backend)
+	if err != nil {
+		return err
+	}
 	if err := startup.observe(StartupWindowOpen, startupPage.Navigation()); err != nil {
 		return fmt.Errorf("window: observe window open: %w", err)
 	}
@@ -89,6 +93,10 @@ func runSession(ctx context.Context, page *browser.Page, backend Backend, config
 	var accessibilityRevision uint64
 	var accessibilityFrame *render.Frame
 	compositor := newSessionCompositor(nil)
+	compositor.setDeviceScale(deviceScale)
+	if err := setPageDeviceScale(startupPage, deviceScale); err != nil {
+		return err
+	}
 	lastWindowTitle := config.Title
 	lastCursor := CursorDefault
 	state := inputState{}
@@ -106,7 +114,7 @@ func runSession(ctx context.Context, page *browser.Page, backend Backend, config
 		return fmt.Errorf("window: rasterize initial frame: %w", err)
 	}
 	if shell != nil {
-		canvas, err = shell.compose(canvas, activePage)
+		canvas, err = shell.composeAtScale(canvas, activePage, deviceScale)
 		if err != nil {
 			return fmt.Errorf("window: compose initial Graphite shell: %w", err)
 		}
@@ -133,6 +141,11 @@ func runSession(ctx context.Context, page *browser.Page, backend Backend, config
 		}
 		if activePage == nil || activeState == nil {
 			return fmt.Errorf("window: browser shell has no active tab")
+		}
+		for _, currentPage := range pages {
+			if err := setPageDeviceScale(currentPage, deviceScale); err != nil {
+				return err
+			}
 		}
 		compositor.prune(pages)
 		for _, currentPage := range pages {
@@ -185,7 +198,7 @@ func runSession(ctx context.Context, page *browser.Page, backend Backend, config
 				return fmt.Errorf("window: rasterize frame: %w", err)
 			}
 			if shell != nil {
-				canvas, err = shell.compose(canvas, activePage)
+				canvas, err = shell.composeAtScale(canvas, activePage, deviceScale)
 				if err != nil {
 					return fmt.Errorf("window: compose Graphite shell: %w", err)
 				}
@@ -213,6 +226,19 @@ func runSession(ctx context.Context, page *browser.Page, backend Backend, config
 		}
 		if event.Kind == EventClose {
 			return nil
+		}
+		if event.DeviceScaleFactor > 0 && event.DeviceScaleFactor != deviceScale {
+			if !finiteDeviceScale(event.DeviceScaleFactor) {
+				return fmt.Errorf("window: invalid backend device scale %g", event.DeviceScaleFactor)
+			}
+			deviceScale = event.DeviceScaleFactor
+			compositor.setDeviceScale(deviceScale)
+			for _, currentPage := range pages {
+				if err := setPageDeviceScale(currentPage, deviceScale); err != nil {
+					return err
+				}
+			}
+			presented = nil
 		}
 		if shell != nil && event.Kind == EventPointerDown && event.Button == 1 {
 			handled, contextErr := shell.handleContextMenu(ctx, activePage, backend, event)
@@ -259,6 +285,31 @@ func runSession(ctx context.Context, page *browser.Page, backend Backend, config
 			return err
 		}
 	}
+}
+
+func backendDeviceScale(backend Backend) (float64, error) {
+	scale := 1.0
+	if scaled, ok := backend.(DeviceScaleBackend); ok {
+		var err error
+		scale, err = scaled.DeviceScaleFactor()
+		if err != nil {
+			return 0, fmt.Errorf("window: read backend device scale: %w", err)
+		}
+	}
+	if !finiteDeviceScale(scale) {
+		return 0, fmt.Errorf("window: invalid backend device scale %g", scale)
+	}
+	return scale, nil
+}
+
+func setPageDeviceScale(page *browser.Page, scale float64) error {
+	if page == nil || page.DeviceScaleFactor() == scale {
+		return nil
+	}
+	if err := page.SetDeviceScaleFactor(scale); err != nil {
+		return fmt.Errorf("window: set page device scale: %w", err)
+	}
+	return nil
 }
 
 func routeClipboardShortcut(page *browser.Page, backend Backend, event Event, state *inputState) (bool, error) {

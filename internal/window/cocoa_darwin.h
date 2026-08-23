@@ -9,6 +9,7 @@ typedef struct {
   int32_t kind;
   int32_t width;
   int32_t height;
+  double device_scale_factor;
   double x;
   double y;
   double delta_x;
@@ -34,6 +35,8 @@ int gossamer_cocoa_next_event(gossamer_cocoa_window *window,
 int gossamer_cocoa_present(gossamer_cocoa_window *window,
                            const uint8_t *pixels, int width, int height,
                            int stride, char **error);
+int gossamer_cocoa_device_scale_factor(gossamer_cocoa_window *window,
+                                       double *scale_out, char **error);
 int gossamer_cocoa_set_title(gossamer_cocoa_window *window, const char *title,
                              char **error);
 int gossamer_cocoa_set_cursor(gossamer_cocoa_window *window, int cursor,

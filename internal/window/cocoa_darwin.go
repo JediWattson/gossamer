@@ -107,13 +107,27 @@ func (backend *cocoaBackend) NextEvent(ctx context.Context) (Event, error) {
 	code, normalizedKey := cocoaKey(uint16(native.key_code), key)
 	return Event{
 		Kind: EventKind(native.kind), Width: int(native.width), Height: int(native.height),
-		X: float64(native.x), Y: float64(native.y),
+		DeviceScaleFactor: float64(native.device_scale_factor),
+		X:                 float64(native.x), Y: float64(native.y),
 		DeltaX: float64(native.delta_x), DeltaY: float64(native.delta_y),
 		Button: int(native.button), Buttons: uint(native.buttons),
 		Key: normalizedKey, Code: code, Text: C.GoString(&native.text[0]), Repeat: native.repeat != 0,
 		Composing: native.composing != 0,
 		Modifiers: Modifiers{Alt: native.alt != 0, Ctrl: native.control != 0, Meta: native.command != 0, Shift: native.shift != 0},
 	}, nil
+}
+
+func (backend *cocoaBackend) DeviceScaleFactor() (float64, error) {
+	if backend == nil || backend.window == nil {
+		return 0, fmt.Errorf("window: Cocoa backend is not open")
+	}
+	var scale C.double
+	var nativeError *C.char
+	if C.gossamer_cocoa_device_scale_factor(backend.window, &scale, &nativeError) == 0 {
+		return 0, cocoaError(nativeError, "read Cocoa device scale")
+	}
+	C.free(unsafe.Pointer(nativeError))
+	return float64(scale), nil
 }
 
 func (backend *cocoaBackend) Present(frame *image.RGBA) error {

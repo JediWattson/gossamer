@@ -41,21 +41,22 @@ type Modifiers struct {
 // text arrives separately from physical key events so IME composition can be
 // represented without pretending every edit is one key-down.
 type Event struct {
-	Kind      EventKind
-	Width     int
-	Height    int
-	X         float64
-	Y         float64
-	DeltaX    float64
-	DeltaY    float64
-	Button    int
-	Buttons   uint
-	Key       string
-	Code      string
-	Text      string
-	Repeat    bool
-	Composing bool
-	Modifiers Modifiers
+	Kind              EventKind
+	Width             int
+	Height            int
+	DeviceScaleFactor float64
+	X                 float64
+	Y                 float64
+	DeltaX            float64
+	DeltaY            float64
+	Button            int
+	Buttons           uint
+	Key               string
+	Code              string
+	Text              string
+	Repeat            bool
+	Composing         bool
+	Modifiers         Modifiers
 }
 
 type Config struct {
@@ -72,6 +73,12 @@ type Backend interface {
 	NextEvent(context.Context) (Event, error)
 	Present(*image.RGBA) error
 	Close() error
+}
+
+// DeviceScaleBackend optionally reports the native backing-store scale after
+// Open. Window dimensions and input remain CSS pixels (points on Cocoa).
+type DeviceScaleBackend interface {
+	DeviceScaleFactor() (float64, error)
 }
 
 // ClipboardBackend is an optional native capability. Clipboard strings cross

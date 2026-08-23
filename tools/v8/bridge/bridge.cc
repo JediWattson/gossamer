@@ -10272,6 +10272,8 @@ void GlobalViewportGetter(
     value = geometry.inner_width;
   else if (name == "innerHeight")
     value = geometry.inner_height;
+  else if (name == "devicePixelRatio")
+    value = geometry.device_pixel_ratio;
   else if (name == "scrollX" || name == "pageXOffset")
     value = geometry.scroll_x;
   else if (name == "scrollY" || name == "pageYOffset")
@@ -12908,7 +12910,7 @@ bool InstallBindings(gossamer_v8_realm *realm, v8::Local<v8::Context> context) {
            .FromMaybe(false)) {
     return false;
   }
-  for (const char *name : {"innerWidth", "innerHeight", "scrollX", "scrollY",
+  for (const char *name : {"innerWidth", "innerHeight", "devicePixelRatio", "scrollX", "scrollY",
                            "pageXOffset", "pageYOffset"}) {
     if (!global
              ->SetNativeDataProperty(

@@ -33,6 +33,7 @@ static void gossamer_queue_text_event(struct gossamer_cocoa_window *state,
 @interface GossamerView : NSView <NSTextInputClient> {
  @public
   uint8_t *_pixels;
+  size_t _capacity;
   size_t _width;
   size_t _height;
   size_t _stride;
@@ -66,10 +67,20 @@ struct gossamer_cocoa_window {
   int focus_change;
   int last_width;
   int last_height;
+  double last_scale;
   gossamer_cocoa_event pending_events[8];
   unsigned int pending_head;
   unsigned int pending_count;
 };
+
+static double gossamer_device_scale_factor(gossamer_cocoa_window *state) {
+  if (state == NULL || state->window == nil)
+    return 1.0;
+  double scale = (double)[state->window backingScaleFactor];
+  if (!isfinite(scale) || scale <= 0.0)
+    return 1.0;
+  return MIN(8.0, scale);
+}
 
 static void gossamer_set_error(char **error, NSString *message) {
   if (error == NULL)
@@ -116,6 +127,7 @@ static int gossamer_pop_text_event(gossamer_cocoa_window *state,
 
 static void gossamer_draw_frame(CGContextRef context, CGRect bounds,
                                 CGImageRef image) {
+  CGContextSetInterpolationQuality(context, kCGInterpolationHigh);
   CGContextDrawImage(context, bounds, image);
 }
 
@@ -227,13 +239,21 @@ static void gossamer_draw_frame(CGContextRef context, CGRect bounds,
   if (height != 0 && stride > SIZE_MAX / height)
     return NO;
   size_t size = stride * height;
-  uint8_t *copy = size == 0 ? NULL : malloc(size);
-  if (size != 0 && copy == NULL)
-    return NO;
+  if (size > _capacity) {
+    uint8_t *grown = realloc(_pixels, size);
+    if (grown == NULL)
+      return NO;
+    _pixels = grown;
+    _capacity = size;
+  } else if (size != 0 && size < _capacity / 2) {
+    uint8_t *shrunk = realloc(_pixels, size);
+    if (shrunk != NULL) {
+      _pixels = shrunk;
+      _capacity = size;
+    }
+  }
   if (size != 0)
-    memcpy(copy, pixels, size);
-  free(_pixels);
-  _pixels = copy;
+    memcpy(_pixels, pixels, size);
   _width = width;
   _height = height;
   _stride = stride;
@@ -250,7 +270,7 @@ static void gossamer_draw_frame(CGContextRef context, CGRect bounds,
   NSRectFill([self bounds]);
   if (_pixels == NULL || _width == 0 || _height == 0)
     return;
-  CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+  CGColorSpaceRef colorSpace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
   CGDataProviderRef provider =
       CGDataProviderCreateWithData(NULL, _pixels, _stride * _height, NULL);
   if (colorSpace == NULL || provider == NULL) {
@@ -360,6 +380,7 @@ gossamer_cocoa_window *gossamer_cocoa_open(const char *title, int width,
     [NSApp activateIgnoringOtherApps:YES];
     state->last_width = width;
     state->last_height = height;
+    state->last_scale = gossamer_device_scale_factor(state);
     return state;
   }
 }
@@ -554,6 +575,8 @@ int gossamer_cocoa_next_event(gossamer_cocoa_window *state,
       return 0;
     }
     memset(event, 0, sizeof(*event));
+		double scale = gossamer_device_scale_factor(state);
+		event->device_scale_factor = scale;
     if (state->closed) {
       event->kind = GOSSAMER_EVENT_CLOSE;
       return 1;
@@ -564,9 +587,11 @@ int gossamer_cocoa_next_event(gossamer_cocoa_window *state,
     int width = (int)llround(size.width);
     int height = (int)llround(size.height);
     if (width > 0 && height > 0 &&
-        (width != state->last_width || height != state->last_height)) {
+        (width != state->last_width || height != state->last_height ||
+         fabs(scale - state->last_scale) > 0.001)) {
       state->last_width = width;
       state->last_height = height;
+      state->last_scale = scale;
       event->kind = GOSSAMER_EVENT_RESIZE;
       event->width = width;
       event->height = height;
@@ -639,6 +664,20 @@ int gossamer_cocoa_next_event(gossamer_cocoa_window *state,
     [NSApp updateWindows];
     if (state->closed)
       event->kind = GOSSAMER_EVENT_CLOSE;
+    return 1;
+  }
+}
+
+int gossamer_cocoa_device_scale_factor(gossamer_cocoa_window *state,
+                                       double *scale_out, char **error) {
+  @autoreleasepool {
+    if (error != NULL)
+      *error = NULL;
+    if (state == NULL || state->window == nil || scale_out == NULL) {
+      gossamer_set_error(error, @"native window or scale output is null");
+      return 0;
+    }
+    *scale_out = gossamer_device_scale_factor(state);
     return 1;
   }
 }
@@ -728,7 +767,7 @@ int gossamer_cocoa_presentation_is_top_left(void) {
         255, 0, 0, 255, 255, 0, 0, 255,
         0, 0, 255, 255, 0, 0, 255, 255,
     };
-    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+    CGColorSpaceRef colorSpace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
     CGDataProviderRef provider = CGDataProviderCreateWithData(
         NULL, pixels, sizeof(pixels), NULL);
     if (colorSpace == NULL || provider == NULL) {
@@ -750,7 +789,7 @@ int gossamer_cocoa_presentation_is_top_left(void) {
                 samplesPerPixel:4
                        hasAlpha:YES
                        isPlanar:NO
-                 colorSpaceName:NSDeviceRGBColorSpace
+                 colorSpaceName:NSCalibratedRGBColorSpace
                     bytesPerRow:8
                    bitsPerPixel:32];
     if (image == NULL || target == nil) {

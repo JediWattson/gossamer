@@ -621,12 +621,13 @@ type DOMElementGeometry struct {
 
 // DOMViewportGeometry is the window viewport and root scrolling state.
 type DOMViewportGeometry struct {
-	InnerWidth   float64
-	InnerHeight  float64
-	ScrollX      float64
-	ScrollY      float64
-	ScrollWidth  float64
-	ScrollHeight float64
+	InnerWidth       float64
+	InnerHeight      float64
+	DevicePixelRatio float64
+	ScrollX          float64
+	ScrollY          float64
+	ScrollWidth      float64
+	ScrollHeight     float64
 }
 
 // ScrollAlignment is one ScrollIntoView alignment keyword. The browser owns

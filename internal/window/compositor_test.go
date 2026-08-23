@@ -8,7 +8,7 @@ import (
 	"github.com/JediWattson/gossamer/internal/render"
 )
 
-func TestSessionCompositorCachesOneRasterPerPageFrame(t *testing.T) {
+func TestSessionCompositorCachesOnlyActivePageFrame(t *testing.T) {
 	t.Parallel()
 
 	var calls int
@@ -40,11 +40,34 @@ func TestSessionCompositorCachesOneRasterPerPageFrame(t *testing.T) {
 	if _, err := compositor.pageCanvas(secondPage, firstFrame); err != nil {
 		t.Fatal(err)
 	}
-	if calls != 3 || len(compositor.pages) != 2 {
-		t.Fatalf("changed frame/tab cache = calls %d pages %d, want 3/2", calls, len(compositor.pages))
+	if calls != 3 || len(compositor.pages) != 1 {
+		t.Fatalf("changed frame/tab cache = calls %d pages %d, want 3/1", calls, len(compositor.pages))
 	}
 	compositor.prune([]*browser.Page{secondPage})
 	if len(compositor.pages) != 1 {
 		t.Fatalf("pruned cache pages = %d, want 1", len(compositor.pages))
+	}
+}
+
+func TestSessionCompositorInvalidatesRasterWhenDeviceScaleChanges(t *testing.T) {
+	t.Parallel()
+	compositor := newSessionCompositor(nil)
+	page := &browser.Page{}
+	frame := &render.Frame{Viewport: render.Viewport{Width: 10, Height: 8}}
+	frame.DisplayList.Viewport = frame.Viewport
+	first, err := compositor.pageCanvas(page, frame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compositor.setDeviceScale(2)
+	second, err := compositor.pageCanvas(page, frame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Bounds() != image.Rect(0, 0, 10, 8) || second.Bounds() != image.Rect(0, 0, 20, 16) {
+		t.Fatalf("raster bounds = %v then %v", first.Bounds(), second.Bounds())
+	}
+	if compositor.rasterizations != 2 {
+		t.Fatalf("rasterizations = %d, want 2", compositor.rasterizations)
 	}
 }

@@ -190,7 +190,7 @@ func pageResourcesFromRenderer(document *dom.Document, resources render.Resource
 	return stable, nil
 }
 
-func discoverNavigationResources(document *dom.Document, location *url.URL) ([]navigationResourceRequest, error) {
+func discoverNavigationResources(document *dom.Document, location *url.URL, deviceScale float64, viewportWidth int) ([]navigationResourceRequest, error) {
 	// Preparation owns this not-yet-published Document exclusively, so resource
 	// discovery can traverse its root before the completion task exposes it.
 	graph, err := resource.Discover(document.Root(), location)
@@ -200,6 +200,11 @@ func discoverNavigationResources(document *dom.Document, location *url.URL) ([]n
 	requests := make([]navigationResourceRequest, 0, len(graph.References))
 	for _, reference := range graph.References {
 		if !isRenderedReference(reference) {
+			continue
+		}
+		// Responsive <img> candidates are selected below as one consumer. Do not
+		// fetch src as well when srcset chooses a density-appropriate resource.
+		if reference.Kind == resource.Image && reference.Node != nil && strings.EqualFold(reference.Node.Data, "img") {
 			continue
 		}
 		id, ok := document.ID(reference.Node)
@@ -212,6 +217,33 @@ func discoverNavigationResources(document *dom.Document, location *url.URL) ([]n
 			node:     id,
 			optional: reference.Kind == resource.Image && reference.Node.Data == "link",
 		})
+	}
+	base := graph.BaseURL
+	var visit func(*dom.Node) error
+	visit = func(node *dom.Node) error {
+		if node == nil {
+			return nil
+		}
+		if node.Type == dom.ElementNode && strings.EqualFold(node.Data, "img") {
+			rawSource, _ := imageConsumerSource(node, deviceScale, viewportWidth)
+			source, valid := resolveDocumentImageSource(rawSource, base)
+			if valid && !source.inline {
+				id, ok := document.ID(node)
+				if !ok {
+					return fmt.Errorf("browser: discovered responsive image node is not indexed")
+				}
+				requests = append(requests, navigationResourceRequest{kind: resource.Image, url: cloneURL(source.url), node: id})
+			}
+		}
+		for _, child := range node.Children {
+			if err := visit(child); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if err := visit(document.Root()); err != nil {
+		return nil, err
 	}
 	return requests, nil
 }

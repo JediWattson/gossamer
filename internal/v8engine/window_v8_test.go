@@ -10,6 +10,34 @@ import (
 	"github.com/JediWattson/gossamer/internal/window"
 )
 
+func TestStockV8WindowDevicePixelRatioUsesPagePresentationScale(t *testing.T) {
+	engine := newTestEngine(t)
+	browserRuntime, err := browser.NewWithEngine(engine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer browserRuntime.Close()
+	page, err := browserRuntime.LoadPage(context.Background(), "https://gossamer.test/device-scale", staticDocumentLoader{
+		document: `<!doctype html><html><body></body></html>`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := page.SetDeviceScaleFactor(2); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := page.QueueScript(browser.ScriptSource{
+		URL: "https://gossamer.test/device-scale/assert.js",
+		Source: `if (devicePixelRatio !== 2 || innerWidth !== 800 || innerHeight !== 600)
+			throw new Error("device scale changed CSS viewport geometry");`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestStockV8GraphiteShellRoutesNativeInputAndTeardown(t *testing.T) {
 	engine := newTestEngine(t)
 	browserRuntime, err := browser.NewWithEngine(engine)

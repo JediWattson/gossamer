@@ -96,6 +96,8 @@ type preparedNavigation struct {
 	requests        []navigationResourceRequest
 	scripts         []navigationScript
 	fetcher         resource.Fetcher
+	deviceScale     float64
+	viewportWidth   int
 }
 
 // Navigate begins document I/O outside the Realm. Parsed document state is
@@ -386,7 +388,11 @@ func (page *Page) navigationSnapshotLocked() NavigationSnapshot {
 }
 
 func (page *Page) loadNavigationDocument(ctx context.Context, id NavigationID, rawURL string, client DocumentLoader) {
-	prepared, err := prepareNavigation(ctx, rawURL, client)
+	page.mutex.RLock()
+	deviceScale := page.deviceScaleFactor
+	viewportWidth := page.viewport.Width
+	page.mutex.RUnlock()
+	prepared, err := prepareNavigation(ctx, rawURL, client, deviceScale, viewportWidth)
 	if err != nil {
 		page.enqueueNavigationFailure(id, err)
 		return
@@ -399,7 +405,7 @@ func (page *Page) loadNavigationDocument(ctx context.Context, id NavigationID, r
 	}
 }
 
-func prepareNavigation(ctx context.Context, rawURL string, client DocumentLoader) (preparedNavigation, error) {
+func prepareNavigation(ctx context.Context, rawURL string, client DocumentLoader, deviceScale float64, viewportWidth int) (preparedNavigation, error) {
 	response, err := client.Load(ctx, rawURL)
 	if err != nil {
 		return preparedNavigation{}, fmt.Errorf("browser: load document: %w", err)
@@ -421,7 +427,7 @@ func prepareNavigation(ctx context.Context, rawURL string, client DocumentLoader
 	if err != nil {
 		return preparedNavigation{}, err
 	}
-	requests, err := discoverNavigationResources(document, location)
+	requests, err := discoverNavigationResources(document, location, deviceScale, viewportWidth)
 	if err != nil {
 		return preparedNavigation{}, fmt.Errorf("browser: discover page resources: %w", err)
 	}
@@ -449,6 +455,8 @@ func prepareNavigation(ctx context.Context, rawURL string, client DocumentLoader
 		requests:        requests,
 		scripts:         scripts,
 		fetcher:         fetcher,
+		deviceScale:     deviceScale,
+		viewportWidth:   viewportWidth,
 	}, nil
 }
 
@@ -476,6 +484,42 @@ func (page *Page) commitNavigationDocument(
 	id NavigationID,
 	prepared preparedNavigation,
 ) error {
+	// The native window can reveal its backing scale while document I/O is in
+	// flight. Re-select responsive image candidates at the ordered commit point
+	// so a fast preload cannot permanently capture the pre-window 1x default.
+	page.mutex.RLock()
+	prepared.deviceScale = page.deviceScaleFactor
+	prepared.viewportWidth = page.viewport.Width
+	page.mutex.RUnlock()
+	currentRequests, currentRequestErr := discoverNavigationResources(
+		prepared.document, prepared.location, prepared.deviceScale, prepared.viewportWidth,
+	)
+	if currentRequestErr != nil {
+		page.mutex.Lock()
+		if page.matchesNavigationLocked(id, 0) {
+			page.failNavigationLocked(currentRequestErr)
+		}
+		page.mutex.Unlock()
+		return currentRequestErr
+	}
+	if prepared.fetcher == nil {
+		available := currentRequests[:0]
+		for _, request := range currentRequests {
+			if !request.optional {
+				available = append(available, request)
+			}
+		}
+		currentRequests = available
+		if len(currentRequests) != 0 {
+			page.mutex.Lock()
+			if page.matchesNavigationLocked(id, 0) {
+				page.failNavigationLocked(ErrResourceLoaderUnavailable)
+			}
+			page.mutex.Unlock()
+			return ErrResourceLoaderUnavailable
+		}
+	}
+	prepared.requests = currentRequests
 	replacementResources := newPageResources()
 	stylesheetRequests, _, graphErr := replacementResources.stylesheets.sync(prepared.document, prepared.location)
 	if graphErr != nil {
@@ -514,7 +558,7 @@ func (page *Page) commitNavigationDocument(
 		page.mutex.Unlock()
 		return err
 	}
-	if err := replacementResources.decodeInitialInlineImages(prepared.document, prepared.location); err != nil {
+	if err := replacementResources.decodeInitialInlineImages(prepared.document, prepared.location, prepared.deviceScale, prepared.viewportWidth); err != nil {
 		page.mutex.Lock()
 		if page.matchesNavigationLocked(id, 0) {
 			page.failNavigationLocked(err)

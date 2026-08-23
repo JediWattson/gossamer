@@ -12,6 +12,7 @@ import (
 
 	"github.com/JediWattson/gossamer/internal/browser"
 	computed "github.com/JediWattson/gossamer/internal/style"
+	xdraw "golang.org/x/image/draw"
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/gofont/gobold"
 	"golang.org/x/image/font/gofont/goregular"
@@ -157,13 +158,67 @@ func (shell *graphiteShell) compose(pageCanvas *image.RGBA, page *browser.Page) 
 	if err := shell.drawRail(canvas, layout, page); err != nil {
 		return nil, err
 	}
-	if shell.loading {
+	if shell.loading && page != nil {
 		progress := shellNavigationProgress(page.Navigation())
 		lineRight := layout.content.Min.X + int(math.Round(float64(layout.content.Dx())*progress))
 		lineRight = maxInt(layout.content.Min.X+2, minInt(layout.content.Max.X, lineRight))
 		fillRect(canvas, image.Rect(0, graphiteChromeHeight-2, lineRight, graphiteChromeHeight), graphitePalette.teal)
 	}
 	return canvas, nil
+}
+
+func (shell *graphiteShell) composeAtScale(pageCanvas *image.RGBA, page *browser.Page, scale float64) (*image.RGBA, error) {
+	if scale == 1 {
+		return shell.compose(pageCanvas, page)
+	}
+	if !finiteDeviceScale(scale) {
+		return nil, fmt.Errorf("window: invalid Graphite device scale %g", scale)
+	}
+	// Chrome is still authored in CSS pixels. Scale that stable layer once,
+	// then place the independently high-resolution page raster into its device-
+	// pixel content rectangle. Website pixels therefore never take a lossy
+	// CSS-pixel round trip on Retina displays.
+	cssChrome, err := shell.compose(nil, page)
+	if err != nil {
+		return nil, err
+	}
+	layout := shell.layout()
+	windowBounds := scaleImageRectangle(layout.window, scale)
+	canvas := image.NewRGBA(windowBounds)
+	xdraw.CatmullRom.Scale(canvas, windowBounds, cssChrome, cssChrome.Bounds(), draw.Src, nil)
+	content := scaleImageRectangle(layout.content, scale)
+	if pageCanvas != nil && !content.Empty() {
+		if pageCanvas.Bounds().Size() == content.Size() {
+			draw.Draw(canvas, content, pageCanvas, pageCanvas.Bounds().Min, draw.Src)
+		} else {
+			xdraw.CatmullRom.Scale(canvas, content, pageCanvas, pageCanvas.Bounds(), draw.Src, nil)
+		}
+	}
+	overlay := image.NewRGBA(layout.window)
+	if err := shell.drawScrollbars(overlay, layout, page); err != nil {
+		return nil, err
+	}
+	if err := shell.drawPageStatus(overlay, layout, page); err != nil {
+		return nil, err
+	}
+	if err := shell.drawInteractionOverlay(overlay, layout, page); err != nil {
+		return nil, err
+	}
+	xdraw.CatmullRom.Scale(canvas, windowBounds, overlay, overlay.Bounds(), draw.Over, nil)
+	return canvas, nil
+}
+
+func finiteDeviceScale(scale float64) bool {
+	return !math.IsNaN(scale) && !math.IsInf(scale, 0) && scale > 0 && scale <= 8
+}
+
+func scaleImageRectangle(rectangle image.Rectangle, scale float64) image.Rectangle {
+	return image.Rect(
+		int(math.Round(float64(rectangle.Min.X)*scale)),
+		int(math.Round(float64(rectangle.Min.Y)*scale)),
+		int(math.Round(float64(rectangle.Max.X)*scale)),
+		int(math.Round(float64(rectangle.Max.Y)*scale)),
+	)
 }
 
 func (shell *graphiteShell) drawScrollbars(canvas *image.RGBA, layout shellLayout, page *browser.Page) error {
@@ -439,15 +494,11 @@ func drawScaledImage(destination *image.RGBA, bounds image.Rectangle, source ima
 		return
 	}
 	sourceBounds := source.Bounds()
-	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
-		sourceY := sourceBounds.Min.Y + (y-bounds.Min.Y)*sourceBounds.Dy()/bounds.Dy()
-		for x := bounds.Min.X; x < bounds.Max.X; x++ {
-			if image.Pt(x, y).In(destination.Bounds()) {
-				sourceX := sourceBounds.Min.X + (x-bounds.Min.X)*sourceBounds.Dx()/bounds.Dx()
-				destination.Set(x, y, source.At(sourceX, sourceY))
-			}
-		}
+	scaler := xdraw.Scaler(xdraw.ApproxBiLinear)
+	if bounds.Dx() < sourceBounds.Dx() || bounds.Dy() < sourceBounds.Dy() {
+		scaler = xdraw.CatmullRom
 	}
+	scaler.Scale(destination, bounds, source, sourceBounds, draw.Over, nil)
 }
 
 func (shell *graphiteShell) drawRail(canvas *image.RGBA, layout shellLayout, page *browser.Page) error {

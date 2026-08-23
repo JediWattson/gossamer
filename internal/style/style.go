@@ -2398,6 +2398,12 @@ func availableFontFamily(name string, generic bool) (FontFamily, bool) {
 			return FontFamilyMonospace, true
 		case "go", "go sans":
 			return FontFamilySansSerif, true
+		case "-apple-system", "blinkmacsystemfont", "sf pro", "sf pro display", "sf pro text":
+			return FontFamilySystemUI, true
+		case "arial", "helvetica", "helvetica neue":
+			return FontFamilySansSerif, true
+		case "times", "times new roman":
+			return FontFamilySerif, true
 		default:
 			return 0, false
 		}

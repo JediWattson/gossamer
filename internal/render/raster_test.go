@@ -1,10 +1,50 @@
 package render
 
 import (
+	"image"
 	"image/color"
 	"strings"
 	"testing"
 )
+
+func TestRasterizeAtScaleKeepsCSSGeometryAndProducesDevicePixels(t *testing.T) {
+	t.Parallel()
+	frame := &Frame{
+		Viewport: Viewport{Width: 10, Height: 6},
+		DisplayList: DisplayList{
+			Viewport: Viewport{Width: 10, Height: 6},
+			Commands: []Command{{Kind: FillRectCommand, Rect: Rect{X: 2, Y: 1, Width: 3, Height: 2}, Color: color.NRGBA{R: 0x24, G: 0x68, B: 0xac, A: 0xff}}},
+		},
+	}
+	canvas, err := RasterizeAtScale(frame, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if canvas.Bounds() != image.Rect(0, 0, 20, 12) {
+		t.Fatalf("scaled canvas = %v, want 20x12", canvas.Bounds())
+	}
+	if got := color.NRGBAModel.Convert(canvas.At(4, 2)).(color.NRGBA); got != (color.NRGBA{R: 0x24, G: 0x68, B: 0xac, A: 0xff}) {
+		t.Fatalf("scaled CSS rect origin = %#v", got)
+	}
+	if got := canvas.RGBAAt(10, 2); got.A != 0 {
+		t.Fatalf("pixel outside scaled rect = %#v, want transparent", got)
+	}
+	if frame.Viewport != (Viewport{Width: 10, Height: 6}) || frame.DisplayList.Viewport != frame.Viewport {
+		t.Fatal("device rasterization mutated CSS-pixel frame geometry")
+	}
+}
+
+func TestCommandScratchBoundsUsesClipIntersection(t *testing.T) {
+	t.Parallel()
+	command := Command{
+		HasClip: true, Clip: Rect{X: 20, Y: 10, Width: 40, Height: 30},
+		RoundedClipCount: 1,
+		RoundedClips:     [maxCommandRoundedClips]RoundedClip{{Rect: Rect{X: 30, Y: 5, Width: 20, Height: 20}}},
+	}
+	if got, want := commandScratchBounds(command, image.Rect(0, 0, 800, 600)), image.Rect(30, 10, 50, 25); got != want {
+		t.Fatalf("scratch bounds = %v, want %v", got, want)
+	}
+}
 
 func TestRasterizeCompositesOpacityAsAGroup(t *testing.T) {
 	t.Parallel()

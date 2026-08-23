@@ -21,6 +21,7 @@ type MemoryBackend struct {
 	contextActions []ContextAction
 	accessibility  []AccessibilitySnapshot
 	clipboard      string
+	deviceScale    float64
 	open           bool
 	closed         bool
 }
@@ -176,7 +177,28 @@ func (backend *MemoryBackend) SetClipboardText(value string) {
 }
 
 func NewMemoryBackend(events ...Event) *MemoryBackend {
-	return &MemoryBackend{events: append([]Event(nil), events...)}
+	return &MemoryBackend{events: append([]Event(nil), events...), deviceScale: 1}
+}
+
+func (backend *MemoryBackend) SetDeviceScaleFactor(scale float64) {
+	if backend == nil {
+		return
+	}
+	backend.mutex.Lock()
+	backend.deviceScale = scale
+	backend.mutex.Unlock()
+}
+
+func (backend *MemoryBackend) DeviceScaleFactor() (float64, error) {
+	if backend == nil {
+		return 0, fmt.Errorf("window: nil memory backend")
+	}
+	backend.mutex.Lock()
+	defer backend.mutex.Unlock()
+	if backend.deviceScale <= 0 {
+		return 1, nil
+	}
+	return backend.deviceScale, nil
 }
 
 func (backend *MemoryBackend) Open(config Config) error {

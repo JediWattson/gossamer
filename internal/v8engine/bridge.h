@@ -77,6 +77,8 @@ typedef struct gossamer_v8_viewport_geometry {
   double scroll_y;
   double scroll_width;
   double scroll_height;
+  // Append-only: existing bridge builds keep all prior geometry offsets.
+  double device_pixel_ratio;
 } gossamer_v8_viewport_geometry;
 
 // gossamer_v8_host is valid only for one engine entry. It contains numeric

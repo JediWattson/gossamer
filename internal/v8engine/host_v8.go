@@ -2665,6 +2665,7 @@ func goGossamerV8HostViewportGeometry(
 		if geometryOut != nil {
 			geometryOut.inner_width = C.double(geometry.InnerWidth)
 			geometryOut.inner_height = C.double(geometry.InnerHeight)
+			geometryOut.device_pixel_ratio = C.double(geometry.DevicePixelRatio)
 			geometryOut.scroll_x = C.double(geometry.ScrollX)
 			geometryOut.scroll_y = C.double(geometry.ScrollY)
 			geometryOut.scroll_width = C.double(geometry.ScrollWidth)

@@ -273,7 +273,8 @@ func (realm *Realm) windowGeometryValue(property string) browserruntime.NativeFu
 		}
 		values := map[string]float64{
 			"innerWidth": geometry.InnerWidth, "innerHeight": geometry.InnerHeight,
-			"scrollX": geometry.ScrollX, "scrollY": geometry.ScrollY,
+			"devicePixelRatio": geometry.DevicePixelRatio,
+			"scrollX":          geometry.ScrollX, "scrollY": geometry.ScrollY,
 		}
 		return memory.NumberValue(values[property]), nil
 	}
