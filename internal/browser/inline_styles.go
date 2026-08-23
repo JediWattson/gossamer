@@ -78,6 +78,9 @@ func (cache *inlineStyleCache) syncAccess(access *dom.ReadAccess) (bool, error) 
 		for _, child := range node.Children {
 			visit(child)
 		}
+		if node.ShadowRoot != nil {
+			visit(node.ShadowRoot)
+		}
 	}
 	visit(access.Root())
 

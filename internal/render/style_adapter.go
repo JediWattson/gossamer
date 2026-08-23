@@ -426,7 +426,8 @@ func projectStyleTree(node *dom.Node, snapshot *computed.Snapshot) *styledNode {
 		return nil
 	}
 	projected := &styledNode{node: node, style: physicalComputedStyle(value)}
-	projected.children = make([]*styledNode, 0, len(node.Children)+2)
+	children := dom.ComposedChildren(node)
+	projected.children = make([]*styledNode, 0, len(children)+2)
 	lookupPseudo := func(origin *dom.Node, pseudo css.PseudoElement) (computedStyle, bool) {
 		value, found := snapshot.LookupPseudo(origin, pseudo)
 		return physicalComputedStyle(value), found
@@ -434,7 +435,7 @@ func projectStyleTree(node *dom.Node, snapshot *computed.Snapshot) *styledNode {
 	if before := projectPseudoStyle(node, css.PseudoElementBefore, lookupPseudo); before != nil {
 		projected.children = append(projected.children, before)
 	}
-	for _, child := range node.Children {
+	for _, child := range children {
 		if projectedChild := projectStyleTree(child, snapshot); projectedChild != nil {
 			projected.children = append(projected.children, projectedChild)
 		}
@@ -458,7 +459,8 @@ func projectReadAccessStyleTree(node *dom.Node, access *dom.ReadAccess, snapshot
 		return nil
 	}
 	projected := &styledNode{node: node, style: physicalComputedStyle(value)}
-	projected.children = make([]*styledNode, 0, len(node.Children)+2)
+	children := dom.ComposedChildren(node)
+	projected.children = make([]*styledNode, 0, len(children)+2)
 	lookupPseudo := func(origin *dom.Node, pseudo css.PseudoElement) (computedStyle, bool) {
 		originID, found := access.ID(origin)
 		if !found {
@@ -470,7 +472,7 @@ func projectReadAccessStyleTree(node *dom.Node, access *dom.ReadAccess, snapshot
 	if before := projectPseudoStyle(node, css.PseudoElementBefore, lookupPseudo); before != nil {
 		projected.children = append(projected.children, before)
 	}
-	for _, child := range node.Children {
+	for _, child := range children {
 		if projectedChild := projectReadAccessStyleTree(child, access, snapshot); projectedChild != nil {
 			projected.children = append(projected.children, projectedChild)
 		}
@@ -486,7 +488,7 @@ func projectPseudoStyle(
 	pseudo css.PseudoElement,
 	lookup func(*dom.Node, css.PseudoElement) (computedStyle, bool),
 ) *styledNode {
-	if origin == nil || origin.Type != dom.ElementNode || origin.Data == "img" {
+	if origin == nil || origin.Type != dom.ElementNode || origin.Data == "img" || origin.Data == "iframe" {
 		return nil
 	}
 	value, ok := lookup(origin, pseudo)

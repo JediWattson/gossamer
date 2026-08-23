@@ -31,7 +31,7 @@ func TestIframeChildPageOwnsIndependentDocumentRealm(t *testing.T) {
 	iframeHandle := NodeHandle{Document: parent.DocumentGeneration(), Node: iframeID}
 	childRoot := dom.NewDocument()
 	childRoot.AppendChild(dom.NewElement("p"))
-	childLocation, _ := url.Parse("https://child.test/")
+	childLocation, _ := url.Parse("https://parent.test/child")
 	child, err := parent.AttachChildFrame(iframeHandle, childRoot, childLocation)
 	if err != nil {
 		t.Fatal(err)
@@ -54,6 +54,33 @@ func TestIframeChildPageOwnsIndependentDocumentRealm(t *testing.T) {
 	}
 	if _, err := child.Realm.EnqueueTask(func(*browserruntime.TaskContext) error { return nil }); !errors.Is(err, browserruntime.ErrRealmClosed) {
 		t.Fatalf("child Realm after parent close = %v, want ErrRealmClosed", err)
+	}
+}
+
+func TestCrossOriginIframeHidesContentDocument(t *testing.T) {
+	t.Parallel()
+
+	browserRuntime, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer browserRuntime.Close()
+	parentRoot := dom.NewDocument()
+	iframe := dom.NewElement("iframe")
+	parentRoot.AppendChild(iframe)
+	parentLocation, _ := url.Parse("https://parent.test/")
+	parent, err := browserRuntime.NewPage(parentRoot, parentLocation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	iframeID, _ := parent.Document().ID(iframe)
+	iframeHandle := NodeHandle{Document: parent.DocumentGeneration(), Node: iframeID}
+	childLocation, _ := url.Parse("https://child.test/")
+	if _, err := parent.AttachChildFrame(iframeHandle, dom.NewDocument(), childLocation); err != nil {
+		t.Fatal(err)
+	}
+	if content, ok := parent.ContentDocument(iframeHandle); ok || content != (NodeHandle{}) {
+		t.Fatalf("cross-origin contentDocument = %#v, %t; want null", content, ok)
 	}
 }
 

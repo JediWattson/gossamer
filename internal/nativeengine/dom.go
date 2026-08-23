@@ -187,6 +187,10 @@ const (
 	nativeShadowRootHost
 	nativeShadowRootMode
 	nativeShadowRootDelegatesFocus
+	nativeWindowParent
+	nativeWindowTop
+	nativeWindowPostMessage
+	nativeIFrameContentWindow
 )
 
 const (
@@ -395,6 +399,10 @@ func (realm *Realm) installBrowserNatives() error {
 		{nativeShadowRootHost, realm.shadowRootHost},
 		{nativeShadowRootMode, realm.shadowRootMode},
 		{nativeShadowRootDelegatesFocus, realm.shadowRootDelegatesFocus},
+		{nativeWindowParent, realm.windowParent},
+		{nativeWindowTop, realm.windowTop},
+		{nativeWindowPostMessage, realm.windowPostMessage},
+		{nativeIFrameContentWindow, realm.iframeContentWindow},
 		{nativeDocumentCreateElementNS, realm.documentCreateElementNS},
 		{nativeDocumentCreateDocumentFragment, realm.documentCreateDocumentFragment},
 		{nativeDocumentDefaultView, realm.documentDefaultView},
@@ -1041,6 +1049,7 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{"window", memory.RefValue(bindings.window)},
 		{"self", memory.RefValue(bindings.window)},
 		{"globalThis", memory.RefValue(bindings.window)},
+		{"onmessage", memory.NullValue()},
 		{"document", memory.RefValue(bindings.document)},
 		{"queueMicrotask", memory.RefValue(realm.active.QueueMicrotask)},
 		{"setTimeout", memory.RefValue(setTimeout)},
@@ -1322,6 +1331,7 @@ func (realm *Realm) installDOMPrototypeProperties(context *browserruntime.TaskCo
 		{realm.bindings.windowPrototype, "addEventListener", 2, nativeEventTargetAdd},
 		{realm.bindings.windowPrototype, "removeEventListener", 2, nativeEventTargetRemove},
 		{realm.bindings.windowPrototype, "dispatchEvent", 1, nativeEventTargetDispatch},
+		{realm.bindings.windowPrototype, "postMessage", 1, nativeWindowPostMessage},
 		{realm.bindings.eventPrototype, "preventDefault", 0, nativeEventPreventDefault},
 		{realm.bindings.eventPrototype, "stopPropagation", 0, nativeEventStopPropagation},
 		{realm.bindings.eventPrototype, "stopImmediatePropagation", 0, nativeEventStopImmediatePropagation},
@@ -1468,6 +1478,9 @@ func (realm *Realm) installDOMPrototypeProperties(context *browserruntime.TaskCo
 		{realm.bindings.windowPrototype, "scrollY", nativeWindowScrollY, 0},
 		{realm.bindings.windowPrototype, "pageXOffset", nativeWindowScrollX, 0},
 		{realm.bindings.windowPrototype, "pageYOffset", nativeWindowScrollY, 0},
+		{realm.bindings.windowPrototype, "parent", nativeWindowParent, 0},
+		{realm.bindings.windowPrototype, "top", nativeWindowTop, 0},
+		{realm.bindings.htmlIFrameElementPrototype, "contentWindow", nativeIFrameContentWindow, 0},
 		{realm.bindings.rangePrototype, "startContainer", nativeRangeStartContainer, 0},
 		{realm.bindings.rangePrototype, "startOffset", nativeRangeStartOffset, 0},
 		{realm.bindings.rangePrototype, "endContainer", nativeRangeEndContainer, 0},

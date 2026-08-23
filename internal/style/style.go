@@ -1429,7 +1429,7 @@ func styleNode(node *dom.Node, parent *styledNode, context *cascadeStyleContext,
 			styled.pseudos[pseudo] = pseudoStyledNode{style: pseudoStyle, explanations: pseudoExplanations}
 		}
 	}
-	for _, child := range node.Children {
+	for _, child := range dom.ComposedChildren(node) {
 		styled.children = append(styled.children, styleNode(child, styled, context, viewport))
 	}
 	return styled
@@ -1697,7 +1697,7 @@ func applyCascade(style *computedStyle, explanations map[string]PropertyExplanat
 	recordSheets(CascadeOriginUserAgent, context.userAgent)
 	recordSheets(CascadeOriginUser, context.user)
 
-	if pseudo == css.PseudoElementNone && node.Data == "img" {
+	if pseudo == css.PseudoElementNone && (node.Data == "img" || node.Data == "iframe") {
 		for declarationIndex, name := range []string{"width", "height"} {
 			order := reserveSourceOrder(CascadeOriginPresentationalHint)
 			value, ok := dimensionAttribute(node, name)

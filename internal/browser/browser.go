@@ -34,6 +34,7 @@ type Browser struct {
 	nextDocument DocumentGeneration
 	pages        map[PageID]*Page
 	documents    map[DocumentGeneration]*Page
+	windowDocs   map[DocumentGeneration]*Page
 	localStorage map[string]map[string]string
 	closed       bool
 }
@@ -54,6 +55,7 @@ func NewWithEngine(engine Engine) (*Browser, error) {
 		engine:       engine,
 		pages:        make(map[PageID]*Page),
 		documents:    make(map[DocumentGeneration]*Page),
+		windowDocs:   make(map[DocumentGeneration]*Page),
 		localStorage: make(map[string]map[string]string),
 	}, nil
 }
@@ -111,6 +113,7 @@ func (browser *Browser) NewPage(root *dom.Node, location *url.URL) (*Page, error
 	}
 	browser.pages[page.ID] = page
 	browser.documents[generation] = page
+	browser.windowDocs[generation] = page
 	return page, nil
 }
 
@@ -139,6 +142,7 @@ func (browser *Browser) replaceDocument(page *Page, oldGeneration, newGeneration
 		delete(browser.documents, oldGeneration)
 	}
 	browser.documents[newGeneration] = page
+	browser.windowDocs[newGeneration] = page
 	browser.mutex.Unlock()
 }
 
@@ -148,6 +152,20 @@ func (browser *Browser) pageForDocument(generation DocumentGeneration) (*Page, b
 	}
 	browser.mutex.Lock()
 	page := browser.documents[generation]
+	browser.mutex.Unlock()
+	return page, page != nil
+}
+
+// pageForWindowDocument resolves a document generation as a stable
+// WindowProxy capability. Unlike NodeHandles, a WindowProxy survives document
+// replacement in the same browsing context, so old generations remain aliases
+// until the owning Page closes.
+func (browser *Browser) pageForWindowDocument(generation DocumentGeneration) (*Page, bool) {
+	if browser == nil || generation == 0 {
+		return nil, false
+	}
+	browser.mutex.Lock()
+	page := browser.windowDocs[generation]
 	browser.mutex.Unlock()
 	return page, page != nil
 }
@@ -162,6 +180,11 @@ func (browser *Browser) unregisterPage(page *Page, generation DocumentGeneration
 	}
 	if browser.documents[generation] == page {
 		delete(browser.documents, generation)
+	}
+	for document, candidate := range browser.windowDocs {
+		if candidate == page {
+			delete(browser.windowDocs, document)
+		}
 	}
 	browser.mutex.Unlock()
 }

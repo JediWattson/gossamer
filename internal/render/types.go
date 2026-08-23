@@ -438,6 +438,63 @@ type Frame struct {
 	Fonts          []WebFontFace
 }
 
+// EmbedFrame returns a shallow parent-frame copy whose display list contains
+// child translated into bounds and clipped to that iframe content box. Layout
+// ownership remains separate: the parent retains its own geometry while the
+// child keeps its independently rendered document snapshot.
+func EmbedFrame(parent, child *Frame, bounds Rect) *Frame {
+	if parent == nil || child == nil || bounds.Width <= 0 || bounds.Height <= 0 {
+		return parent
+	}
+	result := *parent
+	result.DisplayList = parent.DisplayList
+	result.DisplayList.Commands = make([]Command, 0, len(parent.DisplayList.Commands)+len(child.DisplayList.Commands)+2)
+	result.DisplayList.Commands = append(result.DisplayList.Commands, parent.DisplayList.Commands...)
+	result.DisplayList.Commands = append(result.DisplayList.Commands, Command{Kind: BeginClipCommand, Rect: bounds})
+	fontOffset := uint32(len(parent.Fonts))
+	for _, source := range child.DisplayList.Commands {
+		command := source
+		translateCommand(&command, bounds.X, bounds.Y)
+		if command.Kind == DrawTextCommand && command.WebFont != 0 {
+			command.WebFont += fontOffset
+		}
+		result.DisplayList.Commands = append(result.DisplayList.Commands, command)
+	}
+	result.DisplayList.Commands = append(result.DisplayList.Commands, Command{Kind: EndClipCommand})
+	result.Fonts = append(append([]WebFontFace(nil), parent.Fonts...), child.Fonts...)
+	return &result
+}
+
+func translateCommand(command *Command, x, y float64) {
+	if command == nil || (x == 0 && y == 0) {
+		return
+	}
+	switch command.Kind {
+	case FillRectCommand, FillEllipseCommand, DrawImageCommand, DrawRoundedBorderCommand, DrawBoxShadowCommand, DrawGradientCommand, BeginClipCommand:
+		command.Rect.X += x
+		command.Rect.Y += y
+	case BeginTransformCommand:
+		command.Transform = multiplyTransforms(translatedTransform(x, y), command.Transform)
+	case DrawTextCommand:
+		command.X += x
+		command.BaselineY += y
+		if command.textOrientation != textPaintHorizontal {
+			command.Rect.X += x
+			command.Rect.Y += y
+			command.textBounds.X += x
+			command.textBounds.Y += y
+		}
+	}
+	if command.HasClip {
+		command.Clip.X += x
+		command.Clip.Y += y
+	}
+	for index := 0; index < int(command.RoundedClipCount); index++ {
+		command.RoundedClips[index].Rect.X += x
+		command.RoundedClips[index].Rect.Y += y
+	}
+}
+
 // ScrollDisplayList returns a shallow frame copy whose paint commands are
 // translated from document coordinates into viewport coordinates. Layout and
 // stable node geometry remain immutable document-space snapshots.

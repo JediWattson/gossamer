@@ -359,6 +359,34 @@ type JSFetchRealm interface {
 	DispatchFetch(Host, ValueHandle, FetchResponse, error) error
 }
 
+// WindowMessage is a bounded, pointer-free structured-clone subset carried
+// between document Realms. JSON preserves the ordinary data shapes used by
+// embedded documents without sharing engine values or Go pointers. Undefined
+// is tagged separately because JSON has no representation for it.
+type WindowMessage struct {
+	JSON      string
+	Undefined bool
+	Origin    string
+	Source    DocumentGeneration
+}
+
+// JSWindowMessageRealm receives one browser-queued message event. Delivery is
+// optional so engines can add the surface without changing the core JSRealm
+// interface used by other adapters.
+type JSWindowMessageRealm interface {
+	DispatchWindowMessage(Host, WindowMessage) error
+}
+
+// WindowProxyHost is the browser-owned relationship and queue seam behind
+// WindowProxy, iframe.contentWindow, and postMessage. Document generations are
+// capabilities, not pointers, and every send is revalidated at delivery.
+type WindowProxyHost interface {
+	ParentWindow(DocumentGeneration) (DocumentGeneration, bool, error)
+	TopWindow(DocumentGeneration) (DocumentGeneration, bool, error)
+	ChildWindow(NodeHandle) (DocumentGeneration, bool, error)
+	PostWindowMessage(DocumentGeneration, string, string, bool) error
+}
+
 // Host is the execution-scoped browser API visible to an engine. Methods that
 // schedule work preserve the current task as the publication boundary.
 type Host interface {

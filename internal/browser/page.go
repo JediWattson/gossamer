@@ -36,6 +36,8 @@ type Page struct {
 	parent              *Page
 	frameOwner          NodeHandle
 	children            map[dom.NodeID]*Page
+	childFrameSources   map[dom.NodeID]string
+	childFrameCancels   map[dom.NodeID]context.CancelFunc
 	location            *url.URL
 	readyState          string
 	formLoader          DocumentLoader
@@ -131,6 +133,8 @@ func newPage(
 		nodeLifetimes:      lifetimes,
 		documentGeneration: generation,
 		children:           make(map[dom.NodeID]*Page),
+		childFrameSources:  make(map[dom.NodeID]string),
+		childFrameCancels:  make(map[dom.NodeID]context.CancelFunc),
 		location:           cloneURL(location),
 		readyState:         "complete",
 		resources:          newPageResources(),
@@ -264,6 +268,9 @@ func documentHasResponsiveImages(node *dom.Node) bool {
 		if documentHasResponsiveImages(child) {
 			return true
 		}
+	}
+	if node.ShadowRoot != nil && documentHasResponsiveImages(node.ShadowRoot) {
+		return true
 	}
 	return false
 }
@@ -479,8 +486,14 @@ func (page *Page) Render() error {
 		return fmt.Errorf("browser: nil page")
 	}
 	page.mutex.Lock()
-	defer page.mutex.Unlock()
-	return page.renderLocked(false)
+	err := page.renderLocked(false)
+	page.mutex.Unlock()
+	if err != nil {
+		return err
+	}
+	err = page.syncChildFrames()
+	page.notifyParentFrameChanged()
+	return err
 }
 
 // QueueTextMutation schedules a stable-ID DOM mutation followed by a separate
@@ -530,8 +543,14 @@ func (page *Page) QueueRender() (browserruntime.TaskID, error) {
 	}
 	return page.Realm.EnqueueTask(func(*browserruntime.TaskContext) error {
 		page.mutex.Lock()
-		defer page.mutex.Unlock()
-		return page.renderLocked(true)
+		err := page.renderLocked(true)
+		page.mutex.Unlock()
+		if err != nil {
+			return err
+		}
+		err = page.syncChildFrames()
+		page.notifyParentFrameChanged()
+		return err
 	})
 }
 
@@ -545,11 +564,18 @@ func (page *Page) queueRenderFromTask(context *browserruntime.TaskContext) error
 	}
 	_, err = context.QueueTask(func(*browserruntime.TaskContext) error {
 		page.mutex.Lock()
-		defer page.mutex.Unlock()
 		if page.documentGeneration != generation {
+			page.mutex.Unlock()
 			return nil
 		}
-		return page.renderLocked(true)
+		renderErr := page.renderLocked(true)
+		page.mutex.Unlock()
+		if renderErr != nil {
+			return renderErr
+		}
+		renderErr = page.syncChildFrames()
+		page.notifyParentFrameChanged()
+		return renderErr
 	}, invalidation)
 	return err
 }
@@ -661,7 +687,29 @@ func (page *Page) renderLocked(onlyIfDirty bool) error {
 	if err != nil {
 		return err
 	}
-	page.frame = render.TransformDisplayList(frame, page.visualTransformsLocked(frame))
+	transforms := page.visualTransformsLocked(frame)
+	page.frame = render.TransformDisplayList(frame, transforms)
+	for nodeID, child := range page.children {
+		childFrame := child.Frame()
+		if childFrame == nil || page.frame.Layout == nil {
+			continue
+		}
+		geometry, ok := page.frame.Layout.GeometryID(nodeID)
+		if !ok {
+			continue
+		}
+		bounds := geometry.ContentBounds
+		if node, found := page.document.Resolve(nodeID); found {
+			if visual, transformed := transforms[node]; transformed {
+				bounds.X -= visual.OffsetX
+				bounds.Y -= visual.OffsetY
+				if visual.HasClip {
+					bounds = intersectBrowserRects(bounds, visual.Clip)
+				}
+			}
+		}
+		page.frame = render.EmbedFrame(page.frame, childFrame, bounds)
+	}
 	page.frameGeneration = page.documentGeneration
 	page.renderedVersion = renderedVersion
 	page.dirty = false
@@ -669,6 +717,14 @@ func (page *Page) renderLocked(onlyIfDirty bool) error {
 		go page.loadDynamicImages(page.documentContext, page.documentGeneration, page.resourceFetcher, backgroundRequests)
 	}
 	return nil
+}
+
+func intersectBrowserRects(left, right render.Rect) render.Rect {
+	x := math.Max(left.X, right.X)
+	y := math.Max(left.Y, right.Y)
+	rightEdge := math.Min(left.X+left.Width, right.X+right.Width)
+	bottomEdge := math.Min(left.Y+left.Height, right.Y+right.Height)
+	return render.Rect{X: x, Y: y, Width: math.Max(0, rightEdge-x), Height: math.Max(0, bottomEdge-y)}
 }
 
 // ComputedStyle synchronously flushes style computation for handle without

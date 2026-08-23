@@ -802,12 +802,13 @@ func (page *Page) queueNavigationRenderLocked(
 	}
 	_, err = task.QueueTask(func(*browserruntime.TaskContext) error {
 		page.mutex.Lock()
-		defer page.mutex.Unlock()
 		if !page.matchesNavigationLocked(id, generation) || page.navigation.state != NavigationRendering {
+			page.mutex.Unlock()
 			return nil
 		}
 		if renderErr := page.renderLocked(false); renderErr != nil {
 			page.failNavigationLocked(renderErr)
+			page.mutex.Unlock()
 			return renderErr
 		}
 		page.navigation.state = NavigationComplete
@@ -818,7 +819,10 @@ func (page *Page) queueNavigationRenderLocked(
 			page.navigation.cancel()
 			page.navigation.cancel = nil
 		}
-		return nil
+		page.mutex.Unlock()
+		syncErr := page.syncChildFrames()
+		page.notifyParentFrameChanged()
+		return syncErr
 	}, invalidation)
 	if err != nil {
 		page.failNavigationLocked(err)

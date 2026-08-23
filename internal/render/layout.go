@@ -345,8 +345,8 @@ func (context *layoutContext) blockGeneratesOwnContent(node *styledNode) bool {
 	if node.style.Display() == displayListItem && node.style.ListStyleType() != listStyleNone {
 		return true
 	}
-	return node.node != nil && node.node.Type == dom.ElementNode && node.node.Data == "img" &&
-		(context.images[node.node] != nil || hasExplicitImageDimensions(node.style))
+	return isReplacedElement(node.node) && (node.node.Data == "iframe" ||
+		context.images[node.node] != nil || hasExplicitImageDimensions(node.style))
 }
 
 func (context *layoutContext) layoutBlock(node *styledNode, containingX, contentY, availableWidth float64, containingHeight *float64) (*Box, error) {
@@ -461,9 +461,9 @@ func (context *layoutContext) layoutBlockSizedWithSubgrid(node *styledNode, cont
 	if overrides.childContainingHeight != nil {
 		childContainingHeight = overrides.childContainingHeight
 	}
-	if node.node != nil && node.node.Type == dom.ElementNode && node.node.Data == "img" {
+	if isReplacedElement(node.node) {
 		decoded := context.images[node.node]
-		imageWidth, imageHeight, ok := context.replacedDimensions(style, decoded, availableWidth, containingHeight, horizontalInsets, verticalInsets)
+		imageWidth, imageHeight, ok := context.replacedDimensions(node.node, style, decoded, availableWidth, containingHeight, horizontalInsets, verticalInsets)
 		if !ok {
 			box := &Box{
 				Node:          node.node,
@@ -815,7 +815,7 @@ func tableCellFirstPassZeroHeight(node *styledNode) bool {
 	if node == nil || !node.style.Height().DependsOnPercent() {
 		return false
 	}
-	if node.node != nil && node.node.Type == dom.ElementNode && node.node.Data == "img" {
+	if isReplacedElement(node.node) {
 		return false
 	}
 	for _, overflow := range []computed.OverflowMode{node.style.OverflowX(), node.style.OverflowY()} {
@@ -1808,7 +1808,7 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 			wordMetrics.descent = math.Max(0, atomicHeight-atomicBaseline)
 		} else if token.replaced {
 			var ok bool
-			imageWidth, imageHeight, ok = context.replacedDimensions(token.style, token.image, width, containingHeight, 0, 0)
+			imageWidth, imageHeight, ok = context.replacedDimensions(token.node, token.style, token.image, width, containingHeight, 0, 0)
 			if !ok {
 				continue
 			}
@@ -2115,8 +2115,8 @@ func (context *layoutContext) intrinsicOuterWidths(node *styledNode, availableWi
 	margins := resolveLength(style.MarginLeft(), availableWidth, context.viewport, 0) +
 		resolveLength(style.MarginRight(), availableWidth, context.viewport, 0)
 
-	if node.node != nil && node.node.Type == dom.ElementNode && node.node.Data == "img" {
-		width, _, ok := context.replacedDimensions(style, context.images[node.node], availableWidth, nil, horizontalInsets, 0)
+	if isReplacedElement(node.node) {
+		width, _, ok := context.replacedDimensions(node.node, style, context.images[node.node], availableWidth, nil, horizontalInsets, 0)
 		if !ok {
 			return intrinsicWidths{}, nil
 		}
@@ -2179,7 +2179,7 @@ func (context *layoutContext) intrinsicInlineWidths(nodes []*styledNode, availab
 				return intrinsicWidths{}, err
 			}
 		case token.replaced:
-			width, _, ok := context.replacedDimensions(token.style, token.image, availableWidth, nil, 0, 0)
+			width, _, ok := context.replacedDimensions(token.node, token.style, token.image, availableWidth, nil, 0, 0)
 			if !ok {
 				continue
 			}
@@ -2299,7 +2299,7 @@ func lastBoxBaseline(box *Box) (float64, bool) {
 	return 0, false
 }
 
-func (context *layoutContext) replacedDimensions(style computedStyle, decoded image.Image, availableWidth float64, containingHeight *float64, horizontalInsets, verticalInsets float64) (float64, float64, bool) {
+func (context *layoutContext) replacedDimensions(node *dom.Node, style computedStyle, decoded image.Image, availableWidth float64, containingHeight *float64, horizontalInsets, verticalInsets float64) (float64, float64, bool) {
 	naturalWidth := 0.0
 	naturalHeight := 0.0
 	hasNaturalSize := false
@@ -2308,6 +2308,11 @@ func (context *layoutContext) replacedDimensions(style computedStyle, decoded im
 		naturalWidth = float64(bounds.Dx())
 		naturalHeight = float64(bounds.Dy())
 		hasNaturalSize = naturalWidth > 0 && naturalHeight > 0
+	}
+	if !hasNaturalSize && node != nil && node.Type == dom.ElementNode && node.NamespaceURI == dom.HTMLNamespace && node.Data == "iframe" {
+		naturalWidth = 300
+		naturalHeight = 150
+		hasNaturalSize = true
 	}
 
 	widthSpecified := style.Width().Unit() != lengthAuto
@@ -2465,6 +2470,11 @@ type inlineTokenBuilder struct {
 	hasContent   bool
 }
 
+func isReplacedElement(node *dom.Node) bool {
+	return node != nil && node.Type == dom.ElementNode && node.NamespaceURI == dom.HTMLNamespace &&
+		(node.Data == "img" || node.Data == "iframe")
+}
+
 func (builder *inlineTokenBuilder) add(node *styledNode, inheritedOpacity float64) {
 	builder.addAligned(node, inheritedOpacity, verticalAlignment{})
 }
@@ -2507,9 +2517,9 @@ func (builder *inlineTokenBuilder) addAligned(node *styledNode, inheritedOpacity
 		builder.hasContent = false
 		return
 	}
-	if node.node.Type == dom.ElementNode && node.node.Data == "img" {
+	if isReplacedElement(node.node) {
 		decoded := builder.images[node.node]
-		if decoded != nil || hasExplicitImageDimensions(node.style) {
+		if node.node.Data == "iframe" || decoded != nil || hasExplicitImageDimensions(node.style) {
 			leadingSpace := builder.pendingSpace && builder.hasContent
 			builder.tokens = append(builder.tokens, inlineToken{
 				node:          node.node,

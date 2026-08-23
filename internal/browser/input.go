@@ -442,8 +442,44 @@ var _ FetchHost = (*taskHost)(nil)
 var _ AsyncFetchHost = (*taskHost)(nil)
 var _ StorageHost = (*taskHost)(nil)
 var _ WebSocketHost = (*taskHost)(nil)
+var _ WindowProxyHost = (*taskHost)(nil)
 
 const maxFetchResponseBytes int64 = 16 << 20
+
+func (host *taskHost) ParentWindow(document DocumentGeneration) (DocumentGeneration, bool, error) {
+	return host.page.relatedWindow(document, false)
+}
+
+func (host *taskHost) TopWindow(document DocumentGeneration) (DocumentGeneration, bool, error) {
+	return host.page.relatedWindow(document, true)
+}
+
+func (host *taskHost) ChildWindow(iframe NodeHandle) (DocumentGeneration, bool, error) {
+	if host == nil || host.page == nil {
+		return 0, false, fmt.Errorf("browser: nil task host")
+	}
+	if iframe.Document != host.generation {
+		return 0, false, ErrStaleNodeHandle
+	}
+	child, ok := host.page.ChildFrame(iframe)
+	if !ok {
+		if err := host.page.syncChildFrames(); err != nil {
+			return 0, false, err
+		}
+		child, ok = host.page.ChildFrame(iframe)
+		if !ok {
+			return 0, false, nil
+		}
+	}
+	return child.DocumentGeneration(), true, nil
+}
+
+func (host *taskHost) PostWindowMessage(target DocumentGeneration, targetOrigin, payload string, undefined bool) error {
+	if host == nil || host.page == nil {
+		return fmt.Errorf("browser: nil task host")
+	}
+	return host.page.postWindowMessage(host.generation, target, targetOrigin, payload, undefined)
+}
 
 // Fetch resolves a script request against the active document and executes it
 // through the document's navigation loader. That gives navigation and fetch a
@@ -2132,6 +2168,9 @@ func (host *taskHost) finish() error {
 		}
 		if syncErr := host.page.syncAndLoadImages(); syncErr != nil {
 			err = errors.Join(err, fmt.Errorf("browser: synchronize dynamic images: %w", syncErr))
+		}
+		if syncErr := host.page.syncChildFrames(); syncErr != nil {
+			err = errors.Join(err, fmt.Errorf("browser: synchronize child frames: %w", syncErr))
 		}
 	}
 	if host.scrolled {
