@@ -136,13 +136,58 @@ func (execution *execution) appendIterableToArray(array memory.Ref, iterable mem
 	if _, err := execution.context.DerefArray(array); err != nil {
 		return err
 	}
-	return execution.forEachIterableValue(iterable, func(value memory.Value) error {
-		snapshot, err := execution.context.DerefArray(array)
+	iterator, next, err := execution.getIteratorRecord(iterable)
+	if err != nil {
+		return err
+	}
+	doneName, err := execution.context.NewString("done")
+	if err != nil {
+		_ = execution.closeIterator(iterator)
+		return err
+	}
+	valueName, err := execution.context.NewString("value")
+	if err != nil {
+		_ = execution.closeIterator(iterator)
+		return err
+	}
+	for {
+		result, err := execution.iteratorNext(iterator, next)
 		if err != nil {
 			return err
 		}
-		return execution.context.SetArrayElement(array, snapshot.Length, value)
-	})
+		done, found, err := execution.getProperty(result, memory.RefValue(doneName))
+		if err != nil {
+			return err
+		}
+		if !found {
+			done = memory.UndefinedValue()
+		}
+		finished, err := valueTruthy(execution.context, done)
+		if err != nil {
+			return err
+		}
+		if finished {
+			return nil
+		}
+		value, found, err := execution.getProperty(result, memory.RefValue(valueName))
+		if err != nil {
+			// ArrayAccumulation propagates an abrupt IteratorStepValue directly;
+			// unlike an abrupt array write below, it does not IteratorClose.
+			return err
+		}
+		if !found {
+			value = memory.UndefinedValue()
+		}
+		snapshot, err := execution.context.DerefArray(array)
+		if err != nil {
+			_ = execution.closeIterator(iterator)
+			return err
+		}
+		if err := execution.context.SetArrayElement(array, snapshot.Length, value); err != nil {
+			_ = execution.closeIterator(iterator)
+			return err
+		}
+	}
 }
 
 func (execution *execution) forEachIterableValue(iterable memory.Value, visit func(memory.Value) error) error {
