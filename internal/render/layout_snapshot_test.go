@@ -62,6 +62,47 @@ func TestLayoutSnapshotIndexesStableContentGeometryAndPaintsWithoutRelayout(t *t
 	}
 }
 
+func TestLayoutSnapshotClipsDescendantScrollExtentBeforePropagatingToRoot(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name          string
+		overflow      string
+		wantRootWidth float64
+	}{
+		{name: "hidden", overflow: "hidden", wantRootWidth: 400},
+		{name: "visible", overflow: "visible", wantRootWidth: 410},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			document, _ := indexedLayoutDocument(t, `
+				<html id="root"><body style="margin:0">
+					<div id="container" style="width:400px;height:100px;overflow:`+test.overflow+`">
+						<div style="width:410px;height:200px"></div>
+					</div>
+				</body></html>
+			`)
+			viewport := render.Viewport{Width: 400, Height: 240}
+			styles := mustDocumentStyleSnapshot(t, document, viewport, render.Resources{})
+			var layout *render.LayoutSnapshot
+			if err := document.WithReadView(func(view dom.ReadView) error {
+				var layoutErr error
+				layout, layoutErr = render.ComputeLayoutSnapshotFromReadView(view, viewport, render.Resources{}, styles)
+				return layoutErr
+			}); err != nil {
+				t.Fatal(err)
+			}
+			container, found := layout.GeometryID(mustElementID(t, document, "container"))
+			if !found || container.ScrollWidth != 410 || container.ScrollHeight != 200 {
+				t.Fatalf("container geometry = %#v, %t; want retained 410x200 scroll extent", container, found)
+			}
+			root, found := layout.GeometryID(mustElementID(t, document, "root"))
+			if !found || root.ScrollWidth != test.wantRootWidth {
+				t.Fatalf("root geometry = %#v, %t; want scroll width %.0f", root, found, test.wantRootWidth)
+			}
+		})
+	}
+}
+
 func TestLayoutSnapshotOnlyIndexesPrincipalBoxesAndInlineReplacedContent(t *testing.T) {
 	t.Parallel()
 

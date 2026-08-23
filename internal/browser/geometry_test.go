@@ -66,6 +66,35 @@ func TestPageGeometryAndRootScrollReuseLayoutAndTranslateHitTesting(t *testing.T
 	}
 }
 
+func TestViewportGeometryExcludesOverflowClippedByDescendantContainer(t *testing.T) {
+	t.Parallel()
+
+	engine, page, containerID := computedStyleTestPage(t, `<!doctype html><html><body style="margin:0">
+		<div id="target" style="width:400px;height:100px;overflow:hidden">
+			<div style="width:410px;height:200px"></div>
+		</div>
+	</body></html>`)
+	defer engine.Close()
+	if err := page.SetViewport(render.Viewport{Width: 400, Height: 240}); err != nil {
+		t.Fatal(err)
+	}
+
+	container, err := page.ElementGeometry(NodeHandle{Document: page.DocumentGeneration(), Node: containerID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if container.ScrollWidth != 410 || container.ScrollHeight != 200 {
+		t.Fatalf("clipping container geometry = %#v, want retained 410x200 scroll extent", container)
+	}
+	viewport, err := page.ViewportGeometry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if viewport.ScrollWidth != viewport.InnerWidth || viewport.ScrollHeight != viewport.InnerHeight {
+		t.Fatalf("viewport geometry = %#v, clipped descendant must not enlarge root scrolling", viewport)
+	}
+}
+
 func TestPageGeometryObservesCollapsedMarginMutationWithoutPublishingFrame(t *testing.T) {
 	t.Parallel()
 

@@ -257,6 +257,25 @@ type layoutExtent struct {
 	bottom float64
 }
 
+// propagatedLayoutExtent applies this box's overflow clip before its visual
+// extent is handed to an ancestor. The box still indexes its untrimmed extent
+// for its own scrollWidth/scrollHeight; only the ancestor-facing projection is
+// clipped. Without that distinction, content intentionally hidden by a nested
+// scroller incorrectly enlarges the root document.
+func propagatedLayoutExtent(box *Box, extent layoutExtent) layoutExtent {
+	if box == nil || !box.hasStyle {
+		return extent
+	}
+	client := boxClientBounds(box)
+	if box.style.OverflowX() != computed.OverflowVisible {
+		extent.right = math.Max(box.Bounds.X+box.Bounds.Width, math.Min(extent.right, client.X+client.Width))
+	}
+	if box.style.OverflowY() != computed.OverflowVisible {
+		extent.bottom = math.Max(box.Bounds.Y+box.Bounds.Height, math.Min(extent.bottom, client.Y+client.Height))
+	}
+	return extent
+}
+
 func boxClientBounds(box *Box) Rect {
 	if box == nil {
 		return Rect{}
@@ -405,7 +424,7 @@ func indexPointerGeometry(box *Box, index map[*dom.Node]LayoutGeometry, pseudoIn
 			}
 		}
 	}
-	return extent
+	return propagatedLayoutExtent(box, extent)
 }
 
 func indexStableGeometry(box *Box, access *dom.ReadAccess, index map[dom.NodeID]LayoutGeometry, pseudoIndex map[stablePseudoGeometryKey]LayoutGeometry) layoutExtent {
@@ -468,5 +487,5 @@ func indexStableGeometry(box *Box, access *dom.ReadAccess, index map[dom.NodeID]
 			}
 		}
 	}
-	return extent
+	return propagatedLayoutExtent(box, extent)
 }
