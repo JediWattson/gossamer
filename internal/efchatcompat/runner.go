@@ -31,6 +31,8 @@ const (
 	defaultUserUUID       = "00000000-0000-4000-8000-000000000001"
 	historyMessageID      = "strand-history-message-1"
 	historyMessageContent = "history rendered by Strand"
+	turnstileRawToken     = "XXXX.DUMMY.TOKEN.XXXX"
+	turnstileVerifyToken  = "strand-derived-websocket-verification"
 )
 
 type Options struct {
@@ -75,12 +77,21 @@ type HistoryReport struct {
 	Rendered  bool   `json:"rendered"`
 }
 
+type TurnstileReport struct {
+	InitSent          bool `json:"initSent"`
+	RawTokenValidated bool `json:"rawTokenValidated"`
+	VerifyReceived    bool `json:"verifyReceived"`
+	CookieStored      bool `json:"cookieStored"`
+	BlockedWrites     int  `json:"blockedWrites"`
+}
+
 type Report struct {
 	Passed     bool                          `json:"passed"`
 	URL        string                        `json:"url,omitempty"`
 	Navigation browser.NavigationSnapshot    `json:"navigation"`
 	Session    SessionReport                 `json:"session"`
 	History    HistoryReport                 `json:"history"`
+	Turnstile  TurnstileReport               `json:"turnstile"`
 	Console    []nativeengine.ConsoleMessage `json:"console,omitempty"`
 	WebSocket  WebSocketReport               `json:"webSocket"`
 	DOM        []string                      `json:"dom,omitempty"`
@@ -92,6 +103,26 @@ type Report struct {
 type wireEnvelope struct {
 	Event   string         `json:"event"`
 	Payload map[string]any `json:"payload"`
+}
+
+func redactedWebSocketMessages(messages []string) []string {
+	redacted := make([]string, 0, len(messages))
+	for _, raw := range messages {
+		var envelope wireEnvelope
+		if json.Unmarshal([]byte(raw), &envelope) == nil && envelope.Event == "turnstile:verify" {
+			if envelope.Payload == nil {
+				envelope.Payload = make(map[string]any)
+			}
+			envelope.Payload["token"] = "[redacted]"
+			encoded, err := json.Marshal(envelope)
+			if err == nil {
+				redacted = append(redacted, string(encoded))
+				continue
+			}
+		}
+		redacted = append(redacted, raw)
+	}
+	return redacted
 }
 
 func Run(ctx context.Context, options Options) (report Report, resultErr error) {
@@ -118,12 +149,14 @@ func Run(ctx context.Context, options Options) (report Report, resultErr error) 
 		place = defaultPlace
 	}
 
-	session := &anonymousSessionServer{root: root}
+	gate := &turnstileGate{}
+	session := &anonymousSessionServer{root: root, gate: gate}
 	server := httptest.NewServer(session)
 	defer server.Close()
+	client := newFixtureLoader(loader.New(nil))
 	report.URL = server.URL + "/" + url.PathEscape(place)
 
-	dialer := newRecordingDialer()
+	dialer := newRecordingDialer(gate)
 	console := &consoleRecorder{}
 	var page *browser.Page
 	interpreter := browserruntime.InterpreterConfig{}
@@ -147,7 +180,6 @@ func Run(ctx context.Context, options Options) (report Report, resultErr error) 
 	}
 	if err == nil {
 		page.SetWebSocketDialer(dialer)
-		client := loader.New(nil)
 		page.SetNavigationLoader(client)
 		var navigation browser.NavigationID
 		navigation, err = page.Navigate(ctx, report.URL, client)
@@ -225,6 +257,20 @@ input.dispatchEvent(enter);
 		_, err = page.QueueScript(browser.ScriptSource{URL: server.URL + "/strand-anon-send.js", Source: source})
 	}
 	if err == nil {
+		err = waitFor(ctx, page, dialer.isVerified)
+		if err != nil {
+			err = fmt.Errorf("efchatcompat: wait for Turnstile verification: %w", err)
+		}
+	}
+	if err == nil {
+		_, err = page.QueueScript(browser.ScriptSource{URL: server.URL + "/strand-anon-send-after-turnstile.js", Source: `
+const verifiedInput = document.getElementById("efchat-input");
+if (!verifiedInput) throw new Error("efchat anonymous gate: missing #efchat-input after Turnstile");
+const verifiedEnter = new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Enter", code: "Enter" });
+verifiedInput.dispatchEvent(verifiedEnter);
+`})
+	}
+	if err == nil {
 		err = waitFor(ctx, page, func() bool { return dialer.hasMessage(message) })
 	}
 	if page != nil {
@@ -239,11 +285,12 @@ input.dispatchEvent(enter);
 		report.DOM, _ = page.InspectorDOMLines(120)
 	}
 	report.Session = session.report(dialer.snapshot().Cookie)
+	report.Turnstile = gate.report(client, server.URL)
 	report.Console = console.snapshot()
 	socket := dialer.snapshot()
 	report.WebSocket.URL = socket.URL
-	report.WebSocket.Messages = append([]string(nil), socket.Messages...)
-	for _, raw := range socket.Messages {
+	report.WebSocket.Messages = redactedWebSocketMessages(socket.Messages)
+	for _, raw := range socket.Accepted {
 		var envelope wireEnvelope
 		if json.Unmarshal([]byte(raw), &envelope) == nil && envelope.Event == "message" {
 			if content, _ := envelope.Payload["content"].(string); content == message {
@@ -271,6 +318,10 @@ input.dispatchEvent(enter);
 	}
 	if err == nil && report.WebSocket.Event != "message" {
 		err = fmt.Errorf("efchatcompat: efchat message envelope was not observed")
+	}
+	if err == nil && (!report.Turnstile.InitSent || !report.Turnstile.RawTokenValidated ||
+		!report.Turnstile.VerifyReceived || !report.Turnstile.CookieStored) {
+		err = fmt.Errorf("efchatcompat: Turnstile gate did not complete: %#v", report.Turnstile)
 	}
 	if err == nil && !report.History.Rendered {
 		err = fmt.Errorf("efchatcompat: history message row was not rendered")
@@ -340,8 +391,135 @@ func quotedJavaScriptString(value string) string {
 	return string(encoded)
 }
 
+const turnstileFixtureJavaScript = `(function () {
+  const widgets = new Map();
+  let nextWidget = 0;
+  window.turnstile = {
+    ready: function (callback) { queueMicrotask(callback); },
+    render: function (container, options) {
+      const id = "strand-turnstile-widget-" + String(++nextWidget);
+      const marker = document.createElement("div");
+      marker.id = id;
+      marker.textContent = "Security check";
+      container.append(marker);
+      widgets.set(id, marker);
+      queueMicrotask(function () { options.callback("XXXX.DUMMY.TOKEN.XXXX"); });
+      return id;
+    },
+    remove: function (id) {
+      const marker = widgets.get(id);
+      if (marker) marker.remove();
+      widgets.delete(id);
+    },
+    reset: function () {}
+  };
+})();`
+
+type fixtureLoader struct {
+	base *loader.Loader
+}
+
+func newFixtureLoader(base *loader.Loader) *fixtureLoader {
+	return &fixtureLoader{base: base}
+}
+
+func (client *fixtureLoader) Load(ctx context.Context, rawURL string) (*loader.Response, error) {
+	return client.base.Load(ctx, rawURL)
+}
+
+func (client *fixtureLoader) LoadResource(ctx context.Context, rawURL string, destination loader.Destination) (*loader.Response, error) {
+	location, err := url.Parse(rawURL)
+	if err == nil && destination == loader.ScriptDestination && strings.EqualFold(location.Hostname(), "challenges.cloudflare.com") &&
+		location.Path == "/turnstile/v0/api.js" {
+		return &loader.Response{
+			URL: location, StatusCode: http.StatusOK,
+			Header: http.Header{"Content-Type": []string{"text/javascript; charset=utf-8"}},
+			Body:   io.NopCloser(strings.NewReader(turnstileFixtureJavaScript)),
+		}, nil
+	}
+	return client.base.LoadResource(ctx, rawURL, destination)
+}
+
+func (client *fixtureLoader) Do(ctx context.Context, request loader.Request) (*loader.Response, error) {
+	return client.base.Do(ctx, request)
+}
+
+func (client *fixtureLoader) Cookies(location *url.URL) []*http.Cookie {
+	return client.base.Cookies(location)
+}
+
+func (client *fixtureLoader) SetCookies(location *url.URL, cookies []*http.Cookie) {
+	client.base.SetCookies(location, cookies)
+}
+
+type turnstileGate struct {
+	mutex             sync.Mutex
+	initSent          bool
+	rawTokenValidated bool
+	verifyReceived    bool
+	blockedWrites     int
+}
+
+func (gate *turnstileGate) markInitSent() {
+	gate.mutex.Lock()
+	gate.initSent = true
+	gate.mutex.Unlock()
+}
+
+func (gate *turnstileGate) validateRawToken(token string) bool {
+	gate.mutex.Lock()
+	defer gate.mutex.Unlock()
+	if strings.TrimSpace(token) != turnstileRawToken {
+		return false
+	}
+	gate.rawTokenValidated = true
+	return true
+}
+
+func (gate *turnstileGate) verifyDerivedToken(token string) bool {
+	gate.mutex.Lock()
+	defer gate.mutex.Unlock()
+	if !gate.rawTokenValidated || strings.TrimSpace(token) != turnstileVerifyToken {
+		return false
+	}
+	gate.verifyReceived = true
+	return true
+}
+
+func (gate *turnstileGate) markBlockedWrite() {
+	gate.mutex.Lock()
+	gate.blockedWrites++
+	gate.mutex.Unlock()
+}
+
+func (gate *turnstileGate) verified() bool {
+	gate.mutex.Lock()
+	defer gate.mutex.Unlock()
+	return gate.verifyReceived
+}
+
+func (gate *turnstileGate) report(store loader.CookieStore, rawURL string) TurnstileReport {
+	gate.mutex.Lock()
+	report := TurnstileReport{
+		InitSent: gate.initSent, RawTokenValidated: gate.rawTokenValidated,
+		VerifyReceived: gate.verifyReceived, BlockedWrites: gate.blockedWrites,
+	}
+	gate.mutex.Unlock()
+	location, err := url.Parse(rawURL)
+	if err == nil {
+		for _, cookie := range store.Cookies(location) {
+			if cookie != nil && cookie.Name == "efchat_code" && cookie.Value == turnstileVerifyToken {
+				report.CookieStored = true
+				break
+			}
+		}
+	}
+	return report
+}
+
 type anonymousSessionServer struct {
 	root     string
+	gate     *turnstileGate
 	mutex    sync.Mutex
 	requests int
 	paths    []string
@@ -368,6 +546,24 @@ func (server *anonymousSessionServer) ServeHTTP(writer http.ResponseWriter, requ
 	case "/api/chat/reactions":
 		writer.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(writer, `{"reactions":[]}`)
+	case "/api/turnstile/validate":
+		if request.Method != http.MethodPost {
+			writer.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		var payload struct {
+			Token string `json:"token"`
+		}
+		if json.NewDecoder(request.Body).Decode(&payload) != nil || server.gate == nil || !server.gate.validateRawToken(payload.Token) {
+			http.Error(writer, "Turnstile verification failed", http.StatusForbidden)
+			return
+		}
+		http.SetCookie(writer, &http.Cookie{
+			Name: "efchat_code", Value: turnstileVerifyToken, Path: "/", HttpOnly: true,
+			SameSite: http.SameSiteStrictMode,
+		})
+		writer.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(writer).Encode(map[string]string{"token": turnstileVerifyToken})
 	case "/api/attachments/place/global/photo/meta":
 		writer.WriteHeader(http.StatusNotFound)
 	default:
@@ -396,6 +592,7 @@ type socketSnapshot struct {
 	URL      string
 	Cookie   string
 	Messages []string
+	Accepted []string
 }
 
 type recordingDialer struct {
@@ -403,7 +600,9 @@ type recordingDialer struct {
 	url      string
 	cookie   string
 	messages []string
+	accepted []string
 	reads    chan recordingRead
+	gate     *turnstileGate
 }
 
 type recordingRead struct {
@@ -412,8 +611,8 @@ type recordingRead struct {
 	err     error
 }
 
-func newRecordingDialer() *recordingDialer {
-	return &recordingDialer{reads: make(chan recordingRead, 8)}
+func newRecordingDialer(gate *turnstileGate) *recordingDialer {
+	return &recordingDialer{reads: make(chan recordingRead, 8), gate: gate}
 }
 
 func (dialer *recordingDialer) Dial(_ context.Context, rawURL string, _ []string, header http.Header) (browser.WebSocketConnection, error) {
@@ -425,23 +624,38 @@ func (dialer *recordingDialer) Dial(_ context.Context, rawURL string, _ []string
 	dialer.url = rawURL
 	dialer.cookie = header.Get("Cookie")
 	dialer.mutex.Unlock()
+	if dialer.gate != nil {
+		dialer.gate.markInitSent()
+		dialer.reads <- recordingRead{
+			message: browser.WebSocketTextMessage,
+			data:    []byte(`{"event":"turnstile:init"}`),
+		}
+	}
 	return &recordingConnection{dialer: dialer}, nil
 }
 
 func (dialer *recordingDialer) snapshot() socketSnapshot {
 	dialer.mutex.Lock()
 	defer dialer.mutex.Unlock()
-	return socketSnapshot{URL: dialer.url, Cookie: dialer.cookie, Messages: append([]string(nil), dialer.messages...)}
+	return socketSnapshot{
+		URL: dialer.url, Cookie: dialer.cookie,
+		Messages: append([]string(nil), dialer.messages...),
+		Accepted: append([]string(nil), dialer.accepted...),
+	}
 }
 
 func (dialer *recordingDialer) hasMessage(content string) bool {
-	for _, raw := range dialer.snapshot().Messages {
+	for _, raw := range dialer.snapshot().Accepted {
 		var envelope wireEnvelope
 		if json.Unmarshal([]byte(raw), &envelope) == nil && envelope.Event == "message" && envelope.Payload["content"] == content {
 			return true
 		}
 	}
 	return false
+}
+
+func (dialer *recordingDialer) isVerified() bool {
+	return dialer.gate != nil && dialer.gate.verified()
 }
 
 type recordingConnection struct{ dialer *recordingDialer }
@@ -459,8 +673,24 @@ func (connection *recordingConnection) Write(_ context.Context, message browser.
 	if message != browser.WebSocketTextMessage {
 		return fmt.Errorf("efchatcompat: expected text WebSocket message")
 	}
+	raw := string(data)
 	connection.dialer.mutex.Lock()
-	connection.dialer.messages = append(connection.dialer.messages, string(data))
+	connection.dialer.messages = append(connection.dialer.messages, raw)
+	connection.dialer.mutex.Unlock()
+
+	gate := connection.dialer.gate
+	if gate != nil && !gate.verified() {
+		var envelope wireEnvelope
+		if json.Unmarshal(data, &envelope) == nil && envelope.Event == "turnstile:verify" {
+			token, _ := envelope.Payload["token"].(string)
+			_ = gate.verifyDerivedToken(token)
+		} else {
+			gate.markBlockedWrite()
+		}
+		return nil
+	}
+	connection.dialer.mutex.Lock()
+	connection.dialer.accepted = append(connection.dialer.accepted, raw)
 	connection.dialer.mutex.Unlock()
 	return nil
 }

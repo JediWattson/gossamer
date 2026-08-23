@@ -75,8 +75,9 @@ go run ./cmd/gossamer-sitecheck --engine=strand --dist /absolute/path/to/dist
 ```
 
 The efchat-specific gate runs its production bundle through an anonymous local
-session, submits the real chat input, and records the resulting WebSocket
-message without posting to a public place:
+session and an exact local Turnstile init/validate/verify handshake, submits the
+real chat input, and records the resulting WebSocket message without posting to
+a public place:
 
 ```sh
 go run ./cmd/gossamer-efchatcheck \

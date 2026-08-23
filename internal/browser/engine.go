@@ -49,6 +49,7 @@ const (
 	InputPageHide
 	InputUnload
 	InputPageShow
+	InputError
 )
 
 // InputEvent contains browser-normalized input and a generation-safe target.
@@ -144,6 +145,8 @@ func (eventType InputEventType) String() string {
 		return "unload"
 	case InputPageShow:
 		return "pageshow"
+	case InputError:
+		return "error"
 	default:
 		return ""
 	}

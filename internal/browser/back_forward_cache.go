@@ -25,6 +25,7 @@ type cachedDocumentState struct {
 	readyState       string
 	resources        pageResources
 	resourceFetcher  resource.Fetcher
+	startedScripts   map[dom.NodeID]struct{}
 	documentContext  context.Context
 	documentCancel   context.CancelFunc
 	scrollX          float64
@@ -93,6 +94,7 @@ func (page *Page) captureCurrentDocumentLocked() *cachedDocumentState {
 		generation: page.documentGeneration, documentLanguage: page.documentLanguage,
 		location: cloneURL(page.location), readyState: page.readyState,
 		resources: page.resources, resourceFetcher: page.resourceFetcher,
+		startedScripts:  cloneStartedScripts(page.startedScripts),
 		documentContext: page.documentContext, documentCancel: page.documentCancel,
 		scrollX: page.scrollX, scrollY: page.scrollY,
 		elementScroll: cloneElementScroll(page.elementScroll),
@@ -288,6 +290,7 @@ func (page *Page) restoreBackForwardCacheDocument(
 	page.readyState = restored.readyState
 	page.resources = restored.resources
 	page.resourceFetcher = restored.resourceFetcher
+	page.startedScripts = cloneStartedScripts(restored.startedScripts)
 	page.documentContext = restored.documentContext
 	page.documentCancel = restored.documentCancel
 	page.scrollX = restored.scrollX

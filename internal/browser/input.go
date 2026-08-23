@@ -2080,6 +2080,9 @@ func (host *taskHost) finish() error {
 	host.releaseMutationJournal()
 	var err error
 	if host.mutated {
+		if syncErr := host.page.syncAndLoadDynamicScripts(); syncErr != nil {
+			err = errors.Join(err, fmt.Errorf("browser: synchronize dynamic scripts: %w", syncErr))
+		}
 		if syncErr := host.page.syncAndLoadStylesheets(); syncErr != nil {
 			err = errors.Join(err, fmt.Errorf("browser: synchronize dynamic stylesheets: %w", syncErr))
 		}

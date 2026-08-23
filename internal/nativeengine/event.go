@@ -964,7 +964,8 @@ func setDataValue(context *browserruntime.TaskContext, object memory.Ref, name s
 
 func inputEventBubbles(eventType browser.InputEventType) bool {
 	switch eventType {
-	case browser.InputPointerEnter, browser.InputPointerLeave, browser.InputFocus, browser.InputBlur, browser.InputScroll, browser.InputResize:
+	case browser.InputPointerEnter, browser.InputPointerLeave, browser.InputFocus, browser.InputBlur, browser.InputScroll,
+		browser.InputResize, browser.InputLoad, browser.InputError:
 		return false
 	default:
 		return true
@@ -975,7 +976,7 @@ func inputEventCancelable(eventType browser.InputEventType) bool {
 	switch eventType {
 	case browser.InputInput, browser.InputFocus, browser.InputBlur, browser.InputFocusIn, browser.InputFocusOut,
 		browser.InputChange, browser.InputCompositionStart, browser.InputCompositionUpdate, browser.InputCompositionEnd,
-		browser.InputScroll, browser.InputResize:
+		browser.InputScroll, browser.InputResize, browser.InputLoad, browser.InputError:
 		return false
 	default:
 		return true

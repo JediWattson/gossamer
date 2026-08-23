@@ -630,6 +630,7 @@ func (page *Page) commitNavigationDocument(
 	page.resources = replacementResources
 	page.resources.stylesheets.markRequested(prepared.requests)
 	page.resourceFetcher = prepared.fetcher
+	page.startedScripts = documentScriptNodes(prepared.document)
 	page.documentContext = documentContext
 	page.documentCancel = documentCancel
 	page.dirty = true

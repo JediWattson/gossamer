@@ -2,15 +2,60 @@ package efchatcompat
 
 import (
 	"context"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/JediWattson/gossamer/internal/browser"
+	"github.com/JediWattson/gossamer/internal/loader"
 	browserruntime "github.com/JediWattson/gossamer/internal/runtime"
 )
+
+func TestTurnstileFixtureBlocksMessagesUntilDerivedTokenVerification(t *testing.T) {
+	gate := &turnstileGate{}
+	dialer := newRecordingDialer(gate)
+	connection, err := dialer.Dial(context.Background(), "wss://efchat.test/ws/global", nil, http.Header{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	message := `{"event":"message","payload":{"content":"blocked"}}`
+	if err := connection.Write(context.Background(), browser.WebSocketTextMessage, []byte(message)); err != nil {
+		t.Fatal(err)
+	}
+	if dialer.hasMessage("blocked") || gate.verified() {
+		t.Fatal("unverified message crossed the fixture gate")
+	}
+	if blocked := gate.report(loader.New(nil), "https://efchat.test").BlockedWrites; blocked != 1 {
+		t.Fatalf("blocked writes = %d, want 1", blocked)
+	}
+	if !gate.validateRawToken(turnstileRawToken) {
+		t.Fatal("fixture raw token was rejected")
+	}
+	verify := `{"event":"turnstile:verify","payload":{"token":"` + turnstileVerifyToken + `"}}`
+	if err := connection.Write(context.Background(), browser.WebSocketTextMessage, []byte(verify)); err != nil {
+		t.Fatal(err)
+	}
+	if !gate.verified() {
+		t.Fatal("derived token did not unlock fixture writes")
+	}
+	accepted := `{"event":"message","payload":{"content":"accepted"}}`
+	if err := connection.Write(context.Background(), browser.WebSocketTextMessage, []byte(accepted)); err != nil {
+		t.Fatal(err)
+	}
+	if !dialer.hasMessage("accepted") {
+		t.Fatal("verified message did not cross the fixture gate")
+	}
+	redacted := redactedWebSocketMessages(dialer.snapshot().Messages)
+	for _, raw := range redacted {
+		if strings.Contains(raw, turnstileVerifyToken) {
+			t.Fatal("verification token escaped report redaction")
+		}
+	}
+}
 
 func TestAnonymousSessionSendsMessageEnvelope(t *testing.T) {
 	dist := t.TempDir()
@@ -41,8 +86,48 @@ fetch("/api/user")
           root.appendChild(row);
         });
         const socket = new WebSocket("ws://" + location.host + "/ws/global");
+        let verificationRequired = false;
+        let verificationStarted = false;
+        let verified = false;
+        socket.addEventListener("message", event => {
+          const envelope = JSON.parse(event.data);
+          if (envelope.event === "turnstile:init") verificationRequired = true;
+        });
+        const startVerification = () => {
+          if (verificationStarted) return;
+          verificationStarted = true;
+          const script = document.createElement("script");
+          script.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+          script.addEventListener("load", () => {
+            window.turnstile.ready(() => {
+              const mount = document.createElement("div");
+              root.appendChild(mount);
+              window.turnstile.render(mount, {
+                sitekey: "1x00000000000000000000AA",
+                callback: token => {
+                  fetch("/api/turnstile/validate", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ token })
+                  })
+                    .then(response => response.json())
+                    .then(result => {
+                      socket.send(JSON.stringify({ event: "turnstile:verify", payload: { token: result.token } }));
+                      verified = true;
+                      verificationRequired = false;
+                    });
+                }
+              });
+            });
+          });
+          document.head.append(script);
+        };
         input.addEventListener("keydown", event => {
           if (event.key === "Enter") {
+            if (verificationRequired && !verified) {
+              startVerification();
+              return;
+            }
             socket.send(JSON.stringify({
               event: "message",
               payload: { content: input.value }
@@ -73,6 +158,12 @@ fetch("/api/user")
 	}
 	if !report.History.Rendered || report.History.MessageID != historyMessageID || report.History.Content != historyMessageContent {
 		t.Fatalf("history message = %#v", report.History)
+	}
+	if !report.Turnstile.InitSent || !report.Turnstile.RawTokenValidated || !report.Turnstile.VerifyReceived || !report.Turnstile.CookieStored {
+		t.Fatalf("Turnstile gate = %#v", report.Turnstile)
+	}
+	if report.Turnstile.BlockedWrites != 0 {
+		t.Fatalf("valid Turnstile flow blocked %d writes", report.Turnstile.BlockedWrites)
 	}
 	payload, payloadOK := report.WebSocket.Payload.(map[string]any)
 	if report.WebSocket.Event != "message" || !payloadOK || payload["content"] != "hello from the anonymous gate" {

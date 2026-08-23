@@ -62,7 +62,11 @@ The current efchat production distribution evaluates under Strand, hydrates an
 anonymous session, opens the place WebSocket with the session cookie, and can
 submit the real `#efchat-input` Enter path. The compatibility gate records the
 same `message` envelope efchat would send, verifies the optimistic message in
-the DOM, and requires zero live or persistent objects after teardown:
+the DOM, and requires zero live or persistent objects after teardown. Its fake
+WebSocket also sends `turnstile:init`: the production frontend must dynamically
+load the Turnstile script, validate the raw widget token over HTTP, store the
+`efchat_code` cookie, return the derived token on `turnstile:verify`, and only
+then resubmit the message:
 
 ```sh
 GOCACHE=/tmp/gossamer-go-cache go run ./cmd/gossamer-efchatcheck \
@@ -75,8 +79,9 @@ Its `/api/user` response and WebSocket are deterministic local fakes, so the
 gate exercises the production frontend and Gossamer's cookie/socket boundary
 without sending a message to efchat.net. A passing report contains
 `session.role: "anon"`, `session.cookieOnSocket: true`,
-`webSocket.event: "message"`, the requested content, clean navigation, and
-zero teardown ownership.
+all four `turnstile` completion fields, `webSocket.event: "message"`, the
+requested content, clean navigation, and zero teardown ownership. Verification
+tokens are redacted from the report.
 
 For a manual live session, the Graphite shell can open efchat with Strand:
 

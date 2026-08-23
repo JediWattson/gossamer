@@ -48,6 +48,7 @@ type Page struct {
 	backForwardOrder    []uint64
 	resources           pageResources
 	resourceFetcher     resource.Fetcher
+	startedScripts      map[dom.NodeID]struct{}
 	documentContext     context.Context
 	documentCancel      context.CancelFunc
 	viewport            render.Viewport
@@ -131,6 +132,7 @@ func newPage(
 		location:           cloneURL(location),
 		readyState:         "complete",
 		resources:          newPageResources(),
+		startedScripts:     documentScriptNodes(document),
 		documentContext:    documentContext,
 		documentCancel:     documentCancel,
 		viewport:           render.DefaultViewport,

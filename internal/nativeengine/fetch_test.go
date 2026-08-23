@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"sync"
@@ -79,6 +80,94 @@ func TestNativeFetchUsesDocumentRequesterAndWebResponseObjects(t *testing.T) {
 	if len(client.requests) != 2 || client.requests[0].URL != "https://strand.test/api" || client.requests[0].Method != http.MethodPost ||
 		client.requests[0].Header.Get("X-Test") != "yes" || string(client.requests[0].Body) != "payload" {
 		t.Fatalf("requests = %#v", client.requests)
+	}
+}
+
+func TestNativeDynamicClassicScriptsFetchEvaluateAndDispatchElementEvents(t *testing.T) {
+	t.Parallel()
+
+	var dynamicRequests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/page":
+			writer.Header().Set("Content-Type", "text/html")
+			_, _ = io.WriteString(writer, `<!doctype html><html><head></head><body><div id="result">pending</div><script>
+const loaded = document.createElement("script");
+loaded.async = false;
+loaded.addEventListener("load", function () {
+  document.getElementById("result").textContent = "loaded:" + String(window.dynamicLoads) + ":" + String(loaded instanceof HTMLScriptElement) + ":" + String(loaded.async);
+});
+loaded.addEventListener("error", function () { document.getElementById("result").textContent = "unexpected-error"; });
+loaded.src = "/dynamic.js";
+document.head.append(loaded);
+
+const failed = document.createElement("script");
+failed.addEventListener("error", function () { document.getElementById("result").textContent += ":error"; });
+failed.src = "/not-javascript";
+document.head.append(failed);
+</script></body></html>`)
+		case "/dynamic.js":
+			dynamicRequests.Add(1)
+			writer.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+			_, _ = io.WriteString(writer, `window.dynamicLoads = (window.dynamicLoads || 0) + 1;`)
+		case "/not-javascript":
+			writer.Header().Set("Content-Type", "text/plain")
+			_, _ = io.WriteString(writer, "not JavaScript")
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	engine := nativeengine.New(nativeengine.Config{})
+	runtime, err := browser.NewWithEngine(engine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	page, err := runtime.LoadPage(context.Background(), server.URL+"/page", loader.New(server.Client()))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, ok := page.Document().ElementByID("result")
+	if !ok {
+		t.Fatal("missing result element")
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	text := ""
+	for time.Now().Before(deadline) {
+		text, err = page.Document().TextContent(result)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if text == "loaded:1:true:false:error" {
+			break
+		}
+		if page.Realm.Tasks.Len() == 0 {
+			time.Sleep(time.Millisecond)
+			continue
+		}
+		runContext, cancel := context.WithTimeout(context.Background(), time.Second)
+		err = page.Realm.RunOne(runContext)
+		cancel()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if text != "loaded:1:true:false:error" {
+		t.Fatalf("dynamic script result = %q", text)
+	}
+
+	if _, err := page.QueueScript(browser.ScriptSource{URL: server.URL + "/unrelated.js", Source: `document.body.setAttribute("data-after", "true");`}); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	if got := dynamicRequests.Load(); got != 1 {
+		t.Fatalf("dynamic script fetch count = %d, want 1", got)
 	}
 }
 

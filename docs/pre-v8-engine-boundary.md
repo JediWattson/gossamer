@@ -66,8 +66,11 @@ This sequence intentionally executes initial scripts after parse and initial
 rendered-resource loading. It supports blocking classic scripts, `defer`,
 `async`, and static HTTP(S) module graphs. Streaming parser-blocking execution,
 import maps, bare module specifiers, dynamic `import()`, dynamic script
-insertion, and full HTML scripting semantics remain later browser features;
-the engine scheduling boundary does not depend on them.
+modules, dynamically inserted inline scripts, and full HTML scripting semantics
+remain later browser features. Connected external classic scripts are fetched
+off-Realm, evaluated through a Page task, and receive non-bubbling `load` or
+`error` completion events; the engine scheduling boundary does not depend on
+the remaining features.
 
 With no Engine, Page preserves the existing no-JavaScript behavior and does
 not fetch script resources.

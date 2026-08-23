@@ -177,6 +177,10 @@ const (
 	nativeNodePreviousElementSibling
 	nativeNodeNextElementSibling
 	nativeElementScrollIntoView
+	nativeScriptSourceGet
+	nativeScriptSourceSet
+	nativeScriptAsyncGet
+	nativeScriptAsyncSet
 )
 
 const (
@@ -457,6 +461,10 @@ func (realm *Realm) installBrowserNatives() error {
 		{nativeElementScrollTopGet, realm.elementGeometryValue("scrollTop")},
 		{nativeElementScrollTopSet, realm.elementScrollSet(true)},
 		{nativeElementScrollIntoView, realm.elementScrollIntoView},
+		{nativeScriptSourceGet, realm.scriptSourceGet},
+		{nativeScriptSourceSet, realm.scriptSourceSet},
+		{nativeScriptAsyncGet, realm.scriptAsyncGet},
+		{nativeScriptAsyncSet, realm.scriptAsyncSet},
 		{nativeWindowInnerWidth, realm.windowGeometryValue("innerWidth")},
 		{nativeWindowInnerHeight, realm.windowGeometryValue("innerHeight")},
 		{nativeWindowScrollX, realm.windowGeometryValue("scrollX")},
@@ -1389,6 +1397,8 @@ func (realm *Realm) installDOMPrototypeProperties(context *browserruntime.TaskCo
 		{realm.bindings.elementPrototype, "innerHTML", nativeElementInnerHTMLGet, nativeElementInnerHTMLSet},
 		{realm.bindings.elementPrototype, "style", nativeElementStyle, 0},
 		{realm.bindings.htmlElementPrototype, "hidden", nativeElementHiddenGet, nativeElementHiddenSet},
+		{realm.bindings.htmlScriptElementPrototype, "src", nativeScriptSourceGet, nativeScriptSourceSet},
+		{realm.bindings.htmlScriptElementPrototype, "async", nativeScriptAsyncGet, nativeScriptAsyncSet},
 		{realm.bindings.htmlInputElementPrototype, "value", nativeElementFormValueGet, nativeElementFormValueSet},
 		{realm.bindings.htmlTextAreaElementPrototype, "value", nativeElementFormValueGet, nativeElementFormValueSet},
 		{realm.bindings.htmlSelectElementPrototype, "value", nativeElementFormValueGet, nativeElementFormValueSet},
