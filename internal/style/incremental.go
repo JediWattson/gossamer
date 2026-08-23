@@ -189,7 +189,7 @@ func (snapshot *Snapshot) RestyleReadViewAfterMutations(
 	styledRoots := make([]*styledNode, 0, len(dirtyRoots))
 	styledParents := make([]*styledNode, 0, len(dirtyRoots))
 	for _, root := range dirtyRoots {
-		parent, parentErr := snapshot.incrementalStyledParent(access, root.Parent)
+		parent, parentErr := snapshot.incrementalStyledParent(access, composedIncrementalParent(root.Parent))
 		if parentErr != nil {
 			return nil, false, parentErr
 		}
@@ -329,6 +329,7 @@ func (snapshot *Snapshot) dirtyStyleRoots(access *dom.ReadAccess, records []dom.
 }
 
 func appendDirtyStyleRoot(roots *[]*dom.Node, candidate *dom.Node) bool {
+	candidate = composedIncrementalParent(candidate)
 	if candidate == nil || candidate.Type == dom.DocumentNode {
 		return false
 	}
@@ -354,6 +355,16 @@ func appendDirtyStyleRoot(roots *[]*dom.Node, candidate *dom.Node) bool {
 	}
 	*roots = append(filtered, candidate)
 	return true
+}
+
+// A ShadowRoot owns its children in the raw DOM but is intentionally omitted
+// from the composed style tree. Incremental inheritance and sibling invalidation
+// therefore cross that ownership boundary through the rendered host.
+func composedIncrementalParent(node *dom.Node) *dom.Node {
+	if node != nil && node.ShadowHost != nil {
+		return node.ShadowHost
+	}
+	return node
 }
 
 func styleOwnerAttributeAffectsSheet(node *dom.Node, name string) bool {

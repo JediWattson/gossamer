@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -541,6 +542,64 @@ if (timerValue !== 43) {
 	}
 	if err := page.Realm.Store().CheckInvariants(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestNativeRealmReportsTimerExceptionsAndContinuesTheEventLoop(t *testing.T) {
+	t.Parallel()
+
+	var mutex sync.Mutex
+	var messages []nativeengine.ConsoleMessage
+	scriptEngine := nativeengine.New(nativeengine.Config{ConsoleSink: func(message nativeengine.ConsoleMessage) {
+		mutex.Lock()
+		messages = append(messages, message)
+		mutex.Unlock()
+	}})
+	browserRuntime, err := browser.NewWithEngine(scriptEngine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer browserRuntime.Close()
+	location, _ := url.Parse("https://gossamer.test/native-timer-error/")
+	page, err := browserRuntime.NewPage(dom.NewDocument(), location)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer page.Close()
+	if _, err := page.QueueScript(browser.ScriptSource{URL: "schedule.js", Source: `
+		let completedAfterError = false;
+		setTimeout(function () { throw new Error("expected timer failure"); }, 0);
+		setTimeout(function () { completedAfterError = true; }, 0);
+	`}); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for page.Realm.Tasks.Len() < 2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if page.Realm.Tasks.Len() < 2 {
+		t.Fatal("timer tasks were not enqueued")
+	}
+	for range 2 {
+		if err := page.Realm.RunOne(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := page.QueueScript(browser.ScriptSource{URL: "verify.js", Source: `
+		if (!completedAfterError) throw new Error("event loop stopped after timer exception");
+	`}); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	mutex.Lock()
+	defer mutex.Unlock()
+	if len(messages) != 1 || messages[0].Method != "error" || !strings.Contains(strings.Join(messages[0].Arguments, " "), "expected timer failure") {
+		t.Fatalf("reported timer messages = %#v", messages)
 	}
 }
 

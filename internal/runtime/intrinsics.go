@@ -204,6 +204,7 @@ const (
 	nativeReflectGet
 	nativeReflectApply
 	nativeStringConcat
+	nativeBigIntConstructor
 )
 
 // Intrinsics is one task-local instantiation of the native ECMAScript
@@ -251,12 +252,13 @@ type Intrinsics struct {
 	DateConstructor           memory.Ref
 	IsNaN                     memory.Ref
 	NumberConstructor         memory.Ref
+	BigIntConstructor         memory.Ref
 	RegExpConstructor         memory.Ref
 	WeakMapConstructor        memory.Ref
 	WeakSetConstructor        memory.Ref
 }
 
-const intrinsicRootCount = 42
+const intrinsicRootCount = 43
 
 // Roots returns every Ref needed to carry one intrinsic environment across an
 // explicit ownership boundary. The ordering is private to this package and is
@@ -331,6 +333,7 @@ func (intrinsics *Intrinsics) rootArray() [intrinsicRootCount]memory.Ref {
 		intrinsics.WeakMapConstructor,
 		intrinsics.WeakSetConstructor,
 		intrinsics.SymbolToStringTag,
+		intrinsics.BigIntConstructor,
 	}
 }
 
@@ -388,6 +391,7 @@ func RestoreIntrinsics(roots []memory.Ref) (*Intrinsics, error) {
 		WeakMapConstructor:        roots[39],
 		WeakSetConstructor:        roots[40],
 		SymbolToStringTag:         roots[41],
+		BigIntConstructor:         roots[42],
 	}, nil
 }
 
@@ -568,6 +572,7 @@ func (interpreter *Interpreter) Bootstrap(context *TaskContext) (*Intrinsics, er
 		{"Date", memory.RefValue(intrinsics.DateConstructor)},
 		{"isNaN", memory.RefValue(intrinsics.IsNaN)},
 		{"Number", memory.RefValue(intrinsics.NumberConstructor)},
+		{"BigInt", memory.RefValue(intrinsics.BigIntConstructor)},
 		{"RegExp", memory.RefValue(intrinsics.RegExpConstructor)},
 		{"WeakMap", memory.RefValue(intrinsics.WeakMapConstructor)},
 		{"WeakSet", memory.RefValue(intrinsics.WeakSetConstructor)},
@@ -698,6 +703,7 @@ func (interpreter *Interpreter) registerBuiltinCallbacks() error {
 		nativeReflectGet:                      builtinReflectGet,
 		nativeReflectApply:                    builtinReflectApply,
 		nativeStringConcat:                    builtinStringConcat,
+		nativeBigIntConstructor:               builtinBigIntConstructor,
 		nativeArrayReduce:                     builtinArrayReduce,
 		nativeArraySome:                       builtinArraySome,
 		nativeArrayEvery:                      builtinArrayEvery,

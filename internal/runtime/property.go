@@ -9,7 +9,32 @@ import (
 )
 
 func (execution *execution) getProperty(base, key memory.Value) (memory.Value, bool, error) {
-	return execution.getPropertyWithReceiver(base, key, base)
+	value, found, err := execution.getPropertyWithReceiver(base, key, base)
+	if err == nil && !found {
+		execution.observePropertyMiss(base, key)
+	}
+	return value, found, err
+}
+
+func (execution *execution) observePropertyMiss(base, key memory.Value) {
+	if execution == nil || execution.interpreter == nil || execution.interpreter.config.PropertyMiss == nil || !key.IsRef() {
+		return
+	}
+	keyKind, err := execution.context.HeapKind(key.Ref())
+	if err != nil || keyKind != memory.HeapString {
+		return
+	}
+	name, err := execution.context.DerefString(key.Ref())
+	if err != nil {
+		return
+	}
+	sample := PropertyMissSample{BaseKind: base.Kind(), Name: name}
+	if base.IsRef() {
+		if kind, kindErr := execution.context.HeapKind(base.Ref()); kindErr == nil {
+			sample.HeapKind = kind
+		}
+	}
+	execution.interpreter.config.PropertyMiss(sample)
 }
 
 func (execution *execution) getPropertyWithReceiver(base, key, receiver memory.Value) (memory.Value, bool, error) {

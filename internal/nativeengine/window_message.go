@@ -10,6 +10,15 @@ import (
 	"github.com/JediWattson/gossamer/internal/runtime/memory"
 )
 
+func (realm *Realm) globalWindowMethod(callback browserruntime.NativeFunction) browserruntime.NativeFunction {
+	return func(context *browserruntime.TaskContext, _ memory.Value, arguments []memory.Value) (memory.Value, error) {
+		if realm == nil || realm.bindings.window == (memory.Ref{}) {
+			return memory.Value{}, ErrRealmClosed
+		}
+		return callback(context, memory.RefValue(realm.bindings.window), arguments)
+	}
+}
+
 func (realm *Realm) windowParent(context *browserruntime.TaskContext, this memory.Value, _ []memory.Value) (memory.Value, error) {
 	document, err := realm.windowDocument(context, this)
 	if err != nil {

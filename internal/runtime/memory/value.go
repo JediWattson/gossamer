@@ -1,6 +1,9 @@
 package memory
 
-import "math"
+import (
+	"fmt"
+	"math"
+)
 
 // ValueKind identifies the small set of synthetic values supported by the
 // first native heap. It is intentionally not a JavaScript value model.
@@ -13,6 +16,23 @@ const (
 	ValueNumber
 	ValueReference
 )
+
+func (kind ValueKind) String() string {
+	switch kind {
+	case ValueUndefined:
+		return "undefined"
+	case ValueNull:
+		return "null"
+	case ValueBool:
+		return "boolean"
+	case ValueNumber:
+		return "number"
+	case ValueReference:
+		return "reference"
+	default:
+		return fmt.Sprintf("ValueKind(%d)", kind)
+	}
+}
 
 const (
 	valueNullBits         uint64 = 0x7ff8000000000001

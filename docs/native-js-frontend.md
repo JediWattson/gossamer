@@ -98,6 +98,9 @@ without keeping an interpreter frame alive.
 
 This is not yet an ECMAScript-compatible engine. In particular:
 
+- indirect `eval` executes in the Realm global environment, while direct
+  caller-local lexical `eval` remains unsupported;
+
 - Annex B block-Function compatibility and the full global-environment split
   are not implemented; Function declarations use the containing Function or
   script scope;

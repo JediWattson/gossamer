@@ -239,6 +239,9 @@ func (execution *execution) abstractEqualDepth(left, right memory.Value, depth i
 	if rightType == semanticBool {
 		return execution.abstractEqualDepth(left, memory.NumberValue(boolNumber(right.Bool())), depth+1)
 	}
+	if equal, handled, err := equalBigIntPrimitives(execution, left, right, leftType, rightType); handled || err != nil {
+		return equal, err
+	}
 	if leftType == semanticString && rightType == semanticNumber {
 		number, err := execution.toNumber(left)
 		return !math.IsNaN(number) && number == right.Number(), err
@@ -349,6 +352,9 @@ func (execution *execution) comparePrimitives(left, right memory.Value) (compari
 			return 0, false, err
 		}
 		return strings.Compare(leftText, rightText), false, nil
+	}
+	if comparison, unordered, handled, err := compareBigIntPrimitives(execution, left, right); handled || err != nil {
+		return comparison, unordered, err
 	}
 	leftNumber, err := execution.toNumber(left)
 	if err != nil {

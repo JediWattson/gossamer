@@ -113,6 +113,7 @@ var nativeGlobalBindings = map[string]bool{
 	"Array":                true,
 	"String":               true,
 	"Number":               true,
+	"BigInt":               true,
 	"RegExp":               true,
 	"Symbol":               true,
 	"Math":                 true,

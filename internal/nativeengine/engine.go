@@ -117,6 +117,7 @@ type Realm struct {
 	executionSample              func(*browserruntime.TaskContext, browserruntime.ExecutionSample) error
 	lastExecutionSampleTask      browserruntime.TaskID
 	lastExecutionSampleRaw       uint64
+	evalDepth                    uint32
 	consoleSink                  func(ConsoleMessage)
 	reportedExceptions           uint64
 
@@ -432,6 +433,9 @@ func (realm *Realm) Invoke(host browser.Host, handle browser.ValueHandle) error 
 		return fmt.Errorf("nativeengine: begin callback %d in task %d: %w", handle, task.TaskID, err)
 	}
 	if err := realm.invokeCallbackLocked(scope, handle); err != nil {
+		if realm.reportCallbackExceptionLocked(scope, "timer callback", err) {
+			return nil
+		}
 		return fmt.Errorf("nativeengine: invoke callback %d in task %d: %w", handle, task.TaskID, err)
 	}
 	return nil
@@ -463,6 +467,9 @@ func (realm *Realm) InvokeAnimationFrame(host browser.Host, handle browser.Value
 		}
 	}
 	if err := realm.invokeCallbackArgumentsLocked(scope, handle, true, memory.UndefinedValue(), memory.NumberValue(timestamp)); err != nil {
+		if realm.reportCallbackExceptionLocked(scope, "animation frame callback", err) {
+			return nil
+		}
 		return fmt.Errorf("nativeengine: invoke animation callback %d in task %d: %w", handle, task.TaskID, err)
 	}
 	return nil

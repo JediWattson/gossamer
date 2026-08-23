@@ -101,6 +101,62 @@ func TestSnapshotRestylesAttributeSubtreeAndPseudoStyles(t *testing.T) {
 	}
 }
 
+func TestSnapshotRestylesComposedShadowChildren(t *testing.T) {
+	root := dom.NewDocument()
+	html := dom.NewElement("html")
+	head := dom.NewElement("head")
+	owner := dom.NewElement("style")
+	head.AppendChild(owner)
+	body := dom.NewElement("body")
+	host := dom.NewElement("div")
+	body.AppendChild(host)
+	html.AppendChild(head)
+	html.AppendChild(body)
+	root.AppendChild(html)
+	document, err := dom.IndexDocument(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostID, _ := document.ID(host)
+	shadowID, err := document.AttachShadow(hostID, dom.ShadowRootClosed, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leadID, err := document.AppendChild(shadowID, dom.NewElement("span"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetID, err := document.AppendChild(shadowID, dom.NewElement("span", dom.Attribute{Name: "class", Value: "target"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := incrementalStyleInput(t, owner, `.lead + .target { color:#123456 }`)
+	snapshot := incrementalStyleSnapshot(t, document, input)
+	sequence := document.MutationSequence()
+	if err := document.SetAttribute(leadID, "class", "lead"); err != nil {
+		t.Fatal(err)
+	}
+	updated, reused := incrementalStyleUpdate(t, document, snapshot, input, sequence)
+	if !reused {
+		t.Fatal("shadow-tree sibling mutation did not use composed subtree restyle")
+	}
+	assertIncrementalSnapshotMatchesFull(t, document, input, updated)
+	target, found := updated.LookupID(targetID)
+	if !found || target.Color().R != 0x12 || target.Color().G != 0x34 || target.Color().B != 0x56 {
+		t.Fatalf("shadow target color = %#v, %t", target.Color(), found)
+	}
+
+	sequence = document.MutationSequence()
+	if err := document.SetAttribute(targetID, "style", "color:#654321"); err != nil {
+		t.Fatal(err)
+	}
+	updated, reused = incrementalStyleUpdate(t, document, updated, input, sequence)
+	if !reused {
+		t.Fatal("shadow child inline style mutation did not use composed parent")
+	}
+	assertIncrementalSnapshotMatchesFull(t, document, input, updated)
+}
+
 func TestSnapshotRestylesSiblingAndNthFilterDependencies(t *testing.T) {
 	for _, test := range []struct {
 		name       string

@@ -69,3 +69,22 @@ func TestCompactValueKeepsSameValueNumberDistinctions(t *testing.T) {
 		t.Fatal("numeric NaN was not canonicalized")
 	}
 }
+
+func TestValueKindString(t *testing.T) {
+	tests := []struct {
+		kind memory.ValueKind
+		want string
+	}{
+		{memory.ValueUndefined, "undefined"},
+		{memory.ValueNull, "null"},
+		{memory.ValueBool, "boolean"},
+		{memory.ValueNumber, "number"},
+		{memory.ValueReference, "reference"},
+		{memory.ValueKind(99), "ValueKind(99)"},
+	}
+	for _, test := range tests {
+		if got := test.kind.String(); got != test.want {
+			t.Errorf("ValueKind(%d).String() = %q; want %q", test.kind, got, test.want)
+		}
+	}
+}

@@ -41,6 +41,10 @@ type InterpreterConfig struct {
 	// interval disables sampling.
 	ExecutionSampleInterval uint64
 	ExecutionSample         func(*TaskContext, ExecutionSample) error
+	// PropertyMiss observes absent named-property reads without exposing the
+	// receiver Ref or retaining heap ownership. It is intended for bounded,
+	// opt-in compatibility diagnostics.
+	PropertyMiss func(PropertyMissSample)
 }
 
 // ExecutionSample identifies one sparse point inside a running bytecode call.
@@ -56,6 +60,14 @@ type ExecutionSample struct {
 	FunctionHash    uint64
 	Instruction     uint32
 	Opcode          Opcode
+}
+
+// PropertyMissSample describes an absent named-property read. BaseKind is the
+// compact Value representation; HeapKind further classifies reference values.
+type PropertyMissSample struct {
+	BaseKind memory.ValueKind
+	HeapKind memory.HeapKind
+	Name     string
 }
 
 // NativeFunction is an explicitly registered host callback. Native Function
@@ -1636,7 +1648,7 @@ func chargeExecutionBudget(frame *Frame, instructionIndex uint32, instruction In
 
 func requireRef(value memory.Value, label string) (memory.Ref, error) {
 	if !value.IsRef() {
-		return memory.Ref{}, fmt.Errorf("%w: %s must be a Ref", ErrOperandType, label)
+		return memory.Ref{}, fmt.Errorf("%w: %s must be a Ref (got %s)", ErrOperandType, label, value.Kind())
 	}
 	return value.Ref(), nil
 }
@@ -2141,6 +2153,13 @@ func executeOperator(execution *execution, frame *Frame, opcode Opcode) error {
 		if err != nil {
 			return err
 		}
+		if value, handled, err := executeBigIntUnary(context, opcode, operand); handled || err != nil {
+			if err != nil {
+				return err
+			}
+			frame.push(value)
+			return nil
+		}
 		value, err := execution.toNumber(operand)
 		if err != nil {
 			return err
@@ -2268,6 +2287,13 @@ func executeOperator(execution *execution, frame *Frame, opcode Opcode) error {
 			frame.push(memory.RefValue(ref))
 			return nil
 		}
+		if value, handled, err := executeBigIntBinary(context, opcode, left, right); handled || err != nil {
+			if err != nil {
+				return err
+			}
+			frame.push(value)
+			return nil
+		}
 		leftNumber, err := execution.toNumber(left)
 		if err != nil {
 			return err
@@ -2284,6 +2310,13 @@ func executeOperator(execution *execution, frame *Frame, opcode Opcode) error {
 		rightValue, leftValue, err := popBinary(frame)
 		if err != nil {
 			return err
+		}
+		if value, handled, err := executeBigIntBinary(context, opcode, leftValue, rightValue); handled || err != nil {
+			if err != nil {
+				return err
+			}
+			frame.push(value)
+			return nil
 		}
 		left, err := execution.toNumber(leftValue)
 		if err != nil {

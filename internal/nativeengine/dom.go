@@ -191,6 +191,18 @@ const (
 	nativeWindowTop
 	nativeWindowPostMessage
 	nativeIFrameContentWindow
+	nativeGlobalWindowAddEventListener
+	nativeGlobalWindowRemoveEventListener
+	nativeGlobalWindowDispatchEvent
+	nativeGlobalWindowPostMessage
+	nativeGlobalEval
+	nativeGlobalAtob
+	nativeGlobalBtoa
+	nativeDocumentVisibilityState
+	nativeDocumentHidden
+	nativeElementAttributes
+	nativeAttributesItem
+	nativeAttributesGetNamedItem
 )
 
 const (
@@ -242,6 +254,8 @@ const (
 	bindingResizeObserverConstructor       = "\x00gossamer.resize-observer.constructor"
 	bindingIntersectionObserverPrototype   = "\x00gossamer.intersection-observer.prototype"
 	bindingIntersectionObserverConstructor = "\x00gossamer.intersection-observer.constructor"
+	bindingPerformanceObserverPrototype    = "\x00gossamer.performance-observer.prototype"
+	bindingPerformanceObserverConstructor  = "\x00gossamer.performance-observer.constructor"
 	bindingDOMException                    = "DOMException"
 	bindingWrapperCache                    = "\x00gossamer.wrapper.cache"
 	bindingCallbackCache                   = "\x00gossamer.callback.cache"
@@ -258,6 +272,7 @@ const (
 	bindingMutationObserver                = "MutationObserver"
 	bindingResizeObserver                  = "ResizeObserver"
 	bindingIntersectionObserver            = "IntersectionObserver"
+	bindingPerformanceObserver             = "PerformanceObserver"
 	bindingRangePrototype                  = "\x00gossamer.range.prototype"
 	bindingSelectionPrototype              = "\x00gossamer.selection.prototype"
 	bindingSelection                       = "\x00gossamer.selection"
@@ -312,6 +327,8 @@ type browserBindings struct {
 	resizeObserverConstructor       memory.Ref
 	intersectionObserverPrototype   memory.Ref
 	intersectionObserverConstructor memory.Ref
+	performanceObserverPrototype    memory.Ref
+	performanceObserverConstructor  memory.Ref
 	domExceptionPrototype           memory.Ref
 	domExceptionConstructor         memory.Ref
 	urlSearchParamsPrototype        memory.Ref
@@ -403,11 +420,23 @@ func (realm *Realm) installBrowserNatives() error {
 		{nativeWindowTop, realm.windowTop},
 		{nativeWindowPostMessage, realm.windowPostMessage},
 		{nativeIFrameContentWindow, realm.iframeContentWindow},
+		{nativeGlobalWindowAddEventListener, realm.globalWindowMethod(realm.eventTargetAdd)},
+		{nativeGlobalWindowRemoveEventListener, realm.globalWindowMethod(realm.eventTargetRemove)},
+		{nativeGlobalWindowDispatchEvent, realm.globalWindowMethod(realm.eventTargetDispatch)},
+		{nativeGlobalWindowPostMessage, realm.globalWindowMethod(realm.windowPostMessage)},
+		{nativeGlobalEval, realm.globalEval},
+		{nativeGlobalAtob, realm.globalAtob},
+		{nativeGlobalBtoa, realm.globalBtoa},
 		{nativeDocumentCreateElementNS, realm.documentCreateElementNS},
 		{nativeDocumentCreateDocumentFragment, realm.documentCreateDocumentFragment},
 		{nativeDocumentDefaultView, realm.documentDefaultView},
 		{nativeDocumentBaseURI, realm.documentBaseURI},
 		{nativeDocumentReadyState, realm.documentReadyState},
+		{nativeDocumentVisibilityState, realm.documentVisibilityState},
+		{nativeDocumentHidden, realm.documentHidden},
+		{nativeElementAttributes, realm.elementAttributes},
+		{nativeAttributesItem, realm.attributesItem},
+		{nativeAttributesGetNamedItem, realm.attributesGetNamedItem},
 		{nativeNodeParentElement, realm.nodeRelation(browser.RelationParentElement)},
 		{nativeNodeOwnerDocument, realm.nodeOwnerDocument},
 		{nativeNodeNamespaceURI, realm.nodeNamespaceURI},
@@ -505,6 +534,13 @@ func (realm *Realm) installBrowserNatives() error {
 		{nativeGlobalRequestAnimationFrame, realm.globalRequestAnimationFrame},
 		{nativeGlobalCancelAnimationFrame, realm.globalCancelAnimationFrame},
 		{nativePerformanceNow, realm.performanceNow},
+		{nativePerformanceGetEntries, realm.performanceGetEntries},
+		{nativePerformanceGetEntriesByType, realm.performanceGetEntriesByType},
+		{nativePerformanceGetEntriesByName, realm.performanceGetEntriesByName},
+		{nativePerformanceObserverConstructor, realm.performanceObserverConstructor},
+		{nativePerformanceObserverObserve, realm.performanceObserverObserve},
+		{nativePerformanceObserverDisconnect, realm.performanceObserverDisconnect},
+		{nativePerformanceObserverTakeRecords, realm.performanceObserverTakeRecords},
 		{nativeMutationObserverConstructor, realm.mutationObserverConstructor},
 		{nativeMutationObserverObserve, realm.mutationObserverObserve},
 		{nativeMutationObserverDisconnect, realm.mutationObserverDisconnect},
@@ -642,6 +678,7 @@ func (realm *Realm) installBrowserNatives() error {
 		{nativeLocationToString, realm.locationToString},
 		{nativeGlobalFetch, realm.globalFetch},
 		{nativeCryptoRandomUUID, realm.cryptoRandomUUID},
+		{nativeCryptoGetRandomValues, realm.cryptoGetRandomValues},
 		{nativeHeadersConstructor, realm.headersConstructor},
 		{nativeHeadersAppend, realm.headersAppend},
 		{nativeHeadersDelete, realm.headersDelete},
@@ -752,6 +789,8 @@ func (realm *Realm) prepareBrowserBindingsLocked(context *browserruntime.TaskCon
 			{bindingResizeObserverConstructor, &bindings.resizeObserverConstructor},
 			{bindingIntersectionObserverPrototype, &bindings.intersectionObserverPrototype},
 			{bindingIntersectionObserverConstructor, &bindings.intersectionObserverConstructor},
+			{bindingPerformanceObserverPrototype, &bindings.performanceObserverPrototype},
+			{bindingPerformanceObserverConstructor, &bindings.performanceObserverConstructor},
 			{bindingDOMExceptionPrototype, &bindings.domExceptionPrototype},
 			{bindingDOMExceptionConstructor, &bindings.domExceptionConstructor},
 			{bindingURLSearchParamsPrototype, &bindings.urlSearchParamsPrototype},
@@ -885,6 +924,10 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 	if err != nil {
 		return err
 	}
+	bindings.performanceObserverConstructor, bindings.performanceObserverPrototype, err = realm.newPerformanceObserverConstructor(context)
+	if err != nil {
+		return err
+	}
 	bindings.domExceptionConstructor, bindings.domExceptionPrototype, err = realm.newDOMExceptionConstructor(context)
 	if err != nil {
 		return err
@@ -960,6 +1003,9 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 	if err != nil {
 		return err
 	}
+	if err := installECMAScriptWindowAliases(context, realm.active.Global, bindings.window); err != nil {
+		return err
+	}
 	bindings.location, err = realm.newLocation(context, metadata.Root.Document)
 	if err != nil {
 		return err
@@ -1006,11 +1052,56 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 	if err := defineData(context, bindings.performance, "now", memory.RefValue(performanceNow), true, false, true); err != nil {
 		return err
 	}
+	for _, method := range []struct {
+		name  string
+		arity uint32
+		id    uint64
+	}{
+		{"getEntries", 0, nativePerformanceGetEntries},
+		{"getEntriesByType", 1, nativePerformanceGetEntriesByType},
+		{"getEntriesByName", 1, nativePerformanceGetEntriesByName},
+	} {
+		function, err := realm.newNativeFunction(context, method.name, method.arity, method.id)
+		if err != nil {
+			return err
+		}
+		if err := defineData(context, bindings.performance, method.name, memory.RefValue(function), true, false, true); err != nil {
+			return err
+		}
+	}
 	getComputedStyle, err := realm.newNativeFunction(context, "getComputedStyle", 1, nativeGlobalGetComputedStyle)
 	if err != nil {
 		return err
 	}
 	getSelection, err := realm.newNativeFunction(context, "getSelection", 0, nativeDocumentGetSelection)
+	if err != nil {
+		return err
+	}
+	addEventListener, err := realm.newNativeFunction(context, "addEventListener", 2, nativeGlobalWindowAddEventListener)
+	if err != nil {
+		return err
+	}
+	removeEventListener, err := realm.newNativeFunction(context, "removeEventListener", 2, nativeGlobalWindowRemoveEventListener)
+	if err != nil {
+		return err
+	}
+	dispatchEvent, err := realm.newNativeFunction(context, "dispatchEvent", 1, nativeGlobalWindowDispatchEvent)
+	if err != nil {
+		return err
+	}
+	postMessage, err := realm.newNativeFunction(context, "postMessage", 1, nativeGlobalWindowPostMessage)
+	if err != nil {
+		return err
+	}
+	eval, err := realm.newNativeFunction(context, "eval", 1, nativeGlobalEval)
+	if err != nil {
+		return err
+	}
+	atob, err := realm.newNativeFunction(context, "atob", 1, nativeGlobalAtob)
+	if err != nil {
+		return err
+	}
+	btoa, err := realm.newNativeFunction(context, "btoa", 1, nativeGlobalBtoa)
 	if err != nil {
 		return err
 	}
@@ -1049,6 +1140,13 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{"window", memory.RefValue(bindings.window)},
 		{"self", memory.RefValue(bindings.window)},
 		{"globalThis", memory.RefValue(bindings.window)},
+		{"addEventListener", memory.RefValue(addEventListener)},
+		{"removeEventListener", memory.RefValue(removeEventListener)},
+		{"dispatchEvent", memory.RefValue(dispatchEvent)},
+		{"postMessage", memory.RefValue(postMessage)},
+		{"eval", memory.RefValue(eval)},
+		{"atob", memory.RefValue(atob)},
+		{"btoa", memory.RefValue(btoa)},
 		{"onmessage", memory.NullValue()},
 		{"document", memory.RefValue(bindings.document)},
 		{"queueMicrotask", memory.RefValue(realm.active.QueueMicrotask)},
@@ -1077,6 +1175,7 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{"MutationObserver", memory.RefValue(bindings.mutationObserverConstructor)},
 		{"ResizeObserver", memory.RefValue(bindings.resizeObserverConstructor)},
 		{"IntersectionObserver", memory.RefValue(bindings.intersectionObserverConstructor)},
+		{"PerformanceObserver", memory.RefValue(bindings.performanceObserverConstructor)},
 		{bindingDOMException, memory.RefValue(bindings.domExceptionConstructor)},
 		{"URLSearchParams", memory.RefValue(bindings.urlSearchParamsConstructor)},
 		{"URL", memory.RefValue(bindings.urlConstructor)},
@@ -1141,6 +1240,8 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{bindingResizeObserverConstructor, bindings.resizeObserverConstructor, false},
 		{bindingIntersectionObserverPrototype, bindings.intersectionObserverPrototype, false},
 		{bindingIntersectionObserverConstructor, bindings.intersectionObserverConstructor, false},
+		{bindingPerformanceObserverPrototype, bindings.performanceObserverPrototype, false},
+		{bindingPerformanceObserverConstructor, bindings.performanceObserverConstructor, false},
 		{bindingDOMExceptionPrototype, bindings.domExceptionPrototype, false},
 		{bindingDOMExceptionConstructor, bindings.domExceptionConstructor, false},
 		{bindingURLSearchParamsPrototype, bindings.urlSearchParamsPrototype, false},
@@ -1191,6 +1292,7 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{bindingMutationObserver, bindings.mutationObserverConstructor, false},
 		{bindingResizeObserver, bindings.resizeObserverConstructor, false},
 		{bindingIntersectionObserver, bindings.intersectionObserverConstructor, true},
+		{bindingPerformanceObserver, bindings.performanceObserverConstructor, true},
 		{bindingDOMException, bindings.domExceptionConstructor, true},
 		{"URLSearchParams", bindings.urlSearchParamsConstructor, true},
 		{"URL", bindings.urlConstructor, true},
@@ -1215,6 +1317,9 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{"cancelAnimationFrame", cancelAnimationFrame, true},
 		{"getComputedStyle", getComputedStyle, true},
 		{"getSelection", getSelection, true},
+		{"eval", eval, true},
+		{"atob", atob, true},
+		{"btoa", btoa, true},
 		{"Range", rangeConstructor, true},
 		{"Selection", selectionConstructor, true},
 	}
@@ -1325,6 +1430,9 @@ func (realm *Realm) installDOMPrototypeProperties(context *browserruntime.TaskCo
 		{realm.bindings.intersectionObserverPrototype, "unobserve", 1, nativeIntersectionObserverUnobserve},
 		{realm.bindings.intersectionObserverPrototype, "disconnect", 0, nativeIntersectionObserverDisconnect},
 		{realm.bindings.intersectionObserverPrototype, "takeRecords", 0, nativeIntersectionObserverTakeRecords},
+		{realm.bindings.performanceObserverPrototype, "observe", 1, nativePerformanceObserverObserve},
+		{realm.bindings.performanceObserverPrototype, "disconnect", 0, nativePerformanceObserverDisconnect},
+		{realm.bindings.performanceObserverPrototype, "takeRecords", 0, nativePerformanceObserverTakeRecords},
 		{realm.bindings.nodePrototype, "addEventListener", 2, nativeEventTargetAdd},
 		{realm.bindings.nodePrototype, "removeEventListener", 2, nativeEventTargetRemove},
 		{realm.bindings.nodePrototype, "dispatchEvent", 1, nativeEventTargetDispatch},
@@ -1390,6 +1498,8 @@ func (realm *Realm) installDOMPrototypeProperties(context *browserruntime.TaskCo
 		{realm.bindings.documentPrototype, "defaultView", nativeDocumentDefaultView, 0},
 		{realm.bindings.documentPrototype, "baseURI", nativeDocumentBaseURI, 0},
 		{realm.bindings.documentPrototype, "readyState", nativeDocumentReadyState, 0},
+		{realm.bindings.documentPrototype, "visibilityState", nativeDocumentVisibilityState, 0},
+		{realm.bindings.documentPrototype, "hidden", nativeDocumentHidden, 0},
 		{realm.bindings.documentPrototype, "activeElement", nativeDocumentActiveElement, 0},
 		{realm.bindings.documentPrototype, "scrollingElement", nativeDocumentScrollingElement, 0},
 		{realm.bindings.nodePrototype, "nodeType", nativeNodeType, 0},
@@ -1412,6 +1522,8 @@ func (realm *Realm) installDOMPrototypeProperties(context *browserruntime.TaskCo
 		{realm.bindings.templatePrototype, "content", nativeTemplateContent, 0},
 		{realm.bindings.textPrototype, "data", nativeNodeValueGet, nativeNodeValueSet},
 		{realm.bindings.elementPrototype, "localName", nativeElementLocalName, 0},
+		{realm.bindings.elementPrototype, "tagName", nativeNodeName, 0},
+		{realm.bindings.elementPrototype, "attributes", nativeElementAttributes, 0},
 		{realm.bindings.elementPrototype, "shadowRoot", nativeElementShadowRoot, 0},
 		{realm.bindings.shadowRootPrototype, "host", nativeShadowRootHost, 0},
 		{realm.bindings.shadowRootPrototype, "mode", nativeShadowRootMode, 0},
@@ -1782,6 +1894,22 @@ func (realm *Realm) documentReadyState(context *browserruntime.TaskContext, this
 		return memory.Value{}, err
 	}
 	return newString(context, state)
+}
+
+func (realm *Realm) documentVisibilityState(context *browserruntime.TaskContext, this memory.Value, _ []memory.Value) (memory.Value, error) {
+	if _, err := realm.unwrapNode(context, this); err != nil {
+		return memory.Value{}, err
+	}
+	// Pages do not yet have a backgrounding lifecycle, so every live document
+	// is visible. This is an explicit state, not a fabricated visibility event.
+	return newString(context, "visible")
+}
+
+func (realm *Realm) documentHidden(context *browserruntime.TaskContext, this memory.Value, _ []memory.Value) (memory.Value, error) {
+	if _, err := realm.unwrapNode(context, this); err != nil {
+		return memory.Value{}, err
+	}
+	return memory.BoolValue(false), nil
 }
 
 func (realm *Realm) documentMetadata() (browser.DocumentMetadata, error) {
@@ -2271,6 +2399,133 @@ func (realm *Realm) elementGetAttribute(context *browserruntime.TaskContext, thi
 	return newString(context, value)
 }
 
+func (realm *Realm) elementAttributes(context *browserruntime.TaskContext, this memory.Value, _ []memory.Value) (memory.Value, error) {
+	handle, err := realm.unwrapNode(context, this)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	host, ok := realm.host.(browser.DOMElementHost)
+	if !ok {
+		return memory.Value{}, fmt.Errorf("nativeengine: browser host does not expose attributes")
+	}
+	names, err := host.AttributeNames(handle)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	attributes, err := context.NewArray(uint32(len(names)))
+	if err != nil {
+		return memory.Value{}, err
+	}
+	item, err := realm.newNativeFunction(context, "item", 1, nativeAttributesItem)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	getNamedItem, err := realm.newNativeFunction(context, "getNamedItem", 1, nativeAttributesGetNamedItem)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	if err := defineData(context, attributes, "item", memory.RefValue(item), true, false, true); err != nil {
+		return memory.Value{}, err
+	}
+	if err := defineData(context, attributes, "getNamedItem", memory.RefValue(getNamedItem), true, false, true); err != nil {
+		return memory.Value{}, err
+	}
+	for index, name := range names {
+		value, _, err := realm.host.GetAttribute(handle, name)
+		if err != nil {
+			return memory.Value{}, err
+		}
+		nameValue, err := newString(context, name)
+		if err != nil {
+			return memory.Value{}, err
+		}
+		attributeValue, err := newString(context, value)
+		if err != nil {
+			return memory.Value{}, err
+		}
+		attribute, err := context.NewHeapObject()
+		if err != nil {
+			return memory.Value{}, err
+		}
+		for _, property := range []struct {
+			name  string
+			value memory.Value
+		}{
+			{"name", nameValue}, {"localName", nameValue}, {"nodeName", nameValue},
+			{"value", attributeValue}, {"nodeValue", attributeValue}, {"specified", memory.BoolValue(true)},
+			{"namespaceURI", memory.NullValue()}, {"prefix", memory.NullValue()}, {"ownerElement", this},
+		} {
+			if err := defineData(context, attribute, property.name, property.value, false, true, true); err != nil {
+				return memory.Value{}, err
+			}
+		}
+		if err := context.SetArrayElement(attributes, uint32(index), memory.RefValue(attribute)); err != nil {
+			return memory.Value{}, err
+		}
+	}
+	return memory.RefValue(attributes), nil
+}
+
+func (realm *Realm) attributesItem(context *browserruntime.TaskContext, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+	if !this.IsRef() {
+		return memory.Value{}, fmt.Errorf("%w: invalid NamedNodeMap receiver", browserruntime.ErrOperandType)
+	}
+	kind, err := context.HeapKind(this.Ref())
+	if err != nil {
+		return memory.Value{}, err
+	}
+	if kind != memory.HeapArray {
+		return memory.Value{}, fmt.Errorf("%w: invalid NamedNodeMap receiver", browserruntime.ErrOperandType)
+	}
+	index, err := integerArgument(arguments, 0)
+	if err != nil || index < 0 {
+		return memory.NullValue(), nil
+	}
+	value, found, err := context.ArrayElement(this.Ref(), uint32(index))
+	if err != nil || !found {
+		return memory.NullValue(), err
+	}
+	return value, nil
+}
+
+func (realm *Realm) attributesGetNamedItem(context *browserruntime.TaskContext, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+	name, err := stringArgument(context, arguments, 0)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	if !this.IsRef() {
+		return memory.Value{}, fmt.Errorf("%w: invalid NamedNodeMap receiver", browserruntime.ErrOperandType)
+	}
+	array, err := context.DerefArray(this.Ref())
+	if err != nil {
+		return memory.Value{}, fmt.Errorf("%w: invalid NamedNodeMap receiver", browserruntime.ErrOperandType)
+	}
+	nameRef, err := context.NewString("name")
+	if err != nil {
+		return memory.Value{}, err
+	}
+	for index := uint32(0); index < array.Length; index++ {
+		attribute, found, err := context.ArrayElement(this.Ref(), index)
+		if err != nil {
+			return memory.Value{}, err
+		}
+		if !found || !attribute.IsRef() {
+			continue
+		}
+		candidate, found, err := context.GetOwnProperty(attribute.Ref(), nameRef)
+		if err != nil {
+			return memory.Value{}, err
+		}
+		if found && candidate.IsRef() {
+			candidateName, nameErr := context.DerefString(candidate.Ref())
+			if nameErr == nil && candidateName == name {
+				return attribute, nil
+			}
+		}
+	}
+	return memory.NullValue(), nil
+}
+
 func (realm *Realm) elementSetAttribute(context *browserruntime.TaskContext, this memory.Value, arguments []memory.Value) (memory.Value, error) {
 	handle, name, err := realm.attributeOperands(context, this, arguments)
 	if err != nil {
@@ -2478,6 +2733,28 @@ func declareGlobal(context *browserruntime.TaskContext, global memory.Ref, name 
 		return err
 	}
 	return context.InitializeBinding(global, nameRef, value)
+}
+
+// installECMAScriptWindowAliases gives Window the language globals that were
+// created before the browser host object existed. Strand deliberately keeps
+// lexical environments and JavaScript objects as different physical payloads,
+// so this initial projection makes globalThis.Object, globalThis.Math, and the
+// rest observe the same identities as their bare global bindings.
+func installECMAScriptWindowAliases(context *browserruntime.TaskContext, global, window memory.Ref) error {
+	environment, err := context.DerefContext(global)
+	if err != nil {
+		return err
+	}
+	for _, binding := range environment.Bindings {
+		if !binding.Initialized || binding.Indirect {
+			continue
+		}
+		descriptor := memory.DataProperty(binding.Value, binding.Mutable, false, binding.Mutable)
+		if err := context.DefineProperty(window, binding.Name, descriptor); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func defineData(context *browserruntime.TaskContext, object memory.Ref, name string, value memory.Value, writable, enumerable, configurable bool) error {

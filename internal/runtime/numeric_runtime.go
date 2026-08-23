@@ -3,6 +3,7 @@ package runtime
 import (
 	"fmt"
 	"math"
+	"math/big"
 	"math/bits"
 	"math/rand/v2"
 	"strconv"
@@ -18,6 +19,11 @@ func (intrinsics *Intrinsics) installNumericBuiltins(context *TaskContext) error
 		return err
 	}
 	intrinsics.NumberConstructor = numberConstructor
+	bigIntConstructor, err := intrinsics.newBuiltinMethod(context, "BigInt", 1, nativeBigIntConstructor)
+	if err != nil {
+		return err
+	}
+	intrinsics.BigIntConstructor = bigIntConstructor
 	if err := defineData(context, numberConstructor, "prototype", memory.RefValue(intrinsics.NumberPrototype), false, false, false); err != nil {
 		return err
 	}
@@ -143,6 +149,69 @@ func (intrinsics *Intrinsics) installNumericBuiltins(context *TaskContext) error
 		}
 	}
 	return nil
+}
+
+func builtinBigIntConstructor(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+	if this.IsRef() {
+		return memory.Value{}, ErrNotConstructor
+	}
+	value := argument(arguments, 0)
+	if value.Kind() == memory.ValueUndefined || value.Kind() == memory.ValueNull {
+		return memory.Value{}, fmt.Errorf("%w: BigInt requires an integer-compatible value", ErrOperandType)
+	}
+	primitive, err := execution.toPrimitive(value, hintNumber)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	if primitive.IsRef() {
+		kind, kindErr := execution.context.HeapKind(primitive.Ref())
+		if kindErr != nil {
+			return memory.Value{}, kindErr
+		}
+		switch kind {
+		case memory.HeapBigInt:
+			return primitive, nil
+		case memory.HeapString:
+			text, textErr := execution.context.DerefString(primitive.Ref())
+			if textErr != nil {
+				return memory.Value{}, textErr
+			}
+			text = strings.TrimSpace(text)
+			if text == "" {
+				text = "0"
+			}
+			base := 10
+			unsigned := strings.TrimPrefix(strings.TrimPrefix(text, "+"), "-")
+			if strings.HasPrefix(strings.ToLower(unsigned), "0x") || strings.HasPrefix(strings.ToLower(unsigned), "0o") || strings.HasPrefix(strings.ToLower(unsigned), "0b") {
+				base = 0
+			}
+			integer, parseErr := execution.context.ParseBigInt(text, base)
+			if parseErr != nil {
+				return memory.Value{}, fmt.Errorf("%w: invalid BigInt string", ErrOperandType)
+			}
+			return memory.RefValue(integer), nil
+		default:
+			return memory.Value{}, fmt.Errorf("%w: value cannot be converted to BigInt", ErrOperandType)
+		}
+	}
+	switch primitive.Kind() {
+	case memory.ValueBool:
+		text := "0"
+		if primitive.Bool() {
+			text = "1"
+		}
+		integer, parseErr := execution.context.ParseBigInt(text, 10)
+		return memory.RefValue(integer), parseErr
+	case memory.ValueNumber:
+		number := primitive.Number()
+		if math.IsNaN(number) || math.IsInf(number, 0) || number != math.Trunc(number) {
+			return memory.Value{}, fmt.Errorf("%w: Number is not an integer", ErrOperandType)
+		}
+		integer, parseErr := execution.context.ParseBigInt(strconv.FormatFloat(number, 'f', -1, 64), 10)
+		return memory.RefValue(integer), parseErr
+	default:
+		return memory.Value{}, fmt.Errorf("%w: value cannot be converted to BigInt", ErrOperandType)
+	}
 }
 
 func builtinMathCLZ32(execution *execution, _ memory.Ref, _ memory.Function, _ memory.Value, arguments []memory.Value) (memory.Value, error) {
@@ -461,6 +530,24 @@ func builtinGlobalParseFloat(execution *execution, _ memory.Ref, _ memory.Functi
 func builtinNumberConstructor(execution *execution, _ memory.Ref, _ memory.Function, _ memory.Value, arguments []memory.Value) (memory.Value, error) {
 	if len(arguments) == 0 {
 		return memory.NumberValue(0), nil
+	}
+	if arguments[0].IsRef() {
+		kind, err := execution.context.HeapKind(arguments[0].Ref())
+		if err != nil {
+			return memory.Value{}, err
+		}
+		if kind == memory.HeapBigInt {
+			value, err := execution.context.DerefBigInt(arguments[0].Ref())
+			if err != nil {
+				return memory.Value{}, err
+			}
+			integer := new(big.Int).SetBytes(value.Magnitude)
+			if value.Negative {
+				integer.Neg(integer)
+			}
+			number, _ := new(big.Float).SetInt(integer).Float64()
+			return memory.NumberValue(number), nil
+		}
 	}
 	number, err := execution.toNumber(arguments[0])
 	return memory.NumberValue(number), err

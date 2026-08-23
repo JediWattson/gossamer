@@ -15,6 +15,7 @@ const (
 	nativeMediaQueryNoop
 	nativeMediaQueryDispatch
 	nativeCryptoRandomUUID
+	nativeCryptoGetRandomValues
 )
 
 func (realm *Realm) newCrypto(context *browserruntime.TaskContext) (memory.Ref, error) {
@@ -29,7 +30,37 @@ func (realm *Realm) newCrypto(context *browserruntime.TaskContext) (memory.Ref, 
 	if err := defineData(context, cryptoObject, "randomUUID", memory.RefValue(randomUUID), true, false, true); err != nil {
 		return memory.Ref{}, err
 	}
+	getRandomValues, err := realm.newNativeFunction(context, "getRandomValues", 1, nativeCryptoGetRandomValues)
+	if err != nil {
+		return memory.Ref{}, err
+	}
+	if err := defineData(context, cryptoObject, "getRandomValues", memory.RefValue(getRandomValues), true, false, true); err != nil {
+		return memory.Ref{}, err
+	}
 	return cryptoObject, nil
+}
+
+func (realm *Realm) cryptoGetRandomValues(context *browserruntime.TaskContext, _ memory.Value, arguments []memory.Value) (memory.Value, error) {
+	value := argument(arguments, 0)
+	view, err := requireUint8Array(context, value)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	if view.Length > 65_536 {
+		exception, exceptionErr := realm.newDOMExceptionValue(context, "QuotaExceededError", "The requested random byte length exceeds 65536.")
+		if exceptionErr != nil {
+			return memory.Value{}, exceptionErr
+		}
+		return memory.Value{}, browserruntime.Throw(exception)
+	}
+	bytes := make([]byte, view.Length)
+	if _, err := rand.Read(bytes); err != nil {
+		return memory.Value{}, fmt.Errorf("nativeengine: getRandomValues: %w", err)
+	}
+	if err := context.WriteArrayBuffer(view.Buffer, view.ByteOffset, bytes); err != nil {
+		return memory.Value{}, err
+	}
+	return value, nil
 }
 
 func (realm *Realm) cryptoRandomUUID(context *browserruntime.TaskContext, _ memory.Value, _ []memory.Value) (memory.Value, error) {

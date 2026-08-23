@@ -18,6 +18,13 @@ const (
 	nativeGlobalRequestAnimationFrame
 	nativeGlobalCancelAnimationFrame
 	nativePerformanceNow
+	nativePerformanceGetEntries
+	nativePerformanceGetEntriesByType
+	nativePerformanceGetEntriesByName
+	nativePerformanceObserverConstructor
+	nativePerformanceObserverObserve
+	nativePerformanceObserverDisconnect
+	nativePerformanceObserverTakeRecords
 )
 
 func (realm *Realm) globalSetTimeout(context *browserruntime.TaskContext, _ memory.Value, arguments []memory.Value) (memory.Value, error) {
@@ -157,6 +164,89 @@ func (realm *Realm) performanceNow(_ *browserruntime.TaskContext, _ memory.Value
 		return memory.Value{}, fmt.Errorf("nativeengine: browser host does not expose performance clock")
 	}
 	return memory.NumberValue(host.PerformanceNow()), nil
+}
+
+func (realm *Realm) performanceGetEntries(context *browserruntime.TaskContext, _ memory.Value, _ []memory.Value) (memory.Value, error) {
+	return realm.performanceEntries(context, true)
+}
+
+func (realm *Realm) performanceGetEntriesByType(context *browserruntime.TaskContext, _ memory.Value, arguments []memory.Value) (memory.Value, error) {
+	entryType, err := stringArgument(context, arguments, 0)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	return realm.performanceEntries(context, entryType == "navigation")
+}
+
+func (realm *Realm) performanceGetEntriesByName(context *browserruntime.TaskContext, _ memory.Value, arguments []memory.Value) (memory.Value, error) {
+	name, err := stringArgument(context, arguments, 0)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	entryType := ""
+	if len(arguments) > 1 && arguments[1].Kind() != memory.ValueUndefined {
+		entryType, err = stringArgument(context, arguments, 1)
+		if err != nil {
+			return memory.Value{}, err
+		}
+	}
+	metadata, err := realm.documentMetadata()
+	if err != nil {
+		return memory.Value{}, err
+	}
+	return realm.performanceEntries(context, name == metadata.BaseURI && (entryType == "" || entryType == "navigation"))
+}
+
+func (realm *Realm) performanceEntries(context *browserruntime.TaskContext, includeNavigation bool) (memory.Value, error) {
+	length := uint32(0)
+	if includeNavigation {
+		length = 1
+	}
+	entries, err := context.NewArray(length)
+	if err != nil || !includeNavigation {
+		return memory.RefValue(entries), err
+	}
+	metadata, err := realm.documentMetadata()
+	if err != nil {
+		return memory.Value{}, err
+	}
+	name, err := newString(context, metadata.BaseURI)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	entryType, err := newString(context, "navigation")
+	if err != nil {
+		return memory.Value{}, err
+	}
+	navigationType, err := newString(context, "navigate")
+	if err != nil {
+		return memory.Value{}, err
+	}
+	// The host does not yet expose navigation milestone timestamps. Keep the
+	// entry deterministic at zero instead of fabricating timing precision.
+	duration := memory.NumberValue(0)
+	entry, err := context.NewHeapObject()
+	if err != nil {
+		return memory.Value{}, err
+	}
+	for _, property := range []struct {
+		name  string
+		value memory.Value
+	}{
+		{"name", name}, {"entryType", entryType}, {"type", navigationType},
+		{"startTime", memory.NumberValue(0)}, {"duration", duration},
+		{"requestStart", duration}, {"responseStart", duration}, {"responseEnd", duration},
+		{"transferSize", memory.NumberValue(0)}, {"encodedBodySize", memory.NumberValue(0)},
+		{"domInteractive", duration}, {"domContentLoadedEventEnd", duration}, {"loadEventEnd", duration},
+	} {
+		if err := defineData(context, entry, property.name, property.value, true, true, true); err != nil {
+			return memory.Value{}, err
+		}
+	}
+	if err := context.SetArrayElement(entries, 0, memory.RefValue(entry)); err != nil {
+		return memory.Value{}, err
+	}
+	return memory.RefValue(entries), nil
 }
 
 func (realm *Realm) retainCallbackLocked(context *browserruntime.TaskContext, callback memory.Value) (browser.ValueHandle, error) {
