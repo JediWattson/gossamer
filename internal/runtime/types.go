@@ -412,6 +412,25 @@ func (context *TaskContext) NewBytecodeFunctionWithLocations(name, environment m
 	return context.trackNativeAllocation(ref, nil)
 }
 
+// NewSharedBytecodeFunctionWithLocations instantiates an immutable portable
+// Program Function without cloning its code. RegionStore compacts the source
+// locations into its own immutable table; constants remain ordinary
+// RegionStore graph values.
+func (context *TaskContext) NewSharedBytecodeFunctionWithLocations(name, environment memory.Value, arity uint32, code []byte, constants []memory.Value, locations []memory.SourceSpan) (memory.Ref, error) {
+	if context == nil || context.Realm == nil {
+		return memory.Ref{}, fmt.Errorf("runtime: nil task context")
+	}
+	ref, err := context.Realm.store.AllocSharedBytecodeFunction(context.Owner, context.MemoryRegion, name, environment, arity, code, constants, locations)
+	if err != nil || context.intrinsics == nil {
+		return context.trackNativeAllocation(ref, err)
+	}
+	if err := context.intrinsics.initializeFunction(context, ref, name, arity, true); err != nil {
+		_ = context.Realm.store.Free(context.Owner, ref)
+		return memory.Ref{}, err
+	}
+	return context.trackNativeAllocation(ref, nil)
+}
+
 func (context *TaskContext) NewArrowBytecodeFunctionWithLocations(name, environment, lexicalThis memory.Value, arity uint32, code []byte, constants []memory.Value, locations []memory.SourceSpan) (memory.Ref, error) {
 	if context == nil || context.Realm == nil {
 		return memory.Ref{}, fmt.Errorf("runtime: nil task context")

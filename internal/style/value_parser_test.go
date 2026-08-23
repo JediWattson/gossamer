@@ -186,6 +186,47 @@ func TestLengthMathParsesResolvesAndSerializesTypedExpressions(t *testing.T) {
 	}
 }
 
+func TestEnvironmentSafeAreaLengthsResolveWithFallbacks(t *testing.T) {
+	t.Parallel()
+
+	viewport := Viewport{
+		Width: 800, Height: 600, InitialFontSize: 16,
+		SafeAreaInsetTop: 12, SafeAreaInsetRight: 4,
+		SafeAreaInsetBottom: 20, SafeAreaInsetLeft: 6,
+	}
+	tests := []struct {
+		source string
+		want   float64
+	}{
+		{source: "env(safe-area-inset-top)", want: 12},
+		{source: "env(safe-area-inset-bottom, 99px)", want: 20},
+		{source: "calc(env(safe-area-inset-left) + 0.5em)", want: 14},
+		{source: "env(unknown-inset, calc(2px + 3px))", want: 5},
+		{source: "max(env(safe-area-inset-right), 8px)", want: 8},
+	}
+	for _, test := range tests {
+		parsed, ok := parseLength(test.source, 16, 16, viewport)
+		if !ok {
+			t.Fatalf("parseLength(%q) rejected", test.source)
+		}
+		resolved, ok := parsed.Resolve(100, float64(viewport.Width), float64(viewport.Height))
+		if !ok || resolved != test.want {
+			t.Errorf("Resolve(%q) = %v, %t, want %v, true", test.source, resolved, ok, test.want)
+		}
+	}
+
+	for _, source := range []string{
+		"env(unknown-inset)",
+		"env(safe-area-inset-top 1px)",
+		"env(safe-area-inset-top,)",
+		"env(unknown-inset, auto)",
+	} {
+		if parsed, ok := parseLength(source, 16, 16, viewport); ok {
+			t.Errorf("parseLength(%q) = %#v, true; want rejection", source, parsed)
+		}
+	}
+}
+
 func TestLengthMathRejectsInvalidOrUnboundedExpressions(t *testing.T) {
 	t.Parallel()
 

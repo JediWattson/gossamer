@@ -502,8 +502,7 @@ func (execution *execution) wrapFrameError(frame *Frame, err error) error {
 	if frame.ip != 0 {
 		instruction = frame.ip - 1
 	}
-	if uint64(instruction) < uint64(len(frame.function.Locations)) {
-		location := frame.function.Locations[instruction]
+	if location, ok := frame.function.Locations.At(instruction); ok {
 		return fmt.Errorf("runtime: bytecode function %s instruction %d source %d:%d: %w", frame.Function, instruction, location.Start, location.End, err)
 	}
 	return fmt.Errorf("runtime: bytecode function %s instruction %d: %w", frame.Function, instruction, err)
@@ -707,9 +706,9 @@ func (execution *execution) runFrame(frame *Frame) (memory.Value, error) {
 				descriptor = memory.AccessorProperty(memory.UndefinedValue(), memory.UndefinedValue(), true, true)
 			}
 			if instruction.A == 0 {
-				descriptor.Getter = callable
+				descriptor.SetGetter(callable)
 			} else {
-				descriptor.Setter = callable
+				descriptor.SetSetter(callable)
 			}
 			if err := context.DefineProperty(object, name, descriptor); err != nil {
 				return memory.Value{}, err

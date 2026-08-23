@@ -209,3 +209,96 @@ func TestStickyBottomProjectsIntoNearestScrollport(t *testing.T) {
 		t.Fatalf("sticky HitTest = %#v, %t; want %#v", hit, ok, handle)
 	}
 }
+
+func TestFixedAncestorKeepsStickyDescendantInViewportCoordinatesAfterRootScroll(t *testing.T) {
+	engine, page, stickyID := computedStyleTestPage(t, `<!doctype html><html><body style="margin:0">
+		<div id="fixed" style="position:fixed;inset:0 auto auto 0;width:100px;height:100px">
+			<div style="height:100px;overflow:hidden">
+				<div style="height:100px"></div>
+				<button id="target" style="display:block;position:sticky;bottom:0;height:20px">target</button>
+			</div>
+		</div>
+		<div style="height:400px"></div>
+	</body></html>`)
+	defer engine.Close()
+	if err := page.SetViewport(render.Viewport{Width: 100, Height: 100}); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := page.ScrollViewport(0, 50); err != nil || !changed {
+		t.Fatalf("ScrollViewport = %t, %v", changed, err)
+	}
+
+	handle := NodeHandle{Document: page.DocumentGeneration(), Node: stickyID}
+	geometry, err := page.ElementGeometry(handle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if geometry.Rect.Y != 80 || geometry.Rect.Height != 20 {
+		t.Fatalf("fixed sticky geometry = %#v, want y=80 height=20", geometry.Rect)
+	}
+	if err := page.Render(); err != nil {
+		t.Fatal(err)
+	}
+	if hit, ok := page.HitTest(10, 90); !ok || hit != handle {
+		t.Fatalf("fixed sticky HitTest = %#v, %t; want %#v", hit, ok, handle)
+	}
+}
+
+func TestStickyBoxSpanningScrollportKeepsNormalInlinePosition(t *testing.T) {
+	engine, page, stickyID := computedStyleTestPage(t, `<!doctype html><html><body style="margin:0">
+		<div style="width:100px;height:40px;overflow:hidden">
+			<button id="target" style="display:block;position:sticky;left:4px;right:4px;width:100%;height:20px">target</button>
+		</div>
+	</body></html>`)
+	defer engine.Close()
+	if err := page.SetViewport(render.Viewport{Width: 100, Height: 100}); err != nil {
+		t.Fatal(err)
+	}
+
+	handle := NodeHandle{Document: page.DocumentGeneration(), Node: stickyID}
+	geometry, err := page.ElementGeometry(handle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if geometry.Rect.X != 0 || geometry.Rect.Width != 100 {
+		t.Fatalf("spanning sticky geometry = %#v, want x=0 width=100", geometry.Rect)
+	}
+}
+
+func TestScrollIntoViewNearestLeavesVisibleTargetAndStartAlignsIt(t *testing.T) {
+	engine, page, targetID := computedStyleTestPage(t, `<!doctype html><html><body style="margin:0">
+		<div id="scroller" style="width:100px;height:100px;overflow:hidden">
+			<div style="height:40px"></div>
+			<button id="target" style="display:block;width:20px;height:20px">target</button>
+			<div style="height:80px"></div>
+		</div>
+	</body></html>`)
+	defer engine.Close()
+	if err := page.SetViewport(render.Viewport{Width: 100, Height: 100}); err != nil {
+		t.Fatal(err)
+	}
+	target := NodeHandle{Document: page.DocumentGeneration(), Node: targetID}
+	scroller := NodeHandle{Document: page.DocumentGeneration(), Node: mustPageElementID(t, page, "scroller")}
+
+	nearest := ScrollIntoViewOptions{Block: ScrollAlignNearest, Inline: ScrollAlignNearest}
+	if changed, err := page.ScrollIntoView(target, nearest); err != nil || changed {
+		t.Fatalf("nearest ScrollIntoView = %t, %v; want false, nil", changed, err)
+	}
+	geometry, err := page.ElementGeometry(scroller)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if geometry.ScrollLeft != 0 || geometry.ScrollTop != 0 {
+		t.Fatalf("nearest scroller offsets = %v/%v, want 0/0", geometry.ScrollLeft, geometry.ScrollTop)
+	}
+
+	start := ScrollIntoViewOptions{Block: ScrollAlignStart, Inline: ScrollAlignNearest}
+	if changed, err := page.ScrollIntoView(target, start); err != nil || !changed {
+		t.Fatalf("start ScrollIntoView = %t, %v; want true, nil", changed, err)
+	}
+	geometry, _ = page.ElementGeometry(scroller)
+	targetGeometry, _ := page.ElementGeometry(target)
+	if geometry.ScrollTop != 40 || targetGeometry.Rect.Y != 0 {
+		t.Fatalf("start scroller/target geometry = scrollTop %v / %#v, want 40 / y=0", geometry.ScrollTop, targetGeometry.Rect)
+	}
+}

@@ -38,7 +38,7 @@ type Function struct {
 	ThisMode      FunctionThisMode
 	LexicalThis   Value
 	Code          []byte
-	Locations     []SourceSpan
+	Locations     SourceLocationTable
 	Constants     []Value
 	Captures      []Value
 	NativeID      uint64
@@ -55,7 +55,7 @@ func cloneFunction(function Function) Function {
 		ThisMode:      function.ThisMode,
 		LexicalThis:   function.LexicalThis,
 		Code:          append([]byte(nil), function.Code...),
-		Locations:     append([]SourceSpan(nil), function.Locations...),
+		Locations:     function.Locations.clone(),
 		Constants:     append([]Value(nil), function.Constants...),
 		Captures:      append([]Value(nil), function.Captures...),
 		NativeID:      function.NativeID,
@@ -101,7 +101,7 @@ func storeFunction(function Function, shareCode, shareConstants bool) Function {
 		stored.Locations = function.Locations
 	} else {
 		stored.Code = append([]byte(nil), function.Code...)
-		stored.Locations = append([]SourceSpan(nil), function.Locations...)
+		stored.Locations = function.Locations.clone()
 	}
 	if shareConstants {
 		stored.Constants = function.Constants

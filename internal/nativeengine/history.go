@@ -228,7 +228,7 @@ func historyStateValue(context *browserruntime.TaskContext, value memory.Value, 
 			if nameErr != nil {
 				continue
 			}
-			item, itemErr := historyStateValue(context, property.Value, active)
+			item, itemErr := historyStateValue(context, property.Value(), active)
 			if itemErr != nil {
 				return nil, itemErr
 			}

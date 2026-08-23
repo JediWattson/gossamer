@@ -3,9 +3,27 @@ package memory_test
 import (
 	"errors"
 	"testing"
+	"unsafe"
 
 	"github.com/JediWattson/gossamer/internal/runtime/memory"
 )
+
+func TestCompactPropertyDescriptorPreservesTaggedPayload(t *testing.T) {
+	if size := unsafe.Sizeof(memory.Property{}); size != 72 {
+		t.Fatalf("Property size = %d bytes, want 72", size)
+	}
+	value := memory.RefValue(memory.Ref{Region: 1, Slot: 2, Gen: 3})
+	data := memory.DataProperty(value, true, false, true)
+	if data.Kind != memory.PropertyData || data.Value() != value || data.Getter().Kind() != memory.ValueUndefined || data.Setter().Kind() != memory.ValueUndefined {
+		t.Fatalf("data property = %#v", data)
+	}
+	getter := memory.RefValue(memory.Ref{Region: 4, Slot: 5, Gen: 6})
+	setter := memory.RefValue(memory.Ref{Region: 7, Slot: 8, Gen: 9})
+	accessor := memory.AccessorProperty(getter, setter, true, false)
+	if accessor.Kind != memory.PropertyAccessor || accessor.Value().Kind() != memory.ValueUndefined || accessor.Getter() != getter || accessor.Setter() != setter {
+		t.Fatalf("accessor property = %#v", accessor)
+	}
+}
 
 func TestNativeObjectPropertiesAndPrototypeMaintainEdges(t *testing.T) {
 	t.Parallel()
@@ -237,7 +255,7 @@ func TestNativeObjectPromotionPreservesGraphAndPropertyOrder(t *testing.T) {
 	if len(copyObject.Properties) != 2 || !copyObject.Prototype.IsRef() {
 		t.Fatalf("promoted Object = %#v", copyObject)
 	}
-	if copyObject.Properties[0].Value.Ref() != copyObject.Properties[1].Value.Ref() {
+	if copyObject.Properties[0].Value().Ref() != copyObject.Properties[1].Value().Ref() {
 		t.Fatal("promotion did not preserve shared property alias")
 	}
 	for index, want := range []string{"first", "second"} {
@@ -306,7 +324,7 @@ func TestNativeObjectDescriptorsOwnTheirAccessorGraph(t *testing.T) {
 	if len(copyObject.Properties) != 2 || copyObject.Properties[0].Kind != memory.PropertyAccessor || copyObject.Properties[1].Writable {
 		t.Fatalf("promoted descriptors = %#v", copyObject.Properties)
 	}
-	if !copyObject.Properties[0].Getter.IsRef() || !copyObject.Properties[0].Setter.IsRef() {
+	if !copyObject.Properties[0].Getter().IsRef() || !copyObject.Properties[0].Setter().IsRef() {
 		t.Fatalf("promoted accessor lost callables: %#v", copyObject.Properties[0])
 	}
 	if err := store.CheckInvariants(); err != nil {
@@ -378,7 +396,7 @@ func TestSharedObjectHeadersSurviveGraphPromotion(t *testing.T) {
 		if err != nil {
 			t.Fatalf("header %d: %v", index, err)
 		}
-		if !header.Prototype.IsRef() || header.Prototype.Ref() == prototype || len(header.Properties) != 1 || header.Properties[0].Value.Number() != 42 {
+		if !header.Prototype.IsRef() || header.Prototype.Ref() == prototype || len(header.Properties) != 1 || header.Properties[0].Value().Number() != 42 {
 			t.Fatalf("header %d = %#v", index, header)
 		}
 	}

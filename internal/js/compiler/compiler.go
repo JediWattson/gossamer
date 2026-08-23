@@ -68,7 +68,7 @@ func CompileASTWithOptions(script *ast.Script, options Options) (program.Program
 		return program.Program{}, err
 	}
 	owner.functions[0] = template
-	image, err := program.New(owner.functions, 0)
+	image, err := program.NewOwned(owner.functions, 0)
 	if err != nil {
 		return program.Program{}, fmt.Errorf("%w: %v", ErrCompile, err)
 	}
@@ -154,7 +154,7 @@ type functionCompiler struct {
 	parent               *functionCompiler
 	builder              *browserruntime.BytecodeBuilder
 	constants            []program.Constant
-	constant             map[constantKey]uint32
+	constant             map[program.Constant]uint32
 	scopes               []map[string]binding
 	loops                []loopTarget
 	inFunction           bool
@@ -167,19 +167,10 @@ type functionCompiler struct {
 	moduleUsesImport     bool
 }
 
-type constantKey struct {
-	kind     program.ConstantKind
-	bits     uint64
-	text     string
-	flags    string
-	function uint32
-	boolean  bool
-}
-
 func newFunctionCompiler(owner *imageCompiler, parent *functionCompiler, inFunction bool) *functionCompiler {
 	return &functionCompiler{
 		owner: owner, parent: parent, builder: browserruntime.NewBytecodeBuilder(),
-		constant: make(map[constantKey]uint32), scopes: []map[string]binding{make(map[string]binding)}, inFunction: inFunction,
+		constant: make(map[program.Constant]uint32), scopes: []map[string]binding{make(map[string]binding)}, inFunction: inFunction,
 	}
 }
 
@@ -215,13 +206,13 @@ func (compiler *functionCompiler) compileScript(script *ast.Script) error {
 }
 
 func (compiler *functionCompiler) finish(name string, arity uint32) (program.FunctionTemplate, error) {
-	code, locations, err := compiler.builder.BuildCode(len(compiler.constants))
+	code, locations, err := compiler.builder.BuildCodeOwned(len(compiler.constants))
 	if err != nil {
 		return program.FunctionTemplate{}, fmt.Errorf("%w: Function %q: %v", ErrCompile, name, err)
 	}
 	return program.FunctionTemplate{
 		Name: name, Arity: arity, Code: code,
-		Constants: append([]program.Constant(nil), compiler.constants...), Locations: locations,
+		Constants: compiler.constants, Locations: locations,
 	}, nil
 }
 
@@ -282,21 +273,7 @@ func runtimeSpan(span lexer.Span) browserruntime.SourceSpan {
 }
 
 func (compiler *functionCompiler) addConstant(constant program.Constant) (uint32, error) {
-	key := constantKey{kind: constant.Kind()}
-	switch constant.Kind() {
-	case program.ConstantBool:
-		key.boolean = constant.Bool()
-	case program.ConstantNumber:
-		key.bits = math.Float64bits(constant.Number())
-	case program.ConstantString, program.ConstantBigInt:
-		key.text = constant.String()
-	case program.ConstantRegExp:
-		key.text = constant.String()
-		key.flags = constant.Flags()
-	case program.ConstantFunction:
-		key.function = constant.Function()
-	}
-	if index, exists := compiler.constant[key]; exists {
+	if index, exists := compiler.constant[constant]; exists {
 		return index, nil
 	}
 	if uint64(len(compiler.constants)) > math.MaxUint32 {
@@ -304,7 +281,7 @@ func (compiler *functionCompiler) addConstant(constant program.Constant) (uint32
 	}
 	index := uint32(len(compiler.constants))
 	compiler.constants = append(compiler.constants, constant)
-	compiler.constant[key] = index
+	compiler.constant[constant] = index
 	return index, nil
 }
 

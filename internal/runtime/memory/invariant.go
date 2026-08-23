@@ -208,14 +208,14 @@ func (store *Store) CheckInvariants() error {
 					if property.Kind != PropertyData && property.Kind != PropertyAccessor {
 						return invariantError("Object %s property %d has invalid descriptor kind %d", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, propertyIndex, property.Kind)
 					}
-					if property.Kind == PropertyData && (property.Getter.Kind() != ValueUndefined || property.Setter.Kind() != ValueUndefined) {
+					if property.Kind == PropertyData && (property.Getter().Kind() != ValueUndefined || property.Setter().Kind() != ValueUndefined) {
 						return invariantError("Object %s data property %d retains accessors", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, propertyIndex)
 					}
-					if property.Kind == PropertyAccessor && (property.Value.Kind() != ValueUndefined || property.Writable) {
+					if property.Kind == PropertyAccessor && (property.Value().Kind() != ValueUndefined || property.Writable) {
 						return invariantError("Object %s accessor property %d retains data state", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, propertyIndex)
 					}
 					if property.Kind == PropertyAccessor {
-						for _, callable := range []Value{property.Getter, property.Setter} {
+						for _, callable := range []Value{property.Getter(), property.Setter()} {
 							if callable.Kind() == ValueUndefined {
 								continue
 							}
@@ -301,15 +301,18 @@ func (store *Store) CheckInvariants() error {
 				}
 			case HeapFunction:
 				liveFunctions++
-				liveBytes += uint64(len(slot.function().Code)) + uint64(len(slot.function().Locations))*8
+				liveBytes += uint64(len(slot.function().Code)) + slot.function().Locations.StorageBytes()
 				if slot.function().Kind != FunctionBytecode && slot.function().Kind != FunctionNative {
 					return invariantError("Function %s has invalid kind %d", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot.function().Kind)
 				}
 				if slot.function().Kind == FunctionBytecode && slot.function().NativeID != 0 {
 					return invariantError("bytecode Function %s has native ID %d", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot.function().NativeID)
 				}
-				if slot.function().Kind == FunctionNative && (slot.function().NativeID == 0 || len(slot.function().Code) != 0 || len(slot.function().Locations) != 0 || len(slot.function().Constants) != 0) {
+				if slot.function().Kind == FunctionNative && (slot.function().NativeID == 0 || len(slot.function().Code) != 0 || slot.function().Locations.Len() != 0 || len(slot.function().Constants) != 0) {
 					return invariantError("native Function %s has an invalid descriptor", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
+				}
+				if !slot.function().Locations.valid() {
+					return invariantError("Function %s has an invalid source-location table", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation})
 				}
 				if slot.function().ThisMode != FunctionThisDynamic && slot.function().ThisMode != FunctionThisLexical {
 					return invariantError("Function %s has invalid this mode %d", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot.function().ThisMode)
@@ -811,14 +814,14 @@ func (store *Store) checkObjectHeaderLocked(ref Ref, slot *Slot) error {
 		if property.Kind != PropertyData && property.Kind != PropertyAccessor {
 			return invariantError("%s property %d has invalid descriptor kind %d", ref, propertyIndex, property.Kind)
 		}
-		if property.Kind == PropertyData && (property.Getter.Kind() != ValueUndefined || property.Setter.Kind() != ValueUndefined) {
+		if property.Kind == PropertyData && (property.Getter().Kind() != ValueUndefined || property.Setter().Kind() != ValueUndefined) {
 			return invariantError("%s data property %d retains accessors", ref, propertyIndex)
 		}
-		if property.Kind == PropertyAccessor && (property.Value.Kind() != ValueUndefined || property.Writable) {
+		if property.Kind == PropertyAccessor && (property.Value().Kind() != ValueUndefined || property.Writable) {
 			return invariantError("%s accessor property %d retains data state", ref, propertyIndex)
 		}
 		if property.Kind == PropertyAccessor {
-			for _, callable := range []Value{property.Getter, property.Setter} {
+			for _, callable := range []Value{property.Getter(), property.Setter()} {
 				if callable.Kind() == ValueUndefined {
 					continue
 				}

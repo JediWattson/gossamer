@@ -63,7 +63,7 @@ func (loader *programLoader) loadFunction(index uint32, environment memory.Value
 		return memory.Ref{}, fmt.Errorf("%w: function template cycle at %d", ErrInvalidProgram, index)
 	}
 	loader.states[index] = 1
-	function, ok := loader.image.Function(index)
+	function, ok := loader.image.functionView(index)
 	if !ok {
 		return memory.Ref{}, fmt.Errorf("%w: function %d", ErrInvalidProgram, index)
 	}
@@ -83,11 +83,7 @@ func (loader *programLoader) loadFunction(index uint32, environment memory.Value
 		}
 		name = memory.RefValue(ref)
 	}
-	locations := make([]memory.SourceSpan, len(function.Locations))
-	for index, location := range function.Locations {
-		locations[index] = memory.SourceSpan{Start: location.Start, End: location.End}
-	}
-	ref, err := loader.context.NewBytecodeFunctionWithLocations(name, environment, function.Arity, function.Code, constants, locations)
+	ref, err := loader.context.NewSharedBytecodeFunctionWithLocations(name, environment, function.Arity, function.Code, constants, function.Locations)
 	if err != nil {
 		return memory.Ref{}, err
 	}

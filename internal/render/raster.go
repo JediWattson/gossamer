@@ -35,6 +35,18 @@ func rasterize(displayList DisplayList, fonts *fontBook) (*image.RGBA, error) {
 		canvas := layers[len(layers)-1].canvas
 		switch command.Kind {
 		case FillRectCommand:
+			if !command.Radii.empty() {
+				target := draw.Image(canvas)
+				if command.HasClip {
+					target = image.NewRGBA(canvas.Bounds())
+				}
+				paintRoundedRect(target, command.Rect, command.Radii, command.Color)
+				if command.HasClip {
+					clip := commandClip(command, canvas.Bounds())
+					draw.Draw(canvas, clip, target, clip.Min, draw.Over)
+				}
+				continue
+			}
 			rectangle := image.Rect(
 				int(math.Floor(command.Rect.X)),
 				int(math.Floor(command.Rect.Y)),
@@ -283,6 +295,35 @@ func paintEllipse(target draw.Image, rectangle Rect, fill color.NRGBA) {
 	rasterizer.CubeTo(cx-kappa*rx, cy+ry, cx-rx, cy+kappa*ry, cx-rx, cy)
 	rasterizer.CubeTo(cx-rx, cy-kappa*ry, cx-kappa*rx, cy-ry, cx, cy-ry)
 	rasterizer.CubeTo(cx+kappa*rx, cy-ry, cx+rx, cy-kappa*ry, cx+rx, cy)
+	rasterizer.ClosePath()
+	rasterizer.Draw(target, bounds, image.NewUniform(fill), image.Point{})
+}
+
+func paintRoundedRect(target draw.Image, rectangle Rect, radii CornerRadii, fill color.NRGBA) {
+	if rectangle.Width <= 0 || rectangle.Height <= 0 || fill.A == 0 {
+		return
+	}
+	bounds := target.Bounds()
+	rasterizer := vector.NewRasterizer(bounds.Dx(), bounds.Dy())
+	x := float32(rectangle.X - float64(bounds.Min.X))
+	y := float32(rectangle.Y - float64(bounds.Min.Y))
+	w := float32(rectangle.Width)
+	h := float32(rectangle.Height)
+	const kappa = float32(0.5522847498307936)
+	topLeftX, topLeftY := float32(radii.TopLeft.X), float32(radii.TopLeft.Y)
+	topRightX, topRightY := float32(radii.TopRight.X), float32(radii.TopRight.Y)
+	bottomRightX, bottomRightY := float32(radii.BottomRight.X), float32(radii.BottomRight.Y)
+	bottomLeftX, bottomLeftY := float32(radii.BottomLeft.X), float32(radii.BottomLeft.Y)
+
+	rasterizer.MoveTo(x+topLeftX, y)
+	rasterizer.LineTo(x+w-topRightX, y)
+	rasterizer.CubeTo(x+w-topRightX+kappa*topRightX, y, x+w, y+topRightY-kappa*topRightY, x+w, y+topRightY)
+	rasterizer.LineTo(x+w, y+h-bottomRightY)
+	rasterizer.CubeTo(x+w, y+h-bottomRightY+kappa*bottomRightY, x+w-bottomRightX+kappa*bottomRightX, y+h, x+w-bottomRightX, y+h)
+	rasterizer.LineTo(x+bottomLeftX, y+h)
+	rasterizer.CubeTo(x+bottomLeftX-kappa*bottomLeftX, y+h, x, y+h-bottomLeftY+kappa*bottomLeftY, x, y+h-bottomLeftY)
+	rasterizer.LineTo(x, y+topLeftY)
+	rasterizer.CubeTo(x, y+topLeftY-kappa*topLeftY, x+topLeftX-kappa*topLeftX, y, x+topLeftX, y)
 	rasterizer.ClosePath()
 	rasterizer.Draw(target, bounds, image.NewUniform(fill), image.Point{})
 }

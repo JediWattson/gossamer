@@ -287,7 +287,12 @@ func appendObjectHeaderReferences(values []Value, slot *Slot) []Value {
 	}
 	values = append(values, header.Prototype)
 	for _, property := range header.Properties {
-		values = append(values, RefValue(property.Name), property.Value, property.Getter, property.Setter)
+		values = append(values, RefValue(property.Name))
+		if property.Kind == PropertyData {
+			values = append(values, property.Value())
+		} else {
+			values = append(values, property.Getter(), property.Setter())
+		}
 	}
 	return values
 }
@@ -315,9 +320,12 @@ func rewriteSlotReferences(slot *Slot, replacements map[Ref]Ref) {
 		for index := range header.Properties {
 			property := &header.Properties[index]
 			property.Name = rewriteRef(property.Name)
-			property.Value = rewriteValue(property.Value)
-			property.Getter = rewriteValue(property.Getter)
-			property.Setter = rewriteValue(property.Setter)
+			if property.Kind == PropertyData {
+				property.SetValue(rewriteValue(property.Value()))
+			} else {
+				property.SetGetter(rewriteValue(property.Getter()))
+				property.SetSetter(rewriteValue(property.Setter()))
+			}
 		}
 	}
 	switch slot.Kind {

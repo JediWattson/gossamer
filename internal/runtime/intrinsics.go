@@ -1341,17 +1341,17 @@ func builtinObjectGetOwnPropertyDescriptorOrdinary(execution *execution, target,
 		return memory.Value{}, err
 	}
 	if descriptor.Kind == memory.PropertyData {
-		if err := defineData(execution.context, result, "value", descriptor.Value, true, true, true); err != nil {
+		if err := defineData(execution.context, result, "value", descriptor.Value(), true, true, true); err != nil {
 			return memory.Value{}, err
 		}
 		if err := defineData(execution.context, result, "writable", memory.BoolValue(descriptor.Writable), true, true, true); err != nil {
 			return memory.Value{}, err
 		}
 	} else {
-		if err := defineData(execution.context, result, "get", descriptor.Getter, true, true, true); err != nil {
+		if err := defineData(execution.context, result, "get", descriptor.Getter(), true, true, true); err != nil {
 			return memory.Value{}, err
 		}
-		if err := defineData(execution.context, result, "set", descriptor.Setter, true, true, true); err != nil {
+		if err := defineData(execution.context, result, "set", descriptor.Setter(), true, true, true); err != nil {
 			return memory.Value{}, err
 		}
 	}

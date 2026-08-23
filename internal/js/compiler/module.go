@@ -171,7 +171,7 @@ func CompileModuleASTWithOptions(script *ast.Script, options Options) (program.M
 		return program.Module{}, err
 	}
 	owner.functions[0] = template
-	image, err := program.New(owner.functions, 0)
+	image, err := program.NewOwned(owner.functions, 0)
 	if err != nil {
 		return program.Module{}, fmt.Errorf("%w: %v", ErrCompile, err)
 	}
@@ -212,7 +212,7 @@ func CompileModuleASTWithOptions(script *ast.Script, options Options) (program.M
 		}
 		portableExports = append(portableExports, exported.entry)
 	}
-	return program.NewModule(image, requests, bindings, imports, portableExports, stars), nil
+	return program.NewModuleOwned(image, requests, bindings, imports, portableExports, stars), nil
 }
 
 func exportedDeclarationNames(statement ast.Statement) []string {

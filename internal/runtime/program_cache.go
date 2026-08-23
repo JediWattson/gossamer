@@ -20,6 +20,8 @@ type cachedBytecode struct {
 // decodeProgram decodes and verifies an immutable Function body once. Closure
 // instances frequently share the same code while carrying different captured
 // environments, so the cache is content-addressed rather than Ref-addressed.
+// Callers relinquish mutation of code for the lifetime of the Interpreter;
+// RegionStore Function descriptors satisfy that contract.
 func (interpreter *Interpreter) decodeProgram(code []byte, constantCount int) ([]Instruction, error) {
 	cached, err := interpreter.loadProgram(code, constantCount)
 	if err != nil {
@@ -54,7 +56,7 @@ func (interpreter *Interpreter) loadProgram(code []byte, constantCount int) (*ca
 	}
 	cached := &cachedBytecode{
 		key:          key,
-		code:         append([]byte(nil), code...),
+		code:         code,
 		instructions: instructions,
 		referenced:   true,
 	}

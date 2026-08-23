@@ -151,6 +151,15 @@ func (realm *Realm) ScriptMemoryProfile() (browser.ScriptMemoryProfile, error) {
 	for _, listeners := range realm.listeners {
 		profile.EventListeners += uint64(len(listeners))
 	}
+	for _, module := range realm.modules {
+		profile.ModuleSourceBytes += uint64(len(module.source.Source))
+		storage := module.image.Program().StorageStats()
+		profile.PortableFunctions += storage.Functions
+		profile.PortableFunctionBytes += storage.FunctionTableBytes
+		profile.PortableCodeBytes += storage.CodeBytes
+		profile.PortableConstantBytes += storage.ConstantTableBytes
+		profile.PortableLocationBytes += storage.SourceLocationBytes
+	}
 	if realm.runtime == nil || realm.persistent == nil {
 		return profile, nil
 	}

@@ -24,12 +24,26 @@ const (
 )
 
 type nativeModule struct {
-	source   browser.ScriptSource
-	image    program.Module
-	compiled bool
-	entry    memory.Ref
-	status   nativeModuleStatus
-	err      error
+	source       browser.ScriptSource
+	sourceLength uint64
+	image        program.Module
+	compiled     bool
+	entry        memory.Ref
+	status       nativeModuleStatus
+	err          error
+}
+
+func newNativeModule(source browser.ScriptSource) nativeModule {
+	return nativeModule{source: source, sourceLength: uint64(len(source.Source))}
+}
+
+// installImage severs the cache's reference to source text as soon as parsing
+// and compilation have finished. Dynamic-only modules do not call this until
+// their first import, so lazy compilation keeps the source it still needs.
+func (module *nativeModule) installImage(image program.Module) {
+	module.image = image
+	module.compiled = true
+	module.source.Source = ""
 }
 
 type moduleResolutionKey struct {
@@ -87,8 +101,7 @@ func (realm *Realm) EvaluateModule(host browser.Host, graph browser.ModuleGraph)
 			copy := candidate
 			realm.modules[url] = &copy
 		} else if !existing.compiled && candidate.compiled {
-			existing.image = candidate.image
-			existing.compiled = true
+			existing.installImage(candidate.image)
 		}
 	}
 	for key, destination := range resolutions {
@@ -149,7 +162,7 @@ func compileNativeModuleGraph(graph browser.ModuleGraph, cached map[string]*nati
 			compiled[source.URL] = *existing
 			continue
 		}
-		compiled[source.URL] = nativeModule{source: source}
+		compiled[source.URL] = newNativeModule(source)
 	}
 	resolutions := make(map[moduleResolutionKey]string, len(graph.Resolutions))
 	for _, resolution := range graph.Resolutions {
@@ -182,8 +195,7 @@ func compileNativeModuleGraph(graph browser.ModuleGraph, cached map[string]*nati
 		if err != nil {
 			return evaluationError(moduleURL, err)
 		}
-		module.image = image
-		module.compiled = true
+		module.installImage(image)
 		compiled[moduleURL] = module
 		compilations++
 		compiling[moduleURL] = true
@@ -347,8 +359,7 @@ func (realm *Realm) ensureModuleCompiledLocked(url string, compiling map[string]
 	if err != nil {
 		return evaluationError(url, err)
 	}
-	module.image = image
-	module.compiled = true
+	module.installImage(image)
 	realm.moduleCompilations++
 	compiling[url] = true
 	defer delete(compiling, url)
@@ -474,6 +485,7 @@ func (realm *Realm) instantiateModuleLocalsLocked(context *browserruntime.TaskCo
 			}
 		}
 	}
+	module.image.ReleaseProgram()
 	return nil
 }
 
@@ -606,7 +618,7 @@ func (realm *Realm) evaluateModuleLocked(context *browserruntime.TaskContext, ur
 		return evaluationError(url, fmt.Errorf("%w: source %q has no instantiated entry", ErrModuleLink, url))
 	}
 	realm.evaluations++
-	realm.sourceBytes += uint64(len(module.source.Source))
+	realm.sourceBytes += module.sourceLength
 	if _, err := realm.interpreter.ExecuteWithoutCheckpoint(context, module.entry); err != nil {
 		return evaluationError(url, describeExecutionError(context, err))
 	}

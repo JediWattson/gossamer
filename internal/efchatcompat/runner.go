@@ -21,6 +21,7 @@ import (
 	"github.com/JediWattson/gossamer/internal/dom"
 	"github.com/JediWattson/gossamer/internal/loader"
 	"github.com/JediWattson/gossamer/internal/nativeengine"
+	browserruntime "github.com/JediWattson/gossamer/internal/runtime"
 	"github.com/JediWattson/gossamer/internal/runtime/ownership"
 )
 
@@ -33,9 +34,20 @@ const (
 )
 
 type Options struct {
-	Dist    string
-	Message string
-	Place   string
+	Dist                    string
+	Message                 string
+	Place                   string
+	MemoryProfiler          MemoryProfiler
+	ExecutionSampleInterval uint64
+}
+
+// MemoryProfiler lets the production compatibility gate record the same
+// engine-neutral checkpoints as the interactive shell. The gate owns neither
+// the profiler nor its output files; callers close it after Run returns.
+type MemoryProfiler interface {
+	Record(string, *browser.Page, bool) error
+	RecordExecution(*browser.Page, *browserruntime.TaskContext, browserruntime.ExecutionSample) error
+	WriteHeapProfile() error
 }
 
 type SessionReport struct {
@@ -113,12 +125,26 @@ func Run(ctx context.Context, options Options) (report Report, resultErr error) 
 
 	dialer := newRecordingDialer()
 	console := &consoleRecorder{}
-	engine := nativeengine.New(nativeengine.Config{ConsoleSink: console.record})
+	var page *browser.Page
+	interpreter := browserruntime.InterpreterConfig{}
+	if options.MemoryProfiler != nil && options.ExecutionSampleInterval != 0 {
+		interpreter.ExecutionSampleInterval = options.ExecutionSampleInterval
+		interpreter.ExecutionSample = func(context *browserruntime.TaskContext, sample browserruntime.ExecutionSample) error {
+			if page == nil {
+				return nil
+			}
+			return options.MemoryProfiler.RecordExecution(page, context, sample)
+		}
+	}
+	engine := nativeengine.New(nativeengine.Config{Interpreter: interpreter, ConsoleSink: console.record})
 	browserRuntime, err := browser.NewWithEngine(engine)
 	if err != nil {
 		return report, errors.Join(err, engine.Close())
 	}
-	page, err := browserRuntime.NewPage(dom.NewDocument(), nil)
+	page, err = browserRuntime.NewPage(dom.NewDocument(), nil)
+	if err == nil {
+		err = recordMemory(options.MemoryProfiler, "page-created", page)
+	}
 	if err == nil {
 		page.SetWebSocketDialer(dialer)
 		client := loader.New(nil)
@@ -128,6 +154,9 @@ func Run(ctx context.Context, options Options) (report Report, resultErr error) 
 		if err == nil {
 			err = page.WaitNavigation(ctx, navigation)
 		}
+	}
+	if err == nil {
+		err = recordMemory(options.MemoryProfiler, "navigation-complete", page)
 	}
 	if err == nil {
 		snapshot := page.Navigation()
@@ -144,6 +173,9 @@ func Run(ctx context.Context, options Options) (report Report, resultErr error) 
 		})
 	}
 	if err == nil {
+		err = recordMemory(options.MemoryProfiler, "session-ready", page)
+	}
+	if err == nil {
 		err = waitFor(ctx, page, func() bool {
 			root, rootReady := page.Document().ElementByID("root")
 			text, _ := page.Document().TextContent(root)
@@ -152,6 +184,9 @@ func Run(ctx context.Context, options Options) (report Report, resultErr error) 
 		if err != nil {
 			err = fmt.Errorf("efchatcompat: wait for history message: %w", err)
 		}
+	}
+	if err == nil {
+		err = recordMemory(options.MemoryProfiler, "history-rendered", page)
 	}
 	if err == nil {
 		source := fmt.Sprintf(`
@@ -191,6 +226,12 @@ input.dispatchEvent(enter);
 	}
 	if err == nil {
 		err = waitFor(ctx, page, func() bool { return dialer.hasMessage(message) })
+	}
+	if page != nil {
+		err = errors.Join(err, recordMemory(options.MemoryProfiler, "message-attempt", page))
+		if options.MemoryProfiler != nil {
+			err = errors.Join(err, options.MemoryProfiler.WriteHeapProfile())
+		}
 	}
 
 	if page != nil {
@@ -239,6 +280,13 @@ input.dispatchEvent(enter);
 		report.Failure = err.Error()
 	}
 	return report, err
+}
+
+func recordMemory(profiler MemoryProfiler, label string, page *browser.Page) error {
+	if profiler == nil || page == nil {
+		return nil
+	}
+	return profiler.Record(label, page, true)
 }
 
 type consoleRecorder struct {

@@ -23,6 +23,14 @@ type Environment struct {
 	Height          int
 	MediaType       string
 	InitialFontSize float64
+	// SafeAreaInsets are CSS-pixel environment values exposed through
+	// env(safe-area-inset-*). Desktop/browser surfaces leave them at zero;
+	// platform shells can provide non-zero occlusion insets without making the
+	// style engine depend on window-system APIs.
+	SafeAreaInsetTop    float64
+	SafeAreaInsetRight  float64
+	SafeAreaInsetBottom float64
+	SafeAreaInsetLeft   float64
 }
 
 // Viewport is retained as a private implementation alias while the extracted
@@ -380,6 +388,25 @@ type BorderSide struct {
 	hasColor bool
 }
 
+// CornerRadius is one computed elliptical border radius. Percentages remain
+// typed until paint can resolve the horizontal and vertical axes against the
+// border box.
+type CornerRadius struct {
+	horizontal Length
+	vertical   Length
+}
+
+func (radius CornerRadius) Horizontal() Length { return radius.horizontal }
+
+func (radius CornerRadius) Vertical() Length { return radius.vertical }
+
+type borderRadii struct {
+	topLeft     CornerRadius
+	topRight    CornerRadius
+	bottomRight CornerRadius
+	bottomLeft  CornerRadius
+}
+
 // BorderCollapse selects the table border model. The property is inherited,
 // even though it only affects table grid boxes and their descendants.
 type BorderCollapse uint8
@@ -721,6 +748,7 @@ type ComputedStyle struct {
 	borderRight       BorderSide
 	borderBottom      BorderSide
 	borderLeft        BorderSide
+	borderRadii       borderRadii
 	marginTop         Length
 	marginRight       Length
 	marginBottom      Length
@@ -896,10 +924,22 @@ func (computed ComputedStyle) BorderTop() BorderSide                  { return c
 func (computed ComputedStyle) BorderRight() BorderSide                { return computed.borderRight }
 func (computed ComputedStyle) BorderBottom() BorderSide               { return computed.borderBottom }
 func (computed ComputedStyle) BorderLeft() BorderSide                 { return computed.borderLeft }
-func (computed ComputedStyle) MarginTop() Length                      { return computed.marginTop }
-func (computed ComputedStyle) MarginRight() Length                    { return computed.marginRight }
-func (computed ComputedStyle) MarginBottom() Length                   { return computed.marginBottom }
-func (computed ComputedStyle) MarginLeft() Length                     { return computed.marginLeft }
+func (computed ComputedStyle) BorderTopLeftRadius() CornerRadius {
+	return computed.borderRadii.topLeft
+}
+func (computed ComputedStyle) BorderTopRightRadius() CornerRadius {
+	return computed.borderRadii.topRight
+}
+func (computed ComputedStyle) BorderBottomRightRadius() CornerRadius {
+	return computed.borderRadii.bottomRight
+}
+func (computed ComputedStyle) BorderBottomLeftRadius() CornerRadius {
+	return computed.borderRadii.bottomLeft
+}
+func (computed ComputedStyle) MarginTop() Length    { return computed.marginTop }
+func (computed ComputedStyle) MarginRight() Length  { return computed.marginRight }
+func (computed ComputedStyle) MarginBottom() Length { return computed.marginBottom }
+func (computed ComputedStyle) MarginLeft() Length   { return computed.marginLeft }
 func (computed ComputedStyle) CustomProperties() css.CustomProperties {
 	return computed.customProperties
 }
@@ -1474,11 +1514,17 @@ func cssInitialStyle(viewport Viewport) computedStyle {
 		borderRight:     initialBorderSide(),
 		borderBottom:    initialBorderSide(),
 		borderLeft:      initialBorderSide(),
+		borderRadii:     initialBorderRadii(),
 		marginTop:       length{unit: lengthPX},
 		marginRight:     length{unit: lengthPX},
 		marginBottom:    length{unit: lengthPX},
 		marginLeft:      length{unit: lengthPX},
 	}
+}
+
+func initialBorderRadii() borderRadii {
+	zero := CornerRadius{horizontal: px(0), vertical: px(0)}
+	return borderRadii{topLeft: zero, topRight: zero, bottomRight: zero, bottomLeft: zero}
 }
 
 var builtInUserAgentStylesheet = mustParseBuiltInUserAgentStylesheet(`
@@ -1676,6 +1722,8 @@ func applyCascade(style *computedStyle, explanations map[string]PropertyExplanat
 			delete(candidatesByTarget, definition.name)
 		}
 	}
+	remapLogicalCandidates(style, candidatesByTarget)
+	sortCascadeCandidates(candidatesByTarget)
 	targets := make([]string, 0, len(candidatesByTarget))
 	for target := range candidatesByTarget {
 		targets = append(targets, target)
@@ -2013,7 +2061,7 @@ func applyDeclarationCandidate(style *computedStyle, parent *styledNode, candida
 	if !ok {
 		// A winning declaration whose var() cannot be substituted is invalid at
 		// computed-value time. It computes as unset without reviving a loser.
-		return applyCSSWideKeywordExplanation(style, parent, candidate.target, "unset", viewport, source, ResolutionInvalidAtComputedValue)
+		return applyCandidateCSSWideKeyword(style, parent, candidate, "unset", viewport, source, ResolutionInvalidAtComputedValue)
 	}
 
 	switch keyword := cssWideKeyword(resolved); keyword {
@@ -2022,11 +2070,11 @@ func applyDeclarationCandidate(style *computedStyle, parent *styledNode, candida
 	case "revert-layer":
 		return applyRollbackCandidate(style, parent, candidates, position, viewport, source, ResolutionRevertLayer, nextCandidateAfterRevertLayer(candidates, position))
 	case "inherit":
-		return applyCSSWideKeywordExplanation(style, parent, candidate.target, keyword, viewport, source, ResolutionInherited)
+		return applyCandidateCSSWideKeyword(style, parent, candidate, keyword, viewport, source, ResolutionInherited)
 	case "initial":
-		return applyCSSWideKeywordExplanation(style, parent, candidate.target, keyword, viewport, source, ResolutionInitial)
+		return applyCandidateCSSWideKeyword(style, parent, candidate, keyword, viewport, source, ResolutionInitial)
 	case "unset":
-		return applyCSSWideKeywordExplanation(style, parent, candidate.target, keyword, viewport, source, ResolutionUnset)
+		return applyCandidateCSSWideKeyword(style, parent, candidate, keyword, viewport, source, ResolutionUnset)
 	}
 
 	declaration := candidate.declaration
@@ -2035,13 +2083,27 @@ func applyDeclarationCandidate(style *computedStyle, parent *styledNode, candida
 		// A declaration containing var() participates in the cascade before its
 		// computed value is known. If substitution produces an invalid value, it
 		// computes as unset; a lower-priority declaration is not resurrected.
-		return applyCSSWideKeywordExplanation(style, parent, candidate.target, "unset", viewport, source, ResolutionInvalidAtComputedValue)
+		return applyCandidateCSSWideKeyword(style, parent, candidate, "unset", viewport, source, ResolutionInvalidAtComputedValue)
 	}
 	applyTargetDeclaration(style, parent, candidate.target, declaration, viewport)
 	return PropertyExplanation{
 		Property: candidate.target, Resolution: ResolutionSpecified,
 		Controller: source, ValueSource: source,
 	}
+}
+
+func applyCandidateCSSWideKeyword(
+	style *computedStyle,
+	parent *styledNode,
+	candidate winningDeclaration,
+	keyword string,
+	viewport Viewport,
+	controller PropertySource,
+	resolution ResolutionKind,
+) PropertyExplanation {
+	explanation := applyCSSWideKeywordExplanation(style, parent, candidate.valueTarget(), keyword, viewport, controller, resolution)
+	explanation.Property = candidate.target
+	return explanation
 }
 
 func applyRollbackCandidate(
@@ -2058,7 +2120,7 @@ func applyRollbackCandidate(
 	if next < len(candidates) {
 		value = applyDeclarationCandidate(style, parent, candidates, next, viewport)
 	} else {
-		value = applyCSSWideKeywordExplanation(style, parent, candidates[position].target, "unset", viewport, controller, ResolutionUnset)
+		value = applyCandidateCSSWideKeyword(style, parent, candidates[position], "unset", viewport, controller, ResolutionUnset)
 	}
 	rollback := make([]PropertySource, 0, 1+len(value.Rollback))
 	if value.Controller != controller && value.Controller != value.ValueSource {

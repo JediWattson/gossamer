@@ -666,7 +666,7 @@ func readHeadersInit(context *browserruntime.TaskContext, value memory.Value) (h
 		if err != nil {
 			return nil, err
 		}
-		text, err := valueString(context, property.Value)
+		text, err := valueString(context, property.Value())
 		if err != nil {
 			return nil, err
 		}

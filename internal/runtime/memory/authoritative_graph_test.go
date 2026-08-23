@@ -543,11 +543,11 @@ func TestCheckpointRewriteCoversEveryStrongTypedLocation(t *testing.T) {
 	replacement := Ref{Region: 4, Slot: 5, Gen: 6}
 	value := RefValue(old)
 	header := func() ObjectHeader {
+		property := AccessorProperty(value, value, false, false)
+		property.Name = old
 		return ObjectHeader{
-			Prototype: value,
-			Properties: []Property{{
-				Name: old, Value: value, Getter: value, Setter: value,
-			}},
+			Prototype:  value,
+			Properties: []Property{property},
 		}
 	}
 	slots := map[string]Slot{

@@ -440,7 +440,7 @@ func paintBoxDecorations(list *DisplayList, box *Box, style computedStyle, visib
 			if bounds.Width > 0 && bounds.Height > 0 {
 				list.Commands = append(list.Commands, Command{
 					Kind: FillRectCommand, Node: box.Node, Pseudo: box.Pseudo,
-					Rect: bounds, Color: background,
+					Rect: bounds, Color: background, Radii: usedCornerRadii(style, bounds, list.Viewport),
 				})
 			}
 		} else {
@@ -458,6 +458,40 @@ func paintBoxDecorations(list *DisplayList, box *Box, style computedStyle, visib
 	if visible && !box.suppressDecorations && !box.suppressBorders {
 		paintBoxBorders(list, box, style)
 	}
+}
+
+func usedCornerRadii(style computedStyle, bounds Rect, viewport Viewport) CornerRadii {
+	resolve := func(radius computed.CornerRadius) CornerRadius {
+		x, xOK := radius.Horizontal().Resolve(bounds.Width, float64(viewport.Width), float64(viewport.Height))
+		y, yOK := radius.Vertical().Resolve(bounds.Height, float64(viewport.Width), float64(viewport.Height))
+		if !xOK || !yOK || !isFinite(x) || !isFinite(y) {
+			return CornerRadius{}
+		}
+		return CornerRadius{X: math.Max(0, x), Y: math.Max(0, y)}
+	}
+	radii := CornerRadii{
+		TopLeft:     resolve(style.BorderTopLeftRadius()),
+		TopRight:    resolve(style.BorderTopRightRadius()),
+		BottomRight: resolve(style.BorderBottomRightRadius()),
+		BottomLeft:  resolve(style.BorderBottomLeftRadius()),
+	}
+	factor := 1.0
+	fit := func(available, requested float64) {
+		if requested > 0 && requested > available {
+			factor = math.Min(factor, available/requested)
+		}
+	}
+	fit(bounds.Width, radii.TopLeft.X+radii.TopRight.X)
+	fit(bounds.Width, radii.BottomLeft.X+radii.BottomRight.X)
+	fit(bounds.Height, radii.TopLeft.Y+radii.BottomLeft.Y)
+	fit(bounds.Height, radii.TopRight.Y+radii.BottomRight.Y)
+	if factor < 1 {
+		for _, radius := range []*CornerRadius{&radii.TopLeft, &radii.TopRight, &radii.BottomRight, &radii.BottomLeft} {
+			radius.X *= factor
+			radius.Y *= factor
+		}
+	}
+	return radii
 }
 
 func paintBoxContents(list *DisplayList, box *Box, styles map[*dom.Node]computedStyle) {

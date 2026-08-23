@@ -371,9 +371,12 @@ func (page *Page) scrollElementLocked(handle NodeHandle, x, y float64) (bool, er
 
 // ScrollIntoView aligns the element through each scrollable ancestor and then
 // the root viewport, clamping every Page-owned offset to its scroll range.
-func (page *Page) ScrollIntoView(handle NodeHandle) (bool, error) {
+func (page *Page) ScrollIntoView(handle NodeHandle, options ScrollIntoViewOptions) (bool, error) {
 	if page == nil {
 		return false, fmt.Errorf("browser: nil page")
+	}
+	if !validScrollAlignment(options.Block) || !validScrollAlignment(options.Inline) {
+		return false, fmt.Errorf("browser: invalid scrollIntoView alignment")
 	}
 	page.mutex.Lock()
 	defer page.mutex.Unlock()
@@ -394,8 +397,8 @@ func (page *Page) ScrollIntoView(handle NodeHandle) (bool, error) {
 				return changed, geometryErr
 			}
 			offset := page.elementScroll[ancestor]
-			x := offset.x + geometry.Rect.X - container.Rect.X
-			y := offset.y + geometry.Rect.Y - container.Rect.Y
+			x := scrollIntoViewAxis(offset.x, geometry.Rect.X, geometry.Rect.Width, container.Rect.X, container.ClientWidth, options.Inline)
+			y := scrollIntoViewAxis(offset.y, geometry.Rect.Y, geometry.Rect.Height, container.Rect.Y, container.ClientHeight, options.Block)
 			ancestorChanged, scrollErr := page.scrollElementLocked(NodeHandle{Document: handle.Document, Node: ancestor}, x, y)
 			if scrollErr != nil {
 				return changed, scrollErr
@@ -411,8 +414,40 @@ func (page *Page) ScrollIntoView(handle NodeHandle) (bool, error) {
 	if err != nil {
 		return changed, err
 	}
-	rootChanged, err := page.scrollViewportLocked(geometry.Rect.X+page.scrollX, geometry.Rect.Y+page.scrollY)
+	viewportWidth := float64(page.viewport.Width)
+	viewportHeight := float64(page.viewport.Height)
+	x := scrollIntoViewAxis(page.scrollX, geometry.Rect.X, geometry.Rect.Width, 0, viewportWidth, options.Inline)
+	y := scrollIntoViewAxis(page.scrollY, geometry.Rect.Y, geometry.Rect.Height, 0, viewportHeight, options.Block)
+	rootChanged, err := page.scrollViewportLocked(x, y)
 	return changed || rootChanged, err
+}
+
+func validScrollAlignment(alignment ScrollAlignment) bool {
+	return alignment >= ScrollAlignStart && alignment <= ScrollAlignNearest
+}
+
+func scrollIntoViewAxis(current, targetStart, targetSize, containerStart, containerSize float64, alignment ScrollAlignment) float64 {
+	targetEnd := targetStart + targetSize
+	containerEnd := containerStart + containerSize
+	switch alignment {
+	case ScrollAlignCenter:
+		return current + (targetStart+targetEnd-containerStart-containerEnd)/2
+	case ScrollAlignEnd:
+		return current + targetEnd - containerEnd
+	case ScrollAlignNearest:
+		startOutside := targetStart < containerStart
+		endOutside := targetEnd > containerEnd
+		switch {
+		case !startOutside && !endOutside, startOutside && endOutside:
+			return current
+		case startOutside && targetSize <= containerSize, endOutside && targetSize > containerSize:
+			return current + targetStart - containerStart
+		default:
+			return current + targetEnd - containerEnd
+		}
+	default:
+		return current + targetStart - containerStart
+	}
 }
 
 func overflowScrollable(mode computed.OverflowMode) bool {
@@ -489,6 +524,13 @@ func (page *Page) visualTransformForNodeLocked(node *dom.Node, layout *render.La
 		if !ok {
 			continue
 		}
+		if style.Position() == computed.PositionFixed {
+			// Fixed boxes establish viewport coordinates in the currently
+			// supported positioning model. Their descendants must not inherit
+			// root scrolling or clips collected before the fixed subtree.
+			transform = render.VisualTransform{}
+			stickyContainer = render.Rect{Width: float64(layout.Viewport().Width), Height: float64(layout.Viewport().Height)}
+		}
 		if style.Position() == computed.PositionSticky {
 			transform = stickyVisualTransform(transform, geometry.Bounds, stickyContainer, style, layout.Viewport())
 		}
@@ -536,10 +578,20 @@ func stickyVisualTransform(transform render.VisualTransform, bounds, container r
 
 func stickyAxisPosition(position, size, containerStart, containerSize float64, start, end computed.Length, viewportWidth, viewportHeight float64) float64 {
 	target := position
-	if inset, ok := start.Resolve(containerSize, viewportWidth, viewportHeight); ok {
+	startInset, hasStart := start.Resolve(containerSize, viewportWidth, viewportHeight)
+	endInset, hasEnd := end.Resolve(containerSize, viewportWidth, viewportHeight)
+	if hasStart && hasEnd && position <= containerStart && position+size >= containerStart+containerSize {
+		// The sticky box already spans the scrollport. Moving it toward either
+		// inset would push the opposite edge outside its containing block; the
+		// normal-flow position therefore remains the only valid projection.
+		return position
+	}
+	if hasStart {
+		inset := startInset
 		target = math.Max(target, containerStart+inset)
 	}
-	if inset, ok := end.Resolve(containerSize, viewportWidth, viewportHeight); ok {
+	if hasEnd {
+		inset := endInset
 		target = math.Min(target, containerStart+containerSize-inset-size)
 	}
 	return target

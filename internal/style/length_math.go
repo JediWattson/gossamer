@@ -208,6 +208,8 @@ func parseLengthMathFunction(component css.ComponentValue, source string, emBase
 		value, ok := parser.parseSum(emBase, viewport)
 		parser.skipWhitespace()
 		return value, ok && parser.pos == len(parser.values)
+	case "env":
+		return parser.parseEnvironmentLength(emBase, viewport)
 	case "min", "max", "clamp":
 		arguments := make([]lengthExpression, 0, 3)
 		for {
@@ -244,6 +246,73 @@ func parseLengthMathFunction(component css.ComponentValue, source string, emBase
 	default:
 		return lengthMathValue{}, false
 	}
+}
+
+func (parser *lengthMathParser) parseEnvironmentLength(emBase float64, viewport Viewport) (lengthMathValue, bool) {
+	parser.skipWhitespace()
+	if parser.pos >= len(parser.values) {
+		return lengthMathValue{}, false
+	}
+	nameToken, ok := componentToken(parser.values[parser.pos])
+	if !ok || nameToken.Kind != css.TokenIdent || nameToken.Incomplete {
+		return lengthMathValue{}, false
+	}
+	name := nameToken.Value
+	parser.pos++
+	parser.skipWhitespace()
+
+	value, known := safeAreaEnvironmentLength(name, viewport)
+	if parser.pos == len(parser.values) {
+		if !known {
+			return lengthMathValue{}, false
+		}
+		return environmentLengthMathValue(value), true
+	}
+	if !parser.consumeToken(css.TokenComma, "") {
+		return lengthMathValue{}, false
+	}
+	if known {
+		// The fallback is not evaluated when the environment variable exists,
+		// but a comma must still be followed by a declaration-value component.
+		parser.skipWhitespace()
+		if parser.pos == len(parser.values) {
+			return lengthMathValue{}, false
+		}
+		return environmentLengthMathValue(value), true
+	}
+
+	fallback := lengthMathParser{
+		source: parser.source,
+		values: parser.values[parser.pos:],
+		nodes:  parser.nodes,
+	}
+	parsed, valid := fallback.parseSum(emBase, viewport)
+	fallback.skipWhitespace()
+	return parsed, valid && !parsed.isNumber && fallback.pos == len(fallback.values)
+}
+
+func safeAreaEnvironmentLength(name string, viewport Viewport) (float64, bool) {
+	var value float64
+	switch name {
+	case "safe-area-inset-top", "safe-area-max-inset-top":
+		value = viewport.SafeAreaInsetTop
+	case "safe-area-inset-right", "safe-area-max-inset-right":
+		value = viewport.SafeAreaInsetRight
+	case "safe-area-inset-bottom", "safe-area-max-inset-bottom":
+		value = viewport.SafeAreaInsetBottom
+	case "safe-area-inset-left", "safe-area-max-inset-left":
+		value = viewport.SafeAreaInsetLeft
+	default:
+		return 0, false
+	}
+	return value, isFinite(value) && value >= 0
+}
+
+func environmentLengthMathValue(value float64) lengthMathValue {
+	return lengthMathValue{expression: lengthExpression{
+		kind:   lengthExpressionLinear,
+		linear: linearLength{px: value},
+	}}
 }
 
 func (parser *lengthMathParser) parseSum(emBase float64, viewport Viewport) (lengthMathValue, bool) {

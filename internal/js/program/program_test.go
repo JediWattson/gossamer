@@ -3,12 +3,58 @@ package program_test
 import (
 	"context"
 	"errors"
+	"math"
 	"testing"
+	"unsafe"
 
 	"github.com/JediWattson/gossamer/internal/js/program"
 	browserruntime "github.com/JediWattson/gossamer/internal/runtime"
 	"github.com/JediWattson/gossamer/internal/runtime/memory"
 )
+
+func TestCompactConstantPreservesPortableVariants(t *testing.T) {
+	if size := unsafe.Sizeof(program.Constant{}); size != 32 {
+		t.Fatalf("Constant size = %d bytes, want 32", size)
+	}
+	nan := math.Float64frombits(0x7ff8000000000042)
+	for _, number := range []float64{0, math.Copysign(0, -1), 42.5, math.Inf(1), math.Inf(-1), nan} {
+		constant := program.Number(number)
+		if constant.Kind() != program.ConstantNumber || math.Float64bits(constant.Number()) != math.Float64bits(number) {
+			t.Fatalf("Number(%v) = kind %d, bits %016x", number, constant.Kind(), math.Float64bits(constant.Number()))
+		}
+	}
+	if constant := program.Bool(true); constant.Kind() != program.ConstantBool || !constant.Bool() {
+		t.Fatalf("Bool(true) = %#v", constant)
+	}
+	if constant := program.String("name"); constant.Kind() != program.ConstantString || constant.String() != "name" {
+		t.Fatalf("String(name) = %#v", constant)
+	}
+	if constant := program.BigInt("0x2a"); constant.Kind() != program.ConstantBigInt || constant.String() != "0x2a" {
+		t.Fatalf("BigInt(0x2a) = %#v", constant)
+	}
+	if constant := program.Function(42); constant.Kind() != program.ConstantFunction || constant.Function() != 42 {
+		t.Fatalf("Function(42) = %#v", constant)
+	}
+	if constant := program.RegExp("pattern", "ygid"); constant.Kind() != program.ConstantRegExp || constant.String() != "pattern" || constant.Flags() != "ygid" {
+		t.Fatalf("RegExp(pattern, ygid) = source %q flags %q", constant.String(), constant.Flags())
+	}
+	if program.String("same") != program.String("same") || program.Number(nan) != program.Number(nan) {
+		t.Fatal("equivalent constants are not comparable deduplication keys")
+	}
+}
+
+func TestProgramRejectsCompactRegExpWithInvalidFlags(t *testing.T) {
+	code := browserruntime.Assemble(
+		browserruntime.Instruction{Op: browserruntime.OpConstant, A: 0},
+		browserruntime.Instruction{Op: browserruntime.OpReturn},
+	)
+	_, err := program.New([]program.FunctionTemplate{{
+		Code: code, Constants: []program.Constant{program.RegExp("pattern", "gg")},
+	}}, 0)
+	if !errors.Is(err, program.ErrInvalidProgram) {
+		t.Fatalf("invalid RegExp flags error = %v", err)
+	}
+}
 
 func TestProgramDeepCopiesAndValidatesPortableFunctions(t *testing.T) {
 	t.Parallel()

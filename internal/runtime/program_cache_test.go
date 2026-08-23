@@ -22,6 +22,11 @@ func TestInterpreterCachesDecodedVerifiedBytecodeByContent(t *testing.T) {
 	if len(first) == 0 || &first[0] != &second[0] {
 		t.Fatal("equivalent Function bodies did not share decoded instructions")
 	}
+	key := bytecodeKey(code, 0)
+	cached := interpreter.programs[key][0]
+	if len(cached.code) == 0 || &cached.code[0] != &code[0] {
+		t.Fatal("decoded cache copied immutable Function bytecode")
+	}
 
 	constantCode := Assemble(
 		Instruction{Op: OpConstant, A: 0},

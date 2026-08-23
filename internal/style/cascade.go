@@ -62,6 +62,7 @@ type winningDeclaration struct {
 	ruleOrder         int
 	declarationOrder  int
 	authoredValue     string
+	logicalTarget     string
 }
 
 func (candidate winningDeclaration) source() PropertySource {
@@ -88,6 +89,13 @@ func (candidate winningDeclaration) source() PropertySource {
 		SourceOrder:         candidate.order,
 		owner:               candidate.owner,
 	}
+}
+
+func (candidate winningDeclaration) valueTarget() string {
+	if candidate.logicalTarget != "" {
+		return candidate.logicalTarget
+	}
+	return candidate.target
 }
 
 // declarationPrecedence returns positive when left wins over right.

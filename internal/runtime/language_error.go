@@ -28,9 +28,11 @@ func (execution *execution) routeFrameError(frame *Frame, err error) (bool, erro
 			}
 		}
 		location := ""
-		if frame != nil && uint64(instruction) < uint64(len(frame.function.Locations)) {
-			span := frame.function.Locations[instruction]
-			location = fmt.Sprintf(" source %d..%d", span.Start, span.End)
+		if frame != nil {
+			span, found := frame.function.Locations.At(instruction)
+			if found {
+				location = fmt.Sprintf(" source %d..%d", span.Start, span.End)
+			}
 		}
 		err = fmt.Errorf("%w (in %s at bytecode %d%s)", err, name, instruction, location)
 		message, allocErr := execution.context.NewString(err.Error())

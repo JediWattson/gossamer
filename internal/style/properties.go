@@ -31,6 +31,7 @@ const (
 	propertyBackgroundColor
 	propertyBorderColor
 	propertyBorderCollapse
+	propertyBorderRadius
 	propertyBorderSpacing
 	propertyBorderStyle
 	propertyBorderWidth
@@ -66,6 +67,7 @@ const (
 	propertyJustifySelf
 	propertyLineHeight
 	propertyListStyleType
+	propertyLogicalPadding
 	propertyMargin
 	propertyMaxHeight
 	propertyMaxWidth
@@ -100,6 +102,26 @@ const (
 	propertyLeft
 )
 
+type propertyCorner uint8
+
+const (
+	propertyNoCorner propertyCorner = iota
+	propertyTopLeft
+	propertyTopRight
+	propertyBottomRight
+	propertyBottomLeft
+)
+
+type propertyLogicalEdge uint8
+
+const (
+	propertyNoLogicalEdge propertyLogicalEdge = iota
+	propertyBlockStart
+	propertyBlockEnd
+	propertyInlineStart
+	propertyInlineEnd
+)
+
 // propertyDefinition is the single source of truth for every ordinary
 // longhand represented by ComputedStyle. Its kind and edge select the grammar,
 // computer, copier, and serializer below; inherited and invalidation are
@@ -108,8 +130,11 @@ type propertyDefinition struct {
 	name      string
 	kind      propertyKind
 	edge      propertyEdge
+	corner    propertyCorner
+	logical   propertyLogicalEdge
 	inherited bool
-	// Font-size computes before other em-dependent longhands.
+	// Font-size computes before other em-dependent longhands. Direction and
+	// writing-mode compute before logical properties map into physical slots.
 	computeEarly bool
 	// CSS excludes direction and unicode-bidi from all.
 	excludedFromAll bool
@@ -124,6 +149,8 @@ var propertyDefinitions = [...]propertyDefinition{
 	{name: "align-self", kind: propertyAlignSelf, invalidation: propertyInvalidatesLayout},
 	{name: "background-color", kind: propertyBackgroundColor, invalidation: propertyInvalidatesPaint},
 	{name: "border-bottom-color", kind: propertyBorderColor, edge: propertyBottom, invalidation: propertyInvalidatesPaint},
+	{name: "border-bottom-left-radius", kind: propertyBorderRadius, corner: propertyBottomLeft, invalidation: propertyInvalidatesPaint},
+	{name: "border-bottom-right-radius", kind: propertyBorderRadius, corner: propertyBottomRight, invalidation: propertyInvalidatesPaint},
 	{name: "border-bottom-style", kind: propertyBorderStyle, edge: propertyBottom, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "border-bottom-width", kind: propertyBorderWidth, edge: propertyBottom, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "border-collapse", kind: propertyBorderCollapse, inherited: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
@@ -135,6 +162,8 @@ var propertyDefinitions = [...]propertyDefinition{
 	{name: "border-right-width", kind: propertyBorderWidth, edge: propertyRight, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "border-spacing", kind: propertyBorderSpacing, inherited: true, invalidation: propertyInvalidatesLayout},
 	{name: "border-top-color", kind: propertyBorderColor, edge: propertyTop, invalidation: propertyInvalidatesPaint},
+	{name: "border-top-left-radius", kind: propertyBorderRadius, corner: propertyTopLeft, invalidation: propertyInvalidatesPaint},
+	{name: "border-top-right-radius", kind: propertyBorderRadius, corner: propertyTopRight, invalidation: propertyInvalidatesPaint},
 	{name: "border-top-style", kind: propertyBorderStyle, edge: propertyTop, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "border-top-width", kind: propertyBorderWidth, edge: propertyTop, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "bottom", kind: propertyInset, edge: propertyBottom, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
@@ -143,7 +172,7 @@ var propertyDefinitions = [...]propertyDefinition{
 	{name: "color", kind: propertyColor, inherited: true, invalidation: propertyInvalidatesPaint},
 	{name: "column-gap", kind: propertyGap, edge: propertyRight, invalidation: propertyInvalidatesLayout},
 	{name: "content", kind: propertyContent, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
-	{name: "direction", kind: propertyDirection, inherited: true, excludedFromAll: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
+	{name: "direction", kind: propertyDirection, inherited: true, computeEarly: true, excludedFromAll: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "display", kind: propertyDisplay, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "empty-cells", kind: propertyEmptyCells, inherited: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "flex-basis", kind: propertyFlexBasis, invalidation: propertyInvalidatesLayout},
@@ -183,7 +212,11 @@ var propertyDefinitions = [...]propertyDefinition{
 	{name: "order", kind: propertyOrder, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "overflow-x", kind: propertyOverflowX, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "overflow-y", kind: propertyOverflowY, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
+	{name: "padding-block-end", kind: propertyLogicalPadding, logical: propertyBlockEnd, invalidation: propertyInvalidatesLayout},
+	{name: "padding-block-start", kind: propertyLogicalPadding, logical: propertyBlockStart, invalidation: propertyInvalidatesLayout},
 	{name: "padding-bottom", kind: propertyPadding, edge: propertyBottom, invalidation: propertyInvalidatesLayout},
+	{name: "padding-inline-end", kind: propertyLogicalPadding, logical: propertyInlineEnd, invalidation: propertyInvalidatesLayout},
+	{name: "padding-inline-start", kind: propertyLogicalPadding, logical: propertyInlineStart, invalidation: propertyInvalidatesLayout},
 	{name: "padding-left", kind: propertyPadding, edge: propertyLeft, invalidation: propertyInvalidatesLayout},
 	{name: "padding-right", kind: propertyPadding, edge: propertyRight, invalidation: propertyInvalidatesLayout},
 	{name: "padding-top", kind: propertyPadding, edge: propertyTop, invalidation: propertyInvalidatesLayout},
@@ -201,7 +234,7 @@ var propertyDefinitions = [...]propertyDefinition{
 	{name: "visibility", kind: propertyVisibility, inherited: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "white-space", kind: propertyWhiteSpace, inherited: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "width", kind: propertyWidth, invalidation: propertyInvalidatesLayout},
-	{name: "writing-mode", kind: propertyWritingMode, inherited: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
+	{name: "writing-mode", kind: propertyWritingMode, inherited: true, computeEarly: true, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "z-index", kind: propertyZIndex, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 }
 
@@ -231,6 +264,7 @@ var shorthandTargets = map[string][]string{
 	"border-color":    {"border-top-color", "border-right-color", "border-bottom-color", "border-left-color"},
 	"border-left":     {"border-left-width", "border-left-style", "border-left-color"},
 	"border-right":    {"border-right-width", "border-right-style", "border-right-color"},
+	"border-radius":   {"border-top-left-radius", "border-top-right-radius", "border-bottom-right-radius", "border-bottom-left-radius"},
 	"border-style":    {"border-top-style", "border-right-style", "border-bottom-style", "border-left-style"},
 	"border-top":      {"border-top-width", "border-top-style", "border-top-color"},
 	"border-width":    {"border-top-width", "border-right-width", "border-bottom-width", "border-left-width"},
@@ -244,6 +278,8 @@ var shorthandTargets = map[string][]string{
 	"margin":          {"margin-top", "margin-right", "margin-bottom", "margin-left"},
 	"overflow":        {"overflow-x", "overflow-y"},
 	"padding":         {"padding-top", "padding-right", "padding-bottom", "padding-left"},
+	"padding-block":   {"padding-block-start", "padding-block-end"},
+	"padding-inline":  {"padding-inline-start", "padding-inline-end"},
 	"text-decoration": {"text-decoration-line"},
 }
 
@@ -277,6 +313,44 @@ func declarationTargets(property string) []string {
 	return shorthandTargets[property]
 }
 
+func remapLogicalCandidates(style *computedStyle, candidatesByTarget map[string][]winningDeclaration) {
+	if style == nil || len(candidatesByTarget) == 0 {
+		return
+	}
+	for index := range propertyDefinitions {
+		definition := propertyDefinitions[index]
+		if definition.kind != propertyLogicalPadding {
+			continue
+		}
+		candidates := candidatesByTarget[definition.name]
+		if len(candidates) == 0 {
+			continue
+		}
+		delete(candidatesByTarget, definition.name)
+		physical := physicalPaddingProperty(physicalEdgeForLogical(style.writingMode, style.direction, definition.logical))
+		for candidateIndex := range candidates {
+			candidates[candidateIndex].logicalTarget = definition.name
+			candidates[candidateIndex].target = physical
+		}
+		candidatesByTarget[physical] = append(candidatesByTarget[physical], candidates...)
+	}
+}
+
+func physicalPaddingProperty(edge propertyEdge) string {
+	switch edge {
+	case propertyTop:
+		return "padding-top"
+	case propertyRight:
+		return "padding-right"
+	case propertyBottom:
+		return "padding-bottom"
+	case propertyLeft:
+		return "padding-left"
+	default:
+		panic("style: padding property has no physical edge")
+	}
+}
+
 func copyComputedProperty(destination *computedStyle, source computedStyle, property string) {
 	if definition, ok := lookupPropertyDefinition(property); ok {
 		definition.copy(destination, source)
@@ -305,6 +379,8 @@ func (definition propertyDefinition) copy(destination *computedStyle, source com
 		destinationSide.hasColor = sourceSide.hasColor
 	case propertyBorderCollapse:
 		destination.borderCollapse = source.borderCollapse
+	case propertyBorderRadius:
+		*definition.borderRadius(destination) = *definition.borderRadius(&source)
 	case propertyBorderSpacing:
 		destination.borderSpacing = source.borderSpacing
 	case propertyBorderStyle:
@@ -383,6 +459,8 @@ func (definition propertyDefinition) copy(destination *computedStyle, source com
 		destination.lineHeight = source.lineHeight
 	case propertyListStyleType:
 		destination.listStyleType = source.listStyleType
+	case propertyLogicalPadding:
+		*definition.logicalBoxLength(destination) = *definition.logicalBoxLength(&source)
 	case propertyMargin:
 		*definition.boxLength(destination) = *definition.boxLength(&source)
 	case propertyMaxHeight:
@@ -459,6 +537,9 @@ func (definition propertyDefinition) valid(source string, viewport Viewport) boo
 	case propertyBorderCollapse:
 		keyword, ok := singleCSSKeyword(source)
 		return ok && (keyword == "separate" || keyword == "collapse")
+	case propertyBorderRadius:
+		_, ok := parseCornerRadius(source, 1, viewport)
+		return ok
 	case propertyBorderSpacing:
 		_, ok := parseBorderSpacing(source, 1, viewport)
 		return ok
@@ -588,7 +669,7 @@ func (definition propertyDefinition) valid(source string, viewport Viewport) boo
 	case propertyOverflowX, propertyOverflowY:
 		keyword, ok := singleCSSKeyword(source)
 		return ok && validOverflowKeyword(keyword)
-	case propertyPadding:
+	case propertyLogicalPadding, propertyPadding:
 		parsed, ok := parseLength(source, 1, 1, viewport)
 		return ok && parsed.unit != lengthAuto && nonNegativeLength(parsed)
 	case propertyPosition:
@@ -675,6 +756,10 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 			style.borderCollapse = BorderCollapseCollapse
 		} else {
 			style.borderCollapse = BorderCollapseSeparate
+		}
+	case propertyBorderRadius:
+		if parsed, ok := parseCornerRadius(source, style.fontSize, context.viewport); ok {
+			*definition.borderRadius(style) = parsed
 		}
 	case propertyBorderSpacing:
 		if parsed, ok := parseBorderSpacing(source, style.fontSize, context.viewport); ok {
@@ -928,6 +1013,10 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 		if parsed, ok := parseListStyleType(source); ok {
 			style.listStyleType = parsed
 		}
+	case propertyLogicalPadding:
+		if parsed, ok := parseLength(source, style.fontSize, style.fontSize, context.viewport); ok && parsed.unit != lengthAuto && nonNegativeLength(parsed) {
+			*definition.logicalBoxLength(style) = parsed
+		}
 	case propertyMargin:
 		if parsed, ok := parseLength(source, style.fontSize, style.fontSize, context.viewport); ok {
 			*definition.boxLength(style) = parsed
@@ -1109,6 +1198,8 @@ func (definition propertyDefinition) serialize(computed ComputedStyle) string {
 			return "collapse"
 		}
 		return "separate"
+	case propertyBorderRadius:
+		return serializeComputedCornerRadius(*definition.borderRadius(&computed))
 	case propertyBorderSpacing:
 		horizontal := serializeComputedLength(computed.borderSpacing.horizontal)
 		vertical := serializeComputedLength(computed.borderSpacing.vertical)
@@ -1236,6 +1327,8 @@ func (definition propertyDefinition) serialize(computed ComputedStyle) string {
 		return value
 	case propertyListStyleType:
 		return serializeComputedListStyle(computed.listStyleType)
+	case propertyLogicalPadding:
+		return serializeComputedLength(*definition.logicalBoxLength(&computed))
 	case propertyMargin, propertyPadding:
 		return serializeComputedLength(*definition.boxLength(&computed))
 	case propertyMaxHeight:
@@ -1362,6 +1455,21 @@ func (definition propertyDefinition) borderSide(style *computedStyle) *borderSid
 	}
 }
 
+func (definition propertyDefinition) borderRadius(style *computedStyle) *CornerRadius {
+	switch definition.corner {
+	case propertyTopLeft:
+		return &style.borderRadii.topLeft
+	case propertyTopRight:
+		return &style.borderRadii.topRight
+	case propertyBottomRight:
+		return &style.borderRadii.bottomRight
+	case propertyBottomLeft:
+		return &style.borderRadii.bottomLeft
+	default:
+		panic("style: border-radius property has no corner")
+	}
+}
+
 func (definition propertyDefinition) boxLength(style *computedStyle) *length {
 	switch definition.kind {
 	case propertyGap:
@@ -1406,6 +1514,61 @@ func (definition propertyDefinition) boxLength(style *computedStyle) *length {
 		}
 	}
 	panic("style: box property has no edge")
+}
+
+func (definition propertyDefinition) logicalBoxLength(style *computedStyle) *length {
+	if definition.kind != propertyLogicalPadding {
+		panic("style: property is not a logical padding")
+	}
+	physical := physicalEdgeForLogical(style.writingMode, style.direction, definition.logical)
+	return propertyDefinition{kind: propertyPadding, edge: physical}.boxLength(style)
+}
+
+func physicalEdgeForLogical(mode WritingMode, direction Direction, logical propertyLogicalEdge) propertyEdge {
+	switch logical {
+	case propertyBlockStart:
+		switch mode {
+		case WritingModeVerticalRL:
+			return propertyRight
+		case WritingModeVerticalLR:
+			return propertyLeft
+		default:
+			return propertyTop
+		}
+	case propertyBlockEnd:
+		switch mode {
+		case WritingModeVerticalRL:
+			return propertyLeft
+		case WritingModeVerticalLR:
+			return propertyRight
+		default:
+			return propertyBottom
+		}
+	case propertyInlineStart:
+		if mode == WritingModeHorizontalTB {
+			if direction == DirectionRTL {
+				return propertyRight
+			}
+			return propertyLeft
+		}
+		if direction == DirectionRTL {
+			return propertyBottom
+		}
+		return propertyTop
+	case propertyInlineEnd:
+		if mode == WritingModeHorizontalTB {
+			if direction == DirectionRTL {
+				return propertyLeft
+			}
+			return propertyRight
+		}
+		if direction == DirectionRTL {
+			return propertyTop
+		}
+		return propertyBottom
+	default:
+		panic("style: logical property has no edge")
+	}
 }
 
 func validCascadedDeclaration(declaration css.Declaration, viewport Viewport) bool {
@@ -1458,6 +1621,9 @@ func validComputedDeclaration(declaration css.Declaration, viewport Viewport) bo
 	case "padding":
 		_, ok := parsePaddingLengths(declaration.Value, 1, viewport)
 		return ok
+	case "padding-block", "padding-inline":
+		_, _, ok := parseLogicalPaddingShorthand(declaration.Value, 1, viewport)
+		return ok
 	case "border", "border-top", "border-right", "border-bottom", "border-left":
 		_, ok := parseBorderShorthand(declaration.Value, 1, viewport)
 		return ok
@@ -1469,6 +1635,9 @@ func validComputedDeclaration(declaration css.Declaration, viewport Viewport) bo
 		return ok
 	case "border-color":
 		_, ok := parseBorderColors(declaration.Value)
+		return ok
+	case "border-radius":
+		_, ok := parseBorderRadiusShorthand(declaration.Value, 1, viewport)
 		return ok
 	case "text-decoration":
 		if keyword, ok := singleCSSKeyword(declaration.Value); ok && keyword == "none" {
@@ -1510,6 +1679,112 @@ func parseBorderSpacing(source string, fontSize float64, viewport Viewport) (Bor
 		parsed[1] = parsed[0]
 	}
 	return BorderSpacing{horizontal: parsed[0], vertical: parsed[1]}, true
+}
+
+func parseLogicalPaddingShorthand(source string, fontSize float64, viewport Viewport) (length, length, bool) {
+	value, ok := parsePropertyValue(source)
+	if !ok || len(value.terms) < 1 || len(value.terms) > 2 {
+		return length{}, length{}, false
+	}
+	start, ok := parseLengthComponent(value.terms[0], value.source, fontSize, viewport)
+	if !ok || start.unit == lengthAuto || !nonNegativeLength(start) {
+		return length{}, length{}, false
+	}
+	end := start
+	if len(value.terms) == 2 {
+		end, ok = parseLengthComponent(value.terms[1], value.source, fontSize, viewport)
+		if !ok || end.unit == lengthAuto || !nonNegativeLength(end) {
+			return length{}, length{}, false
+		}
+	}
+	return start, end, true
+}
+
+func parseCornerRadius(source string, fontSize float64, viewport Viewport) (CornerRadius, bool) {
+	value, ok := parsePropertyValue(source)
+	if !ok || len(value.terms) < 1 || len(value.terms) > 2 {
+		return CornerRadius{}, false
+	}
+	horizontal, ok := parseRadiusLength(value.terms[0], value.source, fontSize, viewport)
+	if !ok {
+		return CornerRadius{}, false
+	}
+	vertical := horizontal
+	if len(value.terms) == 2 {
+		vertical, ok = parseRadiusLength(value.terms[1], value.source, fontSize, viewport)
+		if !ok {
+			return CornerRadius{}, false
+		}
+	}
+	return CornerRadius{horizontal: horizontal, vertical: vertical}, true
+}
+
+func parseBorderRadiusShorthand(source string, fontSize float64, viewport Viewport) ([4]CornerRadius, bool) {
+	value, ok := parsePropertyValue(source)
+	if !ok {
+		return [4]CornerRadius{}, false
+	}
+	slash := -1
+	for index, term := range value.terms {
+		if componentIsDelimiter(term, "/") {
+			if slash >= 0 {
+				return [4]CornerRadius{}, false
+			}
+			slash = index
+		}
+	}
+	horizontalTerms := value.terms
+	var verticalTerms []css.ComponentValue
+	if slash >= 0 {
+		horizontalTerms = value.terms[:slash]
+		verticalTerms = value.terms[slash+1:]
+	}
+	horizontal, ok := parseRadiusQuad(horizontalTerms, value.source, fontSize, viewport)
+	if !ok {
+		return [4]CornerRadius{}, false
+	}
+	vertical := horizontal
+	if slash >= 0 {
+		vertical, ok = parseRadiusQuad(verticalTerms, value.source, fontSize, viewport)
+		if !ok {
+			return [4]CornerRadius{}, false
+		}
+	}
+	return [4]CornerRadius{
+		{horizontal: horizontal[0], vertical: vertical[0]},
+		{horizontal: horizontal[1], vertical: vertical[1]},
+		{horizontal: horizontal[2], vertical: vertical[2]},
+		{horizontal: horizontal[3], vertical: vertical[3]},
+	}, true
+}
+
+func parseRadiusQuad(terms []css.ComponentValue, source string, fontSize float64, viewport Viewport) ([4]length, bool) {
+	if len(terms) < 1 || len(terms) > 4 {
+		return [4]length{}, false
+	}
+	parsed := make([]length, len(terms))
+	for index, term := range terms {
+		value, ok := parseRadiusLength(term, source, fontSize, viewport)
+		if !ok {
+			return [4]length{}, false
+		}
+		parsed[index] = value
+	}
+	switch len(parsed) {
+	case 1:
+		return [4]length{parsed[0], parsed[0], parsed[0], parsed[0]}, true
+	case 2:
+		return [4]length{parsed[0], parsed[1], parsed[0], parsed[1]}, true
+	case 3:
+		return [4]length{parsed[0], parsed[1], parsed[2], parsed[1]}, true
+	default:
+		return [4]length{parsed[0], parsed[1], parsed[2], parsed[3]}, true
+	}
+}
+
+func parseRadiusLength(component css.ComponentValue, source string, fontSize float64, viewport Viewport) (length, bool) {
+	parsed, ok := parseLengthComponent(component, source, fontSize, viewport)
+	return parsed, ok && parsed.unit != lengthAuto && nonNegativeLength(parsed)
 }
 
 type gapValue struct {
@@ -1617,6 +1892,17 @@ func applyDeclaration(style *computedStyle, property, source string, context pro
 		if values, ok := parsePaddingLengths(source, style.fontSize, context.viewport); ok {
 			style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft = values[0], values[1], values[2], values[3]
 		}
+	case "padding-block", "padding-inline":
+		if start, end, ok := parseLogicalPaddingShorthand(source, style.fontSize, context.viewport); ok {
+			startEdge, endEdge := propertyBlockStart, propertyBlockEnd
+			if property == "padding-inline" {
+				startEdge, endEdge = propertyInlineStart, propertyInlineEnd
+			}
+			startDefinition := propertyDefinition{kind: propertyLogicalPadding, logical: startEdge}
+			endDefinition := propertyDefinition{kind: propertyLogicalPadding, logical: endEdge}
+			*startDefinition.logicalBoxLength(style) = start
+			*endDefinition.logicalBoxLength(style) = end
+		}
 	case "flex":
 		if grow, shrink, basis, ok := parseFlexShorthand(source, style.fontSize, context.viewport); ok {
 			style.flexGrow, style.flexShrink, style.flexBasis = grow, shrink, basis
@@ -1670,6 +1956,13 @@ func applyDeclaration(style *computedStyle, property, source string, context pro
 			applyBorderColor(&style.borderRight, parsed[1])
 			applyBorderColor(&style.borderBottom, parsed[2])
 			applyBorderColor(&style.borderLeft, parsed[3])
+		}
+	case "border-radius":
+		if parsed, ok := parseBorderRadiusShorthand(source, style.fontSize, context.viewport); ok {
+			style.borderRadii = borderRadii{
+				topLeft: parsed[0], topRight: parsed[1],
+				bottomRight: parsed[2], bottomLeft: parsed[3],
+			}
 		}
 	case "text-decoration":
 		if valueContainsKeyword(source, "underline") {

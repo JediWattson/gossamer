@@ -84,6 +84,18 @@ go run ./cmd/gossamer-efchatcheck \
   --message "hello from Strand"
 ```
 
+The same deterministic production-bundle path can emit active-execution
+region censuses and a retained Go heap profile without opening a window or
+posting to the public service:
+
+```sh
+go run ./cmd/gossamer-efchatcheck \
+  --dist /absolute/path/to/efchat/web/dist \
+  --message "hello from Strand" \
+  --memory-profile /tmp/efchat-strand-memory.jsonl \
+  --heap-profile /tmp/efchat-strand-heap.pprof
+```
+
 To use the same Strand path interactively against the live service, launch:
 
 ```sh
@@ -110,7 +122,15 @@ Function/bytecode offset and separately census its task scratch and persistent
 Realm regions, which distinguishes temporary render churn from retained DOM or
 Realm state. `--memory-profile-interval` controls wall-clock throttling and
 `--strand-execution-sample-interval` controls the raw-instruction spacing of
-those active samples; pass zero to disable them.
+those active samples; pass zero to disable them. Module checkpoints separately
+report lazy source bytes and portable Function, code, constant, and location
+tables. Those portable counters should reach zero after Strand materializes an
+evaluated module into RegionStore; nonzero source bytes identify modules still
+waiting for their first dynamic import.
+RegionStore physical statistics also split retained Function storage into code,
+compact source-location, constant, and capture bytes. Source locations retain
+exact diagnostic spans but use run/delta encoding when it beats their raw
+fixed-width representation.
 
 Messages submitted in that window use the real efchat backend and are public;
 the compatibility gate above remains entirely local.
@@ -303,17 +323,18 @@ hit testing, and coalesced asynchronous scroll events while reusing the same
 immutable Go layout snapshot.
 Element overflow scrolling extends that projection with typed `overflow`,
 stable-ID element offsets, nested scrollport clipping, ancestor-aware
-`scrollIntoView()`, and per-target asynchronous scroll delivery without
-rebuilding layout.
+`scrollIntoView()` with start/center/end/nearest block and inline alignment,
+and per-target asynchronous scroll delivery without rebuilding layout.
 Page-relative `performance.now()`, coalesced `requestAnimationFrame` callbacks,
 cancellation, and queued viewport resize delivery now form the first browser
 frame clock; callback mutations and microtasks publish at most one later frame.
 `ResizeObserver` and viewport-root `IntersectionObserver` sample that same
 native layout at an explicit checkpoint, retain canonical wrappers while
 registered, and release their native claims on disconnect or Realm teardown.
-Block positioned layout now supports relative, absolute, and fixed boxes,
-physical insets, integer `z-index`, and one shared local order for display-list
-paint and hit testing; fixed geometry remains stable through root scrolling.
+Block positioned layout now supports relative, absolute, fixed, and basic
+sticky boxes, physical insets, integer `z-index`, and one shared local order
+for display-list paint and hit testing; fixed subtrees remain stable through
+root scrolling.
 Single-line `display:flex` containers now support row and column directions,
 reversal, ordering, gaps, grow/shrink/basis, justification, and cross-axis
 alignment through the same retained geometry and input path.
@@ -505,11 +526,11 @@ The following are intentionally still outside the current milestone:
 - Flex wrapping and full intrinsic sizing, remaining advanced Grid
   intrinsic/overflow interactions, remaining advanced table intrinsic sizing,
   font-provided vertical metrics and OpenType vertical glyph substitution,
-  floats, sticky and full inline positioned layout, and retained inline boxes
+  floats, advanced sticky and full inline positioned layout, and retained inline boxes
 - The remaining CSS math grammar beyond the current bounded length
   `calc()`/`min()`/`max()`/`clamp()` slice, plus gradients, background images,
-  border radii, shadows, transforms, counters, quotation marks, and generated
-  images
+  curved border strokes, rounded overflow clipping, shadows, transforms,
+  counters, quotation marks, and generated images
 - Escaped literal dots in layer-name segments, `@font-face`, keyframes,
   arbitrary or repeated non-leading `&` nesting selectors, and the remaining
   media-query and `@supports` syntax beyond the current

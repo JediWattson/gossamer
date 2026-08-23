@@ -318,12 +318,12 @@ func (execution *execution) getNamedProperty(base memory.Value, ref, name memory
 		return memory.Value{}, false, nil
 	}
 	if descriptor.Kind == memory.PropertyData {
-		return descriptor.Value, true, nil
+		return descriptor.Value(), true, nil
 	}
-	if descriptor.Getter.Kind() == memory.ValueUndefined {
+	if descriptor.Getter().Kind() == memory.ValueUndefined {
 		return memory.UndefinedValue(), true, nil
 	}
-	getter, err := requireRef(descriptor.Getter, "property getter")
+	getter, err := requireRef(descriptor.Getter(), "property getter")
 	if err != nil {
 		return memory.Value{}, false, err
 	}
@@ -375,10 +375,10 @@ func (execution *execution) setPropertyValue(base, key, value memory.Value) erro
 			return context.SetProperty(ref, name, value)
 		}
 		if descriptor.Kind == memory.PropertyAccessor {
-			if descriptor.Setter.Kind() == memory.ValueUndefined {
+			if descriptor.Setter().Kind() == memory.ValueUndefined {
 				return memory.ErrReadOnlyProperty
 			}
-			setter, err := requireRef(descriptor.Setter, "property setter")
+			setter, err := requireRef(descriptor.Setter(), "property setter")
 			if err != nil {
 				return err
 			}
@@ -465,10 +465,10 @@ func (execution *execution) setNamedProperty(base memory.Value, ref, name memory
 		return context.SetProperty(ref, name, value)
 	}
 	if descriptor.Kind == memory.PropertyAccessor {
-		if descriptor.Setter.Kind() == memory.ValueUndefined {
+		if descriptor.Setter().Kind() == memory.ValueUndefined {
 			return memory.ErrReadOnlyProperty
 		}
-		setter, err := requireRef(descriptor.Setter, "property setter")
+		setter, err := requireRef(descriptor.Setter(), "property setter")
 		if err != nil {
 			return err
 		}

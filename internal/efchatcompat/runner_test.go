@@ -4,8 +4,12 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
+
+	"github.com/JediWattson/gossamer/internal/browser"
+	browserruntime "github.com/JediWattson/gossamer/internal/runtime"
 )
 
 func TestAnonymousSessionSendsMessageEnvelope(t *testing.T) {
@@ -53,7 +57,8 @@ fetch("/api/user")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	report, err := Run(ctx, Options{Dist: dist, Message: "hello from the anonymous gate"})
+	profiler := &recordingMemoryProfiler{}
+	report, err := Run(ctx, Options{Dist: dist, Message: "hello from the anonymous gate", MemoryProfiler: profiler})
 	if err != nil {
 		t.Fatalf("run anonymous session: %v\nreport: %#v", err, report)
 	}
@@ -76,4 +81,29 @@ fetch("/api/user")
 	if report.Teardown.LiveObjects != 0 || report.Teardown.PersistentObjects != 0 {
 		t.Fatalf("teardown ownership = %#v", report.Teardown)
 	}
+	wantLabels := []string{"page-created", "navigation-complete", "session-ready", "history-rendered", "message-attempt"}
+	if !slices.Equal(profiler.labels, wantLabels) || profiler.heapProfiles != 1 {
+		t.Fatalf("memory profile = labels %v, heap profiles %d", profiler.labels, profiler.heapProfiles)
+	}
+}
+
+type recordingMemoryProfiler struct {
+	labels       []string
+	heapProfiles int
+}
+
+func (profiler *recordingMemoryProfiler) Record(label string, _ *browser.Page, force bool) error {
+	if force {
+		profiler.labels = append(profiler.labels, label)
+	}
+	return nil
+}
+
+func (*recordingMemoryProfiler) RecordExecution(*browser.Page, *browserruntime.TaskContext, browserruntime.ExecutionSample) error {
+	return nil
+}
+
+func (profiler *recordingMemoryProfiler) WriteHeapProfile() error {
+	profiler.heapProfiles++
+	return nil
 }

@@ -192,13 +192,73 @@ func (realm *Realm) elementScrollSet(vertical bool) browserruntime.NativeFunctio
 	}
 }
 
-func (realm *Realm) elementScrollIntoView(context *browserruntime.TaskContext, this memory.Value, _ []memory.Value) (memory.Value, error) {
+func (realm *Realm) elementScrollIntoView(context *browserruntime.TaskContext, this memory.Value, arguments []memory.Value) (memory.Value, error) {
 	handle, host, err := realm.geometryOperands(context, this)
 	if err != nil {
 		return memory.Value{}, err
 	}
-	_, err = host.ScrollIntoView(handle)
+	options, err := scrollIntoViewOptions(context, argument(arguments, 0))
+	if err != nil {
+		return memory.Value{}, err
+	}
+	_, err = host.ScrollIntoView(handle, options)
 	return memory.UndefinedValue(), err
+}
+
+func scrollIntoViewOptions(context *browserruntime.TaskContext, value memory.Value) (browser.ScrollIntoViewOptions, error) {
+	options := browser.DefaultScrollIntoViewOptions()
+	if value.Kind() == memory.ValueUndefined {
+		return options, nil
+	}
+	if value.IsRef() {
+		kind, err := context.HeapKind(value.Ref())
+		if err != nil {
+			return options, err
+		}
+		if kind == memory.HeapObject {
+			block, err := scrollAlignmentOption(context, value.Ref(), "block", options.Block)
+			if err != nil {
+				return options, err
+			}
+			inline, err := scrollAlignmentOption(context, value.Ref(), "inline", options.Inline)
+			if err != nil {
+				return options, err
+			}
+			options.Block, options.Inline = block, inline
+			return options, nil
+		}
+	}
+	if !truthy(value) {
+		options.Block = browser.ScrollAlignEnd
+	}
+	return options, nil
+}
+
+func scrollAlignmentOption(context *browserruntime.TaskContext, object memory.Ref, name string, fallback browser.ScrollAlignment) (browser.ScrollAlignment, error) {
+	key, err := context.NewString(name)
+	if err != nil {
+		return fallback, err
+	}
+	value, found, err := context.GetOwnProperty(object, key)
+	if err != nil || !found || value.Kind() == memory.ValueUndefined {
+		return fallback, err
+	}
+	keyword, err := valueString(context, value)
+	if err != nil {
+		return fallback, err
+	}
+	switch keyword {
+	case "start":
+		return browser.ScrollAlignStart, nil
+	case "center":
+		return browser.ScrollAlignCenter, nil
+	case "end":
+		return browser.ScrollAlignEnd, nil
+	case "nearest":
+		return browser.ScrollAlignNearest, nil
+	default:
+		return fallback, fmt.Errorf("%w: invalid scrollIntoView %s alignment %q", browserruntime.ErrOperandType, name, keyword)
+	}
 }
 
 func (realm *Realm) windowGeometryValue(property string) browserruntime.NativeFunction {

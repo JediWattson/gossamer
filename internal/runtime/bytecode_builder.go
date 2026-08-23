@@ -13,11 +13,10 @@ import (
 type Label uint32
 
 // SourceSpan identifies a half-open byte range in the source that emitted one
-// instruction. A zero span means that no source location was supplied.
-type SourceSpan struct {
-	Start uint32
-	End   uint32
-}
+// instruction. A zero span means that no source location was supplied. The
+// alias lets immutable compiled Programs hand location tables directly to the
+// RegionStore without converting and cloning an identical representation.
+type SourceSpan = memory.SourceSpan
 
 // BytecodeChunk is the checked output of BytecodeBuilder. Locations are
 // parallel to decoded instructions and may be carried into Function payloads
@@ -405,4 +404,36 @@ func (builder *BytecodeBuilder) BuildCode(constantCount int) ([]byte, []SourceSp
 		return nil, nil, err
 	}
 	return Assemble(instructions...), append([]SourceSpan(nil), builder.locations...), nil
+}
+
+// BuildCodeOwned is the one-shot compiler handoff. It patches the builder's
+// instruction storage in place instead of allocating a second Instruction
+// table, then resets instruction and label state so the transferred scratch
+// storage cannot be mutated through the builder. Locations are still copied
+// into exact-capacity retained storage rather than preserving builder growth
+// slack in every compiled Function.
+func (builder *BytecodeBuilder) BuildCodeOwned(constantCount int) ([]byte, []SourceSpan, error) {
+	if builder == nil {
+		return nil, nil, fmt.Errorf("%w: nil bytecode builder", ErrInvalidBytecode)
+	}
+	for _, fixup := range builder.fixups {
+		if _, exists := builder.labels[fixup.label]; !exists {
+			return nil, nil, fmt.Errorf("%w: label %d was never marked", ErrInvalidBytecode, fixup.label)
+		}
+	}
+	for _, fixup := range builder.fixups {
+		builder.instructions[fixup.instruction].A = builder.labels[fixup.label]
+	}
+	if err := verifyInstructions(builder.instructions, constantCount); err != nil {
+		return nil, nil, err
+	}
+	code := Assemble(builder.instructions...)
+	locations := make([]SourceSpan, len(builder.locations))
+	copy(locations, builder.locations)
+	builder.instructions = nil
+	builder.locations = nil
+	builder.labels = make(map[Label]uint32)
+	builder.fixups = nil
+	builder.nextLabel = 0
+	return code, locations, nil
 }

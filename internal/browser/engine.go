@@ -218,6 +218,12 @@ type ScriptMemoryProfile struct {
 	MutationObservers      uint64 `json:"mutationObservers"`
 	ResizeObservers        uint64 `json:"resizeObservers"`
 	Modules                uint64 `json:"modules"`
+	ModuleSourceBytes      uint64 `json:"moduleSourceBytes"`
+	PortableFunctions      uint64 `json:"portableFunctions"`
+	PortableFunctionBytes  uint64 `json:"portableFunctionBytes"`
+	PortableCodeBytes      uint64 `json:"portableCodeBytes"`
+	PortableConstantBytes  uint64 `json:"portableConstantBytes"`
+	PortableLocationBytes  uint64 `json:"portableLocationBytes"`
 	Collections            uint64 `json:"collections"`
 	CheckpointCollections  uint64 `json:"checkpointCollections"`
 	ActiveCollections      uint64 `json:"activeCollections"`
@@ -620,6 +626,29 @@ type DOMViewportGeometry struct {
 	ScrollHeight float64
 }
 
+// ScrollAlignment is one ScrollIntoView alignment keyword. The browser owns
+// the geometry policy while script engines only decode Web IDL arguments.
+type ScrollAlignment uint8
+
+const (
+	ScrollAlignStart ScrollAlignment = iota
+	ScrollAlignCenter
+	ScrollAlignEnd
+	ScrollAlignNearest
+)
+
+// ScrollIntoViewOptions carries the instant block/inline alignment subset.
+// Smooth scrolling remains a later scheduling concern.
+type ScrollIntoViewOptions struct {
+	Block  ScrollAlignment
+	Inline ScrollAlignment
+}
+
+// DefaultScrollIntoViewOptions matches the no-argument web-platform default.
+func DefaultScrollIntoViewOptions() ScrollIntoViewOptions {
+	return ScrollIntoViewOptions{Block: ScrollAlignStart, Inline: ScrollAlignNearest}
+}
+
 // DOMGeometryHost exposes synchronous layout reads and root scrolling without
 // allowing an engine to retain a Page pointer or a layout snapshot.
 type DOMGeometryHost interface {
@@ -627,7 +656,7 @@ type DOMGeometryHost interface {
 	ViewportGeometry() (DOMViewportGeometry, error)
 	ScrollElement(NodeHandle, float64, float64) (bool, error)
 	ScrollViewport(float64, float64) (bool, error)
-	ScrollIntoView(NodeHandle) (bool, error)
+	ScrollIntoView(NodeHandle, ScrollIntoViewOptions) (bool, error)
 }
 
 // DOMMutationObserverHost exposes the document-owned mutation journal to a

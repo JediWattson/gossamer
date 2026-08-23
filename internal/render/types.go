@@ -241,6 +241,25 @@ const (
 	DrawImageCommand
 )
 
+// CornerRadius is one used elliptical radius in CSS pixels.
+type CornerRadius struct {
+	X float64
+	Y float64
+}
+
+// CornerRadii are normalized used radii in top-left, top-right,
+// bottom-right, bottom-left order.
+type CornerRadii struct {
+	TopLeft     CornerRadius
+	TopRight    CornerRadius
+	BottomRight CornerRadius
+	BottomLeft  CornerRadius
+}
+
+func (radii CornerRadii) empty() bool {
+	return radii == (CornerRadii{})
+}
+
 // Command is a backend-neutral paint operation.
 type Command struct {
 	Kind CommandKind
@@ -254,6 +273,7 @@ type Command struct {
 
 	Rect  Rect
 	Color color.NRGBA
+	Radii CornerRadii
 
 	Text       string
 	X          float64

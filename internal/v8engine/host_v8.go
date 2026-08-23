@@ -2744,7 +2744,7 @@ func goGossamerV8HostScrollIntoView(
 		if err != nil {
 			return err
 		}
-		changed, err := domHost.ScrollIntoView(browserNodeHandle(document, node))
+		changed, err := domHost.ScrollIntoView(browserNodeHandle(document, node), browser.DefaultScrollIntoViewOptions())
 		if err != nil {
 			return err
 		}

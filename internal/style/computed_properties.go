@@ -112,6 +112,15 @@ func serializeComputedBorderWidth(side BorderSide) string {
 	return serializeComputedLength(side.width)
 }
 
+func serializeComputedCornerRadius(radius CornerRadius) string {
+	horizontal := serializeComputedLength(radius.horizontal)
+	vertical := serializeComputedLength(radius.vertical)
+	if horizontal == vertical {
+		return horizontal
+	}
+	return horizontal + " " + vertical
+}
+
 func serializeComputedDisplay(value DisplayMode) string {
 	switch value {
 	case DisplayInlineBlock:

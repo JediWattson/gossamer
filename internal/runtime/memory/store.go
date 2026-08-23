@@ -1155,7 +1155,7 @@ func (store *Store) recordKindFreeLocked(slot *Slot) {
 		store.stats.LiveContexts--
 	case HeapFunction:
 		store.stats.LiveFunctions--
-		store.stats.LiveBytes -= uint64(len(slot.function().Code)) + uint64(len(slot.function().Locations))*8
+		store.stats.LiveBytes -= uint64(len(slot.function().Code)) + slot.function().Locations.StorageBytes()
 	case HeapPromise:
 		store.stats.LivePromises--
 	case HeapBigInt:
@@ -1950,8 +1950,9 @@ func (store *Store) copyGraphLocked(from, to ownership.OwnerID, lifetime ownersh
 				}
 			}
 		case HeapFunction:
-			function := cloneFunction(*sourceSlot.function())
-			function.ObjectHeader = ObjectHeader{}
+			function := loadFunction(*sourceSlot.function())
+			function.Constants = append([]Value(nil), function.Constants...)
+			function.Captures = append([]Value(nil), function.Captures...)
 			function.Name = remapValue(function.Name, mapping)
 			function.Environment = remapValue(function.Environment, mapping)
 			function.LexicalThis = remapValue(function.LexicalThis, mapping)
@@ -1961,7 +1962,7 @@ func (store *Store) copyGraphLocked(from, to ownership.OwnerID, lifetime ownersh
 			for index, capture := range function.Captures {
 				function.Captures[index] = remapValue(capture, mapping)
 			}
-			if err := store.initializeFunctionLocked(to, copyRef, function, true, false); err != nil {
+			if err := store.initializeFunctionLocked(to, copyRef, function, true, true); err != nil {
 				_ = store.destroyRegionsLocked(map[RegionID]struct{}{destination.ID: {}})
 				return nil, err
 			}
@@ -2135,9 +2136,12 @@ func (store *Store) copyObjectHeaderLocked(to ownership.OwnerID, copyRef Ref, so
 	for _, property := range source.Properties {
 		descriptor := property
 		descriptor.Name = Ref{}
-		descriptor.Value = remapValue(property.Value, mapping)
-		descriptor.Getter = remapValue(property.Getter, mapping)
-		descriptor.Setter = remapValue(property.Setter, mapping)
+		if descriptor.Kind == PropertyData {
+			descriptor.SetValue(remapValue(property.Value(), mapping))
+		} else {
+			descriptor.SetGetter(remapValue(property.Getter(), mapping))
+			descriptor.SetSetter(remapValue(property.Setter(), mapping))
+		}
 		if err := store.definePropertyLocked(to, copyRef, remapRef(property.Name, mapping), descriptor, true); err != nil {
 			return err
 		}

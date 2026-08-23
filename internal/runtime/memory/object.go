@@ -8,26 +8,75 @@ const (
 )
 
 // Property is one insertion-ordered own property. Name references either a
-// String or a Symbol. Accessor getter/setter values are Undefined or Function
-// Refs. Descriptor flags are physical graph state so copy, promotion,
-// barriers, and teardown cannot disagree with the language layer.
+// String or a Symbol. Data descriptors use values[0]; accessor descriptors use
+// values[0] and values[1] for their getter and setter. The tagged union avoids
+// reserving three Values when JavaScript descriptors can never use all three
+// simultaneously. Descriptor flags remain physical graph state so copy,
+// promotion, barriers, and teardown cannot disagree with the language layer.
 type Property struct {
 	Name         Ref
+	values       [2]Value
 	Kind         PropertyKind
-	Value        Value
-	Getter       Value
-	Setter       Value
 	Writable     bool
 	Enumerable   bool
 	Configurable bool
 }
 
 func DataProperty(value Value, writable, enumerable, configurable bool) Property {
-	return Property{Kind: PropertyData, Value: value, Writable: writable, Enumerable: enumerable, Configurable: configurable}
+	return Property{
+		values: [2]Value{value}, Kind: PropertyData,
+		Writable: writable, Enumerable: enumerable, Configurable: configurable,
+	}
 }
 
 func AccessorProperty(getter, setter Value, enumerable, configurable bool) Property {
-	return Property{Kind: PropertyAccessor, Getter: getter, Setter: setter, Enumerable: enumerable, Configurable: configurable}
+	return Property{
+		values: [2]Value{getter, setter}, Kind: PropertyAccessor,
+		Enumerable: enumerable, Configurable: configurable,
+	}
+}
+
+func (property Property) Value() Value {
+	if property.Kind != PropertyData {
+		return UndefinedValue()
+	}
+	return property.values[0]
+}
+
+func (property Property) Getter() Value {
+	if property.Kind != PropertyAccessor {
+		return UndefinedValue()
+	}
+	return property.values[0]
+}
+
+func (property Property) Setter() Value {
+	if property.Kind != PropertyAccessor {
+		return UndefinedValue()
+	}
+	return property.values[1]
+}
+
+// SetValue, SetGetter, and SetSetter mutate a descriptor being prepared by the
+// language layer. DefineProperty validates its Kind before storing it.
+func (property *Property) SetValue(value Value) {
+	if property == nil || property.Kind != PropertyData {
+		return
+	}
+	property.values[0] = value
+	property.values[1] = Value{}
+}
+
+func (property *Property) SetGetter(getter Value) {
+	if property != nil && property.Kind == PropertyAccessor {
+		property.values[0] = getter
+	}
+}
+
+func (property *Property) SetSetter(setter Value) {
+	if property != nil && property.Kind == PropertyAccessor {
+		property.values[1] = setter
+	}
 }
 
 // ObjectHeader is the shared JavaScript object identity carried by every

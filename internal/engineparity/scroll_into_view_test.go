@@ -16,6 +16,55 @@ func TestStrandScrollIntoViewParity(t *testing.T) {
 	runScrollIntoViewParity(t, nativeengine.New(nativeengine.Config{}))
 }
 
+func TestStrandScrollIntoViewHonorsNearestOptions(t *testing.T) {
+	root, err := htmlparser.Parse(strings.NewReader(`<!doctype html><html><body style="margin:0">
+		<div id="scroller" style="width:100px;height:100px;overflow:hidden">
+			<div style="height:40px"></div>
+			<button id="target" style="display:block;width:20px;height:20px">target</button>
+			<div style="height:80px"></div>
+		</div>
+	</body></html>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	browserRuntime, err := browser.NewWithEngine(nativeengine.New(nativeengine.Config{}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer browserRuntime.Close()
+	page, err := browserRuntime.NewPage(root, &url.URL{Scheme: "https", Host: "parity.gossamer.test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer page.Close()
+	if err := page.SetViewport(render.Viewport{Width: 100, Height: 100}); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := page.QueueScript(browser.ScriptSource{URL: "scroll-into-view-nearest.js", Source: `
+const nearestScroller = document.getElementById("scroller");
+const nearestTarget = document.getElementById("target");
+nearestTarget.scrollIntoView({ block: "nearest", inline: "nearest" });
+if (nearestScroller.scrollTop !== 0 || nearestScroller.scrollLeft !== 0) {
+  throw new Error("nearest moved a visible target: " + nearestScroller.scrollLeft + "/" + nearestScroller.scrollTop);
+}
+nearestTarget.scrollIntoView({ block: "start", inline: "nearest" });
+if (nearestScroller.scrollTop !== 40 || nearestScroller.scrollLeft !== 0) {
+  throw new Error("start alignment mismatch: " + nearestScroller.scrollLeft + "/" + nearestScroller.scrollTop);
+}
+`}); err != nil {
+		t.Fatal(err)
+	}
+	for page.Realm.Tasks.Len() != 0 {
+		if err := page.Realm.RunOne(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := page.Realm.Store().CheckInvariants(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func runScrollIntoViewParity(t *testing.T, engine browser.Engine) {
 	t.Helper()
 	root, err := htmlparser.Parse(strings.NewReader(`

@@ -84,6 +84,13 @@ func TestBytecodeClosureSharesImmutableExecutableStorage(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := store.PhysicalStats()
+	locationTable, err := memory.NewSourceLocationTable(locations)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.FunctionSourceLocationBytes != locationTable.StorageBytes() {
+		t.Fatalf("source-location bytes = %d, want %d", before.FunctionSourceLocationBytes, locationTable.StorageBytes())
+	}
 	closure, err := store.AllocBytecodeClosure(owner, functionRegion, template, memory.NullValue())
 	if err != nil {
 		t.Fatal(err)
@@ -96,7 +103,7 @@ func TestBytecodeClosureSharesImmutableExecutableStorage(t *testing.T) {
 		t.Fatalf("template and closure edge count = %d, want 2", got)
 	}
 	loaded, err := store.LoadFunction(owner, closure)
-	if err != nil || len(loaded.Code) != len(code) || len(loaded.Locations) != len(locations) || len(loaded.Constants) != 1 || loaded.Constants[0].Ref() != captured {
+	if err != nil || len(loaded.Code) != len(code) || loaded.Locations.Len() != len(locations) || len(loaded.Constants) != 1 || loaded.Constants[0].Ref() != captured {
 		t.Fatalf("LoadFunction(closure) = %#v, %v", loaded, err)
 	}
 	if allocations := testing.AllocsPerRun(100, func() {
@@ -113,8 +120,46 @@ func TestBytecodeClosureSharesImmutableExecutableStorage(t *testing.T) {
 		t.Fatalf("closure edge count after template free = %d, want 1", got)
 	}
 	snapshot, err := store.DerefFunction(owner, closure)
-	if err != nil || snapshot.Code[513] != code[513] || snapshot.Locations[1] != locations[1] {
+	location, locationFound := snapshot.Locations.At(1)
+	if err != nil || snapshot.Code[513] != code[513] || !locationFound || location != locations[1] {
 		t.Fatalf("closure after template free = %#v, %v", snapshot, err)
+	}
+	if err := store.CheckInvariants(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestFunctionGraphCopySharesImmutableExecutableStorage(t *testing.T) {
+	store := memory.NewStore(nil)
+	defer store.Close()
+	owner := realmOwner(57)
+	reader := realmOwner(58)
+	region := mustRegion(t, store, owner)
+	code := make([]byte, 4096)
+	locations := make([]memory.SourceSpan, 128)
+	function, err := store.AllocSharedBytecodeFunction(
+		owner, region, memory.NullValue(), memory.NullValue(), 0, code, nil, locations,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := store.PhysicalStats()
+	copied, err := store.Copy(owner, reader, function)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := store.PhysicalStats()
+	if delta := after.PayloadBytes - before.PayloadBytes; delta != 0 {
+		t.Fatalf("Function graph copy payload grew by %d bytes, want shared executable storage", delta)
+	}
+	if snapshot, err := store.DerefFunction(reader, copied[0]); err != nil || len(snapshot.Code) != len(code) || snapshot.Locations.Len() != len(locations) {
+		t.Fatalf("copied Function = %#v, %v", snapshot, err)
+	}
+	if err := store.ReleaseOwner(owner); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot, err := store.DerefFunction(reader, copied[0]); err != nil || len(snapshot.Code) != len(code) {
+		t.Fatalf("copied Function after source release = %#v, %v", snapshot, err)
 	}
 	if err := store.CheckInvariants(); err != nil {
 		t.Fatal(err)

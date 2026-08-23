@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/JediWattson/gossamer/internal/js/compiler"
+	"github.com/JediWattson/gossamer/internal/js/program"
 )
 
 func TestCompileModuleProducesPortableBindingMetadata(t *testing.T) {
@@ -208,5 +209,31 @@ export function load(specifier) { return import(specifier); }
 	}
 	if _, err := compiler.Compile(`import("./script.js");`); !errors.Is(err, compiler.ErrCompile) {
 		t.Fatalf("script dynamic import error = %v", err)
+	}
+}
+
+func TestModulePortableProgramCanBeReleasedAfterMaterialization(t *testing.T) {
+	t.Parallel()
+
+	module, err := compiler.CompileModule(`
+import {value} from "./dependency.js";
+export function answer() { return value + 1; }
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	storage := module.Program().StorageStats()
+	if storage.Functions == 0 || storage.FunctionTableBytes == 0 || storage.CodeBytes == 0 || storage.SourceLocationBytes == 0 {
+		t.Fatalf("portable storage before release = %#v", storage)
+	}
+	module.ReleaseProgram()
+	if storage := module.Program().StorageStats(); storage != (program.StorageStats{}) {
+		t.Fatalf("portable storage after release = %#v", storage)
+	}
+	requests := module.Requests()
+	bindings := module.Bindings()
+	exports := module.Exports()
+	if len(requests) != 1 || requests[0] != "./dependency.js" || len(bindings) != 1 || bindings[0].Name != "answer" || len(exports) != 1 || exports[0].ExportName != "answer" {
+		t.Fatalf("module metadata after release: requests=%#v bindings=%#v exports=%#v", requests, bindings, exports)
 	}
 }

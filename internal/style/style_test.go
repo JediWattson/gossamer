@@ -155,6 +155,30 @@ func TestEnvironmentInitialFontSizeFeedsInitialAndRemValues(t *testing.T) {
 	}
 }
 
+func TestEnvironmentSafeAreaFlowsThroughCustomProperties(t *testing.T) {
+	document := dom.NewDocument()
+	html := dom.NewElement("html", dom.Attribute{Name: "style", Value: "--top:calc(env(safe-area-inset-top) + .5em)"})
+	body := dom.NewElement("body")
+	target := dom.NewElement("div", dom.Attribute{Name: "style", Value: "position:fixed;top:var(--top);padding-bottom:env(missing-safe-area, 3px)"})
+	body.AppendChild(target)
+	html.AppendChild(body)
+	document.AppendChild(html)
+
+	snapshot := style.Compute(document, style.Input{Environment: style.Environment{
+		Width: 320, Height: 200, InitialFontSize: 16, SafeAreaInsetTop: 5,
+	}})
+	computed, ok := snapshot.Lookup(target)
+	if !ok {
+		t.Fatal("snapshot does not contain target")
+	}
+	if got := computed.Top().Value(); computed.Top().Unit() != style.LengthPX || got != 13 {
+		t.Errorf("Top() = %v %v, want 13px", got, computed.Top().Unit())
+	}
+	if got := computed.PaddingBottom().Value(); computed.PaddingBottom().Unit() != style.LengthPX || got != 3 {
+		t.Errorf("PaddingBottom() = %v %v, want 3px", got, computed.PaddingBottom().Unit())
+	}
+}
+
 func TestComputedValuesRemainDistinctFromRendererApproximations(t *testing.T) {
 	document := dom.NewDocument()
 	html := dom.NewElement("html")

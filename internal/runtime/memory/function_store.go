@@ -10,6 +10,23 @@ func (store *Store) AllocBytecodeFunction(owner ownership.OwnerID, regionID Regi
 	return store.allocBytecodeFunction(owner, regionID, name, environment, arity, code, constants, FunctionThisDynamic, Value{})
 }
 
+// AllocSharedBytecodeFunction stores immutable Program-owned bytecode by
+// reference and compacts source locations into RegionStore-owned storage.
+// Callers must not mutate code after this call. Constants still pass through
+// the write barrier and are independently retained as part of the Function
+// graph.
+func (store *Store) AllocSharedBytecodeFunction(owner ownership.OwnerID, regionID RegionID, name, environment Value, arity uint32, code []byte, constants []Value, locations []SourceSpan) (Ref, error) {
+	locationTable, err := NewSourceLocationTable(locations)
+	if err != nil {
+		return Ref{}, err
+	}
+	return store.allocFunctionWithExecutable(owner, regionID, Function{
+		Kind: FunctionBytecode, Name: name, Environment: environment, Arity: arity,
+		Constructible: true, ThisMode: FunctionThisDynamic,
+		Code: code, Constants: constants, Locations: locationTable,
+	}, true)
+}
+
 func (store *Store) AllocArrowBytecodeFunction(owner ownership.OwnerID, regionID RegionID, name, environment Value, lexicalThis Value, arity uint32, code []byte, constants []Value) (Ref, error) {
 	return store.allocBytecodeFunction(owner, regionID, name, environment, arity, code, constants, FunctionThisLexical, lexicalThis)
 }
@@ -59,6 +76,10 @@ func (store *Store) allocNativeFunction(owner ownership.OwnerID, regionID Region
 }
 
 func (store *Store) allocFunction(owner ownership.OwnerID, regionID RegionID, function Function) (Ref, error) {
+	return store.allocFunctionWithExecutable(owner, regionID, function, false)
+}
+
+func (store *Store) allocFunctionWithExecutable(owner ownership.OwnerID, regionID RegionID, function Function, shareExecutable bool) (Ref, error) {
 	if store == nil {
 		return Ref{}, fmt.Errorf("memory: nil store")
 	}
@@ -68,7 +89,7 @@ func (store *Store) allocFunction(owner ownership.OwnerID, regionID RegionID, fu
 	if err != nil {
 		return Ref{}, err
 	}
-	if err := store.initializeFunctionLocked(owner, ref, function, false, false); err != nil {
+	if err := store.initializeFunctionLocked(owner, ref, function, false, shareExecutable); err != nil {
 		_ = store.freeLocked(owner, ref, true)
 		return Ref{}, err
 	}
@@ -173,9 +194,13 @@ func (store *Store) SetFunctionLocations(owner ownership.OwnerID, ref Ref, locat
 	if slot.Kind != HeapFunction || slot.function().Kind != FunctionBytecode {
 		return typeError(ref, slot.Kind, HeapFunction)
 	}
-	store.stats.LiveBytes -= uint64(len(slot.function().Locations)) * 8
-	slot.function().Locations = append([]SourceSpan(nil), locations...)
-	store.stats.LiveBytes += uint64(len(slot.function().Locations)) * 8
+	table, err := NewSourceLocationTable(locations)
+	if err != nil {
+		return err
+	}
+	store.stats.LiveBytes -= slot.function().Locations.StorageBytes()
+	slot.function().Locations = table
+	store.stats.LiveBytes += slot.function().Locations.StorageBytes()
 	return nil
 }
 
@@ -196,7 +221,7 @@ func (store *Store) initializeFunctionLocked(owner ownership.OwnerID, ref Ref, f
 	if function.Kind == FunctionBytecode && function.NativeID != 0 {
 		return fmt.Errorf("%w: bytecode Function has native ID", ErrInvalidFunction)
 	}
-	if function.Kind == FunctionNative && (function.NativeID == 0 || len(function.Code) != 0 || len(function.Locations) != 0 || len(function.Constants) != 0) {
+	if function.Kind == FunctionNative && (function.NativeID == 0 || len(function.Code) != 0 || function.Locations.Len() != 0 || len(function.Constants) != 0) {
 		return fmt.Errorf("%w: native Function requires only a nonzero native ID", ErrInvalidFunction)
 	}
 	if function.ThisMode != FunctionThisDynamic && function.ThisMode != FunctionThisLexical {
@@ -252,6 +277,6 @@ func (store *Store) initializeFunctionLocked(owner ownership.OwnerID, ref Ref, f
 		function.Constants = originalConstants
 	}
 	*slot.function() = storeFunction(function, shareExecutable, shareConstants)
-	store.stats.LiveBytes += uint64(len(slot.function().Code)) + uint64(len(slot.function().Locations))*8
+	store.stats.LiveBytes += uint64(len(slot.function().Code)) + slot.function().Locations.StorageBytes()
 	return nil
 }

@@ -7,28 +7,33 @@ import "unsafe"
 // entry counts separately: Go's map bucket overhead is implementation-defined
 // and belongs in the process heap profile rather than an invented byte total.
 type PhysicalStats struct {
-	SlotSizeBytes              uint64 `json:"slotSizeBytes"`
-	SlotPayloadSizeBytes       uint64 `json:"slotPayloadSizeBytes"`
-	SlotPayloadHandleSizeBytes uint64 `json:"slotPayloadHandleSizeBytes"`
-	RefSizeBytes               uint64 `json:"refSizeBytes"`
-	ValueSizeBytes             uint64 `json:"valueSizeBytes"`
-	ReservedSlotBytes          uint64 `json:"reservedSlotBytes"`
-	OccupiedSlotBytes          uint64 `json:"occupiedSlotBytes"`
-	PayloadBytes               uint64 `json:"payloadBytes"`
-	PayloadArenaSlabs          uint64 `json:"payloadArenaSlabs"`
-	ReservedTypedPayloadBytes  uint64 `json:"reservedTypedPayloadBytes"`
-	OccupiedTypedPayloadBytes  uint64 `json:"occupiedTypedPayloadBytes"`
-	FreeListBytes              uint64 `json:"freeListBytes"`
-	AttributedBytes            uint64 `json:"attributedBytes"`
-	RegionRecords              uint64 `json:"regionRecords"`
-	PooledSlotBuffers          uint64 `json:"pooledSlotBuffers"`
-	RegionEdgeEntries          uint64 `json:"regionEdgeEntries"`
-	RegionOutgoingIndexes      uint64 `json:"regionOutgoingIndexes"`
-	RegionIncomingIndexes      uint64 `json:"regionIncomingIndexes"`
-	WeakTableEntries           uint64 `json:"weakTableEntries"`
-	WeakTargetEntries          uint64 `json:"weakTargetEntries"`
-	WeakTargetReferences       uint64 `json:"weakTargetReferences"`
-	WeakTargetUseBytes         uint64 `json:"weakTargetUseBytes"`
+	SlotSizeBytes               uint64 `json:"slotSizeBytes"`
+	SlotPayloadSizeBytes        uint64 `json:"slotPayloadSizeBytes"`
+	SlotPayloadHandleSizeBytes  uint64 `json:"slotPayloadHandleSizeBytes"`
+	RefSizeBytes                uint64 `json:"refSizeBytes"`
+	ValueSizeBytes              uint64 `json:"valueSizeBytes"`
+	PropertySizeBytes           uint64 `json:"propertySizeBytes"`
+	ReservedSlotBytes           uint64 `json:"reservedSlotBytes"`
+	OccupiedSlotBytes           uint64 `json:"occupiedSlotBytes"`
+	PayloadBytes                uint64 `json:"payloadBytes"`
+	FunctionCodeBytes           uint64 `json:"functionCodeBytes"`
+	FunctionSourceLocationBytes uint64 `json:"functionSourceLocationBytes"`
+	FunctionConstantBytes       uint64 `json:"functionConstantBytes"`
+	FunctionCaptureBytes        uint64 `json:"functionCaptureBytes"`
+	PayloadArenaSlabs           uint64 `json:"payloadArenaSlabs"`
+	ReservedTypedPayloadBytes   uint64 `json:"reservedTypedPayloadBytes"`
+	OccupiedTypedPayloadBytes   uint64 `json:"occupiedTypedPayloadBytes"`
+	FreeListBytes               uint64 `json:"freeListBytes"`
+	AttributedBytes             uint64 `json:"attributedBytes"`
+	RegionRecords               uint64 `json:"regionRecords"`
+	PooledSlotBuffers           uint64 `json:"pooledSlotBuffers"`
+	RegionEdgeEntries           uint64 `json:"regionEdgeEntries"`
+	RegionOutgoingIndexes       uint64 `json:"regionOutgoingIndexes"`
+	RegionIncomingIndexes       uint64 `json:"regionIncomingIndexes"`
+	WeakTableEntries            uint64 `json:"weakTableEntries"`
+	WeakTargetEntries           uint64 `json:"weakTargetEntries"`
+	WeakTargetReferences        uint64 `json:"weakTargetReferences"`
+	WeakTargetUseBytes          uint64 `json:"weakTargetUseBytes"`
 	// ObjectEdge and ObjectRegion fields are retained in the profile schema so
 	// old baselines remain comparable. They stay zero now that typed payloads,
 	// rather than a shadow ledger graph, own the complete heap topology.
@@ -58,6 +63,7 @@ func (store *Store) PhysicalStats() PhysicalStats {
 		SlotPayloadHandleSizeBytes:  uint64(unsafe.Sizeof(slotPayload{})),
 		RefSizeBytes:                uint64(unsafe.Sizeof(Ref{})),
 		ValueSizeBytes:              uint64(unsafe.Sizeof(Value{})),
+		PropertySizeBytes:           uint64(unsafe.Sizeof(Property{})),
 		RegionRecords:               uint64(len(store.regions)),
 		WeakTableEntries:            uint64(len(store.weakTables)),
 		WeakTargetEntries:           uint64(len(store.weakTargets)),
@@ -76,6 +82,9 @@ func (store *Store) PhysicalStats() PhysicalStats {
 		result.WeakTargetUseBytes += uint64(cap(uses)) * uint64(unsafe.Sizeof(weakUse{}))
 	}
 	functionStorage := make(map[unsafe.Pointer]struct{})
+	functionCodeStorage := make(map[unsafe.Pointer]struct{})
+	functionLocationStorage := make(map[unsafe.Pointer]struct{})
+	functionConstantStorage := make(map[unsafe.Pointer]struct{})
 	for _, region := range store.regions {
 		if region == nil {
 			continue
@@ -89,6 +98,12 @@ func (store *Store) PhysicalStats() PhysicalStats {
 			}
 			result.OccupiedSlotBytes += result.SlotSizeBytes
 			result.PayloadBytes += slotPayloadCapacityBytes(slot, functionStorage)
+			if slot.Kind == HeapFunction {
+				result.FunctionCodeBytes += uniqueSliceCapacityBytes(slot.function().Code, functionCodeStorage)
+				result.FunctionSourceLocationBytes += uniqueSliceCapacityBytes(slot.function().Locations.storage(), functionLocationStorage)
+				result.FunctionConstantBytes += uniqueSliceCapacityBytes(slot.function().Constants, functionConstantStorage)
+				result.FunctionCaptureBytes += sliceCapacityBytes(slot.function().Captures)
+			}
 		}
 	}
 	for _, buffer := range store.slotBuffers {
@@ -120,7 +135,7 @@ func slotPayloadCapacityBytes(slot *Slot, functionStorage map[unsafe.Pointer]str
 		bytes += sliceCapacityBytes(slot.context().Bindings)
 	case HeapFunction:
 		bytes += uniqueSliceCapacityBytes(slot.function().Code, functionStorage)
-		bytes += uniqueSliceCapacityBytes(slot.function().Locations, functionStorage)
+		bytes += uniqueSliceCapacityBytes(slot.function().Locations.storage(), functionStorage)
 		bytes += uniqueSliceCapacityBytes(slot.function().Constants, functionStorage)
 		bytes += sliceCapacityBytes(slot.function().Captures)
 	case HeapPromise:

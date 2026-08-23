@@ -168,7 +168,7 @@ func (store *Store) setPropertyLocked(owner ownership.OwnerID, object, name Ref,
 		if !property.Writable && !internal {
 			return fmt.Errorf("%w: %s", ErrReadOnlyProperty, key)
 		}
-		property.Value = value
+		property.SetValue(value)
 		property.Name = Ref{}
 		return store.definePropertyLocked(owner, object, name, property, internal)
 	}
@@ -200,11 +200,7 @@ func (store *Store) definePropertyLocked(owner ownership.OwnerID, object, name R
 		return err
 	}
 	descriptor.Name = Ref{}
-	if descriptor.Kind == PropertyData {
-		descriptor.Getter = Value{}
-		descriptor.Setter = Value{}
-	} else if descriptor.Kind == PropertyAccessor {
-		descriptor.Value = Value{}
+	if descriptor.Kind == PropertyAccessor {
 		descriptor.Writable = false
 	}
 	if err := store.validatePropertyDescriptorLocked(descriptor); err != nil {
@@ -249,8 +245,11 @@ func (store *Store) definePropertyLocked(owner ownership.OwnerID, object, name R
 func (store *Store) validatePropertyDescriptorLocked(descriptor Property) error {
 	switch descriptor.Kind {
 	case PropertyData:
+		if descriptor.values[1].Kind() != ValueUndefined {
+			return fmt.Errorf("%w: data property retains accessor state", ErrTypeMismatch)
+		}
 	case PropertyAccessor:
-		for _, callable := range []Value{descriptor.Getter, descriptor.Setter} {
+		for _, callable := range []Value{descriptor.Getter(), descriptor.Setter()} {
 			if callable.Kind() == ValueUndefined {
 				continue
 			}
@@ -279,20 +278,20 @@ func compatiblePropertyDescriptor(previous, next Property) error {
 		return ErrNonConfigurable
 	}
 	if previous.Kind == PropertyData && !previous.Writable {
-		if next.Writable || next.Value != previous.Value {
+		if next.Writable || next.Value() != previous.Value() {
 			return ErrReadOnlyProperty
 		}
 	}
-	if previous.Kind == PropertyAccessor && (next.Getter != previous.Getter || next.Setter != previous.Setter) {
+	if previous.Kind == PropertyAccessor && (next.Getter() != previous.Getter() || next.Setter() != previous.Setter()) {
 		return ErrNonConfigurable
 	}
 	return nil
 }
 
 func (store *Store) replacePropertyValuesLocked(owner ownership.OwnerID, region *Region, slot *Slot, previous, next Property, internal bool) (Property, error) {
-	oldValues := []Value{previous.Value, previous.Getter, previous.Setter}
-	newValues := []Value{next.Value, next.Getter, next.Setter}
-	prepared := make([]Value, len(newValues))
+	oldValues := [3]Value{previous.Value(), previous.Getter(), previous.Setter()}
+	newValues := [3]Value{next.Value(), next.Getter(), next.Setter()}
+	var prepared [3]Value
 	for index := range newValues {
 		value, err := store.replaceValueLocked(owner, region, slot, oldValues[index], newValues[index], internal)
 		if err != nil {
@@ -303,7 +302,12 @@ func (store *Store) replacePropertyValuesLocked(owner ownership.OwnerID, region 
 		}
 		prepared[index] = value
 	}
-	next.Value, next.Getter, next.Setter = prepared[0], prepared[1], prepared[2]
+	if next.Kind == PropertyData {
+		next.SetValue(prepared[0])
+	} else {
+		next.SetGetter(prepared[1])
+		next.SetSetter(prepared[2])
+	}
 	return next, nil
 }
 
@@ -315,7 +319,7 @@ func (store *Store) GetOwnProperty(owner ownership.OwnerID, object, name Ref) (V
 	if property.Kind != PropertyData {
 		return Value{}, true, ErrAccessorProperty
 	}
-	return property.Value, true, nil
+	return property.Value(), true, nil
 }
 
 func (store *Store) GetOwnPropertyDescriptor(owner ownership.OwnerID, object, name Ref) (Property, bool, error) {
@@ -375,7 +379,7 @@ func (store *Store) DeleteProperty(owner ownership.OwnerID, object, name Ref) (b
 	if _, err := store.replaceValueLocked(owner, region, slot, RefValue(property.Name), Value{}, false); err != nil {
 		return false, err
 	}
-	for _, value := range []Value{property.Value, property.Getter, property.Setter} {
+	for _, value := range []Value{property.Value(), property.Getter(), property.Setter()} {
 		if _, err := store.replaceValueLocked(owner, region, slot, value, Value{}, false); err != nil {
 			return false, err
 		}

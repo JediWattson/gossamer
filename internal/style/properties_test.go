@@ -6,8 +6,8 @@ import (
 )
 
 func TestPropertyDefinitionsAreCanonicalAndComplete(t *testing.T) {
-	if len(propertyDefinitions) != 82 {
-		t.Fatalf("property definition count = %d, want 82", len(propertyDefinitions))
+	if len(propertyDefinitions) != 90 {
+		t.Fatalf("property definition count = %d, want 90", len(propertyDefinitions))
 	}
 	if !slices.IsSorted(computedPropertyNames) {
 		t.Fatalf("computed property names are not sorted: %q", computedPropertyNames)
@@ -73,8 +73,8 @@ func TestPropertyDefinitionsAreCanonicalAndComplete(t *testing.T) {
 			}
 		})
 	}
-	if !slices.Equal(early, []string{"font-size"}) {
-		t.Fatalf("early computed properties = %q, want [font-size]", early)
+	if !slices.Equal(early, []string{"direction", "font-size", "writing-mode"}) {
+		t.Fatalf("early computed properties = %q, want [direction font-size writing-mode]", early)
 	}
 }
 
@@ -94,6 +94,8 @@ func registryTestValue(definition propertyDefinition) string {
 		return "1px"
 	case propertyBorderCollapse:
 		return "collapse"
+	case propertyBorderRadius:
+		return "4px 6px"
 	case propertyBorderSpacing:
 		return "3px 4px"
 	case propertyBoxSizing:
@@ -134,7 +136,7 @@ func registryTestValue(definition propertyDefinition) string {
 		return `"main"`
 	case propertyGridTemplateColumns, propertyGridTemplateRows:
 		return "40px 1fr auto"
-	case propertyHeight, propertyInset, propertyMargin, propertyMaxHeight, propertyMaxWidth, propertyMinHeight, propertyMinWidth, propertyPadding, propertyWidth:
+	case propertyHeight, propertyInset, propertyLogicalPadding, propertyMargin, propertyMaxHeight, propertyMaxWidth, propertyMinHeight, propertyMinWidth, propertyPadding, propertyWidth:
 		return "2px"
 	case propertyLineHeight:
 		return "1.5"

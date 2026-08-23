@@ -64,7 +64,7 @@ func TestInterpreterResultRequiresExplicitEscapeBeforeMicrotask(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			if len(object.Properties) != 1 || object.Properties[0].Value.Number() != 42 {
+			if len(object.Properties) != 1 || object.Properties[0].Value().Number() != 42 {
 				t.Fatalf("promoted interpreter result = %#v", object)
 			}
 			if err := microtask.SetProperty(microtask.Refs[0], object.Properties[0].Name, memory.NumberValue(0)); !errors.Is(err, memory.ErrImmutableRegion) {

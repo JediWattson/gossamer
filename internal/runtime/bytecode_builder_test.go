@@ -163,6 +163,48 @@ func TestBytecodeBuilderBuildsAgainstPortableConstantTable(t *testing.T) {
 	}
 }
 
+func TestBytecodeBuilderOwnedBuildResetsScratchWithoutRetainingGrowthCapacity(t *testing.T) {
+	t.Parallel()
+
+	builder := browserruntime.NewBytecodeBuilder()
+	done := builder.NewLabel()
+	if _, err := builder.EmitJump(browserruntime.OpJump, done, browserruntime.SourceSpan{Start: 1, End: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if err := builder.Mark(done); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := builder.EmitAt(browserruntime.Instruction{Op: browserruntime.OpReturn}, browserruntime.SourceSpan{Start: 3, End: 4}); err != nil {
+		t.Fatal(err)
+	}
+	code, locations, err := builder.BuildCodeOwned(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cap(locations) != len(locations) {
+		t.Fatalf("owned locations capacity = %d, length = %d", cap(locations), len(locations))
+	}
+	instructions, err := browserruntime.DecodeBytecode(code)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(instructions) != 2 || instructions[0].A != 1 || locations[0] != (browserruntime.SourceSpan{Start: 1, End: 2}) {
+		t.Fatalf("owned build: instructions=%#v locations=%#v", instructions, locations)
+	}
+
+	// Reuse starts from empty label/instruction state and cannot mutate the
+	// exact retained location table returned by the previous handoff.
+	if _, err := builder.Emit(browserruntime.Instruction{Op: browserruntime.OpReturn}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := builder.BuildCodeOwned(0); err != nil {
+		t.Fatal(err)
+	}
+	if locations[0] != (browserruntime.SourceSpan{Start: 1, End: 2}) {
+		t.Fatalf("reused builder mutated retained locations: %#v", locations)
+	}
+}
+
 func TestBytecodeBuilderFusesOnlyOneDiscardIntoABindingWrite(t *testing.T) {
 	t.Parallel()
 

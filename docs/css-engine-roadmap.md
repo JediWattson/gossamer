@@ -39,7 +39,7 @@ block view, which resolves duplicate priorities and serialization rules.
 
 ## Status snapshot
 
-As of 2026-08-16, the roadmap is well past the original URL-to-pixels vertical
+As of 2026-08-23, the roadmap is well past the original URL-to-pixels vertical
 slice. "Foundation landed" means the stated architecture is implemented and
 tested for Gossamer's supported subset, not that the corresponding web standard
 is complete.
@@ -107,7 +107,7 @@ shared tokenizer.
 
 Current foundation: cascade and computed-value calculation live in
 `internal/style`; browser pages cache versioned, stable-ID snapshots; and
-render consumes the exact snapshot retained by each frame. The current 82
+render consumes the exact snapshot retained by each frame. The current 90
 longhands share one registry for inheritance, validation, computation, copying,
 serialization, and invalidation metadata, and `all` participates in the full
 layer/importance cascade without resetting custom properties. User-agent,
@@ -172,14 +172,30 @@ Inherited `font-family` keeps a normalized CSSOM fallback list and selects the
 first bundled family it can satisfy. Sans/system/serif fall back to the Go sans
 faces, while `monospace` and `Go Mono` select distinct regular, bold, italic,
 and bold-italic faces for both measurement and rasterization.
+Length consumers resolve `env(safe-area-inset-*)` and its fallback grammar
+through the immutable style environment, including when it is nested in
+`calc()` or reached through a custom property. Desktop surfaces expose zero;
+platform shells can supply CSS-pixel insets without coupling style to window
+APIs.
+The four physical `border-*-radius` longhands and `border-radius` shorthand
+retain typed horizontal/vertical length-percentage pairs through CSSOM. Paint
+resolves and normalizes overlapping elliptical corners against the border box
+and rasterizes anti-aliased rounded backgrounds. Curved border strokes and
+rounded overflow clipping remain follow-on paint work rather than being
+silently approximated as supported.
+Logical `padding-block`/`padding-inline` shorthands and their four longhands
+now share cascade order with physical padding. Direction and writing mode
+compute before logical candidates map into physical slots, including explicit
+inheritance across differently oriented parent and child boxes.
 
 - Extend CSS math beyond the current length-percentage subset as number,
   angle, time, resolution, transform, and color consumers arrive.
 - Expand font-relative units and add angle, time, and resolution consumers.
 - Add system colors, wide-gamut `color()`, Lab/LCH/OKLab/OKLCH, and
   relative/color-mix functions.
-- Add URLs, images, gradients, backgrounds, radii, shadows, transforms, and
-  generated content as their consumers become available.
+- Add URLs, background images and gradients, curved border strokes, rounded
+  overflow clipping, shadows, transforms, and generated content as their
+  consumers become available.
 
 Acceptance: computed values are typed and immutable; layout no longer reparses
 raw CSS strings.
@@ -319,9 +335,13 @@ Computed display retains separate outer and inner roles. `inline-block` and
 intrinsic measurement, shrink-to-fit auto width, baseline participation,
 box-model paint, stable-ID geometry, and flow-ordered hit testing. Block
 children no longer escape those roots, and live computed width/height reads use
-their retained geometry. Relative, absolute, and fixed positioning, basic
-stacking order, and single-line row/column flex layout also have tested
-foundations. Vertical block margins now use signed margin struts: sibling,
+their retained geometry. Relative, absolute, fixed, and basic sticky
+positioning, basic stacking order, and single-line row/column flex layout also
+have tested foundations. Fixed subtrees establish viewport coordinates for
+their descendants rather than inheriting root scrolling. `scrollIntoView()`
+retains explicit block/inline start, center, end, and nearest alignment through
+the engine boundary; nearest is scroll-neutral for already visible content.
+Vertical block margins now use signed margin struts: sibling,
 parent-child, nested, and collapse-through empty-block groups retain the
 largest positive plus most-negative margins, while formatting roots, overflow,
 padding, borders, specified height, and nonzero minimum height stop propagation

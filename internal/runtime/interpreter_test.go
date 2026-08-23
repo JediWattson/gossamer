@@ -55,6 +55,44 @@ func TestInstructionLimitProfileAggregatesHotBytecode(t *testing.T) {
 	}
 }
 
+func TestInterpreterReportsCompactedSourceLocationsExactly(t *testing.T) {
+	t.Parallel()
+
+	realm, err := browserruntime.NewRealm(712, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer realm.Close()
+	interpreter := browserruntime.NewInterpreter(browserruntime.InterpreterConfig{})
+	_, err = realm.EnqueueTask(func(task *browserruntime.TaskContext) error {
+		missing, err := task.NewString("missing")
+		if err != nil {
+			return err
+		}
+		function, err := task.NewBytecodeFunctionWithLocations(
+			memory.NullValue(), memory.NullValue(), 0,
+			browserruntime.Assemble(
+				browserruntime.Instruction{Op: browserruntime.OpLoadBinding, A: 0},
+				browserruntime.Instruction{Op: browserruntime.OpReturn},
+			),
+			[]memory.Value{memory.RefValue(missing)},
+			[]memory.SourceSpan{{Start: 123, End: 456}, {Start: 123, End: 456}},
+		)
+		if err != nil {
+			return err
+		}
+		_, err = interpreter.Execute(task, function)
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = realm.RunOne(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "instruction 0 source 123:456") {
+		t.Fatalf("compacted source diagnostic = %v", err)
+	}
+}
+
 func TestInstructionLimitChargesControlFlowInsteadOfLoweringWidth(t *testing.T) {
 	t.Parallel()
 
@@ -340,7 +378,7 @@ func TestInterpreterObjectAndArrayVerbsUseRegionStore(t *testing.T) {
 		t.Fatalf("promoted Array = %#v, %v", array, err)
 	}
 	object, err := realm.Store().DerefObject(realm.Owner(), array.Elements[0].Value.Ref())
-	if err != nil || len(object.Properties) != 1 || object.Properties[0].Value.Number() != 42 {
+	if err != nil || len(object.Properties) != 1 || object.Properties[0].Value().Number() != 42 {
 		t.Fatalf("promoted Object = %#v, %v", object, err)
 	}
 	if err := realm.Store().CheckInvariants(); err != nil {
@@ -1056,7 +1094,7 @@ func TestInterpreterCallsClosuresConstructorsAndNativeDispatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	constructed, err := realm.Store().DerefObject(realm.Owner(), promotedConstructed)
-	if err != nil || len(constructed.Properties) != 1 || constructed.Properties[0].Value.Number() != 77 {
+	if err != nil || len(constructed.Properties) != 1 || constructed.Properties[0].Value().Number() != 77 {
 		t.Fatalf("constructed Object = %#v, %v", constructed, err)
 	}
 	if err := realm.Store().CheckInvariants(); err != nil {

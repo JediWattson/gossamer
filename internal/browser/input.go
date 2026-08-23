@@ -1788,8 +1788,8 @@ func (host *taskHost) ScrollViewport(x, y float64) (bool, error) {
 	return changed, err
 }
 
-func (host *taskHost) ScrollIntoView(handle NodeHandle) (bool, error) {
-	changed, err := host.page.ScrollIntoView(handle)
+func (host *taskHost) ScrollIntoView(handle NodeHandle, options ScrollIntoViewOptions) (bool, error) {
+	changed, err := host.page.ScrollIntoView(handle, options)
 	if changed {
 		// The root remains the compatibility target for scrollIntoView. Direct
 		// element scrolling records the element itself below; ancestor-specific

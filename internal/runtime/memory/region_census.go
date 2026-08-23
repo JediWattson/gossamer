@@ -137,7 +137,7 @@ func slotDynamicBytes(slot *Slot) uint64 {
 	case HeapString:
 		return uint64(len(slot.stringObject().Text))
 	case HeapFunction:
-		return uint64(len(slot.function().Code)) + uint64(len(slot.function().Locations))*8
+		return uint64(len(slot.function().Code)) + slot.function().Locations.StorageBytes()
 	case HeapBigInt:
 		return uint64(len(slot.bigInt().Magnitude))
 	case HeapArrayBuffer:

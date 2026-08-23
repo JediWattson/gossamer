@@ -191,7 +191,7 @@ func urlSearchParamsFromRecord(context *browserruntime.TaskContext, record memor
 		if err != nil {
 			continue
 		}
-		value, err := valueString(context, property.Value)
+		value, err := valueString(context, property.Value())
 		if err != nil {
 			return webapi.URLSearchParams{}, err
 		}
