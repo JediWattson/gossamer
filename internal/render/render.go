@@ -1119,11 +1119,11 @@ func paintTextFragment(list *DisplayList, fragment TextFragment, styles map[*dom
 		X: fragment.X, BaselineY: fragment.BaselineY,
 		FontSize: fragment.FontSize, FontFamily: fragment.FontFamily,
 		FontWeight: fragment.FontWeight, FontStyle: fragment.FontStyle, WebFont: fragment.WebFont,
+		textBounds: textFragmentBounds(fragment),
 	}
 	if fragment.paintOrientation != textPaintHorizontal {
 		command.Rect = fragment.paintBounds
 		command.textOrientation = fragment.paintOrientation
-		command.textBounds = fragment.paintBounds
 		command.textWidth = fragment.logicalWidth
 		command.textHeight = fragment.logicalHeight
 		command.textBaseline = fragment.logicalBaseline

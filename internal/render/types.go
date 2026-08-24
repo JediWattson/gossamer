@@ -478,11 +478,11 @@ func translateCommand(command *Command, x, y float64) {
 	case DrawTextCommand:
 		command.X += x
 		command.BaselineY += y
+		command.textBounds.X += x
+		command.textBounds.Y += y
 		if command.textOrientation != textPaintHorizontal {
 			command.Rect.X += x
 			command.Rect.Y += y
-			command.textBounds.X += x
-			command.textBounds.Y += y
 		}
 	}
 	if command.HasClip {
@@ -516,11 +516,11 @@ func ScrollDisplayList(frame *Frame, x, y float64) *Frame {
 		case DrawTextCommand:
 			command.X -= x
 			command.BaselineY -= y
+			command.textBounds.X -= x
+			command.textBounds.Y -= y
 			if command.textOrientation != textPaintHorizontal {
 				command.Rect.X -= x
 				command.Rect.Y -= y
-				command.textBounds.X -= x
-				command.textBounds.Y -= y
 			}
 		}
 		if command.HasClip {
@@ -560,11 +560,11 @@ func TransformDisplayList(frame *Frame, transforms map[*dom.Node]VisualTransform
 		case DrawTextCommand:
 			command.X -= transform.OffsetX
 			command.BaselineY -= transform.OffsetY
+			command.textBounds.X -= transform.OffsetX
+			command.textBounds.Y -= transform.OffsetY
 			if command.textOrientation != textPaintHorizontal {
 				command.Rect.X -= transform.OffsetX
 				command.Rect.Y -= transform.OffsetY
-				command.textBounds.X -= transform.OffsetX
-				command.textBounds.Y -= transform.OffsetY
 			}
 		}
 		if command.HasClip {

@@ -89,6 +89,7 @@ func scaleCornerRadii(radii CornerRadii, scale float64) CornerRadii {
 type rasterLayer struct {
 	canvas    *image.RGBA
 	kind      rasterLayerKind
+	direct    bool
 	opacity   float64
 	transform AffineTransform
 	clip      Rect
@@ -105,21 +106,25 @@ func rasterize(displayList DisplayList, fonts *fontBook) (*image.RGBA, error) {
 	}
 
 	bounds := image.Rect(0, 0, displayList.Viewport.Width, displayList.Viewport.Height)
+	groupBounds := rasterGroupBounds(displayList.Commands, bounds)
 	layers := []rasterLayer{{canvas: image.NewRGBA(bounds), kind: rasterBaseLayer, opacity: 1}}
+	clipMasks := make(map[commandClipMaskKey]*image.Alpha)
 	verticalTextPixels := 0
 	verticalTextUnits := 0
-	for _, command := range displayList.Commands {
+	for commandIndex, command := range displayList.Commands {
 		canvas := layers[len(layers)-1].canvas
 		switch command.Kind {
 		case FillRectCommand:
-			if !command.Radii.empty() {
-				target := draw.Image(canvas)
-				if commandNeedsScratch(command) {
-					target = image.NewRGBA(commandScratchBounds(command, canvas.Bounds()))
+			if !command.Radii.empty() || commandNeedsScratch(command) {
+				target, scratch := commandPaintTarget(canvas, command)
+				if command.Radii.empty() {
+					rectangle := rectImageBounds(command.Rect).Intersect(target.Bounds())
+					draw.Draw(target, rectangle, image.NewUniform(command.Color), image.Point{}, draw.Over)
+				} else {
+					paintRoundedRect(target, command.Rect, command.Radii, command.Color)
 				}
-				paintRoundedRect(target, command.Rect, command.Radii, command.Color)
-				if scratch, ok := target.(*image.RGBA); ok && scratch != canvas {
-					compositeCommandScratch(canvas, scratch, command)
+				if scratch {
+					compositeCommandScratch(canvas, target, command, clipMasks)
 				}
 				continue
 			}
@@ -138,20 +143,17 @@ func rasterize(displayList DisplayList, fonts *fontBook) (*image.RGBA, error) {
 			if command.Rect.Width <= 0 || command.Rect.Height <= 0 || command.Color.A == 0 {
 				continue
 			}
-			target := draw.Image(canvas)
-			if commandNeedsScratch(command) {
-				target = image.NewRGBA(commandScratchBounds(command, canvas.Bounds()))
-			}
+			target, scratch := commandPaintTarget(canvas, command)
 			paintEllipse(target, command.Rect, command.Color)
-			if scratch, ok := target.(*image.RGBA); ok && scratch != canvas {
-				compositeCommandScratch(canvas, scratch, command)
+			if scratch {
+				compositeCommandScratch(canvas, target, command, clipMasks)
 			}
 
 		case DrawTextCommand:
-			target := canvas
-			if commandNeedsScratch(command) {
-				target = image.NewRGBA(commandScratchBounds(command, canvas.Bounds()))
+			if !hasTransformLayer(layers) && !commandBoundsVisible(command.textBounds, command, canvas.Bounds()) {
+				continue
 			}
+			target, scratch := commandPaintTarget(canvas, command)
 			var err error
 			if command.textOrientation == textPaintSidewaysRight {
 				var width, height int
@@ -196,8 +198,8 @@ func rasterize(displayList DisplayList, fonts *fontBook) (*image.RGBA, error) {
 			if err != nil {
 				return nil, err
 			}
-			if target != canvas {
-				compositeCommandScratch(canvas, target, command)
+			if scratch {
+				compositeCommandScratch(canvas, target, command, clipMasks)
 			}
 
 		case DrawImageCommand:
@@ -220,47 +222,39 @@ func rasterize(displayList DisplayList, fonts *fontBook) (*image.RGBA, error) {
 			if opacity < 1 {
 				options = &xdraw.Options{SrcMask: image.NewUniform(color.Alpha{A: uint8(math.Round(opacity * 255))})}
 			}
-			if commandNeedsScratch(command) {
-				target := image.NewRGBA(commandScratchBounds(command, canvas.Bounds()))
+			target, scratch := commandPaintTarget(canvas, command)
+			if scratch {
 				scaleImage(target, destination, command.Image, options)
-				compositeCommandScratch(canvas, target, command)
+				compositeCommandScratch(canvas, target, command, clipMasks)
 			} else {
-				scaleImage(canvas, destination, command.Image, options)
+				scaleImage(target, destination, command.Image, options)
 			}
 
 		case DrawRoundedBorderCommand:
-			target := draw.Image(canvas)
-			if commandNeedsScratch(command) {
-				target = image.NewRGBA(commandScratchBounds(command, canvas.Bounds()))
-			}
+			target, scratch := commandPaintTarget(canvas, command)
 			paintRoundedBorder(target, command)
-			if scratch, ok := target.(*image.RGBA); ok && scratch != canvas {
-				compositeCommandScratch(canvas, scratch, command)
+			if scratch {
+				compositeCommandScratch(canvas, target, command, clipMasks)
 			}
 
 		case DrawBoxShadowCommand:
-			target := draw.Image(canvas)
-			if commandNeedsScratch(command) {
-				target = image.NewRGBA(commandScratchBounds(command, canvas.Bounds()))
-			}
+			target, scratch := commandPaintTarget(canvas, command)
 			paintBoxShadow(target, command)
-			if scratch, ok := target.(*image.RGBA); ok && scratch != canvas {
-				compositeCommandScratch(canvas, scratch, command)
+			if scratch {
+				compositeCommandScratch(canvas, target, command, clipMasks)
 			}
 
 		case DrawGradientCommand:
-			target := draw.Image(canvas)
-			if commandNeedsScratch(command) {
-				target = image.NewRGBA(commandScratchBounds(command, canvas.Bounds()))
-			}
+			target, scratch := commandPaintTarget(canvas, command)
 			paintGradient(target, command)
-			if scratch, ok := target.(*image.RGBA); ok && scratch != canvas {
-				compositeCommandScratch(canvas, scratch, command)
+			if scratch {
+				compositeCommandScratch(canvas, target, command, clipMasks)
 			}
 
 		case BeginOpacityCommand:
+			layerBounds := groupBounds[commandIndex].Intersect(canvas.Bounds())
 			layers = append(layers, rasterLayer{
-				canvas:  image.NewRGBA(bounds),
+				canvas:  image.NewRGBA(layerBounds),
 				kind:    rasterOpacityLayer,
 				opacity: clamp(command.Opacity, 0, 1),
 			})
@@ -271,11 +265,12 @@ func rasterize(displayList DisplayList, fonts *fontBook) (*image.RGBA, error) {
 			}
 			group := layers[len(layers)-1]
 			layers = layers[:len(layers)-1]
-			compositeRasterLayer(layers[len(layers)-1].canvas, group, bounds)
+			compositeRasterLayer(layers[len(layers)-1].canvas, group)
 
 		case BeginTransformCommand:
+			layerBounds := groupBounds[commandIndex].Intersect(bounds)
 			layers = append(layers, rasterLayer{
-				canvas: image.NewRGBA(bounds), kind: rasterTransformLayer,
+				canvas: image.NewRGBA(layerBounds), kind: rasterTransformLayer,
 				transform: command.Transform,
 			})
 
@@ -285,10 +280,19 @@ func rasterize(displayList DisplayList, fonts *fontBook) (*image.RGBA, error) {
 			}
 			group := layers[len(layers)-1]
 			layers = layers[:len(layers)-1]
-			compositeRasterLayer(layers[len(layers)-1].canvas, group, bounds)
+			compositeRasterLayer(layers[len(layers)-1].canvas, group)
 
 		case BeginClipCommand:
 			clipBounds := rectImageBounds(command.Rect).Intersect(canvas.Bounds())
+			if command.Radii.empty() {
+				layers = append(layers, rasterLayer{
+					canvas: canvas.SubImage(clipBounds).(*image.RGBA),
+					kind:   rasterClipLayer,
+					direct: true,
+					clip:   command.Rect,
+				})
+				continue
+			}
 			layers = append(layers, rasterLayer{
 				canvas: image.NewRGBA(clipBounds), kind: rasterClipLayer,
 				clip: command.Rect, radii: command.Radii,
@@ -300,7 +304,9 @@ func rasterize(displayList DisplayList, fonts *fontBook) (*image.RGBA, error) {
 			}
 			group := layers[len(layers)-1]
 			layers = layers[:len(layers)-1]
-			compositeRasterLayer(layers[len(layers)-1].canvas, group, bounds)
+			if !group.direct {
+				compositeRasterLayer(layers[len(layers)-1].canvas, group)
+			}
 
 		default:
 			return nil, fmt.Errorf("render: unknown display command %d", command.Kind)
@@ -313,9 +319,10 @@ func rasterize(displayList DisplayList, fonts *fontBook) (*image.RGBA, error) {
 	return layers[0].canvas, nil
 }
 
-func compositeRasterLayer(destination *image.RGBA, layer rasterLayer, bounds image.Rectangle) {
+func compositeRasterLayer(destination *image.RGBA, layer rasterLayer) {
 	switch layer.kind {
 	case rasterOpacityLayer:
+		bounds := layer.canvas.Bounds().Intersect(destination.Bounds())
 		alpha := uint8(math.Round(layer.opacity * 255))
 		draw.DrawMask(destination, bounds, layer.canvas, bounds.Min, image.NewUniform(color.Alpha{A: alpha}), bounds.Min, draw.Over)
 	case rasterTransformLayer:
@@ -326,9 +333,9 @@ func compositeRasterLayer(destination *image.RGBA, layer rasterLayer, bounds ima
 		xdraw.ApproxBiLinear.Transform(destination, f64.Aff3{
 			matrix.A, matrix.C, matrix.E,
 			matrix.B, matrix.D, matrix.F,
-		}, layer.canvas, bounds, draw.Over, nil)
+		}, layer.canvas, layer.canvas.Bounds(), draw.Over, nil)
 	case rasterClipLayer:
-		clipBounds := rectImageBounds(layer.clip).Intersect(bounds)
+		clipBounds := rectImageBounds(layer.clip).Intersect(layer.canvas.Bounds()).Intersect(destination.Bounds())
 		if clipBounds.Empty() {
 			return
 		}
@@ -342,13 +349,178 @@ func compositeRasterLayer(destination *image.RGBA, layer rasterLayer, bounds ima
 	}
 }
 
+type rasterGroupBound struct {
+	kind   CommandKind
+	index  int
+	begin  Command
+	bounds Rect
+	valid  bool
+}
+
+// rasterGroupBounds finds the conservative painted extent of every retained
+// opacity and transform group. Raster layers use non-zero image origins, so a
+// small grouped card no longer allocates and composites a full-viewport RGBA
+// surface. Bounds are computed once with a stack and remain linear in the
+// display-list size even for deeply nested effects.
+func rasterGroupBounds(commands []Command, viewport image.Rectangle) map[int]image.Rectangle {
+	result := make(map[int]image.Rectangle)
+	stack := make([]rasterGroupBound, 0, 8)
+	add := func(bounds Rect, valid bool) {
+		if !valid || len(stack) == 0 {
+			return
+		}
+		current := &stack[len(stack)-1]
+		if current.valid {
+			current.bounds = unionRasterRects(current.bounds, bounds)
+		} else {
+			current.bounds, current.valid = bounds, true
+		}
+	}
+	for index, command := range commands {
+		switch command.Kind {
+		case BeginOpacityCommand, BeginTransformCommand, BeginClipCommand:
+			stack = append(stack, rasterGroupBound{kind: command.Kind, index: index, begin: command})
+		case EndOpacityCommand, EndTransformCommand, EndClipCommand:
+			if len(stack) == 0 {
+				continue
+			}
+			group := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			layerBounds := group.bounds
+			if group.valid {
+				switch group.kind {
+				case BeginClipCommand:
+					group.bounds = intersectRasterRects(group.bounds, group.begin.Rect)
+				case BeginTransformCommand:
+					group.bounds = transformRasterRect(group.bounds, group.begin.Transform)
+				}
+			}
+			if group.kind == BeginOpacityCommand || group.kind == BeginTransformCommand {
+				bounds := image.Rectangle{}
+				if group.valid {
+					bounds = rectImageBounds(layerBounds).Intersect(viewport)
+				}
+				result[group.index] = bounds
+			}
+			add(group.bounds, group.valid)
+		default:
+			bounds, valid := rasterCommandBounds(command, viewport)
+			add(bounds, valid)
+		}
+	}
+	return result
+}
+
+func rasterCommandBounds(command Command, viewport image.Rectangle) (Rect, bool) {
+	var bounds Rect
+	switch command.Kind {
+	case FillRectCommand, FillEllipseCommand, DrawImageCommand, DrawRoundedBorderCommand, DrawGradientCommand:
+		bounds = command.Rect
+	case DrawBoxShadowCommand:
+		extent := math.Ceil(math.Max(0, command.ShadowBlur)/2)*3 + 2 + math.Abs(command.ShadowSpread)
+		bounds = Rect{
+			X:      command.Rect.X + command.ShadowOffsetX - extent,
+			Y:      command.Rect.Y + command.ShadowOffsetY - extent,
+			Width:  command.Rect.Width + extent*2,
+			Height: command.Rect.Height + extent*2,
+		}
+	case DrawTextCommand:
+		bounds = command.textBounds
+		if bounds.Width <= 0 || bounds.Height <= 0 {
+			bounds = Rect{X: float64(viewport.Min.X), Y: float64(viewport.Min.Y), Width: float64(viewport.Dx()), Height: float64(viewport.Dy())}
+		}
+	default:
+		return Rect{}, false
+	}
+	if bounds.Width <= 0 || bounds.Height <= 0 {
+		return Rect{}, false
+	}
+	if command.HasClip {
+		bounds = intersectRasterRects(bounds, command.Clip)
+	}
+	for index := 0; index < int(command.RoundedClipCount); index++ {
+		bounds = intersectRasterRects(bounds, command.RoundedClips[index].Rect)
+	}
+	return bounds, bounds.Width > 0 && bounds.Height > 0
+}
+
+func unionRasterRects(left, right Rect) Rect {
+	x := math.Min(left.X, right.X)
+	y := math.Min(left.Y, right.Y)
+	endX := math.Max(left.X+left.Width, right.X+right.Width)
+	endY := math.Max(left.Y+left.Height, right.Y+right.Height)
+	return Rect{X: x, Y: y, Width: endX - x, Height: endY - y}
+}
+
+func intersectRasterRects(left, right Rect) Rect {
+	x := math.Max(left.X, right.X)
+	y := math.Max(left.Y, right.Y)
+	endX := math.Min(left.X+left.Width, right.X+right.Width)
+	endY := math.Min(left.Y+left.Height, right.Y+right.Height)
+	if endX <= x || endY <= y {
+		return Rect{X: x, Y: y}
+	}
+	return Rect{X: x, Y: y, Width: endX - x, Height: endY - y}
+}
+
+func transformRasterRect(bounds Rect, transform AffineTransform) Rect {
+	points := [4][2]float64{
+		{bounds.X, bounds.Y},
+		{bounds.X + bounds.Width, bounds.Y},
+		{bounds.X, bounds.Y + bounds.Height},
+		{bounds.X + bounds.Width, bounds.Y + bounds.Height},
+	}
+	minimumX, minimumY := math.Inf(1), math.Inf(1)
+	maximumX, maximumY := math.Inf(-1), math.Inf(-1)
+	for _, point := range points {
+		x := transform.A*point[0] + transform.C*point[1] + transform.E
+		y := transform.B*point[0] + transform.D*point[1] + transform.F
+		minimumX, minimumY = math.Min(minimumX, x), math.Min(minimumY, y)
+		maximumX, maximumY = math.Max(maximumX, x), math.Max(maximumY, y)
+	}
+	return Rect{X: minimumX, Y: minimumY, Width: maximumX - minimumX, Height: maximumY - minimumY}
+}
+
 func finiteTransform(transform AffineTransform) bool {
 	return isFinite(transform.A) && isFinite(transform.B) && isFinite(transform.C) &&
 		isFinite(transform.D) && isFinite(transform.E) && isFinite(transform.F)
 }
 
 func commandNeedsScratch(command Command) bool {
-	return command.HasClip || command.RoundedClipCount > 0
+	return command.RoundedClipCount > 0
+}
+
+func commandPaintTarget(canvas *image.RGBA, command Command) (*image.RGBA, bool) {
+	if commandNeedsScratch(command) {
+		return image.NewRGBA(commandScratchBounds(command, canvas.Bounds())), true
+	}
+	if command.HasClip {
+		return canvas.SubImage(commandClip(command, canvas.Bounds())).(*image.RGBA), false
+	}
+	return canvas, false
+}
+
+func hasTransformLayer(layers []rasterLayer) bool {
+	for index := len(layers) - 1; index > 0; index-- {
+		if layers[index].kind == rasterTransformLayer {
+			return true
+		}
+	}
+	return false
+}
+
+func commandBoundsVisible(bounds Rect, command Command, canvas image.Rectangle) bool {
+	if bounds.Width <= 0 || bounds.Height <= 0 {
+		return true
+	}
+	visible := rectImageBounds(bounds).Intersect(canvas)
+	if command.HasClip {
+		visible = visible.Intersect(commandClip(command, canvas))
+	}
+	for index := 0; index < int(command.RoundedClipCount); index++ {
+		visible = visible.Intersect(rectImageBounds(command.RoundedClips[index].Rect))
+	}
+	return !visible.Empty()
 }
 
 // commandScratchBounds bounds temporary paint storage to the intersection of
@@ -381,31 +553,41 @@ func scaleImage(target draw.Image, destination image.Rectangle, source image.Ima
 	scaler.Scale(target, destination, source, sourceBounds, draw.Over, options)
 }
 
-func compositeCommandScratch(destination, source *image.RGBA, command Command) {
+type commandClipMaskKey struct {
+	bounds  image.Rectangle
+	hasClip bool
+	clip    Rect
+	count   uint8
+	rounded [maxCommandRoundedClips]RoundedClip
+}
+
+func compositeCommandScratch(destination, source *image.RGBA, command Command, cache map[commandClipMaskKey]*image.Alpha) {
 	bounds := destination.Bounds()
-	maskBounds := bounds
-	if command.HasClip {
-		maskBounds = maskBounds.Intersect(commandClip(command, bounds))
-	}
-	for index := 0; index < int(command.RoundedClipCount); index++ {
-		maskBounds = maskBounds.Intersect(rectImageBounds(command.RoundedClips[index].Rect))
-	}
+	maskBounds := commandScratchBounds(command, bounds)
 	if maskBounds.Empty() {
 		return
 	}
-	mask := image.NewAlpha(maskBounds)
-	draw.Draw(mask, maskBounds, image.NewUniform(color.Alpha{A: 0xff}), image.Point{}, draw.Src)
-	for index := 0; index < int(command.RoundedClipCount); index++ {
-		clip := command.RoundedClips[index]
-		shape := image.NewAlpha(maskBounds)
-		paintRoundedRect(shape, clip.Rect, clip.Radii, color.NRGBA{A: 0xff})
-		for y := maskBounds.Min.Y; y < maskBounds.Max.Y; y++ {
-			for x := maskBounds.Min.X; x < maskBounds.Max.X; x++ {
-				left := uint16(mask.AlphaAt(x, y).A)
-				right := uint16(shape.AlphaAt(x, y).A)
-				mask.SetAlpha(x, y, color.Alpha{A: uint8((left*right + 127) / 255)})
+	key := commandClipMaskKey{
+		bounds: maskBounds, hasClip: command.HasClip, clip: command.Clip,
+		count: command.RoundedClipCount, rounded: command.RoundedClips,
+	}
+	mask := cache[key]
+	if mask == nil {
+		mask = image.NewAlpha(maskBounds)
+		draw.Draw(mask, maskBounds, image.NewUniform(color.Alpha{A: 0xff}), image.Point{}, draw.Src)
+		for index := 0; index < int(command.RoundedClipCount); index++ {
+			clip := command.RoundedClips[index]
+			shape := image.NewAlpha(maskBounds)
+			paintRoundedRect(shape, clip.Rect, clip.Radii, color.NRGBA{A: 0xff})
+			for y := maskBounds.Min.Y; y < maskBounds.Max.Y; y++ {
+				for x := maskBounds.Min.X; x < maskBounds.Max.X; x++ {
+					left := uint16(mask.AlphaAt(x, y).A)
+					right := uint16(shape.AlphaAt(x, y).A)
+					mask.SetAlpha(x, y, color.Alpha{A: uint8((left*right + 127) / 255)})
+				}
 			}
 		}
+		cache[key] = mask
 	}
 	draw.DrawMask(destination, maskBounds, source, maskBounds.Min, mask, maskBounds.Min, draw.Over)
 }

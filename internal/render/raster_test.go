@@ -80,6 +80,54 @@ func TestRasterizeCompositesOpacityAsAGroup(t *testing.T) {
 	}
 }
 
+func TestRasterGroupBoundsTightenNestedEffectLayers(t *testing.T) {
+	t.Parallel()
+
+	commands := []Command{
+		{Kind: BeginOpacityCommand, Opacity: 0.5},
+		{Kind: BeginTransformCommand, Transform: AffineTransform{A: 1, D: 1, E: 50}},
+		{Kind: FillRectCommand, Rect: Rect{X: 1, Y: 2, Width: 3, Height: 4}, Color: opaqueWhite},
+		{Kind: EndTransformCommand},
+		{Kind: EndOpacityCommand},
+	}
+	bounds := rasterGroupBounds(commands, image.Rect(0, 0, 100, 100))
+	if got, want := bounds[1], image.Rect(1, 2, 4, 6); got != want {
+		t.Fatalf("transform source bounds = %v, want %v", got, want)
+	}
+	if got, want := bounds[0], image.Rect(51, 2, 54, 6); got != want {
+		t.Fatalf("opacity output bounds = %v, want %v", got, want)
+	}
+}
+
+func TestRasterizeRectangularClipDrawsDirectlyWithinBounds(t *testing.T) {
+	t.Parallel()
+
+	fonts, err := newFontBook()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fonts.Close()
+	canvas, err := rasterize(DisplayList{
+		Viewport: Viewport{Width: 8, Height: 8},
+		Commands: []Command{
+			{Kind: BeginClipCommand, Rect: Rect{X: 2, Y: 1, Width: 3, Height: 4}},
+			{Kind: FillRectCommand, Rect: Rect{Width: 8, Height: 8}, Color: color.NRGBA{R: 0xff, A: 0xff}},
+			{Kind: EndClipCommand},
+		},
+	}, fonts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := canvas.RGBAAt(3, 2); got.R != 0xff || got.A != 0xff {
+		t.Fatalf("inside clipped pixel = %#v, want opaque red", got)
+	}
+	for _, point := range []image.Point{{X: 1, Y: 2}, {X: 5, Y: 2}, {X: 3, Y: 5}} {
+		if got := canvas.RGBAAt(point.X, point.Y); got.A != 0 {
+			t.Fatalf("outside clipped pixel %v = %#v, want transparent", point, got)
+		}
+	}
+}
+
 func TestRasterizeRejectsUnbalancedOpacityGroups(t *testing.T) {
 	t.Parallel()
 

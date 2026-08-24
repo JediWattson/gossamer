@@ -552,10 +552,11 @@ func (page *Page) visualTransformsLocked(frame *render.Frame) map[*dom.Node]rend
 	if frame == nil || frame.Layout == nil || frame.ComputedStyles == nil {
 		return transforms
 	}
+	cache := make(map[*dom.Node]visualTransformCacheEntry)
 	indexNode := func(node *dom.Node) {
 		if node != nil {
 			if _, exists := transforms[node]; !exists {
-				transforms[node] = page.visualTransformForNodeLocked(node, frame.Layout, frame.ComputedStyles)
+				transforms[node] = page.visualTransformForNodeCachedLocked(node, frame.Layout, frame.ComputedStyles, cache).node
 			}
 		}
 	}
@@ -580,52 +581,64 @@ func (page *Page) visualTransformsLocked(frame *render.Frame) map[*dom.Node]rend
 	return transforms
 }
 
+type visualTransformState struct {
+	transform       render.VisualTransform
+	stickyContainer render.Rect
+}
+
+type visualTransformCacheEntry struct {
+	node        render.VisualTransform
+	descendants visualTransformState
+}
+
 func (page *Page) visualTransformForNodeLocked(node *dom.Node, layout *render.LayoutSnapshot, styles *computed.Snapshot) render.VisualTransform {
-	transform := render.VisualTransform{OffsetX: page.scrollX, OffsetY: page.scrollY}
 	if node == nil || layout == nil || styles == nil {
-		return transform
+		return render.VisualTransform{OffsetX: page.scrollX, OffsetY: page.scrollY}
 	}
-	if id, ok := page.document.ID(node); ok {
-		if style, found := styles.LookupID(id); found && style.Position() == computed.PositionFixed {
-			// Fixed boxes use viewport coordinates and therefore do not inherit
-			// root or element scrolling in the current positioned-layout slice.
-			return render.VisualTransform{}
-		}
+	return page.visualTransformForNodeCachedLocked(
+		node, layout, styles, make(map[*dom.Node]visualTransformCacheEntry),
+	).node
+}
+
+// visualTransformForNodeCachedLocked projects one node from immutable layout
+// coordinates into the current scroll state. The descendant state is cached
+// separately because an element's own overflow clip and scroll offset affect
+// its children, but not the element's border box. A full-frame scroll thus
+// walks each ancestor chain once instead of once per painted descendant.
+func (page *Page) visualTransformForNodeCachedLocked(
+	node *dom.Node,
+	layout *render.LayoutSnapshot,
+	styles *computed.Snapshot,
+	cache map[*dom.Node]visualTransformCacheEntry,
+) visualTransformCacheEntry {
+	if entry, ok := cache[node]; ok {
+		return entry
 	}
-	ancestors := make([]*dom.Node, 0, 8)
-	for ancestor := node.Parent; ancestor != nil; ancestor = ancestor.Parent {
-		ancestors = append(ancestors, ancestor)
+	viewport := render.Rect{Width: float64(layout.Viewport().Width), Height: float64(layout.Viewport().Height)}
+	parent := visualTransformState{
+		transform:       render.VisualTransform{OffsetX: page.scrollX, OffsetY: page.scrollY},
+		stickyContainer: viewport,
 	}
-	for left, right := 0, len(ancestors)-1; left < right; left, right = left+1, right-1 {
-		ancestors[left], ancestors[right] = ancestors[right], ancestors[left]
+	if node.Parent != nil {
+		parent = page.visualTransformForNodeCachedLocked(node.Parent, layout, styles, cache).descendants
 	}
-	stickyContainer := render.Rect{Width: float64(layout.Viewport().Width), Height: float64(layout.Viewport().Height)}
-	for _, ancestor := range ancestors {
-		id, ok := page.document.ID(ancestor)
-		if !ok {
-			continue
-		}
-		style, ok := styles.LookupID(id)
-		if !ok {
-			continue
-		}
-		geometry, ok := layout.GeometryID(id)
-		if !ok {
-			continue
-		}
-		if style.Position() == computed.PositionFixed {
-			// Fixed boxes establish viewport coordinates in the currently
-			// supported positioning model. Their descendants must not inherit
-			// root scrolling or clips collected before the fixed subtree.
-			transform = render.VisualTransform{}
-			stickyContainer = render.Rect{Width: float64(layout.Viewport().Width), Height: float64(layout.Viewport().Height)}
-		}
-		if style.Position() == computed.PositionSticky {
-			transform = stickyVisualTransform(transform, geometry.Bounds, stickyContainer, style, layout.Viewport())
-		}
-		if !overflowClips(style.OverflowX()) && !overflowClips(style.OverflowY()) {
-			continue
-		}
+
+	transform := parent.transform
+	stickyContainer := parent.stickyContainer
+	id, indexed := page.document.ID(node)
+	style, styled := styles.LookupID(id)
+	geometry, laidOut := layout.GeometryID(id)
+	if indexed && styled && style.Position() == computed.PositionFixed {
+		// Fixed boxes establish viewport coordinates. Their descendants also
+		// start a fresh clip/scroll chain below this node.
+		transform = render.VisualTransform{}
+		stickyContainer = viewport
+	} else if indexed && styled && laidOut && style.Position() == computed.PositionSticky {
+		transform = stickyVisualTransform(transform, geometry.Bounds, stickyContainer, style, layout.Viewport())
+	}
+
+	entry := visualTransformCacheEntry{node: transform}
+	if indexed && styled && laidOut && (overflowClips(style.OverflowX()) || overflowClips(style.OverflowY())) {
 		clip := geometry.ClientBounds
 		clip.X -= transform.OffsetX
 		clip.Y -= transform.OffsetY
@@ -643,14 +656,9 @@ func (page *Page) visualTransformForNodeLocked(node *dom.Node, layout *render.La
 			transform.OffsetY += offset.y
 		}
 	}
-	if id, ok := page.document.ID(node); ok {
-		if style, found := styles.LookupID(id); found && style.Position() == computed.PositionSticky {
-			if geometry, available := layout.GeometryID(id); available {
-				transform = stickyVisualTransform(transform, geometry.Bounds, stickyContainer, style, layout.Viewport())
-			}
-		}
-	}
-	return transform
+	entry.descendants = visualTransformState{transform: transform, stickyContainer: stickyContainer}
+	cache[node] = entry
+	return entry
 }
 
 func stickyVisualTransform(transform render.VisualTransform, bounds, container render.Rect, style computed.ComputedStyle, viewport render.Viewport) render.VisualTransform {

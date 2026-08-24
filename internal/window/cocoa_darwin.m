@@ -615,6 +615,7 @@ int gossamer_cocoa_next_event(gossamer_cocoa_window *state,
     }
     NSEventType type = [native type];
     gossamer_event_modifiers(native, event);
+    BOOL dispatched = NO;
     switch (type) {
     case NSEventTypeMouseMoved:
     case NSEventTypeLeftMouseDragged:
@@ -640,6 +641,31 @@ int gossamer_cocoa_next_event(gossamer_cocoa_window *state,
       gossamer_event_location(state, native, event);
       event->delta_x = -[native scrollingDeltaX];
       event->delta_y = -[native scrollingDeltaY];
+      // Software paint can take longer than the trackpad's event cadence.
+      // Drain only immediately adjacent wheel events so the next Realm task
+      // observes the current gesture position instead of replaying a stale
+      // backlog one fully rendered frame at a time. Peeking before dequeueing
+      // preserves ordering with keyboard and pointer events.
+      [NSApp sendEvent:native];
+      dispatched = YES;
+      for (int coalesced = 0; coalesced < 64; coalesced++) {
+        NSEvent *next = [NSApp nextEventMatchingMask:NSEventMaskAny
+                                           untilDate:[NSDate distantPast]
+                                              inMode:NSDefaultRunLoopMode
+                                             dequeue:NO];
+        if (next == nil || [next type] != NSEventTypeScrollWheel ||
+            [next window] != state->window)
+          break;
+        next = [NSApp nextEventMatchingMask:NSEventMaskAny
+                                  untilDate:[NSDate distantPast]
+                                     inMode:NSDefaultRunLoopMode
+                                    dequeue:YES];
+        event->delta_x -= [next scrollingDeltaX];
+        event->delta_y -= [next scrollingDeltaY];
+        gossamer_event_modifiers(next, event);
+        gossamer_event_location(state, next, event);
+        [NSApp sendEvent:next];
+      }
       break;
     case NSEventTypeKeyDown: {
       event->kind = GOSSAMER_EVENT_KEY_DOWN;
@@ -660,7 +686,8 @@ int gossamer_cocoa_next_event(gossamer_cocoa_window *state,
       event->kind = GOSSAMER_EVENT_NONE;
       break;
     }
-    [NSApp sendEvent:native];
+    if (!dispatched)
+      [NSApp sendEvent:native];
     [NSApp updateWindows];
     if (state->closed)
       event->kind = GOSSAMER_EVENT_CLOSE;
