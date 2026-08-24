@@ -22,6 +22,9 @@ all nested bytecode calls. The control budget charges Function activation,
 completion, and loop backedges rather than every stack-machine micro-op, so a
 compiler peephole fusion cannot silently change the runaway-script policy. The
 optional instruction profiler still counts every executed bytecode opcode.
+The default call-depth ceiling is 1,024 explicit interpreter frames: large
+generated component trees have practical headroom, while embedders can still
+set a lower or higher `MaxCallDepth` for their own isolation policy.
 
 Frames retain a Function Ref, captured Context, `this`, arguments, and an
 operand stack. All frame Values are borrowed. `Frame.VisitRefs` exposes these

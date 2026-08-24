@@ -1150,6 +1150,56 @@ func TestInterpreterEnforcesSharedCallDepth(t *testing.T) {
 	}
 }
 
+func TestInterpreterDefaultCallDepthSupportsDeepGeneratedComponentTrees(t *testing.T) {
+	t.Parallel()
+
+	realm, err := browserruntime.NewRealm(722, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer realm.Close()
+	interpreter := browserruntime.NewInterpreter(browserruntime.InterpreterConfig{})
+	_, err = realm.EnqueueTask(func(task *browserruntime.TaskContext) error {
+		function, err := task.NewBytecodeFunction(
+			memory.NullValue(), memory.NullValue(), 0,
+			browserruntime.Assemble(
+				browserruntime.Instruction{Op: browserruntime.OpConstant, A: 0},
+				browserruntime.Instruction{Op: browserruntime.OpReturn},
+			), []memory.Value{memory.NumberValue(42)},
+		)
+		if err != nil {
+			return err
+		}
+		for range 300 {
+			function, err = task.NewBytecodeFunction(
+				memory.NullValue(), memory.NullValue(), 0,
+				browserruntime.Assemble(
+					browserruntime.Instruction{Op: browserruntime.OpConstant, A: 0},
+					browserruntime.Instruction{Op: browserruntime.OpCall},
+					browserruntime.Instruction{Op: browserruntime.OpReturn},
+				), []memory.Value{memory.RefValue(function)},
+			)
+			if err != nil {
+				return err
+			}
+		}
+		result, err := interpreter.Execute(task, function)
+		if err != nil {
+			return err
+		}
+		if result.Kind() != memory.ValueNumber || result.Number() != 42 {
+			t.Fatalf("deep call result = %#v, want 42", result)
+		}
+		return task.Realm.Store().CheckInvariants()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestInterpreterUnwindsThrowCatchFinallyAndNativeCalls(t *testing.T) {
 	t.Parallel()
 

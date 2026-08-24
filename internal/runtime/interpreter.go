@@ -25,6 +25,7 @@ var (
 const (
 	defaultMaxInstructions uint64 = 10_000_000
 	defaultMaxMicrotasks   uint64 = 100_000
+	defaultMaxCallDepth    uint32 = 1_024
 )
 
 type InterpreterConfig struct {
@@ -142,7 +143,7 @@ func NewInterpreter(config InterpreterConfig) *Interpreter {
 		config.MaxMicrotasks = defaultMaxMicrotasks
 	}
 	if config.MaxCallDepth == 0 {
-		config.MaxCallDepth = 256
+		config.MaxCallDepth = defaultMaxCallDepth
 	}
 	return &Interpreter{
 		config:   config,
