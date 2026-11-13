@@ -1076,3 +1076,112 @@ window.scrollBy({ top: 0 });
 		t.Fatal(err)
 	}
 }
+
+func TestNativeTypedArraysArrayBufferAndNumberSafeInteger(t *testing.T) {
+	t.Parallel()
+
+	engine := nativeengine.New(nativeengine.Config{})
+	browserRuntime, err := browser.NewWithEngine(engine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer browserRuntime.Close()
+	location, _ := url.Parse("https://gossamer.test/sub/page")
+	page, err := browserRuntime.NewPage(dom.NewDocument(), location)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer page.Close()
+
+	if _, err := page.QueueScript(browser.ScriptSource{
+		URL: "typed-arrays.js",
+		Source: `
+const buf = new ArrayBuffer(12);
+if (!(buf instanceof ArrayBuffer) || buf.byteLength !== 12 || !ArrayBuffer.isView(new Uint8Array(buf))) {
+  throw new Error("ArrayBuffer basics failed");
+}
+if (ArrayBuffer.isView(buf) || ArrayBuffer.isView({})) {
+  throw new Error("ArrayBuffer.isView false positive");
+}
+const slicedBuf = buf.slice(-4);
+if (!(slicedBuf instanceof ArrayBuffer) || slicedBuf.byteLength !== 4) {
+  throw new Error("ArrayBuffer.prototype.slice failed");
+}
+
+const specs = [
+  [Int8Array, 1],
+  [Uint8Array, 1],
+  [Uint8ClampedArray, 1],
+  [Int16Array, 2],
+  [Uint16Array, 2],
+  [Int32Array, 4],
+  [Uint32Array, 4],
+  [Float32Array, 4],
+  [Float64Array, 8],
+];
+for (const [Ctor, bpe] of specs) {
+  if (Ctor.BYTES_PER_ELEMENT !== bpe) {
+    throw new Error("BYTES_PER_ELEMENT mismatch for " + Ctor.name);
+  }
+  const inst = new Ctor([1, 2, 3]);
+  if (!(inst instanceof Ctor) || inst.length !== 3 || inst.byteLength !== 3 * bpe || inst.BYTES_PER_ELEMENT !== bpe) {
+    throw new Error("TypedArray instance check failed for " + Ctor.name);
+  }
+  if (!ArrayBuffer.isView(inst)) {
+    throw new Error("ArrayBuffer.isView failed for " + Ctor.name);
+  }
+  const fromArrayLike = Ctor.from({ length: 3 }, (_, idx) => (idx + 1) * 2);
+  if (!(fromArrayLike instanceof Ctor) || fromArrayLike[0] !== 2 || fromArrayLike[1] !== 4 || fromArrayLike[2] !== 6) {
+    throw new Error("TypedArray.from array-like + mapper failed for " + Ctor.name);
+  }
+  const fromSet = Ctor.from(new Set([5, 9]));
+  if (fromSet.length !== 2 || fromSet[0] !== 5 || fromSet[1] !== 9) {
+    throw new Error("TypedArray.from Set failed for " + Ctor.name);
+  }
+  fromSet.fill(7, -1);
+  if (fromSet[0] !== 5 || fromSet[1] !== 7) {
+    throw new Error("TypedArray.fill negative start failed for " + Ctor.name);
+  }
+  const copy = fromArrayLike.slice(-2);
+  if (!(copy instanceof Ctor) || copy.length !== 2 || copy[0] !== 4 || copy[1] !== 6) {
+    throw new Error("TypedArray.slice failed for " + Ctor.name);
+  }
+  const sub = fromArrayLike.subarray(1, 3);
+  if (!(sub instanceof Ctor) || sub.length !== 2 || sub[0] !== 4 || sub[1] !== 6) {
+    throw new Error("TypedArray.subarray failed for " + Ctor.name);
+  }
+  copy.set([10], 1);
+  if (copy[0] !== 4 || copy[1] !== 10) {
+    throw new Error("TypedArray.set failed for " + Ctor.name);
+  }
+}
+
+const rng = crypto.getRandomValues(new Uint32Array(4));
+if (!(rng instanceof Uint32Array) || rng.length !== 4) {
+  throw new Error("crypto.getRandomValues(Uint32Array) failed");
+}
+let floatRejected = false;
+try {
+  crypto.getRandomValues(new Float32Array(2));
+} catch (err) {
+  floatRejected = err && err.name === "TypeMismatchError";
+}
+if (!floatRejected) {
+  throw new Error("crypto.getRandomValues should reject Float32Array");
+}
+
+if (!Number.isInteger(42) || !Number.isInteger(-0) || Number.isInteger(4.5) || Number.isInteger(NaN) || Number.isInteger(Infinity) || Number.isInteger("42")) {
+  throw new Error("Number.isInteger checks failed");
+}
+if (!Number.isSafeInteger(9007199254740991) || !Number.isSafeInteger(-9007199254740991) ||
+    Number.isSafeInteger(9007199254740992) || Number.isSafeInteger(-9007199254740992) ||
+    Number.isSafeInteger(1.5) || Number.isSafeInteger(NaN) || Number.isSafeInteger(Infinity) || Number.isSafeInteger("1")) {
+  throw new Error("Number.isSafeInteger checks failed");
+}
+`}); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}

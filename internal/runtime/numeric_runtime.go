@@ -39,6 +39,8 @@ func (intrinsics *Intrinsics) installNumericBuiltins(context *TaskContext) error
 	if err := installMethods(intrinsics, context, numberConstructor, []builtinMethod{
 		{"isFinite", 1, nativeNumberIsFinite},
 		{"isNaN", 1, nativeNumberIsNaN},
+		{"isInteger", 1, nativeNumberIsInteger},
+		{"isSafeInteger", 1, nativeNumberIsSafeInteger},
 		{"parseInt", 2, nativeGlobalParseInt},
 		{"parseFloat", 1, nativeGlobalParseFloat},
 	}); err != nil {
@@ -509,6 +511,27 @@ func builtinNumberIsFinite(_ *execution, _ memory.Ref, _ memory.Function, _ memo
 func builtinNumberIsNaN(_ *execution, _ memory.Ref, _ memory.Function, _ memory.Value, arguments []memory.Value) (memory.Value, error) {
 	value := argument(arguments, 0)
 	return memory.BoolValue(value.Kind() == memory.ValueNumber && math.IsNaN(value.Number())), nil
+}
+
+func isNumberInteger(value memory.Value) (float64, bool) {
+	if value.Kind() != memory.ValueNumber {
+		return 0, false
+	}
+	number := value.Number()
+	if math.IsNaN(number) || math.IsInf(number, 0) || math.Trunc(number) != number {
+		return 0, false
+	}
+	return number, true
+}
+
+func builtinNumberIsInteger(_ *execution, _ memory.Ref, _ memory.Function, _ memory.Value, arguments []memory.Value) (memory.Value, error) {
+	_, ok := isNumberInteger(argument(arguments, 0))
+	return memory.BoolValue(ok), nil
+}
+
+func builtinNumberIsSafeInteger(_ *execution, _ memory.Ref, _ memory.Function, _ memory.Value, arguments []memory.Value) (memory.Value, error) {
+	number, ok := isNumberInteger(argument(arguments, 0))
+	return memory.BoolValue(ok && math.Abs(number) <= 1<<53-1), nil
 }
 
 func builtinGlobalParseInt(execution *execution, _ memory.Ref, _ memory.Function, _ memory.Value, arguments []memory.Value) (memory.Value, error) {

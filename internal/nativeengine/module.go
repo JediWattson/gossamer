@@ -1,6 +1,7 @@
 package nativeengine
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"sort"
@@ -23,12 +24,19 @@ const (
 	moduleErrored
 )
 
+type moduleCachedError struct {
+	url string
+	err error
+}
+
+func (err moduleCachedError) Error() string { return err.err.Error() }
+func (err moduleCachedError) Unwrap() error { return err.err }
+
 type nativeModule struct {
 	source       browser.ScriptSource
 	sourceLength uint64
 	image        program.Module
 	compiled     bool
-	entry        memory.Ref
 	status       nativeModuleStatus
 	err          error
 }
@@ -273,8 +281,7 @@ func (realm *Realm) linkModuleLocked(context *browserruntime.TaskContext, url st
 	module.status = moduleLinking
 	defer func() {
 		if result != nil {
-			module.status = moduleErrored
-			module.err = result
+			realm.recordModuleErrorLocked(context, url, module, result)
 		}
 	}()
 	environment, err := realm.moduleContextLocked(context, url)
@@ -380,7 +387,9 @@ func (realm *Realm) instantiateModuleLocalsLocked(context *browserruntime.TaskCo
 	if err != nil {
 		return err
 	}
-	module.entry = loaded.Entry
+	if err := realm.setModuleCacheValue(context, "entry:"+module.source.URL, memory.RefValue(loaded.Entry)); err != nil {
+		return err
+	}
 	bindings := module.image.Bindings()
 	names := make(map[string]memory.Ref, len(bindings))
 	for _, binding := range bindings {
@@ -526,7 +535,13 @@ func (realm *Realm) moduleDynamicImport(context *browserruntime.TaskContext, thi
 		return memory.Value{}, err
 	}
 	reject := func(cause error) (memory.Value, error) {
-		reason, thrown := browserruntime.ThrownValue(cause)
+		reason, thrown, lookupErr := realm.lookupModuleErrorValueLocked(context, cause)
+		if lookupErr != nil {
+			return memory.Value{}, lookupErr
+		}
+		if !thrown {
+			reason, thrown = browserruntime.ThrownValue(cause)
+		}
 		if !thrown {
 			message, messageErr := context.NewString(cause.Error())
 			if messageErr != nil {
@@ -599,10 +614,9 @@ func (realm *Realm) evaluateModuleLocked(context *browserruntime.TaskContext, ur
 	}
 	module.status = moduleEvaluating
 	defer func() {
-		module.entry = memory.Ref{}
+		realm.deleteModuleCacheKey(context, "entry:"+url)
 		if result != nil {
-			module.status = moduleErrored
-			module.err = result
+			realm.recordModuleErrorLocked(context, url, module, result)
 		}
 	}()
 	for _, request := range module.image.Requests() {
@@ -614,16 +628,78 @@ func (realm *Realm) evaluateModuleLocked(context *browserruntime.TaskContext, ur
 			return err
 		}
 	}
-	if module.entry == (memory.Ref{}) {
+	entryValue, entryFound, err := realm.moduleCacheValue(context, "entry:"+url)
+	if err != nil {
+		return evaluationError(url, err)
+	}
+	if !entryFound || !entryValue.IsRef() {
 		return evaluationError(url, fmt.Errorf("%w: source %q has no instantiated entry", ErrModuleLink, url))
 	}
 	realm.evaluations++
 	realm.sourceBytes += module.sourceLength
-	if _, err := realm.interpreter.ExecuteWithoutCheckpoint(context, module.entry); err != nil {
+	if _, err := realm.interpreter.ExecuteWithoutCheckpoint(context, entryValue.Ref()); err != nil {
 		return evaluationError(url, describeExecutionError(context, err))
 	}
 	module.status = moduleEvaluated
 	return nil
+}
+
+func (realm *Realm) moduleCacheValue(context *browserruntime.TaskContext, rawKey string) (memory.Value, bool, error) {
+	key, err := newString(context, rawKey)
+	if err != nil {
+		return memory.Value{}, false, err
+	}
+	return context.MapGet(realm.bindings.moduleCache, key)
+}
+
+func (realm *Realm) setModuleCacheValue(context *browserruntime.TaskContext, rawKey string, value memory.Value) error {
+	key, err := newString(context, rawKey)
+	if err != nil {
+		return err
+	}
+	return context.MapSet(realm.bindings.moduleCache, key, value)
+}
+
+func (realm *Realm) deleteModuleCacheKey(context *browserruntime.TaskContext, rawKey string) {
+	key, err := newString(context, rawKey)
+	if err != nil {
+		return
+	}
+	_, _ = context.MapDelete(realm.bindings.moduleCache, key)
+}
+
+// recordModuleErrorLocked stores any thrown JS exception value in the persistent
+// module cache map so it is promoted across task regions instead of keeping a
+// task-scoped memory.Ref on Go's nativeModule struct.
+func (realm *Realm) recordModuleErrorLocked(context *browserruntime.TaskContext, url string, module *nativeModule, cause error) {
+	realm.deleteModuleCacheKey(context, "entry:"+url)
+	module.status = moduleErrored
+	var cached moduleCachedError
+	if errors.As(cause, &cached) {
+		module.err = cached
+		return
+	}
+	if reason, thrown := browserruntime.ThrownValue(cause); thrown {
+		if cacheErr := realm.setModuleCacheValue(context, "error:"+url, reason); cacheErr == nil {
+			module.err = moduleCachedError{url: url, err: errors.New(cause.Error())}
+			return
+		}
+		module.err = errors.New(cause.Error())
+		return
+	}
+	module.err = cause
+}
+
+func (realm *Realm) lookupModuleErrorValueLocked(context *browserruntime.TaskContext, cause error) (memory.Value, bool, error) {
+	var cached moduleCachedError
+	if !errors.As(cause, &cached) {
+		return memory.Value{}, false, nil
+	}
+	value, found, err := realm.moduleCacheValue(context, "error:"+cached.url)
+	if err != nil || !found {
+		return memory.Value{}, false, err
+	}
+	return value, true, nil
 }
 
 func (realm *Realm) resolveModuleRequest(referrer, request string) (string, error) {

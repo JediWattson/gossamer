@@ -121,6 +121,36 @@ func (execution *execution) getPropertyWithReceiver(base, key, receiver memory.V
 				return memory.NumberValue(float64(view.ByteOffset)), true, nil
 			case "buffer":
 				return memory.RefValue(view.Buffer), true, nil
+			case "BYTES_PER_ELEMENT":
+				return memory.NumberValue(float64(typedArrayElementSize(view.Element))), true, nil
+			}
+			for _, interceptor := range execution.interpreter.propertyInterceptors() {
+				if interceptor.Get == nil {
+					continue
+				}
+				value, found, handled, interceptErr := interceptor.Get(context, ref, nameText)
+				if interceptErr != nil || handled {
+					return value, found, interceptErr
+				}
+			}
+		}
+		return memory.Value{}, false, nil
+	case memory.HeapArrayBuffer:
+		name, err := execution.propertyName(key)
+		if err != nil {
+			return memory.Value{}, false, err
+		}
+		nameText, stringKey, err := execution.stringPropertyName(name)
+		if err != nil {
+			return memory.Value{}, false, err
+		}
+		if stringKey {
+			if nameText == "byteLength" {
+				buffer, err := context.DerefArrayBuffer(ref)
+				if err != nil {
+					return memory.Value{}, false, err
+				}
+				return memory.NumberValue(float64(len(buffer.Bytes))), true, nil
 			}
 			for _, interceptor := range execution.interpreter.propertyInterceptors() {
 				if interceptor.Get == nil {
@@ -295,11 +325,16 @@ func (execution *execution) instanceOf(value, constructor memory.Value) (bool, e
 		if kindErr != nil {
 			return false, kindErr
 		}
-		if kind == memory.HeapTypedArray && descriptor.Name.IsRef() {
+		if (kind == memory.HeapTypedArray || kind == memory.HeapArrayBuffer) && descriptor.Name.IsRef() {
 			name, nameErr := execution.context.DerefString(descriptor.Name.Ref())
-			if nameErr == nil && name == "Uint8Array" {
-				view, viewErr := execution.context.DerefTypedArray(value.Ref())
-				return viewErr == nil && view.Element == memory.ElementUint8, viewErr
+			if nameErr == nil {
+				if kind == memory.HeapArrayBuffer && name == "ArrayBuffer" {
+					return true, nil
+				}
+				if element, ok := typedArrayElementForName(name); ok && kind == memory.HeapTypedArray {
+					view, viewErr := execution.context.DerefTypedArray(value.Ref())
+					return viewErr == nil && view.Element == element, viewErr
+				}
 			}
 		}
 	}
@@ -628,6 +663,31 @@ func typedArrayElementSize(kind memory.ElementKind) uint64 {
 		return 8
 	default:
 		return 0
+	}
+}
+
+func typedArrayElementForName(name string) (memory.ElementKind, bool) {
+	switch name {
+	case "Int8Array":
+		return memory.ElementInt8, true
+	case "Uint8Array":
+		return memory.ElementUint8, true
+	case "Uint8ClampedArray":
+		return memory.ElementUint8Clamped, true
+	case "Int16Array":
+		return memory.ElementInt16, true
+	case "Uint16Array":
+		return memory.ElementUint16, true
+	case "Int32Array":
+		return memory.ElementInt32, true
+	case "Uint32Array":
+		return memory.ElementUint32, true
+	case "Float32Array":
+		return memory.ElementFloat32, true
+	case "Float64Array":
+		return memory.ElementFloat64, true
+	default:
+		return 0, false
 	}
 }
 

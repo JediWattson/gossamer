@@ -55,18 +55,26 @@ func (realm *Realm) newCrypto(context *browserruntime.TaskContext) (memory.Ref, 
 
 func (realm *Realm) cryptoGetRandomValues(context *browserruntime.TaskContext, _ memory.Value, arguments []memory.Value) (memory.Value, error) {
 	value := argument(arguments, 0)
-	view, err := requireUint8Array(context, value)
+	view, elemSize, err := requireAnyTypedArray(context, value)
 	if err != nil {
 		return memory.Value{}, err
 	}
-	if view.Length > 65_536 {
+	if view.Element == memory.ElementFloat32 || view.Element == memory.ElementFloat64 {
+		exception, exceptionErr := realm.newDOMExceptionValue(context, "TypeMismatchError", "The typed array must be an integer type.")
+		if exceptionErr != nil {
+			return memory.Value{}, exceptionErr
+		}
+		return memory.Value{}, browserruntime.Throw(exception)
+	}
+	byteLength := view.Length * elemSize
+	if byteLength > 65_536 {
 		exception, exceptionErr := realm.newDOMExceptionValue(context, "QuotaExceededError", "The requested random byte length exceeds 65536.")
 		if exceptionErr != nil {
 			return memory.Value{}, exceptionErr
 		}
 		return memory.Value{}, browserruntime.Throw(exception)
 	}
-	bytes := make([]byte, view.Length)
+	bytes := make([]byte, byteLength)
 	if _, err := rand.Read(bytes); err != nil {
 		return memory.Value{}, fmt.Errorf("nativeengine: getRandomValues: %w", err)
 	}

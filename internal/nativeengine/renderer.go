@@ -134,6 +134,13 @@ func (realm *Realm) facadePropertyGet(context *browserruntime.TaskContext, objec
 		}
 		value, found, err := context.GetOwnProperty(realm.bindings.uint8ArrayPrototype, key)
 		return value, found, true, err
+	} else if kind == memory.HeapArrayBuffer {
+		key, err := context.NewString(name)
+		if err != nil {
+			return memory.Value{}, false, true, err
+		}
+		value, found, err := context.GetOwnProperty(realm.bindings.arrayBufferPrototype, key)
+		return value, found, true, err
 	}
 	record, facade, err := realm.facadeRecord(context, object)
 	if err != nil || !facade {

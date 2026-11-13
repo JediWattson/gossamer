@@ -158,6 +158,8 @@ const (
 	nativeGlobalIsFinite
 	nativeNumberIsFinite
 	nativeNumberIsNaN
+	nativeNumberIsInteger
+	nativeNumberIsSafeInteger
 	nativeMathCbrt
 	nativeMathSqrt
 	nativeMathTrunc
@@ -742,6 +744,8 @@ func (interpreter *Interpreter) registerBuiltinCallbacks() error {
 		nativeGlobalIsFinite:                  builtinGlobalIsFinite,
 		nativeNumberIsFinite:                  builtinNumberIsFinite,
 		nativeNumberIsNaN:                     builtinNumberIsNaN,
+		nativeNumberIsInteger:                 builtinNumberIsInteger,
+		nativeNumberIsSafeInteger:             builtinNumberIsSafeInteger,
 		nativeMathCbrt:                        builtinMathUnary(math.Cbrt),
 		nativeMathSqrt:                        builtinMathUnary(math.Sqrt),
 		nativeMathTrunc:                       builtinMathUnary(math.Trunc),

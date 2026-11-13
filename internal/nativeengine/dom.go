@@ -371,6 +371,8 @@ type browserBindings struct {
 	textDecoderConstructor          memory.Ref
 	uint8ArrayPrototype             memory.Ref
 	uint8ArrayConstructor           memory.Ref
+	arrayBufferPrototype            memory.Ref
+	arrayBufferConstructor          memory.Ref
 	headersPrototype                memory.Ref
 	headersConstructor              memory.Ref
 	requestPrototype                memory.Ref
@@ -758,12 +760,13 @@ func (realm *Realm) installBrowserNatives() error {
 		{nativeTextDecoderEncoding, realm.textDecoderEncoding},
 		{nativeTextDecoderFatal, realm.textDecoderFatal},
 		{nativeTextDecoderIgnoreBOM, realm.textDecoderIgnoreBOM},
-		{nativeUint8ArrayConstructor, realm.uint8ArrayConstructor},
-		{nativeUint8ArrayFrom, realm.uint8ArrayFrom},
 		{nativeUint8ArraySet, realm.uint8ArraySet},
 		{nativeUint8ArraySlice, realm.uint8ArraySlice},
 		{nativeUint8ArraySubarray, realm.uint8ArraySubarray},
 		{nativeUint8ArrayFill, realm.uint8ArrayFill},
+		{nativeArrayBufferConstructor, realm.arrayBufferConstructor},
+		{nativeArrayBufferIsView, realm.arrayBufferIsView},
+		{nativeArrayBufferSlice, realm.arrayBufferSlice},
 		{nativeMatchMedia, realm.matchMedia},
 		{nativeMediaQueryNoop, realm.mediaQueryNoop},
 		{nativeMediaQueryDispatch, realm.mediaQueryDispatch},
@@ -838,6 +841,12 @@ func (realm *Realm) installBrowserNatives() error {
 			id:       nativeConsoleMethod + uint64(index),
 			callback: realm.consoleMethod(name),
 		})
+	}
+	for _, spec := range typedArraySpecs {
+		registrations = append(registrations,
+			nativeRegistration{id: spec.nativeCtor, callback: realm.typedArrayConstructorFor(spec)},
+			nativeRegistration{id: spec.nativeFrom, callback: realm.typedArrayFromFor(spec)},
+		)
 	}
 	for _, registration := range registrations {
 		if err := realm.interpreter.RegisterNative(registration.id, registration.callback); err != nil {
@@ -921,6 +930,8 @@ func (realm *Realm) prepareBrowserBindingsLocked(context *browserruntime.TaskCon
 			{bindingTextDecoderConstructor, &bindings.textDecoderConstructor},
 			{bindingUint8ArrayPrototype, &bindings.uint8ArrayPrototype},
 			{bindingUint8ArrayConstructor, &bindings.uint8ArrayConstructor},
+			{bindingArrayBufferPrototype, &bindings.arrayBufferPrototype},
+			{bindingArrayBufferConstructor, &bindings.arrayBufferConstructor},
 			{bindingHeadersPrototype, &bindings.headersPrototype},
 			{bindingHeadersConstructor, &bindings.headersConstructor},
 			{bindingRequestPrototype, &bindings.requestPrototype},
@@ -1087,7 +1098,13 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 	if err != nil {
 		return err
 	}
-	bindings.uint8ArrayConstructor, bindings.uint8ArrayPrototype, err = realm.newUint8ArrayConstructor(context)
+	typedArrayConstructors, uint8Constructor, uint8Prototype, err := realm.installTypedArrayConstructors(context)
+	if err != nil {
+		return err
+	}
+	bindings.uint8ArrayConstructor = uint8Constructor
+	bindings.uint8ArrayPrototype = uint8Prototype
+	bindings.arrayBufferConstructor, bindings.arrayBufferPrototype, err = realm.newArrayBufferConstructor(context)
 	if err != nil {
 		return err
 	}
@@ -1344,7 +1361,7 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{"URL", memory.RefValue(bindings.urlConstructor)},
 		{"TextEncoder", memory.RefValue(bindings.textEncoderConstructor)},
 		{"TextDecoder", memory.RefValue(bindings.textDecoderConstructor)},
-		{"Uint8Array", memory.RefValue(bindings.uint8ArrayConstructor)},
+		{"ArrayBuffer", memory.RefValue(bindings.arrayBufferConstructor)},
 		{"Event", memory.RefValue(eventConstructor)},
 		{"CustomEvent", memory.RefValue(customEventConstructor)},
 		{"KeyboardEvent", memory.RefValue(keyboardEventConstructor)},
@@ -1352,6 +1369,12 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{"getSelection", memory.RefValue(getSelection)},
 		{"Range", memory.RefValue(rangeConstructor)},
 		{"Selection", memory.RefValue(selectionConstructor)},
+	}
+	for _, spec := range typedArraySpecs {
+		windowProperties = append(windowProperties, struct {
+			name  string
+			value memory.Value
+		}{spec.name, memory.RefValue(typedArrayConstructors[spec.name])})
 	}
 	for _, domInterface := range domInterfaces {
 		windowProperties = append(windowProperties, struct {
@@ -1426,6 +1449,8 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{bindingTextDecoderConstructor, bindings.textDecoderConstructor, false},
 		{bindingUint8ArrayPrototype, bindings.uint8ArrayPrototype, false},
 		{bindingUint8ArrayConstructor, bindings.uint8ArrayConstructor, false},
+		{bindingArrayBufferPrototype, bindings.arrayBufferPrototype, false},
+		{bindingArrayBufferConstructor, bindings.arrayBufferConstructor, false},
 		{bindingHeadersPrototype, bindings.headersPrototype, false},
 		{bindingHeadersConstructor, bindings.headersConstructor, false},
 		{bindingRequestPrototype, bindings.requestPrototype, false},
@@ -1480,7 +1505,7 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{"URL", bindings.urlConstructor, true},
 		{"TextEncoder", bindings.textEncoderConstructor, true},
 		{"TextDecoder", bindings.textDecoderConstructor, true},
-		{"Uint8Array", bindings.uint8ArrayConstructor, true},
+		{"ArrayBuffer", bindings.arrayBufferConstructor, true},
 		{"Headers", bindings.headersConstructor, true},
 		{"Request", bindings.requestConstructor, true},
 		{"Response", bindings.responseConstructor, true},
@@ -1506,6 +1531,13 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{"btoa", btoa, true},
 		{"Range", rangeConstructor, true},
 		{"Selection", selectionConstructor, true},
+	}
+	for _, spec := range typedArraySpecs {
+		globalBindings = append(globalBindings, struct {
+			name    string
+			value   memory.Ref
+			mutable bool
+		}{spec.name, typedArrayConstructors[spec.name], true})
 	}
 	for _, domInterface := range domInterfaces {
 		globalBindings = append(globalBindings, struct {
