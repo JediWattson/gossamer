@@ -664,6 +664,13 @@ const (
 	VisibilityCollapse
 )
 
+type PointerEvents uint8
+
+const (
+	PointerEventsAuto PointerEvents = iota
+	PointerEventsNone
+)
+
 type WhiteSpaceMode uint8
 
 const (
@@ -752,6 +759,7 @@ type ComputedStyle struct {
 	zIndex            ZIndex
 	boxSizing         BoxSizing
 	visibility        Visibility
+	pointerEvents     PointerEvents
 	whiteSpace        WhiteSpaceMode
 	width             Length
 	height            Length
@@ -939,6 +947,7 @@ func (computed ComputedStyle) Left() Length                           { return c
 func (computed ComputedStyle) ZIndex() ZIndex                         { return computed.zIndex }
 func (computed ComputedStyle) BoxSizing() BoxSizing                   { return computed.boxSizing }
 func (computed ComputedStyle) Visibility() Visibility                 { return computed.visibility }
+func (computed ComputedStyle) PointerEvents() PointerEvents           { return computed.pointerEvents }
 func (computed ComputedStyle) WhiteSpace() WhiteSpaceMode             { return computed.whiteSpace }
 func (computed ComputedStyle) Width() Length                          { return computed.width }
 func (computed ComputedStyle) Height() Length                         { return computed.height }

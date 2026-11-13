@@ -398,6 +398,8 @@ type whiteSpaceMode = computed.WhiteSpaceMode
 const (
 	boxSizingContentBox = computed.BoxSizingContentBox
 	boxSizingBorderBox  = computed.BoxSizingBorderBox
+	pointerEventsAuto   = computed.PointerEventsAuto
+	pointerEventsNone   = computed.PointerEventsNone
 	visibilityVisible   = computed.VisibilityVisible
 	visibilityCollapse  = computed.VisibilityCollapse
 	whiteSpaceNormal    = computed.WhiteSpaceNormal

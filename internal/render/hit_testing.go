@@ -60,7 +60,7 @@ func hitTestVisualBox(box *Box, x, y float64, transforms map[*dom.Node]VisualTra
 		clip := translatedRect(boxClientBounds(box), boxTransform)
 		radii := insetCornerRadii(usedCornerRadii(box.style, visualBounds, viewport), box.Border)
 		if !pointInRoundedRect(clip, radii, x, y) {
-			if !box.hitTransparent && containsPoint(visualBounds, x, y) {
+			if boxCanHitSelf(box) && containsPoint(visualBounds, x, y) {
 				return box.Node
 			}
 			return nil
@@ -105,7 +105,7 @@ func hitTestVisualBox(box *Box, x, y float64, transforms map[*dom.Node]VisualTra
 			return node
 		}
 	}
-	if !box.hitTransparent && containsPoint(translatedRect(box.Bounds, boxTransform), x, y) {
+	if boxCanHitSelf(box) && containsPoint(translatedRect(box.Bounds, boxTransform), x, y) {
 		return box.Node
 	}
 	return nil
@@ -114,11 +114,17 @@ func hitTestVisualBox(box *Box, x, y float64, transforms map[*dom.Node]VisualTra
 func hitTestVisualFragment(fragment InlineFragment, x, y float64, transforms map[*dom.Node]VisualTransform) *dom.Node {
 	switch fragment.Kind {
 	case ImageFragmentKind:
+		if fragment.Image.pointerEventsNone {
+			return nil
+		}
 		transform := transforms[fragment.Image.Node]
 		if (!transform.HasClip || containsPoint(transform.Clip, x, y)) && containsPoint(translatedRect(fragment.Image.Bounds, transform), x, y) {
 			return fragment.Image.Node
 		}
 	case TextFragmentKind:
+		if fragment.Text.pointerEventsNone {
+			return nil
+		}
 		transform := transforms[fragment.Text.Node]
 		bounds := textFragmentBounds(fragment.Text)
 		if (!transform.HasClip || containsPoint(transform.Clip, x, y)) && containsPoint(translatedRect(bounds, transform), x, y) {
@@ -152,7 +158,7 @@ func hitTestBox(box *Box, x, y float64, viewport Viewport) *dom.Node {
 		clip := boxClientBounds(box)
 		radii := insetCornerRadii(usedCornerRadii(box.style, box.Bounds, viewport), box.Border)
 		if !pointInRoundedRect(clip, radii, x, y) {
-			if !box.hitTransparent && containsPoint(box.Bounds, x, y) {
+			if boxCanHitSelf(box) && containsPoint(box.Bounds, x, y) {
 				return box.Node
 			}
 			return nil
@@ -197,10 +203,14 @@ func hitTestBox(box *Box, x, y float64, viewport Viewport) *dom.Node {
 			return node
 		}
 	}
-	if !box.hitTransparent && containsPoint(box.Bounds, x, y) {
+	if boxCanHitSelf(box) && containsPoint(box.Bounds, x, y) {
 		return box.Node
 	}
 	return nil
+}
+
+func boxCanHitSelf(box *Box) bool {
+	return !box.hitTransparent && (!box.hasStyle || box.style.PointerEvents() != pointerEventsNone)
 }
 
 func inverseTransformPoint(transform AffineTransform, x, y float64) (float64, float64, bool) {
@@ -217,10 +227,16 @@ func inverseTransformPoint(transform AffineTransform, x, y float64) (float64, fl
 func hitTestFragment(fragment InlineFragment, x, y float64) *dom.Node {
 	switch fragment.Kind {
 	case ImageFragmentKind:
+		if fragment.Image.pointerEventsNone {
+			return nil
+		}
 		if containsPoint(fragment.Image.Bounds, x, y) {
 			return fragment.Image.Node
 		}
 	case TextFragmentKind:
+		if fragment.Text.pointerEventsNone {
+			return nil
+		}
 		bounds := textFragmentBounds(fragment.Text)
 		if containsPoint(bounds, x, y) {
 			return fragment.Text.Node

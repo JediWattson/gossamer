@@ -41,6 +41,7 @@ func TestComputedPropertyValueSerializesEverySupportedLonghand(t *testing.T) {
 		opacity:         0.5,
 		boxSizing:       BoxSizingBorderBox,
 		visibility:      VisibilityHidden,
+		pointerEvents:   PointerEventsNone,
 		whiteSpace:      WhiteSpacePreWrap,
 		width:           Length{unit: LengthAuto},
 		height:          Length{value: 12, unit: LengthPX},

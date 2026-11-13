@@ -494,8 +494,14 @@ func (context *layoutContext) layoutBlockSizedWithSubgrid(node *styledNode, cont
 		bounds := Rect{X: containingX + left, Y: contentY, Width: outerWidth, Height: imageHeight + padding.Top + padding.Bottom + border.Top + border.Bottom}
 		contentBounds := Rect{X: bounds.X + border.Left + padding.Left, Y: bounds.Y + border.Top + padding.Top, Width: imageWidth, Height: imageHeight}
 		fragment := InlineFragment{
-			Kind:  ImageFragmentKind,
-			Image: ImageFragment{Node: node.node, Image: decoded, Bounds: contentBounds, Opacity: 1},
+			Kind: ImageFragmentKind,
+			Image: ImageFragment{
+				Node:              node.node,
+				Image:             decoded,
+				Bounds:            contentBounds,
+				Opacity:           1,
+				pointerEventsNone: style.PointerEvents() == pointerEventsNone,
+			},
 		}
 		box := &Box{
 			Node:                  node.node,
@@ -1707,6 +1713,7 @@ func (context *layoutContext) layoutInlineTokens(tokens []inlineToken, directChi
 					previous.Text.FontStyle == text.FontStyle &&
 					previous.Text.WebFont == text.WebFont &&
 					previous.Text.Color == text.Color &&
+					previous.Text.pointerEventsNone == text.pointerEventsNone &&
 					previous.Text.verticalOrientation == text.verticalOrientation &&
 					previous.Text.X+previous.Text.Width == text.X {
 					previous.Text.Text += text.Text
@@ -1809,6 +1816,7 @@ func (context *layoutContext) layoutInlineTokens(tokens []inlineToken, directChi
 						Bounds:                Rect{X: x + lineOffset + piece.x + justifiedOffset, Y: targetY, Width: piece.width, Height: piece.height},
 						Opacity:               piece.opacity,
 						percentHeightResolved: piece.percentHeightResolved,
+						pointerEventsNone:     piece.style.PointerEvents() == pointerEventsNone,
 					},
 				})
 				continue
@@ -1832,6 +1840,7 @@ func (context *layoutContext) layoutInlineTokens(tokens []inlineToken, directChi
 				Color:               textColor,
 				Visible:             piece.style.Visibility() == visibilityVisible,
 				Underline:           piece.style.Underline(),
+				pointerEventsNone:   piece.style.PointerEvents() == pointerEventsNone,
 				paintOpacity:        clamp(piece.opacity, 0, 1),
 				verticalOrientation: piece.orientation,
 			}

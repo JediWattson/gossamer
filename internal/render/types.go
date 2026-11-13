@@ -209,8 +209,9 @@ type TextFragment struct {
 	FontStyle      FontStyle
 	WebFont        uint32
 	Color          color.NRGBA
-	Visible        bool
-	Underline      bool
+	Visible           bool
+	Underline         bool
+	pointerEventsNone bool
 	// paintOpacity retains the cumulative inline opacity separately from Color
 	// so paint-only color changes can reuse glyph geometry exactly.
 	paintOpacity float64
@@ -248,6 +249,7 @@ type ImageFragment struct {
 	Bounds                Rect
 	Opacity               float64
 	percentHeightResolved bool
+	pointerEventsNone     bool
 }
 
 // CommandKind identifies a display-list operation.

@@ -94,6 +94,7 @@ const (
 	propertyTranslate
 	propertyVerticalAlign
 	propertyVisibility
+	propertyPointerEvents
 	propertyWhiteSpace
 	propertyWritingMode
 	propertyWidth
@@ -234,6 +235,7 @@ var propertyDefinitions = [...]propertyDefinition{
 	{name: "padding-left", kind: propertyPadding, edge: propertyLeft, invalidation: propertyInvalidatesLayout},
 	{name: "padding-right", kind: propertyPadding, edge: propertyRight, invalidation: propertyInvalidatesLayout},
 	{name: "padding-top", kind: propertyPadding, edge: propertyTop, invalidation: propertyInvalidatesLayout},
+	{name: "pointer-events", kind: propertyPointerEvents, inherited: true, invalidation: propertyInvalidatesPaint},
 	{name: "position", kind: propertyPosition, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "right", kind: propertyInset, edge: propertyRight, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "rotate", kind: propertyRotate, invalidation: propertyInvalidatesPaint},
@@ -548,6 +550,8 @@ func (definition propertyDefinition) copy(destination *computedStyle, source com
 		destination.verticalAlign = source.verticalAlign
 	case propertyVisibility:
 		destination.visibility = source.visibility
+	case propertyPointerEvents:
+		destination.pointerEvents = source.pointerEvents
 	case propertyWhiteSpace:
 		destination.whiteSpace = source.whiteSpace
 	case propertyWidth:
@@ -783,6 +787,9 @@ func (definition propertyDefinition) valid(source string, viewport Viewport) boo
 	case propertyVisibility:
 		keyword, ok := singleCSSKeyword(source)
 		return ok && (keyword == "visible" || keyword == "hidden" || keyword == "collapse")
+	case propertyPointerEvents:
+		keyword, ok := singleCSSKeyword(source)
+		return ok && (keyword == "auto" || keyword == "none")
 	case propertyWhiteSpace:
 		keyword, ok := singleCSSKeyword(source)
 		return ok && (keyword == "normal" || keyword == "nowrap" || keyword == "pre" || keyword == "pre-wrap" || keyword == "pre-line" || keyword == "break-spaces")
@@ -1245,6 +1252,13 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 		} else {
 			style.visibility = VisibilityVisible
 		}
+	case propertyPointerEvents:
+		keyword, _ := singleCSSKeyword(source)
+		if keyword == "none" {
+			style.pointerEvents = PointerEventsNone
+		} else {
+			style.pointerEvents = PointerEventsAuto
+		}
 	case propertyWhiteSpace:
 		keyword, _ := singleCSSKeyword(source)
 		switch keyword {
@@ -1521,6 +1535,11 @@ func (definition propertyDefinition) serialize(computed ComputedStyle) string {
 		default:
 			return "visible"
 		}
+	case propertyPointerEvents:
+		if computed.pointerEvents == PointerEventsNone {
+			return "none"
+		}
+		return "auto"
 	case propertyWhiteSpace:
 		switch computed.whiteSpace {
 		case WhiteSpaceNoWrap:
