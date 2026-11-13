@@ -34,6 +34,8 @@ type PhysicalStats struct {
 	WeakTargetEntries           uint64 `json:"weakTargetEntries"`
 	WeakTargetReferences        uint64 `json:"weakTargetReferences"`
 	WeakTargetUseBytes          uint64 `json:"weakTargetUseBytes"`
+	SemanticLookupIndexes       uint64 `json:"semanticLookupIndexes"`
+	SemanticLookupEntries       uint64 `json:"semanticLookupEntries"`
 	// ObjectEdge and ObjectRegion fields are retained in the profile schema so
 	// old baselines remain comparable. They stay zero now that typed payloads,
 	// rather than a shadow ledger graph, own the complete heap topology.
@@ -98,6 +100,14 @@ func (store *Store) PhysicalStats() PhysicalStats {
 			}
 			result.OccupiedSlotBytes += result.SlotSizeBytes
 			result.PayloadBytes += slotPayloadCapacityBytes(slot, functionStorage)
+			if header, ok := objectHeaderForSlot(slot); ok && header.propertyLookup != nil {
+				result.SemanticLookupIndexes++
+				result.SemanticLookupEntries += uint64(len(header.propertyLookup))
+			}
+			if slot.Kind == HeapContext && slot.context().bindingLookup != nil {
+				result.SemanticLookupIndexes++
+				result.SemanticLookupEntries += uint64(len(slot.context().bindingLookup))
+			}
 			if slot.Kind == HeapFunction {
 				result.FunctionCodeBytes += uniqueSliceCapacityBytes(slot.function().Code, functionCodeStorage)
 				result.FunctionSourceLocationBytes += uniqueSliceCapacityBytes(slot.function().Locations.storage(), functionLocationStorage)

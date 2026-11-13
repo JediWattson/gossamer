@@ -242,6 +242,13 @@ func (context *TaskContext) GetOwnPropertyDescriptor(object, name memory.Ref) (m
 	return context.Realm.store.GetOwnPropertyDescriptor(context.Owner, object, name)
 }
 
+func (context *TaskContext) ResolvePropertyDescriptor(object, name memory.Ref) (memory.Ref, memory.Property, bool, error) {
+	if context == nil || context.Realm == nil {
+		return memory.Ref{}, memory.Property{}, false, fmt.Errorf("runtime: nil task context")
+	}
+	return context.Realm.store.ResolvePropertyDescriptor(context.Owner, object, name)
+}
+
 func (context *TaskContext) DefineProperty(object, name memory.Ref, descriptor memory.Property) error {
 	if context == nil || context.Realm == nil {
 		return fmt.Errorf("runtime: nil task context")

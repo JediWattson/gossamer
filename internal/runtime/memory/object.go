@@ -87,6 +87,11 @@ type ObjectHeader struct {
 	Properties         []Property
 	NonExtensible      bool
 	ImmutablePrototype bool
+
+	// propertyLookup indexes semantic String contents and Symbol identities.
+	// Descriptors themselves remain in Properties so replacement, barriers,
+	// generation validation, and insertion order still have one source of truth.
+	propertyLookup map[propertyKey]uint32
 }
 
 func cloneObjectHeader(header ObjectHeader) ObjectHeader {

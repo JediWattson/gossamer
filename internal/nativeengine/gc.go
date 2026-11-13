@@ -125,8 +125,14 @@ func (realm *Realm) collectGarbageLocked(
 		return nil, errors.Join(collectErr, restoreErr, observerRestoreErr, listenerRestoreErr)
 	}
 	realm.collectedWrappers = append(realm.collectedWrappers, collected...)
-	if err := store.CheckInvariants(); err != nil {
-		return nil, err
+	if realm.verifyHeapInvariants {
+		verifier := realm.heapInvariantVerifier
+		if verifier == nil {
+			verifier = (*memory.Store).CheckInvariants
+		}
+		if err := verifier(store); err != nil {
+			return nil, fmt.Errorf("nativeengine: verify heap after collection: %w", err)
+		}
 	}
 	if !drainWrappers || len(realm.collectedWrappers) == 0 {
 		return nil, nil

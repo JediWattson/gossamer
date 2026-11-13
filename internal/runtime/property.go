@@ -512,29 +512,7 @@ func (execution *execution) setNamedProperty(base memory.Value, ref, name memory
 }
 
 func resolveObjectProperty(context *TaskContext, object, name memory.Ref) (memory.Ref, memory.Property, bool, error) {
-	seen := make(map[memory.Ref]struct{})
-	current := object
-	for {
-		if _, duplicate := seen[current]; duplicate {
-			return memory.Ref{}, memory.Property{}, false, memory.ErrPrototypeCycle
-		}
-		seen[current] = struct{}{}
-		descriptor, found, err := context.GetOwnPropertyDescriptor(current, name)
-		if err != nil {
-			return memory.Ref{}, memory.Property{}, false, err
-		}
-		if found {
-			return current, descriptor, true, nil
-		}
-		snapshot, err := context.DerefObjectHeader(current)
-		if err != nil {
-			return memory.Ref{}, memory.Property{}, false, err
-		}
-		if snapshot.Prototype.Kind() == memory.ValueNull {
-			return memory.Ref{}, memory.Property{}, false, nil
-		}
-		current = snapshot.Prototype.Ref()
-	}
+	return context.ResolvePropertyDescriptor(object, name)
 }
 
 func (execution *execution) deletePropertyValue(base, key memory.Value) (bool, error) {

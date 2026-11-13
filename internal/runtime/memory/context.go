@@ -17,6 +17,11 @@ type Binding struct {
 type Context struct {
 	Parent   Value
 	Bindings []Binding
+
+	// bindingLookup is a degree-adaptive acceleration structure. It records
+	// semantic String contents to insertion-ordered Binding indexes, never
+	// Values or Refs, so mutations and generation checks remain authoritative.
+	bindingLookup map[string]uint32
 }
 
 // BindingLocation is a generation-safe resolved lexical slot. It borrows the

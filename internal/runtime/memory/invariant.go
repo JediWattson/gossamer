@@ -246,6 +246,9 @@ func (store *Store) CheckInvariants() error {
 					}
 					names[key] = struct{}{}
 				}
+				if err := store.checkPropertyLookupLocked(Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, &slot.object().ObjectHeader); err != nil {
+					return err
+				}
 			case HeapArray:
 				liveArrays++
 				var previous uint32
@@ -298,6 +301,9 @@ func (store *Store) CheckInvariants() error {
 					if !binding.Initialized && binding.Value != (Value{}) {
 						return invariantError("Context %s binding %q retains an uninitialized value", Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, nameSlot.stringObject().Text)
 					}
+				}
+				if err := store.checkBindingLookupLocked(Ref{Region: id, Slot: uint32(index), Gen: slot.Generation}, slot.context()); err != nil {
+					return err
 				}
 			case HeapFunction:
 				liveFunctions++
@@ -851,6 +857,50 @@ func (store *Store) checkObjectHeaderLocked(ref Ref, slot *Slot) error {
 			return invariantError("%s has duplicate property %s", ref, key)
 		}
 		names[key] = struct{}{}
+	}
+	return store.checkPropertyLookupLocked(ref, header)
+}
+
+func (store *Store) checkPropertyLookupLocked(ref Ref, header *ObjectHeader) error {
+	if header.propertyLookup == nil {
+		return nil
+	}
+	if len(header.propertyLookup) != len(header.Properties) {
+		return invariantError("%s property lookup has %d entries, want %d", ref, len(header.propertyLookup), len(header.Properties))
+	}
+	for index, property := range header.Properties {
+		key, err := store.propertyKeyLocked(property.Name)
+		if err != nil {
+			return invariantError("%s property lookup key %d: %v", ref, index, err)
+		}
+		indexed, exists := header.propertyLookup[key]
+		if !exists || indexed != uint32(index) {
+			return invariantError("%s property lookup %s points to %d, want %d", ref, key, indexed, index)
+		}
+	}
+	return nil
+}
+
+func (store *Store) checkBindingLookupLocked(ref Ref, context *Context) error {
+	if context.bindingLookup == nil {
+		return nil
+	}
+	if len(context.bindingLookup) != len(context.Bindings) {
+		return invariantError("Context %s binding lookup has %d entries, want %d", ref, len(context.bindingLookup), len(context.Bindings))
+	}
+	for index, binding := range context.Bindings {
+		_, nameSlot, err := store.slotLocked(binding.Name)
+		if err != nil {
+			return invariantError("Context %s binding lookup name %d: %v", ref, index, err)
+		}
+		if nameSlot.Kind != HeapString {
+			return invariantError("Context %s binding lookup name %d is %s", ref, index, nameSlot.Kind)
+		}
+		name := nameSlot.stringObject().Text
+		indexed, exists := context.bindingLookup[name]
+		if !exists || indexed != uint32(index) {
+			return invariantError("Context %s binding lookup %q points to %d, want %d", ref, name, indexed, index)
+		}
 	}
 	return nil
 }

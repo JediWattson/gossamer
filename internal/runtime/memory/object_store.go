@@ -239,6 +239,9 @@ func (store *Store) definePropertyLocked(owner ownership.OwnerID, object, name R
 	}
 	prepared.Name = preparedName.Ref()
 	header.Properties = append(header.Properties, prepared)
+	if header.propertyLookup != nil {
+		header.propertyLookup[key] = uint32(len(header.Properties) - 1)
+	}
 	return nil
 }
 
@@ -350,6 +353,60 @@ func (store *Store) GetOwnPropertyDescriptor(owner ownership.OwnerID, object, na
 	return header.Properties[index], true, nil
 }
 
+// ResolvePropertyDescriptor returns the nearest named descriptor and the
+// object-like Ref that owns it. The entire prototype walk happens under one
+// Store lock and reads descriptors in place, avoiding a cloned Properties
+// slice for every miss. No result is cached across calls: prototype mutation
+// and own-property shadowing are therefore immediately visible.
+func (store *Store) ResolvePropertyDescriptor(owner ownership.OwnerID, object, name Ref) (Ref, Property, bool, error) {
+	if store == nil {
+		return Ref{}, Property{}, false, fmt.Errorf("memory: nil store")
+	}
+	store.mutex.Lock()
+	defer store.mutex.Unlock()
+
+	_, slot, err := store.readSlotLocked(owner, object)
+	if err != nil {
+		return Ref{}, Property{}, false, err
+	}
+	if _, ok := objectHeaderForSlot(slot); !ok {
+		return Ref{}, Property{}, false, objectHeaderTypeError(object, slot.Kind)
+	}
+	key, err := store.propertyKeyLocked(name)
+	if err != nil {
+		return Ref{}, Property{}, false, err
+	}
+
+	current := object
+	for visited := uint64(1); ; visited++ {
+		header, ok := objectHeaderForSlot(slot)
+		if !ok {
+			return Ref{}, Property{}, false, objectHeaderTypeError(current, slot.Kind)
+		}
+		index, lookupErr := store.findPropertyLocked(slot, key)
+		if lookupErr != nil {
+			return Ref{}, Property{}, false, lookupErr
+		}
+		if index >= 0 {
+			return current, header.Properties[index], true, nil
+		}
+		if header.Prototype.Kind() == ValueNull {
+			return Ref{}, Property{}, false, nil
+		}
+		if !header.Prototype.IsRef() {
+			return Ref{}, Property{}, false, fmt.Errorf("%w: Object prototype has kind %d", ErrTypeMismatch, header.Prototype.Kind())
+		}
+		if visited >= store.stats.LiveSlots {
+			return Ref{}, Property{}, false, ErrPrototypeCycle
+		}
+		current = header.Prototype.Ref()
+		_, slot, err = store.readSlotLocked(owner, current)
+		if err != nil {
+			return Ref{}, Property{}, false, err
+		}
+	}
+}
+
 func (store *Store) DeleteProperty(owner ownership.OwnerID, object, name Ref) (bool, error) {
 	if store == nil {
 		return false, fmt.Errorf("memory: nil store")
@@ -387,6 +444,9 @@ func (store *Store) DeleteProperty(owner ownership.OwnerID, object, name Ref) (b
 	copy(header.Properties[index:], header.Properties[index+1:])
 	header.Properties[len(header.Properties)-1] = Property{}
 	header.Properties = header.Properties[:len(header.Properties)-1]
+	// Compaction changes every following insertion index. Rebuild lazily on
+	// the next high-degree lookup instead of doing extra key dereferences here.
+	header.propertyLookup = nil
 	return true, nil
 }
 
@@ -460,6 +520,16 @@ func (store *Store) findPropertyLocked(slot *Slot, key propertyKey) (int, error)
 	if !ok {
 		return -1, objectHeaderTypeError(Ref{}, slot.Kind)
 	}
+	if len(header.Properties) >= semanticLookupIndexThreshold {
+		if err := store.ensurePropertyLookupLocked(header); err != nil {
+			return -1, err
+		}
+		index, found := header.propertyLookup[key]
+		if !found {
+			return -1, nil
+		}
+		return store.validatePropertyLookupLocked(header, index, key)
+	}
 	for index, property := range header.Properties {
 		propertyKey, err := store.propertyKeyLocked(property.Name)
 		if err != nil {
@@ -470,4 +540,34 @@ func (store *Store) findPropertyLocked(slot *Slot, key propertyKey) (int, error)
 		}
 	}
 	return -1, nil
+}
+
+func (store *Store) ensurePropertyLookupLocked(header *ObjectHeader) error {
+	if header.propertyLookup != nil {
+		return nil
+	}
+	lookup := make(map[propertyKey]uint32, len(header.Properties))
+	for index, property := range header.Properties {
+		key, err := store.propertyKeyLocked(property.Name)
+		if err != nil {
+			return err
+		}
+		lookup[key] = uint32(index)
+	}
+	header.propertyLookup = lookup
+	return nil
+}
+
+func (store *Store) validatePropertyLookupLocked(header *ObjectHeader, index uint32, key propertyKey) (int, error) {
+	if uint64(index) >= uint64(len(header.Properties)) {
+		return -1, fmt.Errorf("%w: property lookup %s points outside Object", ErrInvariantViolation, key)
+	}
+	actual, err := store.propertyKeyLocked(header.Properties[index].Name)
+	if err != nil {
+		return -1, err
+	}
+	if actual != key {
+		return -1, fmt.Errorf("%w: property lookup %s points to %s", ErrInvariantViolation, key, actual)
+	}
+	return int(index), nil
 }

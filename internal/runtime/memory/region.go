@@ -316,6 +316,7 @@ func rewriteSlotReferences(slot *Slot, replacements map[Ref]Ref) {
 		return ref
 	}
 	if header, ok := objectHeaderForSlot(slot); ok {
+		header.propertyLookup = nil
 		header.Prototype = rewriteValue(header.Prototype)
 		for index := range header.Properties {
 			property := &header.Properties[index]
@@ -338,6 +339,7 @@ func rewriteSlotReferences(slot *Slot, replacements map[Ref]Ref) {
 			slot.array().Elements[index].Value = rewriteValue(slot.array().Elements[index].Value)
 		}
 	case HeapContext:
+		slot.context().bindingLookup = nil
 		slot.context().Parent = rewriteValue(slot.context().Parent)
 		for index := range slot.context().Bindings {
 			binding := &slot.context().Bindings[index]
@@ -405,7 +407,7 @@ func slotStorageEmpty(slot *Slot) bool {
 }
 
 func objectHeaderStorageEmpty(header ObjectHeader) bool {
-	return header.Prototype == (Value{}) && len(header.Properties) == 0 && !header.NonExtensible && !header.ImmutablePrototype
+	return header.Prototype == (Value{}) && len(header.Properties) == 0 && header.propertyLookup == nil && !header.NonExtensible && !header.ImmutablePrototype
 }
 
 func (store *Store) initializeSlotPayloadLocked(slot *Slot, kind HeapKind) {

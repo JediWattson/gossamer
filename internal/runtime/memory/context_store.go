@@ -149,6 +149,7 @@ func (store *Store) declareIndirectBindingLocked(owner ownership.OwnerID, contex
 		Name: prepared[0].Ref(), Initialized: true, Indirect: true,
 		Target: prepared[1].Ref(), TargetName: prepared[2].Ref(),
 	})
+	store.recordBindingLookupLocked(slot.context(), nameText)
 	return nil
 }
 
@@ -174,6 +175,7 @@ func (store *Store) declareBindingLocked(owner ownership.OwnerID, context, name 
 		return err
 	}
 	slot.context().Bindings = append(slot.context().Bindings, Binding{Name: preparedName.Ref(), Mutable: mutable})
+	store.recordBindingLookupLocked(slot.context(), nameText)
 	return nil
 }
 
@@ -394,6 +396,16 @@ func (store *Store) resolveBindingSlotLocked(owner ownership.OwnerID, context Re
 }
 
 func (store *Store) findBindingRefLocked(slot *Slot, name Ref, nameText string) (int, error) {
+	if len(slot.context().Bindings) >= semanticLookupIndexThreshold {
+		if err := store.ensureBindingLookupLocked(slot.context()); err != nil {
+			return -1, err
+		}
+		index, found := slot.context().bindingLookup[nameText]
+		if !found {
+			return -1, nil
+		}
+		return store.validateBindingLookupLocked(slot.context(), index, nameText)
+	}
 	for index, binding := range slot.context().Bindings {
 		if binding.Name == name {
 			return index, nil
@@ -438,6 +450,16 @@ func (store *Store) rejectContextCycleLocked(context, parent Ref) error {
 }
 
 func (store *Store) findBindingLocked(slot *Slot, name string) (int, error) {
+	if len(slot.context().Bindings) >= semanticLookupIndexThreshold {
+		if err := store.ensureBindingLookupLocked(slot.context()); err != nil {
+			return -1, err
+		}
+		index, found := slot.context().bindingLookup[name]
+		if !found {
+			return -1, nil
+		}
+		return store.validateBindingLookupLocked(slot.context(), index, name)
+	}
 	for index, binding := range slot.context().Bindings {
 		_, nameSlot, err := store.slotLocked(binding.Name)
 		if err != nil {
@@ -451,4 +473,50 @@ func (store *Store) findBindingLocked(slot *Slot, name string) (int, error) {
 		}
 	}
 	return -1, nil
+}
+
+const semanticLookupIndexThreshold = 8
+
+func (store *Store) ensureBindingLookupLocked(context *Context) error {
+	if context.bindingLookup != nil {
+		return nil
+	}
+	lookup := make(map[string]uint32, len(context.Bindings))
+	for index, binding := range context.Bindings {
+		_, nameSlot, err := store.slotLocked(binding.Name)
+		if err != nil {
+			return err
+		}
+		if nameSlot.Kind != HeapString {
+			return typeError(binding.Name, nameSlot.Kind, HeapString)
+		}
+		lookup[nameSlot.stringObject().Text] = uint32(index)
+	}
+	context.bindingLookup = lookup
+	return nil
+}
+
+func (store *Store) recordBindingLookupLocked(context *Context, name string) {
+	if context.bindingLookup == nil {
+		return
+	}
+	context.bindingLookup[name] = uint32(len(context.Bindings) - 1)
+}
+
+func (store *Store) validateBindingLookupLocked(context *Context, index uint32, name string) (int, error) {
+	if uint64(index) >= uint64(len(context.Bindings)) {
+		return -1, fmt.Errorf("%w: binding lookup %q points outside Context", ErrInvariantViolation, name)
+	}
+	binding := context.Bindings[index]
+	_, nameSlot, err := store.slotLocked(binding.Name)
+	if err != nil {
+		return -1, err
+	}
+	if nameSlot.Kind != HeapString {
+		return -1, typeError(binding.Name, nameSlot.Kind, HeapString)
+	}
+	if nameSlot.stringObject().Text != name {
+		return -1, fmt.Errorf("%w: binding lookup %q points to %q", ErrInvariantViolation, name, nameSlot.stringObject().Text)
+	}
+	return int(index), nil
 }

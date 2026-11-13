@@ -32,7 +32,11 @@ type Config struct {
 	Interpreter                  browserruntime.InterpreterConfig
 	CheckpointCollectionInterval uint64
 	ActiveCollectionInterval     uint64
-	ConsoleSink                  func(ConsoleMessage)
+	// VerifyHeapInvariants enables an independent full-Store audit after each
+	// checkpoint collection. RegionStore operations continue enforcing their
+	// local invariants when this diagnostic scan is disabled.
+	VerifyHeapInvariants bool
+	ConsoleSink          func(ConsoleMessage)
 }
 
 type EngineProfile struct {
@@ -113,6 +117,8 @@ type Realm struct {
 	lastActiveCollection         uint64
 	activeCollections            uint64
 	activeCollectedSlots         uint64
+	verifyHeapInvariants         bool
+	heapInvariantVerifier        func(*memory.Store) error
 	executionSampleInterval      uint64
 	executionSample              func(*browserruntime.TaskContext, browserruntime.ExecutionSample) error
 	lastExecutionSampleTask      browserruntime.TaskID
@@ -165,6 +171,8 @@ func (engine *Engine) NewRealm() (browser.JSRealm, error) {
 		moduleResolutions:            make(map[moduleResolutionKey]string),
 		checkpointCollectionInterval: collectionInterval,
 		activeCollectionInterval:     activeCollectionInterval,
+		verifyHeapInvariants:         engine.config.VerifyHeapInvariants,
+		heapInvariantVerifier:        (*memory.Store).CheckInvariants,
 		executionSampleInterval:      engine.config.Interpreter.ExecutionSampleInterval,
 		executionSample:              engine.config.Interpreter.ExecutionSample,
 		consoleSink:                  engine.config.ConsoleSink,

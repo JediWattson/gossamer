@@ -3,6 +3,7 @@ package runtime_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -1391,6 +1392,17 @@ func TestInterpreterResolvesPrototypeDescriptorsAndAccessors(t *testing.T) {
 		}
 		if err := task.SetPrototype(child, memory.RefValue(prototype)); err != nil {
 			return err
+		}
+		// Keep the inherited accessor path above the adaptive property-index
+		// threshold so receiver semantics are covered on the indexed path.
+		for index := 0; index < 10; index++ {
+			padding, allocErr := task.NewString(fmt.Sprintf("padding-%02d", index))
+			if allocErr != nil {
+				return allocErr
+			}
+			if err := task.DefineProperty(prototype, padding, memory.DataProperty(memory.NumberValue(float64(index)), true, true, true)); err != nil {
+				return err
+			}
 		}
 		accessorName, _ := task.NewString("answer")
 		dataName, _ := task.NewString("value")
