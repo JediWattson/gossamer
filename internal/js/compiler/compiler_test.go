@@ -1126,6 +1126,173 @@ function* matching(values, minimum) {
 	}
 }
 
+func TestCompileAsyncSequentialBranchingUsesSharedJoinContinuation(t *testing.T) {
+	t.Parallel()
+
+	var source strings.Builder
+	source.WriteString(`
+let settled = 0;
+let earlyResult = 0;
+let switchResult = 0;
+async function sequential(flag) {
+  let acc = 0;
+`)
+	for index := 0; index < 24; index++ {
+		fmt.Fprintf(&source, "  if (flag) { acc += await Promise.resolve(1); } else { acc += await Promise.resolve(2); }\n")
+	}
+	source.WriteString(`
+  try {
+    acc += await Promise.resolve(3);
+  } catch (err) {
+    acc += await Promise.resolve(100);
+  }
+  return acc;
+}
+async function earlyReturn(takeEarly) {
+  let acc = 10;
+  if (takeEarly) {
+    return await Promise.resolve(acc + 5);
+  }
+  acc += await Promise.resolve(20);
+  return acc;
+}
+async function switchWithNestedBreak(mode) {
+  let acc = 1;
+  switch (mode) {
+    case "skip":
+      if (acc === 1) {
+        break;
+      }
+      acc += await Promise.resolve(50);
+      break;
+    default:
+      acc += await Promise.resolve(5);
+  }
+  acc += await Promise.resolve(7);
+  return acc;
+}
+sequential(true).then((v) => { settled = v; });
+earlyReturn(true).then((v) => { earlyResult = v; });
+switchWithNestedBreak("skip").then((v) => { switchResult = v; });
+1;
+`)
+	image, err := compiler.Compile(source.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if image.FunctionCount() > 260 {
+		t.Fatalf("compiled async function count = %d, want linear bound <= 260", image.FunctionCount())
+	}
+
+	checkImage, err := compiler.Compile(source.String() + `
+async function verify() {
+  const a = await sequential(true);
+  const b = await earlyReturn(true);
+  const c = await earlyReturn(false);
+  const d = await switchWithNestedBreak("skip");
+  if (a !== 27 || b !== 15 || c !== 30 || d !== 8) {
+    throw new Error("async continuation mismatch: " + [a, b, c, d].join(","));
+  }
+}
+verify();
+1;
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := executeBootstrapped(t, 845, checkImage)
+	if result.Kind() != memory.ValueNumber || result.Number() != 1 {
+		t.Fatalf("async continuation result = %#v, want 1", result)
+	}
+}
+
+func TestNumericPropertyAccessAndUTF8StringOperationsAvoidIndexStringAllocations(t *testing.T) {
+	t.Parallel()
+
+	image, err := compiler.CompileWithOptions(`
+const label = "g\u00f6ssamer-\u03bb";
+if (label.length !== 10 || label[1] !== "\u00f6" || label.charAt(9) !== "\u03bb" ||
+    label.at(-1) !== "\u03bb" || label.slice(1, 4) !== "\u00f6ss" ||
+    label.substring(4, 1) !== "\u00f6ss" || !label.startsWith("ss", 2) ||
+    !label.endsWith("g\u00f6ss", 4) || !label.includes("mer", 5) ||
+    label.indexOf("\u03bb", 2) !== 9 || Object.assign({}, "a\u00f6")[1] !== "\u00f6") {
+  throw new Error("UTF-8 string method mismatch");
+}
+const numbers = [1, 2, 3, 4];
+const ascii = "abcd";
+function runHotLoop() {
+  let total = 0;
+  for (let round = 0; round < 100; round++) {
+    for (let i = 0; i < numbers.length; i++) {
+      bytes[i] = numbers[i];
+      total += bytes[i] + ascii.length + ascii.slice(0, 4).length;
+    }
+  }
+  return total;
+}
+runHotLoop();
+`, compiler.Options{AllowUnresolvedGlobals: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	realm, err := browserruntime.NewRealm(846, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer realm.Close()
+	interpreter := browserruntime.NewInterpreter(browserruntime.InterpreterConfig{})
+	_, err = realm.EnqueueTask(func(task *browserruntime.TaskContext) error {
+		intrinsics, err := interpreter.Bootstrap(task)
+		if err != nil {
+			return err
+		}
+		bufferRef, err := task.NewArrayBuffer(make([]byte, 4))
+		if err != nil {
+			return err
+		}
+		typedRef, err := task.NewTypedArray(bufferRef, memory.ElementUint8, 0, 4)
+		if err != nil {
+			return err
+		}
+		bytesKey, err := task.NewString("bytes")
+		if err != nil {
+			return err
+		}
+		if err := task.DeclareBinding(intrinsics.Global, bytesKey, false); err != nil {
+			return err
+		}
+		if err := task.InitializeBinding(intrinsics.Global, bytesKey, memory.RefValue(typedRef)); err != nil {
+			return err
+		}
+		loaded, err := program.Load(task, image, memory.RefValue(intrinsics.Global))
+		if err != nil {
+			return err
+		}
+		before := task.Realm.Store().Stats().LiveStrings
+		value, err := interpreter.Execute(task, loaded.Entry)
+		if err != nil {
+			return err
+		}
+		if value.Kind() != memory.ValueNumber || value.Number() != 4200 {
+			return fmt.Errorf("hot loop total = %#v, want 4200", value)
+		}
+		after := task.Realm.Store().Stats().LiveStrings
+		// Only the constants/results prior to the loop plus at most a handful
+		// of strings should exist; 400 indexed array/typed-array accesses must
+		// not allocate 800 numeric index strings.
+		if after-before > 20 {
+			return fmt.Errorf("LiveStrings grew by %d across 400 numeric index accesses (before=%d after=%d)", after-before, before, after)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func execute(t *testing.T, realmID browserruntime.RealmID, image program.Program) memory.Value {
 	return executeWithConfig(t, realmID, image, browserruntime.InterpreterConfig{})
 }

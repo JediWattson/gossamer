@@ -119,9 +119,18 @@ func lowerAsyncStatements(statements []ast.Statement, span lexer.Span, nextTempo
 				(statementContainsReturn(statement.Body) || statement.Handler != nil && statementContainsReturn(statement.Handler.Body)) {
 				return nil, fmt.Errorf("await in try/finally with an early return followed by additional statements is not supported yet")
 			}
-			branchRest := rest
-			if statement.Finalizer != nil {
-				branchRest = nil
+			var joinDecl ast.Statement
+			var branchRest []ast.Statement
+			if statement.Finalizer == nil && len(rest) != 0 {
+				if statement.Handler != nil {
+					var err error
+					joinDecl, branchRest, err = lowerAsyncSharedContinuation(rest, span, nextTemporary)
+					if err != nil {
+						return nil, err
+					}
+				} else {
+					branchRest = rest
+				}
 			}
 			tryInput := append(append([]ast.Statement(nil), statement.Body.Body...), branchRest...)
 			tryBody, err := lowerAsyncStatements(tryInput, statement.Body.Span(), nextTemporary)
@@ -165,19 +174,27 @@ func lowerAsyncStatements(statements []ast.Statement, span lexer.Span, nextTempo
 					})
 				}
 			}
+			if joinDecl != nil {
+				return []ast.Statement{joinDecl, asyncReturn(statement.Span(), promise)}, nil
+			}
 			return []ast.Statement{asyncReturn(statement.Span(), promise)}, nil
 		}
 	case *ast.IfStatement:
 		if statementContainsAwait(statement) {
 			var continuationErr error
 			lowered, err := lowerAwaitExpression(statement.Test, func(test ast.Expression) ast.Expression {
-				consequentInput := append(asyncStatementBody(statement.Consequent), rest...)
+				joinDecl, branchRest, err := lowerAsyncSharedContinuation(rest, span, nextTemporary)
+				if err != nil {
+					continuationErr = err
+					return nil
+				}
+				consequentInput := append(asyncStatementBody(statement.Consequent), branchRest...)
 				consequent, err := lowerAsyncStatements(consequentInput, span, nextTemporary)
 				if err != nil {
 					continuationErr = err
 					return nil
 				}
-				alternateInput := append(asyncStatementBody(statement.Alternate), rest...)
+				alternateInput := append(asyncStatementBody(statement.Alternate), branchRest...)
 				alternate, err := lowerAsyncStatements(alternateInput, span, nextTemporary)
 				if err != nil {
 					continuationErr = err
@@ -188,10 +205,14 @@ func lowerAsyncStatements(statements []ast.Statement, span lexer.Span, nextTempo
 				if statement.Alternate != nil {
 					alternateSpan = statement.Alternate.Span()
 				}
-				body := []ast.Statement{
+				body := make([]ast.Statement, 0, 3)
+				if joinDecl != nil {
+					body = append(body, joinDecl)
+				}
+				body = append(body,
 					&ast.IfStatement{Base: statement.Base, Test: test, Consequent: consequentReturn},
 					asyncReturn(alternateSpan, asyncStatementIIFE(alternateSpan, alternate)),
-				}
+				)
 				return asyncStatementIIFE(statement.Span(), body)
 			}, nextTemporary)
 			if err != nil {
@@ -211,6 +232,11 @@ func lowerAsyncStatements(statements []ast.Statement, span lexer.Span, nextTempo
 			}
 			var switchErr error
 			lowered, err := lowerAwaitExpression(statement.Discriminant, func(discriminant ast.Expression) ast.Expression {
+				joinDecl, branchRest, err := lowerAsyncSharedContinuation(rest, span, nextTemporary)
+				if err != nil {
+					switchErr = err
+					return nil
+				}
 				cases := make([]*ast.SwitchCase, len(statement.Cases))
 				for index, item := range statement.Cases {
 					input := make([]ast.Statement, 0)
@@ -220,8 +246,8 @@ func lowerAsyncStatements(statements []ast.Statement, span lexer.Span, nextTempo
 							break
 						}
 					}
-					input = rewriteAsyncSwitchBreaks(input, rest)
-					input = append(input, rest...)
+					input = rewriteAsyncSwitchBreaks(input, branchRest)
+					input = append(input, branchRest...)
 					consequent, err := lowerAsyncStatements(input, span, nextTemporary)
 					if err != nil {
 						switchErr = err
@@ -229,10 +255,19 @@ func lowerAsyncStatements(statements []ast.Statement, span lexer.Span, nextTempo
 					}
 					cases[index] = &ast.SwitchCase{Base: item.Base, Test: item.Test, Consequent: consequent}
 				}
-				body := []ast.Statement{
-					&ast.SwitchStatement{Base: statement.Base, Discriminant: discriminant, Cases: cases},
-					asyncReturn(statement.Span(), asyncStatementIIFE(statement.Span(), mustLowerAsyncStatements(rest, span, nextTemporary, &switchErr))),
+				fallthroughBody, err := lowerAsyncStatements(branchRest, span, nextTemporary)
+				if err != nil {
+					switchErr = err
+					return nil
 				}
+				body := make([]ast.Statement, 0, 3)
+				if joinDecl != nil {
+					body = append(body, joinDecl)
+				}
+				body = append(body,
+					&ast.SwitchStatement{Base: statement.Base, Discriminant: discriminant, Cases: cases},
+					asyncReturn(statement.Span(), asyncStatementIIFE(statement.Span(), fallthroughBody)),
+				)
 				return asyncStatementIIFE(statement.Span(), body)
 			}, nextTemporary)
 			if err != nil {
@@ -550,16 +585,37 @@ func rewriteAsyncSwitchBreak(statement ast.Statement, continuation []ast.Stateme
 	return statement
 }
 
-func mustLowerAsyncStatements(statements []ast.Statement, span lexer.Span, nextTemporary *uint32, problem *error) []ast.Statement {
-	if *problem != nil {
-		return nil
+func lowerAsyncSharedContinuation(
+	rest []ast.Statement,
+	span lexer.Span,
+	nextTemporary *uint32,
+) (ast.Statement, []ast.Statement, error) {
+	if len(rest) == 0 {
+		return nil, nil, nil
 	}
-	lowered, err := lowerAsyncStatements(statements, span, nextTemporary)
+	joinName := fmt.Sprintf("\x00gossamer.async.join.%d", *nextTemporary)
+	*nextTemporary++
+	join := &ast.Identifier{Base: ast.Base{Range: span}, Name: joinName}
+	joinBody, err := lowerAsyncStatements(rest, span, nextTemporary)
 	if err != nil {
-		*problem = err
-		return nil
+		return nil, nil, err
 	}
-	return lowered
+	declaration := &ast.VariableDeclaration{
+		Base: ast.Base{Range: span},
+		Kind: ast.VariableConst,
+		Declarations: []*ast.VariableDeclarator{{
+			Base: ast.Base{Range: span},
+			Name: join,
+			Init: &ast.ArrowFunctionExpression{
+				Base: ast.Base{Range: span},
+				Body: &ast.BlockStatement{Base: ast.Base{Range: span}, Body: joinBody},
+			},
+		}},
+	}
+	invoke := []ast.Statement{
+		asyncReturn(span, &ast.CallExpression{Base: ast.Base{Range: span}, Callee: join}),
+	}
+	return declaration, invoke, nil
 }
 
 func asyncReturn(span lexer.Span, value ast.Expression) ast.Statement {
@@ -655,6 +711,14 @@ func statementContainsReturn(statement ast.Statement) bool {
 		}
 	case *ast.IfStatement:
 		return statementContainsReturn(statement.Consequent) || statementContainsReturn(statement.Alternate)
+	case *ast.SwitchStatement:
+		for _, item := range statement.Cases {
+			for _, child := range item.Consequent {
+				if statementContainsReturn(child) {
+					return true
+				}
+			}
+		}
 	case *ast.WhileStatement:
 		return statementContainsReturn(statement.Body)
 	case *ast.DoWhileStatement:

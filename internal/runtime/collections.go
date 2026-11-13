@@ -231,6 +231,75 @@ func builtinStringConcat(execution *execution, _ memory.Ref, _ memory.Function, 
 	return newStringValue(execution.context, result.String())
 }
 
+func isASCIIString(text string) bool {
+	for index := 0; index < len(text); index++ {
+		if text[index] >= utf8.RuneSelf {
+			return false
+		}
+	}
+	return true
+}
+
+func stringRuneLen(text string) int {
+	if isASCIIString(text) {
+		return len(text)
+	}
+	return utf8.RuneCountInString(text)
+}
+
+func stringRuneAt(text string, target int) (string, bool) {
+	if target < 0 || target >= len(text) {
+		return "", false
+	}
+	if isASCIIString(text) {
+		return text[target : target+1], true
+	}
+	current := 0
+	for byteOffset := 0; byteOffset < len(text); {
+		_, width := utf8.DecodeRuneInString(text[byteOffset:])
+		if current == target {
+			return text[byteOffset : byteOffset+width], true
+		}
+		byteOffset += width
+		current++
+	}
+	return "", false
+}
+
+func stringRuneByteOffset(text string, runeOffset int) int {
+	if runeOffset <= 0 {
+		return 0
+	}
+	if isASCIIString(text) {
+		if runeOffset >= len(text) {
+			return len(text)
+		}
+		return runeOffset
+	}
+	current := 0
+	for byteOffset := 0; byteOffset < len(text); {
+		if current == runeOffset {
+			return byteOffset
+		}
+		_, width := utf8.DecodeRuneInString(text[byteOffset:])
+		byteOffset += width
+		current++
+	}
+	return len(text)
+}
+
+func stringRuneSlice(text string, startRune, endRune int) string {
+	if endRune <= startRune {
+		return ""
+	}
+	startByte := stringRuneByteOffset(text, startRune)
+	endByte := stringRuneByteOffset(text, endRune)
+	if endByte <= startByte {
+		return ""
+	}
+	return text[startByte:endByte]
+}
+
 func builtinStringCharAt(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, arguments []memory.Value) (memory.Value, error) {
 	text, err := requireString(execution.context, this)
 	if err != nil {
@@ -240,10 +309,11 @@ func builtinStringCharAt(execution *execution, _ memory.Ref, _ memory.Function, 
 	if err != nil {
 		return memory.Value{}, err
 	}
-	runes := []rune(text)
 	result := ""
-	if index >= 0 && index < int64(len(runes)) {
-		result = string(runes[index])
+	if index >= 0 && index < int64(len(text)) {
+		if character, ok := stringRuneAt(text, int(index)); ok {
+			result = character
+		}
 	}
 	ref, err := execution.context.NewString(result)
 	return memory.RefValue(ref), err
@@ -258,8 +328,17 @@ func builtinStringCharCodeAt(execution *execution, _ memory.Ref, _ memory.Functi
 	if err != nil {
 		return memory.Value{}, err
 	}
+	if index < 0 {
+		return memory.NumberValue(math.NaN()), nil
+	}
+	if isASCIIString(text) {
+		if index >= int64(len(text)) {
+			return memory.NumberValue(math.NaN()), nil
+		}
+		return memory.NumberValue(float64(text[index])), nil
+	}
 	codeUnits := utf16.Encode([]rune(text))
-	if index < 0 || index >= int64(len(codeUnits)) {
+	if index >= int64(len(codeUnits)) {
 		return memory.NumberValue(math.NaN()), nil
 	}
 	return memory.NumberValue(float64(codeUnits[index])), nil
@@ -274,14 +353,15 @@ func builtinStringAt(execution *execution, _ memory.Ref, _ memory.Function, this
 	if err != nil {
 		return memory.Value{}, err
 	}
-	runes := []rune(text)
+	runeCount := stringRuneLen(text)
 	if index < 0 {
-		index += int64(len(runes))
+		index += int64(runeCount)
 	}
-	if index < 0 || index >= int64(len(runes)) {
+	if index < 0 || index >= int64(runeCount) {
 		return memory.UndefinedValue(), nil
 	}
-	return newStringValue(execution.context, string(runes[index]))
+	character, _ := stringRuneAt(text, int(index))
+	return newStringValue(execution.context, character)
 }
 
 func builtinStringIncludes(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, arguments []memory.Value) (memory.Value, error) {
@@ -297,14 +377,14 @@ func builtinStringIncludes(execution *execution, _ memory.Ref, _ memory.Function
 	if err != nil {
 		return memory.Value{}, err
 	}
-	runes := []rune(text)
+	runeCount := stringRuneLen(text)
 	if start < 0 {
 		start = 0
 	}
-	if start > int64(len(runes)) {
+	if start > int64(runeCount) {
 		return memory.BoolValue(false), nil
 	}
-	return memory.BoolValue(strings.Contains(string(runes[start:]), needle)), nil
+	return memory.BoolValue(strings.Contains(text[stringRuneByteOffset(text, int(start)):], needle)), nil
 }
 
 func builtinStringEndsWith(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, arguments []memory.Value) (memory.Value, error) {
@@ -326,18 +406,18 @@ func builtinStringEndsWith(execution *execution, _ memory.Ref, _ memory.Function
 	if err != nil {
 		return memory.Value{}, err
 	}
-	runes := []rune(text)
-	end, err := integerArgument(execution, arguments, 1, int64(len(runes)))
+	runeCount := stringRuneLen(text)
+	end, err := integerArgument(execution, arguments, 1, int64(runeCount))
 	if err != nil {
 		return memory.Value{}, err
 	}
 	if end < 0 {
 		end = 0
 	}
-	if end > int64(len(runes)) {
-		end = int64(len(runes))
+	if end > int64(runeCount) {
+		end = int64(runeCount)
 	}
-	return memory.BoolValue(strings.HasSuffix(string(runes[:end]), needle)), nil
+	return memory.BoolValue(strings.HasSuffix(text[:stringRuneByteOffset(text, int(end))], needle)), nil
 }
 
 func builtinStringStartsWith(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, arguments []memory.Value) (memory.Value, error) {
@@ -356,11 +436,11 @@ func builtinStringStartsWith(execution *execution, _ memory.Ref, _ memory.Functi
 	if start < 0 {
 		start = 0
 	}
-	runes := []rune(text)
-	if start > int64(len(runes)) {
-		start = int64(len(runes))
+	runeCount := stringRuneLen(text)
+	if start > int64(runeCount) {
+		start = int64(runeCount)
 	}
-	return memory.BoolValue(strings.HasPrefix(string(runes[start:]), needle)), nil
+	return memory.BoolValue(strings.HasPrefix(text[stringRuneByteOffset(text, int(start)):], needle)), nil
 }
 
 func builtinStringPadStart(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, arguments []memory.Value) (memory.Value, error) {
@@ -823,16 +903,16 @@ func builtinStringIndexOf(execution *execution, _ memory.Ref, _ memory.Function,
 	if start < 0 {
 		start = 0
 	}
-	runes := []rune(text)
-	if start > int64(len(runes)) {
+	runeCount := stringRuneLen(text)
+	if start > int64(runeCount) {
 		return memory.NumberValue(-1), nil
 	}
-	tail := string(runes[start:])
+	tail := text[stringRuneByteOffset(text, int(start)):]
 	position := strings.Index(tail, needle)
 	if position < 0 {
 		return memory.NumberValue(-1), nil
 	}
-	return memory.NumberValue(float64(start + int64(utf8.RuneCountInString(tail[:position])))), nil
+	return memory.NumberValue(float64(start + int64(stringRuneLen(tail[:position])))), nil
 }
 
 func builtinStringLastIndexOf(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, arguments []memory.Value) (memory.Value, error) {
@@ -875,8 +955,8 @@ func builtinStringSlice(execution *execution, _ memory.Ref, _ memory.Function, t
 	if err != nil {
 		return memory.Value{}, err
 	}
-	runes := []rune(text)
-	start, err := relativeRuneIndex(execution, argument(arguments, 0), len(runes), 0)
+	runeCount := stringRuneLen(text)
+	start, err := relativeRuneIndex(execution, argument(arguments, 0), runeCount, 0)
 	if err != nil {
 		return memory.Value{}, err
 	}
@@ -884,14 +964,14 @@ func builtinStringSlice(execution *execution, _ memory.Ref, _ memory.Function, t
 	if len(arguments) > 1 {
 		endValue = arguments[1]
 	}
-	end, err := relativeRuneIndex(execution, endValue, len(runes), len(runes))
+	end, err := relativeRuneIndex(execution, endValue, runeCount, runeCount)
 	if err != nil {
 		return memory.Value{}, err
 	}
 	if end < start {
 		end = start
 	}
-	ref, err := execution.context.NewString(string(runes[start:end]))
+	ref, err := execution.context.NewString(stringRuneSlice(text, start, end))
 	return memory.RefValue(ref), err
 }
 
@@ -900,21 +980,21 @@ func builtinStringSubstring(execution *execution, _ memory.Ref, _ memory.Functio
 	if err != nil {
 		return memory.Value{}, err
 	}
-	runes := []rune(text)
+	runeCount := stringRuneLen(text)
 	start, err := integerArgument(execution, arguments, 0, 0)
 	if err != nil {
 		return memory.Value{}, err
 	}
-	end, err := integerArgument(execution, arguments, 1, int64(len(runes)))
+	end, err := integerArgument(execution, arguments, 1, int64(runeCount))
 	if err != nil {
 		return memory.Value{}, err
 	}
-	start = min(max(start, 0), int64(len(runes)))
-	end = min(max(end, 0), int64(len(runes)))
+	start = min(max(start, 0), int64(runeCount))
+	end = min(max(end, 0), int64(runeCount))
 	if start > end {
 		start, end = end, start
 	}
-	return newStringValue(execution.context, string(runes[start:end]))
+	return newStringValue(execution.context, stringRuneSlice(text, int(start), int(end)))
 }
 
 func builtinStringToUpperCase(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, _ []memory.Value) (memory.Value, error) {
@@ -1555,11 +1635,7 @@ func builtinArrayFindIndex(execution *execution, _ memory.Ref, _ memory.Function
 	}
 	thisArg := argument(arguments, 1)
 	for index := uint32(0); index < snapshot.Length; index++ {
-		key, err := execution.context.NewString(strconv.FormatUint(uint64(index), 10))
-		if err != nil {
-			return memory.Value{}, err
-		}
-		value, found, err := execution.getProperty(this, memory.RefValue(key))
+		value, found, err := execution.getProperty(this, memory.NumberValue(float64(index)))
 		if err != nil {
 			return memory.Value{}, err
 		}

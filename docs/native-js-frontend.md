@@ -52,12 +52,15 @@ and ordinary task release invalidates every unpromoted loaded Ref.
 - lazy generator Functions for the production `for...of` shape with direct or
   conditional yields, self-iterable iterator objects, and `return()` forwarding
   to the source iterator;
-- Promise construction, `resolve`, `reject`, ordered iterable `all`, `then`, and
-  `catch`, including chained fulfillment/rejection and Promise adoption, plus FIFO
-  `queueMicrotask` callbacks drained at the native execution checkpoint;
-- async Function declarations and expressions whose body is empty or a single
-  return statement, including multiple nested `await` expressions lowered to
-  Promise reactions backed by ordinary RegionStore closures;
+- Promise construction, `resolve`, `reject`, ordered iterable `all`, `then`,
+  `catch`, and `finally`, including chained fulfillment/rejection and Promise
+  adoption, plus FIFO `queueMicrotask` callbacks drained at the native execution
+  checkpoint;
+- async Function declarations, expressions, arrows, and methods with
+  multi-statement bodies, variable declarations, `if`/`else`, `switch`,
+  `try`/`catch`/`finally`, `for`, `while`, `do-while`, and `for...in`/`for...of`
+  control flow, lowered to Promise reactions and shared join continuations
+  backed by ordinary RegionStore closures;
 - assignment, deletion, and prefix/postfix identifier or property updates;
 - optional property/computed access, optional receiver-preserving method calls,
   direct optional calls, and contiguous chain short-circuiting;
@@ -116,9 +119,8 @@ This is not yet an ECMAScript-compatible engine. In particular:
 - full BigInt and UTF-16 edge semantics,
   computed or script-level dynamic import, import attributes, general generator
   control flow, `yield*`, generator `next(value)`/`throw()` resumption, async
-  generators, multi-statement async Function bodies, async arrows, top-level
-  `await`, thenable assimilation,
-  the remaining Promise combinators/finally, and browser-level
+  generators, top-level `await`, thenable assimilation,
+  the remaining Promise combinators, and browser-level
   unhandled-rejection reporting
   are absent;
 - the native browser facade is intentionally smaller than the stock V8 facade:
@@ -130,20 +132,23 @@ This is not yet an ECMAScript-compatible engine. In particular:
 
 ## N11 browser Realm adapter
 
-`runtime.Interpreter.Bootstrap` still instantiates the native global Context
-and intrinsic graph in task-owned storage. At the browser checkpoint, the
-native adapter copies every intrinsic root and its reachable global graph into
-one Realm-owned region. The next browser task explicitly copies that graph
-back into task-owned storage before evaluation. After native jobs drain, the
-new graph replaces the previous Realm snapshot and the task copy is released
-in bulk by the existing executor.
+`runtime.Interpreter.Bootstrap` instantiates the initial native global Context
+and intrinsic graph in task-owned storage, which the first checkpoint copies into
+one persistent Realm-owned region. Subsequent browser tasks allocate a private
+task scratch region and borrow the persistent Realm region via
+`WithBorrowedRealmMemoryRegion`. Writes from persistent objects into task-scratch
+allocations promote the reachable subgraph into the persistent region through
+`PromoteEscapes`, and ordinary task release destroys the task scratch region in
+bulk after native jobs drain. Periodic checkpoint and safepoint collections
+reclaim dead slots in the persistent and active regions.
 
-This copy-in/copy-out boundary keeps mutable memory under exactly one owner,
-does not turn a borrowed `Ref` into an ownership claim, and lets unused loaded
-Programs disappear with their task. Global lexical bindings, closures, and
-intrinsic mutations survive because they remain reachable from the copied
-roots. Page or navigation teardown destroys the retained region before the
-runtime Realm closes.
+This borrowed-persistent + task-scratch boundary keeps mutable memory under
+explicit ownership, does not turn a borrowed `Ref` into an ownership claim, and
+lets unused loaded Programs and temporary task allocations disappear with their
+task without copying the entire persistent Realm graph on every task entry.
+Global lexical bindings, closures, and intrinsic mutations survive in the
+persistent region. Page or navigation teardown destroys the retained region
+before the runtime Realm closes.
 
 The adapter calls `Interpreter.ExecuteWithoutCheckpoint` during
 `JSRealm.Evaluate`, then drains Promise reactions and `queueMicrotask` jobs only

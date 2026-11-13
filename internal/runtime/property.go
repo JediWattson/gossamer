@@ -3,7 +3,6 @@ package runtime
 import (
 	"fmt"
 	"math"
-	"strconv"
 
 	"github.com/JediWattson/gossamer/internal/runtime/memory"
 )
@@ -135,6 +134,19 @@ func (execution *execution) getPropertyWithReceiver(base, key, receiver memory.V
 		}
 		return memory.Value{}, false, nil
 	case memory.HeapString:
+		if key.Kind() == memory.ValueNumber {
+			if index, ok := numberArrayIndex(key.Number()); ok {
+				text, err := context.DerefString(ref)
+				if err != nil {
+					return memory.Value{}, false, err
+				}
+				if character, found := stringRuneAt(text, int(index)); found {
+					value, err := context.NewString(character)
+					return memory.RefValue(value), true, err
+				}
+				return memory.UndefinedValue(), false, nil
+			}
+		}
 		name, err := execution.propertyName(key)
 		if err != nil {
 			return memory.Value{}, false, err
@@ -144,18 +156,22 @@ func (execution *execution) getPropertyWithReceiver(base, key, receiver memory.V
 			return memory.Value{}, false, err
 		}
 		if stringKey {
-			text, err := context.DerefString(ref)
-			if err != nil {
-				return memory.Value{}, false, err
-			}
-			units := []rune(text)
 			if keyText == "length" {
-				return memory.NumberValue(float64(len(units))), true, nil
+				text, err := context.DerefString(ref)
+				if err != nil {
+					return memory.Value{}, false, err
+				}
+				return memory.NumberValue(float64(stringRuneLen(text))), true, nil
 			}
-			if parsed, parseErr := strconv.ParseUint(keyText, 10, 32); parseErr == nil && strconv.FormatUint(parsed, 10) == keyText && parsed < uint64(len(units)) {
-				character := string(units[parsed])
-				value, err := context.NewString(character)
-				return memory.RefValue(value), true, err
+			if index, ok := canonicalArrayIndex(keyText); ok {
+				text, err := context.DerefString(ref)
+				if err != nil {
+					return memory.Value{}, false, err
+				}
+				if character, found := stringRuneAt(text, int(index)); found {
+					value, err := context.NewString(character)
+					return memory.RefValue(value), true, err
+				}
 			}
 		}
 		if context.intrinsics == nil {
@@ -637,6 +653,11 @@ func (execution *execution) propertyName(key memory.Value) (memory.Ref, error) {
 }
 
 func (execution *execution) arrayPropertyKey(key memory.Value) (index uint32, length, indexed bool, name memory.Ref, err error) {
+	if key.Kind() == memory.ValueNumber {
+		if parsed, ok := numberArrayIndex(key.Number()); ok {
+			return parsed, false, true, memory.Ref{}, nil
+		}
+	}
 	name, err = execution.propertyName(key)
 	if err != nil {
 		return 0, false, false, memory.Ref{}, err
@@ -651,11 +672,46 @@ func (execution *execution) arrayPropertyKey(key memory.Value) (index uint32, le
 	if text == "length" {
 		return 0, true, false, name, nil
 	}
-	parsed, parseErr := strconv.ParseUint(text, 10, 32)
-	if parseErr != nil || parsed == math.MaxUint32 || strconv.FormatUint(parsed, 10) != text {
+	parsed, ok := canonicalArrayIndex(text)
+	if !ok {
 		return 0, false, false, name, nil
 	}
-	return uint32(parsed), false, true, name, nil
+	return parsed, false, true, name, nil
+}
+
+func numberArrayIndex(number float64) (uint32, bool) {
+	if math.IsNaN(number) || math.IsInf(number, 0) || number < 0 || number >= float64(math.MaxUint32) {
+		return 0, false
+	}
+	integer := uint32(number)
+	if float64(integer) != number {
+		return 0, false
+	}
+	return integer, true
+}
+
+func canonicalArrayIndex(text string) (uint32, bool) {
+	if len(text) == 0 || len(text) > 10 {
+		return 0, false
+	}
+	if text == "0" {
+		return 0, true
+	}
+	if text[0] < '1' || text[0] > '9' {
+		return 0, false
+	}
+	var parsed uint64
+	for index := 0; index < len(text); index++ {
+		digit := text[index]
+		if digit < '0' || digit > '9' {
+			return 0, false
+		}
+		parsed = parsed*10 + uint64(digit-'0')
+	}
+	if parsed >= math.MaxUint32 {
+		return 0, false
+	}
+	return uint32(parsed), true
 }
 
 func (execution *execution) stringPropertyName(name memory.Ref) (string, bool, error) {

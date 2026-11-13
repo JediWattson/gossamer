@@ -330,12 +330,12 @@ func (execution *execution) hasOwnProperty(value memory.Value, key memory.Ref) (
 		if text == "length" {
 			return true, nil
 		}
-		index, parseErr := strconv.ParseUint(text, 10, 32)
-		if parseErr != nil || strconv.FormatUint(index, 10) != text {
+		index, ok := canonicalArrayIndex(text)
+		if !ok {
 			return false, nil
 		}
 		contents, err := execution.context.DerefString(value.Ref())
-		return index < uint64(len([]rune(contents))), err
+		return index < uint32(stringRuneLen(contents)), err
 	case memory.HeapBigInt, memory.HeapSymbol:
 		return false, nil
 	}
@@ -393,8 +393,9 @@ func enumerableOwnPropertyKeys(execution *execution, value memory.Value) ([]memo
 		if err != nil {
 			return nil, err
 		}
-		keys := make([]memory.Ref, 0, len([]rune(text)))
-		for index := range []rune(text) {
+		runeCount := stringRuneLen(text)
+		keys := make([]memory.Ref, 0, runeCount)
+		for index := 0; index < runeCount; index++ {
 			key, err := execution.context.NewString(strconv.Itoa(index))
 			if err != nil {
 				return nil, err
@@ -444,7 +445,8 @@ func ownStringPropertyKeys(execution *execution, value memory.Value, includeNonE
 		if err != nil {
 			return nil, err
 		}
-		for index := range []rune(text) {
+		runeCount := stringRuneLen(text)
+		for index := 0; index < runeCount; index++ {
 			key, err := execution.context.NewString(strconv.Itoa(index))
 			if err != nil {
 				return nil, err
