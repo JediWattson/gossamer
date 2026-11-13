@@ -3,6 +3,7 @@ package browser
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"net/url"
 	"slices"
@@ -412,12 +413,51 @@ func (page *Page) applyDynamicStylesheet(
 		return nil
 	}
 	applied := result.err == nil && page.resources.apply(result)
+	matching := applied
+	if !applied && result.err != nil {
+		entry, ok := page.resources.stylesheets.entries[result.target.Node]
+		matching = ok && entry.generation == result.stylesheetGeneration
+	}
 	if applied {
 		page.invalidateStyleLocked()
 	}
 	page.mutex.Unlock()
-	if !applied {
+	var renderErr error
+	if applied {
+		renderErr = page.queueRenderFromTask(task)
+	}
+	var dispatchErr error
+	if matching {
+		dispatchErr = page.dispatchDynamicResourceEvent(task, generation, result.target, result.err)
+	}
+	return errors.Join(renderErr, dispatchErr)
+}
+
+func (page *Page) dispatchDynamicResourceEvent(
+	task *browserruntime.TaskContext,
+	generation DocumentGeneration,
+	target NodeHandle,
+	resourceErr error,
+) error {
+	if target.Node == 0 {
 		return nil
 	}
-	return page.queueRenderFromTask(task)
+	page.mutex.RLock()
+	if page.closed || page.documentGeneration != generation {
+		page.mutex.RUnlock()
+		return nil
+	}
+	script := page.script
+	_, targetExists := page.document.Resolve(target.Node)
+	page.mutex.RUnlock()
+	if script == nil || !targetExists {
+		return nil
+	}
+	eventType := InputLoad
+	if resourceErr != nil {
+		eventType = InputError
+	}
+	host := beginTaskHost(&taskHost{page: page, task: task, generation: generation, autoRender: true})
+	_, dispatchErr := script.DispatchEvent(host, InputEvent{Type: eventType, Target: target})
+	return errors.Join(dispatchErr, script.DrainMicrotasks(host), host.finish())
 }

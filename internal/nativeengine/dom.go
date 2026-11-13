@@ -243,6 +243,10 @@ const (
 	bindingHTMLIFrameElementPrototype      = "\x00gossamer.html-iframe-element.prototype"
 	bindingHTMLHeadElementPrototype        = "\x00gossamer.html-head-element.prototype"
 	bindingHTMLScriptElementPrototype      = "\x00gossamer.html-script-element.prototype"
+	bindingHTMLStyleElementPrototype       = "\x00gossamer.html-style-element.prototype"
+	bindingHTMLLinkElementPrototype        = "\x00gossamer.html-link-element.prototype"
+	bindingHTMLAnchorElementPrototype      = "\x00gossamer.html-anchor-element.prototype"
+	bindingHTMLDialogElementPrototype      = "\x00gossamer.html-dialog-element.prototype"
 	bindingHTMLMediaElementPrototype       = "\x00gossamer.html-media-element.prototype"
 	bindingHTMLImageElementPrototype       = "\x00gossamer.html-image-element.prototype"
 	bindingHTMLCollectionPrototype         = "\x00gossamer.html-collection.prototype"
@@ -325,6 +329,10 @@ type browserBindings struct {
 	htmlIFrameElementPrototype      memory.Ref
 	htmlHeadElementPrototype        memory.Ref
 	htmlScriptElementPrototype      memory.Ref
+	htmlStyleElementPrototype       memory.Ref
+	htmlLinkElementPrototype        memory.Ref
+	htmlAnchorElementPrototype      memory.Ref
+	htmlDialogElementPrototype      memory.Ref
 	htmlMediaElementPrototype       memory.Ref
 	htmlImageElementPrototype       memory.Ref
 	htmlCollectionPrototype         memory.Ref
@@ -519,8 +527,8 @@ func (realm *Realm) installBrowserNatives() error {
 		{nativeElementSelectionEndSet, realm.elementSelectionEndSet},
 		{nativeElementSelectionDirectionGet, realm.elementSelectionDirectionGet},
 		{nativeElementSelectionDirectionSet, realm.elementSelectionDirectionSet},
-		{nativeElementHiddenGet, realm.elementHiddenGet},
-		{nativeElementHiddenSet, realm.elementHiddenSet},
+		{nativeElementHiddenGet, realm.elementBoolAttrGet("hidden")},
+		{nativeElementHiddenSet, realm.elementBoolAttrSet("hidden")},
 		{nativeElementSetSelectionRange, realm.elementSetSelectionRange},
 		{nativeElementSelect, realm.elementSelect},
 		{nativeElementFocus, realm.elementFocus},
@@ -546,10 +554,55 @@ func (realm *Realm) installBrowserNatives() error {
 		{nativeElementScrollTopGet, realm.elementGeometryValue("scrollTop")},
 		{nativeElementScrollTopSet, realm.elementScrollSet(true)},
 		{nativeElementScrollIntoView, realm.elementScrollIntoView},
-		{nativeScriptSourceGet, realm.scriptSourceGet},
-		{nativeScriptSourceSet, realm.scriptSourceSet},
-		{nativeScriptAsyncGet, realm.scriptAsyncGet},
-		{nativeScriptAsyncSet, realm.scriptAsyncSet},
+		{nativeScriptSourceGet, realm.elementURLAttrGet("src")},
+		{nativeScriptSourceSet, realm.elementStringAttrSet("src")},
+		{nativeScriptAsyncGet, realm.elementBoolAttrGet("async")},
+		{nativeScriptAsyncSet, realm.elementBoolAttrSet("async")},
+		{nativeElementClick, realm.elementClick},
+		{nativeElementScrollTo, realm.elementScrollTo},
+		{nativeWindowScrollTo, realm.windowScroll(false)},
+		{nativeWindowScrollBy, realm.windowScroll(true)},
+		{nativeHTMLDialogShow, realm.htmlDialogShow},
+		{nativeHTMLDialogShowModal, realm.htmlDialogShow},
+		{nativeHTMLDialogClose, realm.htmlDialogClose},
+		{nativeHTMLDialogReturnValueGet, realm.htmlDialogReturnValueGet},
+		{nativeHTMLDialogReturnValueSet, realm.htmlDialogReturnValueSet},
+		{nativeElementInertGet, realm.elementBoolAttrGet("inert")},
+		{nativeElementInertSet, realm.elementBoolAttrSet("inert")},
+		{nativeElementTitleGet, realm.elementStringAttrGet("title")},
+		{nativeElementTitleSet, realm.elementStringAttrSet("title")},
+		{nativeElementDisabledGet, realm.elementBoolAttrGet("disabled")},
+		{nativeElementDisabledSet, realm.elementBoolAttrSet("disabled")},
+		{nativeElementTypeGet, realm.elementTypeGet},
+		{nativeElementTypeSet, realm.elementStringAttrSet("type")},
+		{nativeElementNameGet, realm.elementStringAttrGet("name")},
+		{nativeElementNameSet, realm.elementStringAttrSet("name")},
+		{nativeElementHrefGet, realm.elementURLAttrGet("href")},
+		{nativeElementHrefSet, realm.elementStringAttrSet("href")},
+		{nativeElementRelGet, realm.elementStringAttrGet("rel")},
+		{nativeElementRelSet, realm.elementStringAttrSet("rel")},
+		{nativeElementAsGet, realm.elementStringAttrGet("as")},
+		{nativeElementAsSet, realm.elementStringAttrSet("as")},
+		{nativeElementMediaGet, realm.elementStringAttrGet("media")},
+		{nativeElementMediaSet, realm.elementStringAttrSet("media")},
+		{nativeElementCrossOriginGet, realm.elementNullableAttrGet("crossorigin")},
+		{nativeElementCrossOriginSet, realm.elementNullableAttrSet("crossorigin")},
+		{nativeElementAltGet, realm.elementStringAttrGet("alt")},
+		{nativeElementAltSet, realm.elementStringAttrSet("alt")},
+		{nativeElementTargetGet, realm.elementStringAttrGet("target")},
+		{nativeElementTargetSet, realm.elementStringAttrSet("target")},
+		{nativeElementDownloadGet, realm.elementStringAttrGet("download")},
+		{nativeElementDownloadSet, realm.elementStringAttrSet("download")},
+		{nativeElementDeferGet, realm.elementBoolAttrGet("defer")},
+		{nativeElementDeferSet, realm.elementBoolAttrSet("defer")},
+		{nativeElementNoModuleGet, realm.elementBoolAttrGet("nomodule")},
+		{nativeElementNoModuleSet, realm.elementBoolAttrSet("nomodule")},
+		{nativeElementOpenGet, realm.elementBoolAttrGet("open")},
+		{nativeElementOpenSet, realm.elementBoolAttrSet("open")},
+		{nativeElementActionGet, realm.elementURLAttrGet("action")},
+		{nativeElementActionSet, realm.elementStringAttrSet("action")},
+		{nativeElementMethodGet, realm.elementStringAttrGet("method")},
+		{nativeElementMethodSet, realm.elementStringAttrSet("method")},
 		{nativeWindowInnerWidth, realm.windowGeometryValue("innerWidth")},
 		{nativeWindowInnerHeight, realm.windowGeometryValue("innerHeight")},
 		{nativeWindowDevicePixelRatio, realm.windowGeometryValue("devicePixelRatio")},
@@ -826,6 +879,10 @@ func (realm *Realm) prepareBrowserBindingsLocked(context *browserruntime.TaskCon
 			{bindingHTMLIFrameElementPrototype, &bindings.htmlIFrameElementPrototype},
 			{bindingHTMLHeadElementPrototype, &bindings.htmlHeadElementPrototype},
 			{bindingHTMLScriptElementPrototype, &bindings.htmlScriptElementPrototype},
+			{bindingHTMLStyleElementPrototype, &bindings.htmlStyleElementPrototype},
+			{bindingHTMLLinkElementPrototype, &bindings.htmlLinkElementPrototype},
+			{bindingHTMLAnchorElementPrototype, &bindings.htmlAnchorElementPrototype},
+			{bindingHTMLDialogElementPrototype, &bindings.htmlDialogElementPrototype},
 			{bindingHTMLMediaElementPrototype, &bindings.htmlMediaElementPrototype},
 			{bindingHTMLImageElementPrototype, &bindings.htmlImageElementPrototype},
 			{bindingHTMLCollectionPrototype, &bindings.htmlCollectionPrototype},
@@ -1219,6 +1276,14 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 	if err != nil {
 		return err
 	}
+	scrollToFn, err := realm.newNativeFunction(context, "scrollTo", 2, nativeWindowScrollTo)
+	if err != nil {
+		return err
+	}
+	scrollByFn, err := realm.newNativeFunction(context, "scrollBy", 2, nativeWindowScrollBy)
+	if err != nil {
+		return err
+	}
 	fetch, err := realm.newNativeFunction(context, "fetch", 1, nativeGlobalFetch)
 	if err != nil {
 		return err
@@ -1251,6 +1316,9 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{bindingLocation, memory.RefValue(bindings.location)},
 		{"navigator", memory.RefValue(navigator)},
 		{"matchMedia", memory.RefValue(matchMedia)},
+		{"scroll", memory.RefValue(scrollToFn)},
+		{"scrollTo", memory.RefValue(scrollToFn)},
+		{"scrollBy", memory.RefValue(scrollByFn)},
 		{"Image", memory.RefValue(imageConstructor)},
 		{"fetch", memory.RefValue(fetch)},
 		{"console", memory.RefValue(console)},
@@ -1316,6 +1384,10 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{bindingHTMLIFrameElementPrototype, bindings.htmlIFrameElementPrototype, false},
 		{bindingHTMLHeadElementPrototype, bindings.htmlHeadElementPrototype, false},
 		{bindingHTMLScriptElementPrototype, bindings.htmlScriptElementPrototype, false},
+		{bindingHTMLStyleElementPrototype, bindings.htmlStyleElementPrototype, false},
+		{bindingHTMLLinkElementPrototype, bindings.htmlLinkElementPrototype, false},
+		{bindingHTMLAnchorElementPrototype, bindings.htmlAnchorElementPrototype, false},
+		{bindingHTMLDialogElementPrototype, bindings.htmlDialogElementPrototype, false},
 		{bindingHTMLMediaElementPrototype, bindings.htmlMediaElementPrototype, false},
 		{bindingHTMLImageElementPrototype, bindings.htmlImageElementPrototype, false},
 		{bindingHTMLCollectionPrototype, bindings.htmlCollectionPrototype, false},
@@ -1389,6 +1461,9 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{bindingLocation, bindings.location, false},
 		{"navigator", navigator, false},
 		{"matchMedia", matchMedia, true},
+		{"scroll", scrollToFn, true},
+		{"scrollTo", scrollToFn, true},
+		{"scrollBy", scrollByFn, true},
 		{"Image", imageConstructor, true},
 		{"fetch", fetch, true},
 		{"console", console, false},
@@ -1507,6 +1582,15 @@ func (realm *Realm) installDOMPrototypeProperties(context *browserruntime.TaskCo
 		{realm.bindings.elementPrototype, "insertAdjacentHTML", 2, nativeElementInsertAdjacentHTML},
 		{realm.bindings.htmlElementPrototype, "focus", 0, nativeElementFocus},
 		{realm.bindings.htmlElementPrototype, "blur", 0, nativeElementBlur},
+		{realm.bindings.htmlElementPrototype, "click", 0, nativeElementClick},
+		{realm.bindings.htmlDialogElementPrototype, "show", 0, nativeHTMLDialogShow},
+		{realm.bindings.htmlDialogElementPrototype, "showModal", 0, nativeHTMLDialogShowModal},
+		{realm.bindings.htmlDialogElementPrototype, "close", 0, nativeHTMLDialogClose},
+		{realm.bindings.elementPrototype, "scroll", 2, nativeElementScrollTo},
+		{realm.bindings.elementPrototype, "scrollTo", 2, nativeElementScrollTo},
+		{realm.bindings.windowPrototype, "scroll", 2, nativeWindowScrollTo},
+		{realm.bindings.windowPrototype, "scrollTo", 2, nativeWindowScrollTo},
+		{realm.bindings.windowPrototype, "scrollBy", 2, nativeWindowScrollBy},
 		{realm.bindings.htmlInputElementPrototype, "setSelectionRange", 2, nativeElementSetSelectionRange},
 		{realm.bindings.htmlInputElementPrototype, "select", 0, nativeElementSelect},
 		{realm.bindings.htmlTextAreaElementPrototype, "setSelectionRange", 2, nativeElementSetSelectionRange},
@@ -1673,8 +1757,48 @@ func (realm *Realm) installDOMPrototypeProperties(context *browserruntime.TaskCo
 		{realm.bindings.elementPrototype, "innerHTML", nativeElementInnerHTMLGet, nativeElementInnerHTMLSet},
 		{realm.bindings.elementPrototype, "style", nativeElementStyle, 0},
 		{realm.bindings.htmlElementPrototype, "hidden", nativeElementHiddenGet, nativeElementHiddenSet},
+		{realm.bindings.htmlElementPrototype, "inert", nativeElementInertGet, nativeElementInertSet},
+		{realm.bindings.htmlElementPrototype, "title", nativeElementTitleGet, nativeElementTitleSet},
 		{realm.bindings.htmlScriptElementPrototype, "src", nativeScriptSourceGet, nativeScriptSourceSet},
 		{realm.bindings.htmlScriptElementPrototype, "async", nativeScriptAsyncGet, nativeScriptAsyncSet},
+		{realm.bindings.htmlScriptElementPrototype, "type", nativeElementTypeGet, nativeElementTypeSet},
+		{realm.bindings.htmlScriptElementPrototype, "crossOrigin", nativeElementCrossOriginGet, nativeElementCrossOriginSet},
+		{realm.bindings.htmlScriptElementPrototype, "defer", nativeElementDeferGet, nativeElementDeferSet},
+		{realm.bindings.htmlScriptElementPrototype, "noModule", nativeElementNoModuleGet, nativeElementNoModuleSet},
+		{realm.bindings.htmlStyleElementPrototype, "type", nativeElementTypeGet, nativeElementTypeSet},
+		{realm.bindings.htmlStyleElementPrototype, "media", nativeElementMediaGet, nativeElementMediaSet},
+		{realm.bindings.htmlStyleElementPrototype, "disabled", nativeElementDisabledGet, nativeElementDisabledSet},
+		{realm.bindings.htmlLinkElementPrototype, "rel", nativeElementRelGet, nativeElementRelSet},
+		{realm.bindings.htmlLinkElementPrototype, "href", nativeElementHrefGet, nativeElementHrefSet},
+		{realm.bindings.htmlLinkElementPrototype, "as", nativeElementAsGet, nativeElementAsSet},
+		{realm.bindings.htmlLinkElementPrototype, "type", nativeElementTypeGet, nativeElementTypeSet},
+		{realm.bindings.htmlLinkElementPrototype, "media", nativeElementMediaGet, nativeElementMediaSet},
+		{realm.bindings.htmlLinkElementPrototype, "crossOrigin", nativeElementCrossOriginGet, nativeElementCrossOriginSet},
+		{realm.bindings.htmlLinkElementPrototype, "disabled", nativeElementDisabledGet, nativeElementDisabledSet},
+		{realm.bindings.htmlAnchorElementPrototype, "href", nativeElementHrefGet, nativeElementHrefSet},
+		{realm.bindings.htmlAnchorElementPrototype, "target", nativeElementTargetGet, nativeElementTargetSet},
+		{realm.bindings.htmlAnchorElementPrototype, "rel", nativeElementRelGet, nativeElementRelSet},
+		{realm.bindings.htmlAnchorElementPrototype, "download", nativeElementDownloadGet, nativeElementDownloadSet},
+		{realm.bindings.htmlAnchorElementPrototype, "type", nativeElementTypeGet, nativeElementTypeSet},
+		{realm.bindings.htmlImageElementPrototype, "src", nativeScriptSourceGet, nativeScriptSourceSet},
+		{realm.bindings.htmlImageElementPrototype, "alt", nativeElementAltGet, nativeElementAltSet},
+		{realm.bindings.htmlImageElementPrototype, "crossOrigin", nativeElementCrossOriginGet, nativeElementCrossOriginSet},
+		{realm.bindings.htmlDialogElementPrototype, "open", nativeElementOpenGet, nativeElementOpenSet},
+		{realm.bindings.htmlDialogElementPrototype, "returnValue", nativeHTMLDialogReturnValueGet, nativeHTMLDialogReturnValueSet},
+		{realm.bindings.htmlFormElementPrototype, "name", nativeElementNameGet, nativeElementNameSet},
+		{realm.bindings.htmlFormElementPrototype, "action", nativeElementActionGet, nativeElementActionSet},
+		{realm.bindings.htmlFormElementPrototype, "method", nativeElementMethodGet, nativeElementMethodSet},
+		{realm.bindings.htmlInputElementPrototype, "disabled", nativeElementDisabledGet, nativeElementDisabledSet},
+		{realm.bindings.htmlInputElementPrototype, "type", nativeElementTypeGet, nativeElementTypeSet},
+		{realm.bindings.htmlInputElementPrototype, "name", nativeElementNameGet, nativeElementNameSet},
+		{realm.bindings.htmlTextAreaElementPrototype, "disabled", nativeElementDisabledGet, nativeElementDisabledSet},
+		{realm.bindings.htmlTextAreaElementPrototype, "name", nativeElementNameGet, nativeElementNameSet},
+		{realm.bindings.htmlSelectElementPrototype, "disabled", nativeElementDisabledGet, nativeElementDisabledSet},
+		{realm.bindings.htmlSelectElementPrototype, "name", nativeElementNameGet, nativeElementNameSet},
+		{realm.bindings.htmlOptionElementPrototype, "disabled", nativeElementDisabledGet, nativeElementDisabledSet},
+		{realm.bindings.htmlButtonElementPrototype, "disabled", nativeElementDisabledGet, nativeElementDisabledSet},
+		{realm.bindings.htmlButtonElementPrototype, "type", nativeElementTypeGet, nativeElementTypeSet},
+		{realm.bindings.htmlButtonElementPrototype, "name", nativeElementNameGet, nativeElementNameSet},
 		{realm.bindings.htmlInputElementPrototype, "value", nativeElementFormValueGet, nativeElementFormValueSet},
 		{realm.bindings.htmlTextAreaElementPrototype, "value", nativeElementFormValueGet, nativeElementFormValueSet},
 		{realm.bindings.htmlSelectElementPrototype, "value", nativeElementFormValueGet, nativeElementFormValueSet},

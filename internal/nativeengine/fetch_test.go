@@ -1,7 +1,10 @@
 package nativeengine_test
 
 import (
+	"bytes"
 	"context"
+	"image"
+	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -413,4 +416,110 @@ func (client *nativeFetchLoader) Do(_ context.Context, request loader.Request) (
 		header.Set("Content-Type", contentType)
 	}
 	return &loader.Response{URL: location, StatusCode: status, Header: header, Body: io.NopCloser(strings.NewReader(body))}, nil
+}
+
+func TestNativeDynamicStylesheetAndImageElementEvents(t *testing.T) {
+	t.Parallel()
+
+	var encodedPNG bytes.Buffer
+	if err := png.Encode(&encodedPNG, image.NewRGBA(image.Rect(0, 0, 1, 1))); err != nil {
+		t.Fatal(err)
+	}
+	pngBytes := encodedPNG.Bytes()
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/page":
+			writer.Header().Set("Content-Type", "text/html")
+			_, _ = io.WriteString(writer, `<!doctype html><html><head></head><body><div id="box">hello</div><div id="log"></div><script>
+const events = [];
+const link = document.createElement("link");
+link.rel = "stylesheet";
+link.crossOrigin = "";
+link.href = "/dynamic.css";
+link.addEventListener("load", () => {
+  const color = getComputedStyle(document.getElementById("box")).color;
+  events.push("css-load:" + String(link instanceof HTMLLinkElement) + ":" + link.getAttribute("href") + ":" + link.href.endsWith("/dynamic.css") + ":" + link.crossOrigin + ":" + color);
+});
+link.addEventListener("error", () => events.push("css-unexpected-error"));
+document.head.appendChild(link);
+
+const badLink = document.createElement("link");
+badLink.rel = "stylesheet";
+badLink.href = "/missing.css";
+badLink.addEventListener("error", () => events.push("css-error"));
+document.head.appendChild(badLink);
+
+const img = new Image();
+img.alt = "pixel";
+img.src = "/pixel.png";
+img.addEventListener("load", () => events.push("img-load:" + String(img instanceof HTMLImageElement) + ":" + img.alt));
+document.body.appendChild(img);
+
+const badImg = document.createElement("img");
+badImg.src = "/missing.png";
+badImg.addEventListener("error", () => events.push("img-error"));
+document.body.appendChild(badImg);
+
+window.__events = events;
+</script></body></html>`)
+		case "/dynamic.css":
+			writer.Header().Set("Content-Type", "text/css")
+			_, _ = io.WriteString(writer, `#box { color: rgb(1, 2, 3); }`)
+		case "/pixel.png":
+			writer.Header().Set("Content-Type", "image/png")
+			_, _ = writer.Write(pngBytes)
+		default:
+			http.NotFound(writer, request)
+		}
+	}))
+	defer server.Close()
+
+	engine := nativeengine.New(nativeengine.Config{})
+	runtime, err := browser.NewWithEngine(engine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	page, err := runtime.LoadPage(context.Background(), server.URL+"/page", loader.New(server.Client()))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	logEl, ok := page.Document().ElementByID("log")
+	if !ok {
+		t.Fatal("missing log element")
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := page.QueueScript(browser.ScriptSource{
+			URL:    server.URL + "/check.js",
+			Source: `document.getElementById("log").textContent = window.__events.slice().sort().join("|");`,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		for page.Realm.Tasks.Len() != 0 {
+			runContext, cancel := context.WithTimeout(context.Background(), time.Second)
+			err = page.Realm.RunOne(runContext)
+			cancel()
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		text, err := page.Document().TextContent(logEl)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(text, "css-load:") && strings.Contains(text, "css-error") &&
+			strings.Contains(text, "img-load:") && strings.Contains(text, "img-error") {
+			if !strings.Contains(text, "css-load:true:/dynamic.css:true::rgb(1, 2, 3)") ||
+				!strings.Contains(text, "img-load:true:pixel") {
+				t.Fatalf("unexpected event details: %q", text)
+			}
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	text, _ := page.Document().TextContent(logEl)
+	t.Fatalf("timed out waiting for dynamic link/img events, log=%q", text)
 }

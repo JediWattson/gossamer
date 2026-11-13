@@ -73,6 +73,10 @@ func (realm *Realm) newDOMInterfaces(context *browserruntime.TaskContext, bindin
 		{"HTMLIFrameElement", &bindings.htmlIFrameElementPrototype},
 		{"HTMLHeadElement", &bindings.htmlHeadElementPrototype},
 		{"HTMLScriptElement", &bindings.htmlScriptElementPrototype},
+		{"HTMLStyleElement", &bindings.htmlStyleElementPrototype},
+		{"HTMLLinkElement", &bindings.htmlLinkElementPrototype},
+		{"HTMLAnchorElement", &bindings.htmlAnchorElementPrototype},
+		{"HTMLDialogElement", &bindings.htmlDialogElementPrototype},
 		{"HTMLMediaElement", &bindings.htmlMediaElementPrototype},
 		{"HTMLImageElement", &bindings.htmlImageElementPrototype},
 	} {
@@ -155,6 +159,14 @@ func (bindings *browserBindings) prototypeForNode(metadata browser.NodeMetadata)
 			return bindings.htmlHeadElementPrototype, nil
 		case "script":
 			return bindings.htmlScriptElementPrototype, nil
+		case "style":
+			return bindings.htmlStyleElementPrototype, nil
+		case "link":
+			return bindings.htmlLinkElementPrototype, nil
+		case "a":
+			return bindings.htmlAnchorElementPrototype, nil
+		case "dialog":
+			return bindings.htmlDialogElementPrototype, nil
 		case "audio", "video":
 			return bindings.htmlMediaElementPrototype, nil
 		case "img":

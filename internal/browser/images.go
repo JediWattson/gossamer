@@ -3,6 +3,7 @@ package browser
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"math"
 	"net/url"
@@ -563,12 +564,28 @@ func (page *Page) applyDynamicImage(
 		return nil
 	}
 	applied := result.err == nil && page.resources.apply(result)
+	matchingElement := !result.backgroundImage && result.target.Node != 0 && result.imageGeneration != 0
+	if matchingElement {
+		if applied {
+			// page.resources.apply already verified generation and source.
+		} else if result.err != nil {
+			entry, ok := page.resources.imageSources[result.target.Node]
+			matchingElement = ok && entry.generation == result.imageGeneration && entry.source == result.imageSource
+		} else {
+			matchingElement = false
+		}
+	}
 	if applied {
 		page.invalidateLayoutLocked()
 	}
 	page.mutex.Unlock()
-	if !applied {
-		return nil
+	var renderErr error
+	if applied {
+		renderErr = page.queueRenderFromTask(task)
 	}
-	return page.queueRenderFromTask(task)
+	var dispatchErr error
+	if matchingElement {
+		dispatchErr = page.dispatchDynamicResourceEvent(task, generation, result.target, result.err)
+	}
+	return errors.Join(renderErr, dispatchErr)
 }

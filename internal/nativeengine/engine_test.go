@@ -989,3 +989,90 @@ if (!el.toggleAttribute("data-ios-pwa", true) || el.getAttribute("data-ios-pwa")
 		t.Fatal(err)
 	}
 }
+
+func TestNativeLinkDialogClickInertAndScrollTo(t *testing.T) {
+	t.Parallel()
+
+	engine := nativeengine.New(nativeengine.Config{})
+	browserRuntime, err := browser.NewWithEngine(engine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer browserRuntime.Close()
+	location, _ := url.Parse("https://gossamer.test/sub/page")
+	page, err := browserRuntime.NewPage(dom.NewDocument(), location)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer page.Close()
+
+	if _, err := page.QueueScript(browser.ScriptSource{URL: "dom-attributes.js", Source: `
+const link = document.createElement("link");
+link.rel = "stylesheet";
+link.as = "style";
+link.crossOrigin = "anonymous";
+link.href = "/assets/app.css";
+link.disabled = true;
+if (!(link instanceof HTMLLinkElement) || link.rel !== "stylesheet" || link.as !== "style" ||
+    link.crossOrigin !== "anonymous" || link.getAttribute("crossorigin") !== "anonymous" ||
+    link.href !== "https://gossamer.test/assets/app.css" || !link.disabled) {
+  throw new Error("HTMLLinkElement reflected attributes failed");
+}
+link.crossOrigin = null;
+if (link.crossOrigin !== null || link.hasAttribute("crossorigin")) {
+  throw new Error("crossOrigin = null did not remove attribute");
+}
+
+const anchor = document.createElement("a");
+anchor.href = "thread";
+if (!(anchor instanceof HTMLAnchorElement) || anchor.href !== "https://gossamer.test/sub/thread") {
+  throw new Error("HTMLAnchorElement failed");
+}
+
+const input = document.createElement("input");
+if (input.type !== "text") {
+  throw new Error("default input.type should be text");
+}
+input.type = "email";
+input.disabled = true;
+input.inert = true;
+input.title = "hint";
+if (input.type !== "email" || !input.disabled || !input.inert || input.title !== "hint") {
+  throw new Error("input attributes failed");
+}
+
+let clicked = 0;
+input.addEventListener("click", () => { clicked += 1; });
+input.click();
+if (clicked !== 1) {
+  throw new Error("element.click() did not dispatch click event");
+}
+
+const dialog = document.createElement("dialog");
+let closed = 0;
+dialog.addEventListener("close", () => { closed += 1; });
+dialog.showModal();
+if (!(dialog instanceof HTMLDialogElement) || !dialog.open || !dialog.hasAttribute("open")) {
+  throw new Error("dialog.showModal failed");
+}
+dialog.close("accepted");
+if (dialog.open || dialog.returnValue !== "accepted" || closed !== 1) {
+  throw new Error("dialog.close failed");
+}
+
+const style = document.createElement("style");
+if (!(style instanceof HTMLStyleElement)) {
+  throw new Error("HTMLStyleElement instanceof failed");
+}
+
+const scroller = document.createElement("div");
+scroller.scrollTo({ top: 10, left: 5 });
+window.scrollTo(0, 0);
+window.scrollBy({ top: 0 });
+`}); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
