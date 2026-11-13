@@ -503,6 +503,7 @@ func (context *layoutContext) layoutBlockSizedWithSubgrid(node *styledNode, cont
 				Image:             decoded,
 				Bounds:            contentBounds,
 				Opacity:           1,
+				insets:            Edges{Top: border.Top + padding.Top, Right: border.Right + padding.Right, Bottom: border.Bottom + padding.Bottom, Left: border.Left + padding.Left},
 				pointerEventsNone: style.PointerEvents() == pointerEventsNone,
 			},
 		}

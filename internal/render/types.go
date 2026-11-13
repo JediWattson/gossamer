@@ -248,6 +248,7 @@ type ImageFragment struct {
 	Image                 image.Image
 	Bounds                Rect
 	Opacity               float64
+	insets                Edges
 	percentHeightResolved bool
 	pointerEventsNone     bool
 }

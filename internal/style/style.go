@@ -623,6 +623,18 @@ const (
 	OverflowClip
 )
 
+// ObjectFit controls how a replaced element scales its contents within its
+// content box.
+type ObjectFit uint8
+
+const (
+	ObjectFitFill ObjectFit = iota
+	ObjectFitContain
+	ObjectFitCover
+	ObjectFitNone
+	ObjectFitScaleDown
+)
+
 // PositionMode is the computed positioning scheme used by layout. Relative
 // and sticky boxes remain in normal flow, absolute boxes use their nearest
 // positioned ancestor, and fixed boxes use the viewport.
@@ -773,6 +785,8 @@ type ComputedStyle struct {
 	scale             ScaleValue
 	transforms        TransformList
 	transformOrigin   TransformOrigin
+	objectFit         ObjectFit
+	objectPosition    ObjectPosition
 	overflowX         OverflowMode
 	overflowY         OverflowMode
 	position          PositionMode
@@ -962,6 +976,8 @@ func (computed ComputedStyle) Rotate() RotateValue                    { return c
 func (computed ComputedStyle) Scale() ScaleValue                      { return computed.scale }
 func (computed ComputedStyle) Transforms() TransformList              { return computed.transforms }
 func (computed ComputedStyle) TransformOrigin() TransformOrigin       { return computed.transformOrigin }
+func (computed ComputedStyle) ObjectFit() ObjectFit                   { return computed.objectFit }
+func (computed ComputedStyle) ObjectPosition() ObjectPosition         { return computed.objectPosition }
 func (computed ComputedStyle) OverflowX() OverflowMode                { return computed.overflowX }
 func (computed ComputedStyle) OverflowY() OverflowMode                { return computed.overflowY }
 func (computed ComputedStyle) Position() PositionMode                 { return computed.position }
@@ -1560,6 +1576,7 @@ func cssInitialStyle(viewport Viewport) computedStyle {
 		verticalAlign:   VerticalAlignment{mode: VerticalAlignBaseline},
 		opacity:         1,
 		transformOrigin: initialTransformOrigin(),
+		objectPosition:  initialPosition2D(),
 		position:        PositionStatic,
 		top:             length{unit: lengthAuto},
 		right:           length{unit: lengthAuto},

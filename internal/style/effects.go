@@ -160,17 +160,27 @@ func (transforms TransformList) At(index int) (TransformOperation, bool) {
 	return transforms.items[index], true
 }
 
-// TransformOrigin retains the two-dimensional origin used by transform.
-type TransformOrigin struct {
+// Position2D retains a two-dimensional CSS position or origin value.
+type Position2D struct {
 	x Length
 	y Length
 }
 
-func (origin TransformOrigin) X() Length { return origin.x }
-func (origin TransformOrigin) Y() Length { return origin.y }
+func (position Position2D) X() Length { return position.x }
+func (position Position2D) Y() Length { return position.y }
+
+func initialPosition2D() Position2D {
+	return Position2D{x: length{value: 50, unit: lengthPercent}, y: length{value: 50, unit: lengthPercent}}
+}
+
+// TransformOrigin retains the two-dimensional origin used by transform.
+type TransformOrigin = Position2D
+
+// ObjectPosition retains the two-dimensional alignment of a replaced element.
+type ObjectPosition = Position2D
 
 func initialTransformOrigin() TransformOrigin {
-	return TransformOrigin{x: length{value: 50, unit: lengthPercent}, y: length{value: 50, unit: lengthPercent}}
+	return initialPosition2D()
 }
 
 // TranslateValue, ScaleValue, and RotateValue retain the CSS Transforms Level
@@ -622,10 +632,10 @@ func parseTransformOperation(function css.ComponentValue, source string, emBase 
 	}
 }
 
-func parseTransformOrigin(source string, emBase float64, viewport Viewport) (TransformOrigin, bool) {
+func parsePosition2D(source string, emBase float64, viewport Viewport) (Position2D, bool) {
 	value, ok := parsePropertyValue(source)
 	if !ok || len(value.terms) < 1 || len(value.terms) > 2 {
-		return TransformOrigin{}, false
+		return Position2D{}, false
 	}
 	center := length{value: 50, unit: lengthPercent}
 	parseAxis := func(component css.ComponentValue, horizontal bool) (Length, bool) {
@@ -658,10 +668,10 @@ func parseTransformOrigin(source string, emBase float64, viewport Viewport) (Tra
 	if len(value.terms) == 1 {
 		if keyword, keywordOK := componentKeyword(value.terms[0]); keywordOK && (keyword == "top" || keyword == "bottom") {
 			y, ok := parseAxis(value.terms[0], false)
-			return TransformOrigin{x: center, y: y}, ok
+			return Position2D{x: center, y: y}, ok
 		}
 		x, ok := parseAxis(value.terms[0], true)
-		return TransformOrigin{x: x, y: center}, ok
+		return Position2D{x: x, y: center}, ok
 	}
 	x, xOK := parseAxis(value.terms[0], true)
 	y, yOK := parseAxis(value.terms[1], false)
@@ -670,7 +680,7 @@ func parseTransformOrigin(source string, emBase float64, viewport Viewport) (Tra
 		y, yOK = parseAxis(value.terms[0], false)
 		x, xOK = parseAxis(value.terms[1], true)
 	}
-	return TransformOrigin{x: x, y: y}, xOK && yOK
+	return Position2D{x: x, y: y}, xOK && yOK
 }
 
 func parseTranslateValue(source string, emBase float64, viewport Viewport) (TranslateValue, bool) {
@@ -778,8 +788,40 @@ func serializeTransformList(transforms TransformList) string {
 	return strings.Join(parts, " ")
 }
 
-func serializeTransformOrigin(origin TransformOrigin) string {
-	return serializeComputedLength(origin.x) + " " + serializeComputedLength(origin.y)
+func serializePosition2D(position Position2D) string {
+	return serializeComputedLength(position.x) + " " + serializeComputedLength(position.y)
+}
+
+func parseObjectFit(keyword string) (ObjectFit, bool) {
+	switch keyword {
+	case "fill":
+		return ObjectFitFill, true
+	case "contain":
+		return ObjectFitContain, true
+	case "cover":
+		return ObjectFitCover, true
+	case "none":
+		return ObjectFitNone, true
+	case "scale-down":
+		return ObjectFitScaleDown, true
+	default:
+		return ObjectFitFill, false
+	}
+}
+
+func serializeObjectFit(fit ObjectFit) string {
+	switch fit {
+	case ObjectFitContain:
+		return "contain"
+	case ObjectFitCover:
+		return "cover"
+	case ObjectFitNone:
+		return "none"
+	case ObjectFitScaleDown:
+		return "scale-down"
+	default:
+		return "fill"
+	}
 }
 
 func serializeTranslateValue(value TranslateValue) string {

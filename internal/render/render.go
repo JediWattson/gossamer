@@ -1154,10 +1154,80 @@ func paintImageFragment(list *DisplayList, fragment ImageFragment, styles map[*d
 	if fragment.Image == nil || fragment.Bounds.Width <= 0 || fragment.Bounds.Height <= 0 {
 		return
 	}
-	if style, ok := styles[fragment.Node]; ok && style.Visibility() != visibilityVisible {
+	contentBounds := fragment.Bounds
+	style, hasStyle := styles[fragment.Node]
+	if hasStyle && style.Visibility() != visibilityVisible {
 		return
 	}
-	list.Commands = append(list.Commands, Command{Kind: DrawImageCommand, Node: fragment.Node, Rect: fragment.Bounds, Image: fragment.Image, Opacity: fragment.Opacity})
+	destRect := contentBounds
+	if hasStyle {
+		destRect = resolveObjectFitRect(contentBounds, fragment.Image.Bounds(), style, list.Viewport)
+	}
+	if destRect.Width <= 0 || destRect.Height <= 0 {
+		return
+	}
+	command := Command{
+		Kind:    DrawImageCommand,
+		Node:    fragment.Node,
+		Rect:    destRect,
+		Image:   fragment.Image,
+		Opacity: fragment.Opacity,
+	}
+	if hasStyle {
+		borderBounds := Rect{
+			X:      contentBounds.X - fragment.insets.Left,
+			Y:      contentBounds.Y - fragment.insets.Top,
+			Width:  contentBounds.Width + fragment.insets.Left + fragment.insets.Right,
+			Height: contentBounds.Height + fragment.insets.Top + fragment.insets.Bottom,
+		}
+		contentRadii := insetCornerRadii(usedCornerRadii(style, borderBounds, list.Viewport), fragment.insets)
+		if !contentRadii.empty() || !rectContainsRect(contentBounds, destRect) {
+			command.HasClip = true
+			command.Clip = contentBounds
+		}
+		if !contentRadii.empty() {
+			appendRoundedClip(&command, RoundedClip{Rect: contentBounds, Radii: contentRadii})
+		}
+	}
+	list.Commands = append(list.Commands, command)
+}
+
+func resolveObjectFitRect(contentBounds Rect, naturalBounds image.Rectangle, style computedStyle, viewport Viewport) Rect {
+	srcW, srcH := float64(naturalBounds.Dx()), float64(naturalBounds.Dy())
+	if srcW <= 0 || srcH <= 0 || contentBounds.Width <= 0 || contentBounds.Height <= 0 {
+		return contentBounds
+	}
+	width, height := contentBounds.Width, contentBounds.Height
+	switch style.ObjectFit() {
+	case computed.ObjectFitContain:
+		scale := math.Min(contentBounds.Width/srcW, contentBounds.Height/srcH)
+		width, height = srcW*scale, srcH*scale
+	case computed.ObjectFitCover:
+		scale := math.Max(contentBounds.Width/srcW, contentBounds.Height/srcH)
+		width, height = srcW*scale, srcH*scale
+	case computed.ObjectFitNone:
+		width, height = srcW, srcH
+	case computed.ObjectFitScaleDown:
+		scale := math.Min(1, math.Min(contentBounds.Width/srcW, contentBounds.Height/srcH))
+		width, height = srcW*scale, srcH*scale
+	}
+	pos := style.ObjectPosition()
+	offsetX := resolveLength(pos.X(), contentBounds.Width-width, viewport, (contentBounds.Width-width)/2)
+	offsetY := resolveLength(pos.Y(), contentBounds.Height-height, viewport, (contentBounds.Height-height)/2)
+	return Rect{
+		X:      contentBounds.X + offsetX,
+		Y:      contentBounds.Y + offsetY,
+		Width:  width,
+		Height: height,
+	}
+}
+
+func rectContainsRect(outer, inner Rect) bool {
+	const eps = 1e-6
+	return inner.X >= outer.X-eps &&
+		inner.Y >= outer.Y-eps &&
+		inner.X+inner.Width <= outer.X+outer.Width+eps &&
+		inner.Y+inner.Height <= outer.Y+outer.Height+eps
 }
 
 func findElement(root *dom.Node, name string) *dom.Node {

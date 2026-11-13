@@ -77,6 +77,8 @@ const (
 	propertyMaxWidth
 	propertyMinHeight
 	propertyMinWidth
+	propertyObjectFit
+	propertyObjectPosition
 	propertyOpacity
 	propertyOrder
 	propertyOverflowX
@@ -225,6 +227,8 @@ var propertyDefinitions = [...]propertyDefinition{
 	{name: "max-width", kind: propertyMaxWidth, invalidation: propertyInvalidatesLayout},
 	{name: "min-height", kind: propertyMinHeight, invalidation: propertyInvalidatesLayout},
 	{name: "min-width", kind: propertyMinWidth, invalidation: propertyInvalidatesLayout},
+	{name: "object-fit", kind: propertyObjectFit, invalidation: propertyInvalidatesPaint},
+	{name: "object-position", kind: propertyObjectPosition, invalidation: propertyInvalidatesPaint},
 	{name: "opacity", kind: propertyOpacity, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "order", kind: propertyOrder, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "overflow-x", kind: propertyOverflowX, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
@@ -514,6 +518,10 @@ func (definition propertyDefinition) copy(destination *computedStyle, source com
 		destination.minHeight = source.minHeight
 	case propertyMinWidth:
 		destination.minWidth = source.minWidth
+	case propertyObjectFit:
+		destination.objectFit = source.objectFit
+	case propertyObjectPosition:
+		destination.objectPosition = source.objectPosition
 	case propertyOpacity:
 		destination.opacity = source.opacity
 	case propertyTranslate:
@@ -724,6 +732,16 @@ func (definition propertyDefinition) valid(source string, viewport Viewport) boo
 		}
 		parsed, ok := parseLength(source, 1, 1, viewport)
 		return ok && parsed.unit != lengthAuto && nonNegativeLength(parsed)
+	case propertyObjectFit:
+		keyword, ok := singleCSSKeyword(source)
+		if !ok {
+			return false
+		}
+		_, fitOK := parseObjectFit(keyword)
+		return fitOK
+	case propertyObjectPosition, propertyTransformOrigin:
+		_, ok := parsePosition2D(source, 1, viewport)
+		return ok
 	case propertyOpacity:
 		_, ok := singleCSSNumber(source)
 		return ok
@@ -738,9 +756,6 @@ func (definition propertyDefinition) valid(source string, viewport Viewport) boo
 		return ok
 	case propertyTransform:
 		_, ok := parseTransformList(source, 1, viewport)
-		return ok
-	case propertyTransformOrigin:
-		_, ok := parseTransformOrigin(source, 1, viewport)
 		return ok
 	case propertyOrder:
 		token, ok := singleCSSNumber(source)
@@ -1137,6 +1152,16 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 		} else if parsed, ok := parseLength(source, style.fontSize, style.fontSize, context.viewport); ok && nonNegativeLength(parsed) {
 			style.minHeight = parsed
 		}
+	case propertyObjectFit:
+		if keyword, ok := singleCSSKeyword(source); ok {
+			if fit, fitOK := parseObjectFit(keyword); fitOK {
+				style.objectFit = fit
+			}
+		}
+	case propertyObjectPosition:
+		if parsed, ok := parsePosition2D(source, style.fontSize, context.viewport); ok {
+			style.objectPosition = parsed
+		}
 	case propertyOpacity:
 		if token, ok := singleCSSNumber(source); ok {
 			style.opacity = clamp(token.Number, 0, 1)
@@ -1158,7 +1183,7 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 			style.transforms = parsed
 		}
 	case propertyTransformOrigin:
-		if parsed, ok := parseTransformOrigin(source, style.fontSize, context.viewport); ok {
+		if parsed, ok := parsePosition2D(source, style.fontSize, context.viewport); ok {
 			style.transformOrigin = parsed
 		}
 	case propertyOrder:
@@ -1470,6 +1495,10 @@ func (definition propertyDefinition) serialize(computed ComputedStyle) string {
 		return serializeComputedLength(computed.minWidth)
 	case propertyMinHeight:
 		return serializeComputedLength(computed.minHeight)
+	case propertyObjectFit:
+		return serializeObjectFit(computed.objectFit)
+	case propertyObjectPosition:
+		return serializePosition2D(computed.objectPosition)
 	case propertyOpacity:
 		return serializeComputedNumber(computed.opacity)
 	case propertyTranslate:
@@ -1481,7 +1510,7 @@ func (definition propertyDefinition) serialize(computed ComputedStyle) string {
 	case propertyTransform:
 		return serializeTransformList(computed.transforms)
 	case propertyTransformOrigin:
-		return serializeTransformOrigin(computed.transformOrigin)
+		return serializePosition2D(computed.transformOrigin)
 	case propertyOrder:
 		return strconv.Itoa(computed.order)
 	case propertyOverflowX:

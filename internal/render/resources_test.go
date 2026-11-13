@@ -529,3 +529,110 @@ func assertResourcePixel(t *testing.T, image image.Image, x, y int, want color.N
 		t.Errorf("pixel (%d,%d) = %#v, want %#v", x, y, got, want)
 	}
 }
+
+func TestRenderImageObjectFitPositionAndRoundedClip(t *testing.T) {
+	t.Parallel()
+
+	// 40x20 source image: left half red, right half blue.
+	wide := image.NewNRGBA(image.Rect(0, 0, 40, 20))
+	for y := range 20 {
+		for x := range 40 {
+			c := color.NRGBA{R: 0xff, A: 0xff}
+			if x >= 20 {
+				c = color.NRGBA{B: 0xff, A: 0xff}
+			}
+			wide.SetNRGBA(x, y, c)
+		}
+	}
+
+	t.Run("cover_and_rounded_circle", func(t *testing.T) {
+		document, _, body := resourceTestDocument()
+		body.Attributes = append(body.Attributes, dom.Attribute{Name: "style", Value: "margin:0"})
+		img := dom.NewElement("img",
+			dom.Attribute{Name: "src", Value: "avatar.png"},
+			dom.Attribute{Name: "style", Value: "display:block;width:20px;height:20px;border-radius:50%;object-fit:cover;object-position:0% 50%"},
+		)
+		body.AppendChild(img)
+
+		frame, err := render.RenderWithResources(document, render.Viewport{Width: 40, Height: 40}, render.Resources{
+			Images: map[*dom.Node]image.Image{img: wide},
+		})
+		if err != nil {
+			t.Fatalf("RenderWithResources() error = %v", err)
+		}
+		painted, err := render.Rasterize(frame)
+		if err != nil {
+			t.Fatalf("Rasterize() error = %v", err)
+		}
+		// Top-left corner (0,0) is outside the 50% circular clip -> canvas white.
+		assertResourcePixel(t, painted, 0, 0, color.NRGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff})
+		assertResourcePixel(t, painted, 19, 19, color.NRGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff})
+		// With object-position: 0% 50% and cover scaling (40x20 -> 40x20), the visible 20x20 window shows the red left half.
+		assertResourcePixel(t, painted, 10, 10, color.NRGBA{R: 0xff, G: 0x00, B: 0x00, A: 0xff})
+		assertResourcePixel(t, painted, 16, 10, color.NRGBA{R: 0xff, G: 0x00, B: 0x00, A: 0xff})
+		// Pixels outside the 20x20 image box stay white even though cover rect is 40px wide.
+		assertResourcePixel(t, painted, 25, 10, color.NRGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff})
+	})
+
+	t.Run("contain_and_object_position", func(t *testing.T) {
+		document, _, body := resourceTestDocument()
+		body.Attributes = append(body.Attributes, dom.Attribute{Name: "style", Value: "margin:0"})
+		img := dom.NewElement("img",
+			dom.Attribute{Name: "src", Value: "box.png"},
+			dom.Attribute{Name: "style", Value: "display:block;width:20px;height:20px;background:#00ff00;object-fit:contain;object-position:left bottom"},
+		)
+		body.AppendChild(img)
+
+		frame, err := render.RenderWithResources(document, render.Viewport{Width: 30, Height: 30}, render.Resources{
+			Images: map[*dom.Node]image.Image{img: wide},
+		})
+		if err != nil {
+			t.Fatalf("RenderWithResources() error = %v", err)
+		}
+		painted, err := render.Rasterize(frame)
+		if err != nil {
+			t.Fatalf("Rasterize() error = %v", err)
+		}
+		// 40x20 contained in 20x20 becomes 20x10 pinned to bottom (y=10..19), leaving green background in top half (y=0..9).
+		assertResourcePixel(t, painted, 5, 4, color.NRGBA{R: 0x00, G: 0xff, B: 0x00, A: 0xff})
+		assertResourcePixel(t, painted, 4, 15, color.NRGBA{R: 0xff, G: 0x00, B: 0x00, A: 0xff})
+		assertResourcePixel(t, painted, 16, 15, color.NRGBA{R: 0x00, G: 0x00, B: 0xff, A: 0xff})
+	})
+
+	t.Run("none_and_scale_down", func(t *testing.T) {
+		document, _, body := resourceTestDocument()
+		body.Attributes = append(body.Attributes, dom.Attribute{Name: "style", Value: "margin:0"})
+		small := image.NewNRGBA(image.Rect(0, 0, 10, 10))
+		for y := range 10 {
+			for x := range 10 {
+				small.SetNRGBA(x, y, color.NRGBA{R: 0x11, G: 0x22, B: 0x33, A: 0xff})
+			}
+		}
+		img := dom.NewElement("img",
+			dom.Attribute{Name: "src", Value: "small.png"},
+			dom.Attribute{Name: "style", Value: "display:block;width:30px;height:30px;object-fit:scale-down;object-position:right top"},
+		)
+		body.AppendChild(img)
+
+		frame, err := render.RenderWithResources(document, render.Viewport{Width: 40, Height: 40}, render.Resources{
+			Images: map[*dom.Node]image.Image{img: small},
+		})
+		if err != nil {
+			t.Fatalf("RenderWithResources() error = %v", err)
+		}
+		var drawCmd *render.Command
+		for index := range frame.DisplayList.Commands {
+			if frame.DisplayList.Commands[index].Kind == render.DrawImageCommand {
+				drawCmd = &frame.DisplayList.Commands[index]
+				break
+			}
+		}
+		if drawCmd == nil {
+			t.Fatal("missing DrawImageCommand")
+		}
+		want := render.Rect{X: 20, Y: 0, Width: 10, Height: 10}
+		if drawCmd.Rect != want {
+			t.Fatalf("scale-down draw rect = %#v, want %#v", drawCmd.Rect, want)
+		}
+	})
+}
