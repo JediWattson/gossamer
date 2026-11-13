@@ -266,9 +266,12 @@ type provenanceStore struct {
 }
 
 type provenanceBuilder struct {
-	store     provenanceStore
-	sourceIDs map[PropertySource]provenanceSourceID
-	access    *dom.ReadAccess
+	store               provenanceStore
+	sourceIDs           map[PropertySource]provenanceSourceID
+	access              *dom.ReadAccess
+	initialIDs          [len(propertyDefinitions)]provenanceSourceID
+	lastInheritedParent *dom.Node
+	lastInheritedIDs    [len(propertyDefinitions)]provenanceSourceID
 }
 
 // indexPointerProvenance compacts transient style-tree explanations without
@@ -440,19 +443,93 @@ func (builder *provenanceBuilder) finish() provenanceStore {
 	return store
 }
 
+func (builder *provenanceBuilder) initialPropertySourceID(index int, name string) provenanceSourceID {
+	id := builder.initialIDs[index]
+	if id == noProvenanceSource {
+		id = builder.intern(PropertySource{Kind: SourceInitial, DeclarationProperty: name})
+		builder.initialIDs[index] = id
+	}
+	return id
+}
+
+func (builder *provenanceBuilder) inheritedPropertySourceID(index int, name string, parent *dom.Node) provenanceSourceID {
+	if builder.lastInheritedParent != parent {
+		builder.lastInheritedParent = parent
+		builder.lastInheritedIDs = [len(propertyDefinitions)]provenanceSourceID{}
+	}
+	id := builder.lastInheritedIDs[index]
+	if id == noProvenanceSource {
+		controller := PropertySource{Kind: SourceInherited, DeclarationProperty: name, owner: parent}
+		if builder.access != nil {
+			controller = controller.stableCopy(builder.access)
+		}
+		id = builder.intern(controller)
+		builder.lastInheritedIDs[index] = id
+	}
+	return id
+}
+
 func (builder *provenanceBuilder) compact(styled, parent *styledNode) nodeProvenance {
 	node := nodeProvenance{ordinary: make([]explanationRecord, len(propertyDefinitions))}
 	if styled == nil {
 		return node
 	}
 	explanations := styled.explanations
-	if len(explanations) == 0 {
+	if len(explanations) == 0 && !styled.sparseInitial {
+		return node
+	}
+	sparse := styled.sparseInitial
+	elementParent := isElementStyleParent(parent)
+	matched := 0
+	for index := range propertyDefinitions {
+		name := propertyDefinitions[index].name
+		explanation, ok := explanations[name]
+		if !ok {
+			if !sparse {
+				continue
+			}
+			valueSourceID := builder.initialPropertySourceID(index, name)
+			if propertyDefinitions[index].inherited && elementParent {
+				node.ordinary[index] = explanationRecord{
+					controllerID:  builder.inheritedPropertySourceID(index, name, parent.node),
+					valueSourceID: valueSourceID,
+					resolution:    ResolutionInherited,
+				}
+			} else {
+				node.ordinary[index] = explanationRecord{
+					controllerID:  valueSourceID,
+					valueSourceID: valueSourceID,
+					resolution:    ResolutionInitial,
+				}
+			}
+			continue
+		}
+		matched++
+		if explanation.Resolution == ResolutionInitial && len(explanation.Rollback) == 0 &&
+			explanation.Controller.Kind == SourceInitial && explanation.ValueSource.Kind == SourceInitial &&
+			explanation.Controller.DeclarationProperty == name && explanation.ValueSource.DeclarationProperty == name &&
+			explanation.Controller == (PropertySource{Kind: SourceInitial, DeclarationProperty: name}) &&
+			explanation.ValueSource == explanation.Controller {
+			id := builder.initialPropertySourceID(index, name)
+			node.ordinary[index] = explanationRecord{
+				controllerID:  id,
+				valueSourceID: id,
+				resolution:    ResolutionInitial,
+			}
+			continue
+		}
+		node.ordinary[index] = builder.compactExplanation(explanation)
+	}
+	if matched == len(explanations) {
 		return node
 	}
 	// Deterministic traversal makes source interning and rollback-arena layout
-	// independent of Go map iteration order.
-	properties := make([]string, 0, len(explanations))
+	// independent of Go map iteration order for custom and non-canonical keys.
+	properties := make([]string, 0, len(explanations)-matched)
 	for property := range explanations {
+		if _, ok := ordinaryPropertyIndexByName[property]; ok {
+			continue
+		}
 		properties = append(properties, property)
 	}
 	sort.Strings(properties)
@@ -515,11 +592,17 @@ func (builder *provenanceBuilder) intern(source PropertySource) provenanceSource
 	return id
 }
 
+var ordinaryPropertyIndexByName = func() map[string]int {
+	byName := make(map[string]int, len(propertyDefinitions))
+	for index := range propertyDefinitions {
+		byName[propertyDefinitions[index].name] = index
+	}
+	return byName
+}()
+
 func ordinaryProvenanceIndex(property string) (int, bool) {
-	index := sort.Search(len(propertyDefinitions), func(index int) bool {
-		return propertyDefinitions[index].name >= property
-	})
-	return index, index < len(propertyDefinitions) && propertyDefinitions[index].name == property
+	index, ok := ordinaryPropertyIndexByName[property]
+	return index, ok
 }
 
 func (store provenanceStore) source(id provenanceSourceID) PropertySource {

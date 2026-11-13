@@ -3,7 +3,6 @@ package style
 import (
 	"image/color"
 	"math"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -290,6 +289,55 @@ var allPropertyNames = func() []string {
 	return names
 }()
 
+var propertyDefinitionByName = func() map[string]*propertyDefinition {
+	byName := make(map[string]*propertyDefinition, len(propertyDefinitions))
+	for index := range propertyDefinitions {
+		definition := &propertyDefinitions[index]
+		byName[definition.name] = definition
+	}
+	return byName
+}()
+
+var singlePropertyTargetByName = func() map[string][]string {
+	targets := make(map[string][]string, len(propertyDefinitions))
+	for index := range propertyDefinitions {
+		name := propertyDefinitions[index].name
+		targets[name] = []string{name}
+	}
+	return targets
+}()
+
+var inheritedPropertyDefinitions = func() []propertyDefinition {
+	inherited := make([]propertyDefinition, 0, len(propertyDefinitions))
+	for index := range propertyDefinitions {
+		if propertyDefinitions[index].inherited {
+			inherited = append(inherited, propertyDefinitions[index])
+		}
+	}
+	return inherited
+}()
+
+var logicalBoxPropertyDefinitions = func() []propertyDefinition {
+	logical := make([]propertyDefinition, 0, 8)
+	for index := range propertyDefinitions {
+		kind := propertyDefinitions[index].kind
+		if kind == propertyLogicalPadding || kind == propertyLogicalInset {
+			logical = append(logical, propertyDefinitions[index])
+		}
+	}
+	return logical
+}()
+
+var earlyPropertyDefinitions = func() []propertyDefinition {
+	early := make([]propertyDefinition, 0, 4)
+	for index := range propertyDefinitions {
+		if propertyDefinitions[index].computeEarly {
+			early = append(early, propertyDefinitions[index])
+		}
+	}
+	return early
+}()
+
 var shorthandTargets = map[string][]string{
 	"background":      {"background-color"},
 	"border":          {"border-top-width", "border-right-width", "border-bottom-width", "border-left-width", "border-top-style", "border-right-style", "border-bottom-style", "border-left-style", "border-top-color", "border-right-color", "border-bottom-color", "border-left-color"},
@@ -327,13 +375,8 @@ type propertyApplyContext struct {
 }
 
 func lookupPropertyDefinition(name string) (*propertyDefinition, bool) {
-	index := sort.Search(len(propertyDefinitions), func(index int) bool {
-		return propertyDefinitions[index].name >= name
-	})
-	if index >= len(propertyDefinitions) || propertyDefinitions[index].name != name {
-		return nil, false
-	}
-	return &propertyDefinitions[index], true
+	definition, ok := propertyDefinitionByName[name]
+	return definition, ok
 }
 
 func declarationTargets(property string) []string {
@@ -343,25 +386,24 @@ func declarationTargets(property string) []string {
 	if property == "all" {
 		return allPropertyNames
 	}
-	if definition, ok := lookupPropertyDefinition(property); ok {
-		return []string{definition.name}
+	if targets, ok := singlePropertyTargetByName[property]; ok {
+		return targets
 	}
 	return shorthandTargets[property]
 }
 
-func remapLogicalCandidates(style *computedStyle, candidatesByTarget map[string][]winningDeclaration) {
+func remapLogicalCandidates(style *computedStyle, candidatesByTarget map[string][]winningDeclaration) bool {
 	if style == nil || len(candidatesByTarget) == 0 {
-		return
+		return false
 	}
-	for index := range propertyDefinitions {
-		definition := propertyDefinitions[index]
-		if definition.kind != propertyLogicalPadding && definition.kind != propertyLogicalInset {
-			continue
-		}
+	remapped := false
+	for index := range logicalBoxPropertyDefinitions {
+		definition := logicalBoxPropertyDefinitions[index]
 		candidates := candidatesByTarget[definition.name]
 		if len(candidates) == 0 {
 			continue
 		}
+		remapped = true
 		delete(candidatesByTarget, definition.name)
 		physical := physicalBoxProperty(definition.kind, physicalEdgeForLogical(style.writingMode, style.direction, definition.logical))
 		for candidateIndex := range candidates {
@@ -370,6 +412,7 @@ func remapLogicalCandidates(style *computedStyle, candidatesByTarget map[string]
 		}
 		candidatesByTarget[physical] = append(candidatesByTarget[physical], candidates...)
 	}
+	return remapped
 }
 
 func physicalBoxProperty(kind propertyKind, edge propertyEdge) string {

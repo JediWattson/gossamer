@@ -222,3 +222,31 @@ func mustParseSelectorIndexStylesheet(t *testing.T, source string) css.Styleshee
 	}
 	return stylesheet
 }
+
+func TestCompiledRulesAndInactiveMediaPseudoMatchFullPass(t *testing.T) {
+	t.Parallel()
+
+	stylesheet := mustParseSelectorIndexStylesheet(t, `
+		@media (max-width: 100px) {
+			.card::before { content: "off"; color: red }
+		}
+		@supports (color: red) {
+			#target, .other { margin-top: 12px; padding-inline-start: 4px; --accent: green; color: var(--accent) }
+		}
+	`)
+	root, owner := selectorIndexDocument()
+	document, err := dom.IndexDocument(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := Input{
+		Environment: Environment{Width: 640, Height: 480, MediaType: "screen", InitialFontSize: 16},
+		Stylesheets: map[*dom.Node]css.Stylesheet{owner: stylesheet},
+	}
+	indexed := computeSelectorIndexSnapshot(t, document, base)
+	base.disableRuleIndex = true
+	full := computeSelectorIndexSnapshot(t, document, base)
+	if got, want := indexed.DumpExplanations(), full.DumpExplanations(); got != want {
+		t.Fatalf("indexed explanations differ from full pass:\n--- indexed ---\n%s\n--- full ---\n%s", got, want)
+	}
+}

@@ -1038,12 +1038,13 @@ func (computed ComputedStyle) CustomProperties() css.CustomProperties {
 }
 
 type styledNode struct {
-	node         *dom.Node
-	parent       *styledNode
-	style        ComputedStyle
-	explanations map[string]PropertyExplanation
-	pseudos      map[css.PseudoElement]pseudoStyledNode
-	children     []*styledNode
+	node          *dom.Node
+	parent        *styledNode
+	style         ComputedStyle
+	explanations  map[string]PropertyExplanation
+	pseudos       map[css.PseudoElement]pseudoStyledNode
+	children      []*styledNode
+	sparseInitial bool
 }
 
 type pseudoStyledNode struct {
@@ -1078,6 +1079,7 @@ type Snapshot struct {
 	mutationDependencies snapshotMutationDependencies
 	damageBaseVersion    uint64
 	damage               SnapshotStyleDamage
+	contentAttributes    map[string]struct{}
 }
 
 // Compute performs a complete style pass over an unindexed DOM tree. Browser
@@ -1093,8 +1095,8 @@ func Compute(root *dom.Node, input Input) *Snapshot {
 		byPseudoNode:         make(map[pointerPseudoKey]ComputedStyle),
 		mutationDependencies: compileSnapshotMutationDependencies(input),
 	}
-	indexPointerStyles(styledRoot, snapshot.byNode)
-	indexPointerPseudoStyles(styledRoot, snapshot.byPseudoNode)
+	indexPointerStyles(styledRoot, snapshot.byNode, &snapshot.contentAttributes)
+	indexPointerPseudoStyles(styledRoot, snapshot.byPseudoNode, &snapshot.contentAttributes)
 	snapshot.provenance = indexPointerProvenance(styledRoot)
 	return snapshot
 }
@@ -1123,8 +1125,8 @@ func ComputeReadView(view dom.ReadView, input Input) (*Snapshot, error) {
 		byPseudoID:           make(map[stablePseudoKey]ComputedStyle),
 		mutationDependencies: compileSnapshotMutationDependencies(input),
 	}
-	indexStableStyles(styledRoot, snapshot.byID, access)
-	indexStablePseudoStyles(styledRoot, snapshot.byPseudoID, access)
+	indexStableStyles(styledRoot, snapshot.byID, access, &snapshot.contentAttributes)
+	indexStablePseudoStyles(styledRoot, snapshot.byPseudoID, access, &snapshot.contentAttributes)
 	snapshot.provenance = indexStableProvenance(styledRoot, access)
 	snapshot.rootID, _ = access.ID(root)
 	return snapshot, nil
@@ -1201,55 +1203,59 @@ func resolveSelectorTarget(root *dom.Node, access *dom.ReadAccess, state Selecto
 	return found
 }
 
-func indexPointerStyles(node *styledNode, destination map[*dom.Node]ComputedStyle) {
+func indexPointerStyles(node *styledNode, destination map[*dom.Node]ComputedStyle, contentAttributes *map[string]struct{}) {
 	if node == nil {
 		return
 	}
 	if node.node != nil {
 		destination[node.node] = node.style
+		recordContentAttributes(contentAttributes, node.style.content)
 	}
 	for _, child := range node.children {
-		indexPointerStyles(child, destination)
+		indexPointerStyles(child, destination, contentAttributes)
 	}
 }
 
-func indexStableStyles(node *styledNode, destination map[dom.NodeID]ComputedStyle, access *dom.ReadAccess) {
+func indexStableStyles(node *styledNode, destination map[dom.NodeID]ComputedStyle, access *dom.ReadAccess, contentAttributes *map[string]struct{}) {
 	if node == nil {
 		return
 	}
 	if node.node != nil {
 		if id, ok := access.ID(node.node); ok {
 			destination[id] = node.style
+			recordContentAttributes(contentAttributes, node.style.content)
 		}
 	}
 	for _, child := range node.children {
-		indexStableStyles(child, destination, access)
+		indexStableStyles(child, destination, access, contentAttributes)
 	}
 }
 
-func indexPointerPseudoStyles(node *styledNode, destination map[pointerPseudoKey]ComputedStyle) {
+func indexPointerPseudoStyles(node *styledNode, destination map[pointerPseudoKey]ComputedStyle, contentAttributes *map[string]struct{}) {
 	if node == nil {
 		return
 	}
 	for pseudo, styled := range node.pseudos {
 		destination[pointerPseudoKey{node: node.node, pseudo: pseudo}] = styled.style
+		recordContentAttributes(contentAttributes, styled.style.content)
 	}
 	for _, child := range node.children {
-		indexPointerPseudoStyles(child, destination)
+		indexPointerPseudoStyles(child, destination, contentAttributes)
 	}
 }
 
-func indexStablePseudoStyles(node *styledNode, destination map[stablePseudoKey]ComputedStyle, access *dom.ReadAccess) {
+func indexStablePseudoStyles(node *styledNode, destination map[stablePseudoKey]ComputedStyle, access *dom.ReadAccess, contentAttributes *map[string]struct{}) {
 	if node == nil {
 		return
 	}
 	if id, ok := access.ID(node.node); ok {
 		for pseudo, styled := range node.pseudos {
 			destination[stablePseudoKey{id: id, pseudo: pseudo}] = styled.style
+			recordContentAttributes(contentAttributes, styled.style.content)
 		}
 	}
 	for _, child := range node.children {
-		indexStablePseudoStyles(child, destination, access)
+		indexStablePseudoStyles(child, destination, access, contentAttributes)
 	}
 }
 
@@ -1391,7 +1397,10 @@ func buildCascadeStyleContext(document *dom.Node, input Input) cascadeStyleConte
 	}
 	for _, origin := range []originStyleContext{context.userAgent, context.user, context.author} {
 		for _, source := range origin.sheets {
-			for _, rule := range source.stylesheet.Rules {
+			for ruleIndex, rule := range source.stylesheet.Rules {
+				if len(source.ruleIndex.ruleActive) == len(source.stylesheet.Rules) && !source.ruleIndex.ruleActive[ruleIndex] {
+					continue
+				}
 				for _, selector := range rule.Selectors {
 					pseudo := selector.PseudoElement()
 					if pseudo > css.PseudoElementNone && int(pseudo) < len(context.pseudoElements) {
@@ -1473,10 +1482,10 @@ func styleNode(node *dom.Node, parent *styledNode, context *cascadeStyleContext,
 	if node != nil && node.Type == dom.ElementNode {
 		applyCascade(&style, explanations, node, css.PseudoElementNone, context, viewport, parent)
 	}
-	styled := &styledNode{node: node, parent: parent, style: style, explanations: explanations}
+	styled := &styledNode{node: node, parent: parent, style: style, explanations: explanations, sparseInitial: true}
 	if node != nil && node.Type == dom.ElementNode {
 		for _, pseudo := range []css.PseudoElement{css.PseudoElementBefore, css.PseudoElementAfter} {
-			if !context.pseudoElements[pseudo] {
+			if !context.pseudoElements[pseudo] || !hasMatchingPseudoRule(node, pseudo, context) {
 				continue
 			}
 			pseudoStyle, pseudoExplanations := initialStyle(node, styled, viewport)
@@ -1500,37 +1509,28 @@ func styleNode(node *dom.Node, parent *styledNode, context *cascadeStyleContext,
 
 func initialStyle(node *dom.Node, parent *styledNode, viewport Viewport) (computedStyle, map[string]PropertyExplanation) {
 	style := cssInitialStyle(viewport)
-	explanations := make(map[string]PropertyExplanation, len(propertyDefinitions))
+	explanations := make(map[string]PropertyExplanation, 8)
 	hasElementParent := parent != nil && parent.node != nil && parent.node.Type == dom.ElementNode
 	if hasElementParent {
-		for index := range propertyDefinitions {
-			definition := propertyDefinitions[index]
-			if definition.inherited {
-				definition.copy(&style, parent.style)
+		for index := range inheritedPropertyDefinitions {
+			definition := inheritedPropertyDefinitions[index]
+			definition.copy(&style, parent.style)
+			if parentExplanation, ok := parent.explanations[definition.name]; ok {
+				initialSource := PropertySource{Kind: SourceInitial, DeclarationProperty: definition.name}
+				if parentExplanation.ValueSource != initialSource {
+					controller := PropertySource{Kind: SourceInherited, DeclarationProperty: definition.name, owner: parent.node}
+					explanations[definition.name] = PropertyExplanation{
+						Property:    definition.name,
+						Resolution:  ResolutionInherited,
+						Controller:  controller,
+						ValueSource: parentExplanation.ValueSource,
+					}
+				}
 			}
 		}
 		style.ancestorUnderline = parent.style.underline
 		style.underline = parent.style.underline
 		style.customProperties = parent.style.customProperties
-	}
-	for index := range propertyDefinitions {
-		definition := propertyDefinitions[index]
-		if definition.inherited && hasElementParent {
-			parentExplanation := parent.explanations[definition.name]
-			controller := PropertySource{Kind: SourceInherited, DeclarationProperty: definition.name, owner: parent.node}
-			explanations[definition.name] = PropertyExplanation{
-				Property:    definition.name,
-				Resolution:  ResolutionInherited,
-				Controller:  controller,
-				ValueSource: parentExplanation.ValueSource,
-			}
-			continue
-		}
-		source := PropertySource{Kind: SourceInitial, DeclarationProperty: definition.name}
-		explanations[definition.name] = PropertyExplanation{
-			Property: definition.name, Resolution: ResolutionInitial,
-			Controller: source, ValueSource: source,
-		}
 	}
 	if node == nil {
 		return style, explanations
@@ -1668,9 +1668,33 @@ func mustParseBuiltInUserAgentStylesheet(source string) css.Stylesheet {
 	return stylesheet
 }
 
+func hasMatchingPseudoRule(node *dom.Node, pseudo css.PseudoElement, context *cascadeStyleContext) bool {
+	if node == nil || node.Type != dom.ElementNode || context == nil {
+		return false
+	}
+	for _, origin := range []originStyleContext{context.userAgent, context.user, context.author} {
+		for _, source := range origin.sheets {
+			candidateRules := source.ruleIndex.candidates(source.stylesheet, node, context.disableRuleIndex, context.ruleScratch[:0])
+			context.ruleScratch = candidateRules
+			for _, ruleIndex := range candidateRules {
+				if len(source.ruleIndex.ruleActive) == len(source.stylesheet.Rules) && !source.ruleIndex.ruleActive[ruleIndex] {
+					continue
+				}
+				rule := source.stylesheet.Rules[ruleIndex]
+				if _, matches := rule.MatchPseudoWithContext(node, pseudo, context.selectorContext); matches {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 func applyCascade(style *computedStyle, explanations map[string]PropertyExplanation, node *dom.Node, pseudo css.PseudoElement, context *cascadeStyleContext, viewport Viewport, parent *styledNode) bool {
 	candidatesByTarget := make(map[string][]winningDeclaration)
 	recorded := false
+	hasCustom := false
+	var compiledRule *[]winningDeclaration
 	sourceOrders := make(map[CascadeOrigin]int)
 	layerRanks := func(origin CascadeOrigin) map[layerIdentity]int {
 		switch origin {
@@ -1710,7 +1734,13 @@ func applyCascade(style *computedStyle, explanations map[string]PropertyExplanat
 		for _, target := range targets {
 			expanded := candidate
 			expanded.target = target
+			if compiledRule != nil {
+				*compiledRule = append(*compiledRule, expanded)
+			}
 			candidatesByTarget[target] = append(candidatesByTarget[target], expanded)
+			if custom {
+				hasCustom = true
+			}
 			recorded = true
 		}
 	}
@@ -1726,7 +1756,11 @@ func applyCascade(style *computedStyle, explanations map[string]PropertyExplanat
 	recordSheets := func(origin CascadeOrigin, originContext originStyleContext) {
 		for _, source := range originContext.sheets {
 			candidateRules := source.ruleIndex.candidates(source.stylesheet, node, context.disableRuleIndex, context.ruleScratch[:0])
+			canCacheCompiled := len(source.ruleIndex.compiledReady) == len(source.stylesheet.Rules)
 			for _, ruleIndex := range candidateRules {
+				if len(source.ruleIndex.ruleActive) == len(source.stylesheet.Rules) && !source.ruleIndex.ruleActive[ruleIndex] {
+					continue
+				}
 				rule := source.stylesheet.Rules[ruleIndex]
 				var specificity css.Specificity
 				var matches bool
@@ -1735,12 +1769,25 @@ func applyCascade(style *computedStyle, explanations map[string]PropertyExplanat
 				} else {
 					specificity, matches = rule.MatchPseudoWithContext(node, pseudo, context.selectorContext)
 				}
-				matches = matches && rule.MatchesMedia(context.mediaEnvironment)
-				matches = matches && rule.MatchesSupports(SupportsDeclaration)
-				for declarationIndex, declaration := range rule.Declarations {
-					if !matches {
+				if !matches {
+					continue
+				}
+				if canCacheCompiled {
+					if source.ruleIndex.compiledReady[ruleIndex] {
+						for _, compiled := range source.ruleIndex.compiled[ruleIndex] {
+							compiled.specificity = specificity
+							candidatesByTarget[compiled.target] = append(candidatesByTarget[compiled.target], compiled)
+							if strings.HasPrefix(compiled.target, "--") {
+								hasCustom = true
+							}
+							recorded = true
+						}
 						continue
 					}
+					compiledRule = &source.ruleIndex.compiled[ruleIndex]
+					source.ruleIndex.compiledReady[ruleIndex] = true
+				}
+				for declarationIndex, declaration := range rule.Declarations {
 					var declarationSource css.DeclarationSource
 					if declarationIndex < len(rule.DeclarationSources) {
 						declarationSource = rule.DeclarationSources[declarationIndex]
@@ -1753,6 +1800,7 @@ func applyCascade(style *computedStyle, explanations map[string]PropertyExplanat
 						order: source.ruleIndex.sourceOrder[ruleIndex] + declarationIndex,
 					})
 				}
+				compiledRule = nil
 			}
 			context.ruleScratch = candidateRules[:0]
 		}
@@ -1798,29 +1846,43 @@ func applyCascade(style *computedStyle, explanations map[string]PropertyExplanat
 		}
 	}
 
+	if len(candidatesByTarget) == 0 {
+		return recorded
+	}
+
 	sortCascadeCandidates(candidatesByTarget)
 
-	customPropertyCandidates := make(map[string][]winningDeclaration)
-	for target, candidates := range candidatesByTarget {
-		if strings.HasPrefix(target, "--") {
-			customPropertyCandidates[target] = candidates
-			delete(candidatesByTarget, target)
+	if hasCustom {
+		customPropertyCandidates := make(map[string][]winningDeclaration)
+		for target, candidates := range candidatesByTarget {
+			if strings.HasPrefix(target, "--") {
+				customPropertyCandidates[target] = candidates
+				delete(candidatesByTarget, target)
+			}
 		}
+		style.customProperties = resolveCustomPropertyCandidates(style.customProperties, customPropertyCandidates, explanations, parent)
 	}
-	style.customProperties = resolveCustomPropertyCandidates(style.customProperties, customPropertyCandidates, explanations, parent)
 
-	for index := range propertyDefinitions {
-		definition := propertyDefinitions[index]
-		if !definition.computeEarly {
-			continue
-		}
+	if len(candidatesByTarget) == 0 {
+		return recorded
+	}
+
+	for index := range earlyPropertyDefinitions {
+		definition := earlyPropertyDefinitions[index]
 		if candidates, ok := candidatesByTarget[definition.name]; ok {
 			applyDeclarationCandidates(style, explanations, parent, candidates, viewport)
 			delete(candidatesByTarget, definition.name)
 		}
 	}
-	remapLogicalCandidates(style, candidatesByTarget)
-	sortCascadeCandidates(candidatesByTarget)
+	if remapLogicalCandidates(style, candidatesByTarget) {
+		sortCascadeCandidates(candidatesByTarget)
+	}
+	if len(candidatesByTarget) == 1 {
+		for _, candidates := range candidatesByTarget {
+			applyDeclarationCandidates(style, explanations, parent, candidates, viewport)
+		}
+		return recorded
+	}
 	targets := make([]string, 0, len(candidatesByTarget))
 	for target := range candidatesByTarget {
 		targets = append(targets, target)

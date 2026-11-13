@@ -165,28 +165,36 @@ func unionStablePseudoStyleKeysForIDs(
 // GeneratedContentDependsOnAttribute reports whether any retained computed
 // content value can read the named DOM attribute during layout.
 func (snapshot *Snapshot) GeneratedContentDependsOnAttribute(name string) bool {
-	if snapshot == nil {
+	if snapshot == nil || len(snapshot.contentAttributes) == 0 {
 		return false
 	}
-	name = asciiLower(name)
-	for _, computed := range snapshot.byID {
-		if contentDependsOnAttribute(computed.content, name) {
-			return true
-		}
-	}
-	for _, computed := range snapshot.byPseudoID {
-		if contentDependsOnAttribute(computed.content, name) {
-			return true
-		}
-	}
-	return false
+	_, ok := snapshot.contentAttributes[asciiLower(name)]
+	return ok
 }
 
-func contentDependsOnAttribute(content ContentValue, name string) bool {
+func recordContentAttributes(attributes *map[string]struct{}, content ContentValue) {
 	for _, item := range content.items {
-		if item.kind == contentAttribute && asciiLower(item.value) == name {
-			return true
+		if item.kind != contentAttribute {
+			continue
 		}
+		name := asciiLower(item.value)
+		if *attributes == nil {
+			*attributes = make(map[string]struct{})
+		}
+		(*attributes)[name] = struct{}{}
 	}
-	return false
+}
+
+func collectSnapshotContentAttributes(
+	byID map[dom.NodeID]ComputedStyle,
+	byPseudoID map[stablePseudoKey]ComputedStyle,
+) map[string]struct{} {
+	var attributes map[string]struct{}
+	for _, computed := range byID {
+		recordContentAttributes(&attributes, computed.content)
+	}
+	for _, computed := range byPseudoID {
+		recordContentAttributes(&attributes, computed.content)
+	}
+	return attributes
 }

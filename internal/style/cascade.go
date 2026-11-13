@@ -159,6 +159,9 @@ func cascadeLevel(candidate winningDeclaration) int {
 func sortCascadeCandidates(candidatesByTarget map[string][]winningDeclaration) {
 	for target := range candidatesByTarget {
 		candidates := candidatesByTarget[target]
+		if len(candidates) < 2 {
+			continue
+		}
 		sort.SliceStable(candidates, func(left, right int) bool {
 			return declarationPrecedence(candidates[left], candidates[right]) > 0
 		})
@@ -268,8 +271,14 @@ func originLayerRanks(sheets []stylesheetSource, environment css.MediaEnvironmen
 		for _, name := range source.stylesheet.LayerOrder {
 			recordLayerIdentity(&order, layerIdentityFor(source.order, name))
 		}
-		for _, rule := range source.stylesheet.Rules {
-			if rule.MatchesMedia(environment) && rule.MatchesSupports(SupportsDeclaration) {
+		for ruleIndex, rule := range source.stylesheet.Rules {
+			active := false
+			if len(source.ruleIndex.ruleActive) == len(source.stylesheet.Rules) {
+				active = source.ruleIndex.ruleActive[ruleIndex]
+			} else {
+				active = rule.MatchesMedia(environment) && rule.MatchesSupports(SupportsDeclaration)
+			}
+			if active {
 				recordLayerIdentity(&order, layerIdentityFor(source.order, rule.Layer))
 			}
 		}

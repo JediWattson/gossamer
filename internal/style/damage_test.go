@@ -108,3 +108,31 @@ func TestIncrementalSnapshotDamageCacheMatchesFullDiff(t *testing.T) {
 		t.Fatalf("cached paint damage = %#v", cached)
 	}
 }
+
+func TestGeneratedContentDependsOnAttributeTracksIncrementalAdditionsAndRemovals(t *testing.T) {
+	document, owner, target, _ := incrementalSubtreeDocument(t)
+	input := incrementalStyleInput(t, owner, `.on::before { content:attr(data-label); color:red }`)
+
+	initial := incrementalStyleSnapshot(t, document, input)
+	if initial.GeneratedContentDependsOnAttribute("data-label") {
+		t.Fatal("initial snapshot unexpectedly depends on data-label")
+	}
+
+	sequence := document.MutationSequence()
+	if err := document.SetAttribute(target, "class", "on"); err != nil {
+		t.Fatal(err)
+	}
+	added, reused := incrementalStyleUpdate(t, document, initial, input, sequence)
+	if !reused || !added.GeneratedContentDependsOnAttribute("DATA-LABEL") {
+		t.Fatalf("added incremental snapshot reused=%t depends=%t, want true/true", reused, added.GeneratedContentDependsOnAttribute("DATA-LABEL"))
+	}
+
+	sequence = document.MutationSequence()
+	if err := document.SetAttribute(target, "class", ""); err != nil {
+		t.Fatal(err)
+	}
+	removed, reused := incrementalStyleUpdate(t, document, added, input, sequence)
+	if !reused || removed.GeneratedContentDependsOnAttribute("data-label") {
+		t.Fatalf("removed incremental snapshot reused=%t depends=%t, want true/false", reused, removed.GeneratedContentDependsOnAttribute("data-label"))
+	}
+}

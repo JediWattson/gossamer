@@ -204,9 +204,16 @@ func (snapshot *Snapshot) RestyleReadViewAfterMutations(
 	for _, root := range dirtyRoots {
 		deleteStablePseudoSubtree(root, updated.byPseudoID, access)
 	}
+	hadContentAttrs := len(snapshot.contentAttributes) > 0
+	if !hadContentAttrs {
+		updated.contentAttributes = nil
+	}
 	for _, root := range styledRoots {
-		indexStableStyles(root, updated.byID, access)
-		indexStablePseudoStyles(root, updated.byPseudoID, access)
+		indexStableStyles(root, updated.byID, access, &updated.contentAttributes)
+		indexStablePseudoStyles(root, updated.byPseudoID, access, &updated.contentAttributes)
+	}
+	if hadContentAttrs {
+		updated.contentAttributes = collectSnapshotContentAttributes(updated.byID, updated.byPseudoID)
 	}
 	updated.provenance = restyleStableProvenance(snapshot.provenance, styledRoots, styledParents, access)
 	updated.mutationDependencies = compileSnapshotMutationDependencies(input)
