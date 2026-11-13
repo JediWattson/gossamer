@@ -703,6 +703,21 @@ type DOMGeometryHost interface {
 	ScrollIntoView(NodeHandle, ScrollIntoViewOptions) (bool, error)
 }
 
+// DOMImageMetrics describes decoded image dimensions and load completion state
+// for an HTML img element.
+type DOMImageMetrics struct {
+	Complete      bool
+	NaturalWidth  int
+	NaturalHeight int
+	CurrentSrc    string
+}
+
+// DOMImageHost is an optional browser extension exposing image readiness and
+// intrinsic pixel dimensions to script bindings without exposing image buffers.
+type DOMImageHost interface {
+	ImageMetrics(NodeHandle) (DOMImageMetrics, error)
+}
+
 // DOMMutationObserverHost exposes the document-owned mutation journal to a
 // script Realm without moving observer policy into the native DOM.
 type DOMMutationObserverHost interface {

@@ -450,15 +450,24 @@ badLink.href = "/missing.css";
 badLink.addEventListener("error", () => events.push("css-error"));
 document.head.appendChild(badLink);
 
+const emptyImg = new Image();
+events.push("empty-complete:" + emptyImg.complete + ":" + emptyImg.naturalWidth + ":" + emptyImg.naturalHeight);
+
 const img = new Image();
 img.alt = "pixel";
 img.src = "/pixel.png";
-img.addEventListener("load", () => events.push("img-load:" + String(img instanceof HTMLImageElement) + ":" + img.alt));
+events.push("pending-complete:" + img.complete);
+img.addEventListener("load", () => {
+  const beforeResize = img.complete + ":" + img.naturalWidth + "x" + img.naturalHeight + ":" + img.width + "x" + img.height + ":" + img.currentSrc.endsWith("/pixel.png");
+  img.width = 48;
+  img.height = 24;
+  events.push("img-load:" + String(img instanceof HTMLImageElement) + ":" + img.alt + ":" + beforeResize + ":" + img.width + "x" + img.height);
+});
 document.body.appendChild(img);
 
 const badImg = document.createElement("img");
 badImg.src = "/missing.png";
-badImg.addEventListener("error", () => events.push("img-error"));
+badImg.addEventListener("error", () => events.push("img-error:" + badImg.complete + ":" + badImg.naturalWidth + ":" + badImg.naturalHeight));
 document.body.appendChild(badImg);
 
 window.__events = events;
@@ -511,9 +520,12 @@ window.__events = events;
 			t.Fatal(err)
 		}
 		if strings.Contains(text, "css-load:") && strings.Contains(text, "css-error") &&
-			strings.Contains(text, "img-load:") && strings.Contains(text, "img-error") {
+			strings.Contains(text, "img-load:") && strings.Contains(text, "img-error:") {
 			if !strings.Contains(text, "css-load:true:/dynamic.css:true::rgb(1, 2, 3)") ||
-				!strings.Contains(text, "img-load:true:pixel") {
+				!strings.Contains(text, "empty-complete:true:0:0") ||
+				!strings.Contains(text, "pending-complete:false") ||
+				!strings.Contains(text, "img-load:true:pixel:true:1x1:1x1:true:48x24") ||
+				!strings.Contains(text, "img-error:true:0:0") {
 				t.Fatalf("unexpected event details: %q", text)
 			}
 			return

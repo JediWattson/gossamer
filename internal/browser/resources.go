@@ -47,6 +47,7 @@ type imageResourceEntry struct {
 	source     string
 	generation uint64
 	manual     bool
+	failed     bool
 }
 
 type navigationResourceRequest struct {
@@ -110,11 +111,29 @@ func (resources *pageResources) apply(result navigationResourceResult) bool {
 			if !ok || entry.generation != result.imageGeneration || entry.source != result.imageSource {
 				return false
 			}
+			if entry.failed {
+				entry.failed = false
+				resources.imageSources[result.target.Node] = entry
+			}
 		}
 		resources.images[result.target.Node] = result.image
 		return true
 	}
 	return false
+}
+
+func (resources *pageResources) markImageFailed(result navigationResourceResult) bool {
+	if result.kind != resource.Image || result.backgroundImage || result.target.Node == 0 || result.imageGeneration == 0 {
+		return false
+	}
+	entry, ok := resources.imageSources[result.target.Node]
+	if !ok || entry.generation != result.imageGeneration || entry.source != result.imageSource {
+		return false
+	}
+	entry.failed = true
+	resources.imageSources[result.target.Node] = entry
+	delete(resources.images, result.target.Node)
+	return true
 }
 
 func (resources pageResources) rendererResources(document *dom.Document, scriptingEnabled bool, viewport render.Viewport) render.Resources {

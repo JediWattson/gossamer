@@ -39,6 +39,21 @@ func (resources *pageResources) markImageRequests(requests []navigationResourceR
 	return nil
 }
 
+func (resources *pageResources) decodeInlineImage(id dom.NodeID, sourceKey string) (bool, error) {
+	if _, err := resources.beginImageSource(id, sourceKey); err != nil {
+		return false, err
+	}
+	decoded, err := decodeImageDataURL(sourceKey)
+	if err != nil {
+		entry := resources.imageSources[id]
+		entry.failed = true
+		resources.imageSources[id] = entry
+		return false, nil
+	}
+	resources.images[id] = decoded.Image
+	return true, nil
+}
+
 func (resources *pageResources) decodeInitialInlineImages(document *dom.Document, location *url.URL, deviceScale float64, viewportWidth int) error {
 	base := stylesheetBaseURL(document.Root(), location)
 	var visit func(*dom.Node) error
@@ -53,11 +68,8 @@ func (resources *pageResources) decodeInitialInlineImages(document *dom.Document
 				if !ok {
 					return fmt.Errorf("browser: inline image resource node is not indexed")
 				}
-				if _, err := resources.beginImageSource(id, source.key); err != nil {
+				if _, err := resources.decodeInlineImage(id, source.key); err != nil {
 					return err
-				}
-				if decoded, err := decodeImageDataURL(source.key); err == nil {
-					resources.images[id] = decoded.Image
 				}
 			}
 		}
@@ -261,17 +273,19 @@ func (page *Page) syncImagesLocked() ([]navigationResourceRequest, bool, error) 
 					delete(page.resources.images, id)
 					changed = true
 				}
-				generation, err := page.resources.beginImageSource(id, source.key)
-				if err != nil {
-					return err
-				}
 				if source.inline {
-					decoded, decodeErr := decodeImageDataURL(source.key)
-					if decodeErr == nil {
-						page.resources.images[id] = decoded.Image
+					decodedChanged, decodeErr := page.resources.decodeInlineImage(id, source.key)
+					if decodeErr != nil {
+						return decodeErr
+					}
+					if decodedChanged {
 						changed = true
 					}
 				} else {
+					generation, err := page.resources.beginImageSource(id, source.key)
+					if err != nil {
+						return err
+					}
 					requests = append(requests, navigationResourceRequest{
 						kind: resource.Image, url: source.url, node: id,
 						imageGeneration: generation, imageSource: source.key,
@@ -569,8 +583,7 @@ func (page *Page) applyDynamicImage(
 		if applied {
 			// page.resources.apply already verified generation and source.
 		} else if result.err != nil {
-			entry, ok := page.resources.imageSources[result.target.Node]
-			matchingElement = ok && entry.generation == result.imageGeneration && entry.source == result.imageSource
+			matchingElement = page.resources.markImageFailed(result)
 		} else {
 			matchingElement = false
 		}
@@ -588,4 +601,44 @@ func (page *Page) applyDynamicImage(
 		dispatchErr = page.dispatchDynamicResourceEvent(task, generation, result.target, result.err)
 	}
 	return errors.Join(renderErr, dispatchErr)
+}
+
+func (host *taskHost) ImageMetrics(handle NodeHandle) (DOMImageMetrics, error) {
+	host.page.mutex.RLock()
+	defer host.page.mutex.RUnlock()
+	if err := host.validateHandleLocked(handle); err != nil {
+		return DOMImageMetrics{}, err
+	}
+	node, ok := host.page.document.Resolve(handle.Node)
+	if !ok {
+		return DOMImageMetrics{}, fmt.Errorf("%w: %d", dom.ErrUnknownNode, handle.Node)
+	}
+	if node.Type != dom.ElementNode || !strings.EqualFold(node.Data, "img") {
+		return DOMImageMetrics{}, fmt.Errorf("%w: image metrics require an img element", dom.ErrWrongNodeKind)
+	}
+	metrics := DOMImageMetrics{}
+	decoded, loaded := host.page.resources.images[handle.Node]
+	if loaded && decoded != nil {
+		bounds := decoded.Bounds()
+		metrics.Complete = true
+		metrics.NaturalWidth = bounds.Dx()
+		metrics.NaturalHeight = bounds.Dy()
+	}
+	entry, tracked := host.page.resources.imageSources[handle.Node]
+	if tracked {
+		metrics.CurrentSrc = entry.source
+		if entry.failed {
+			metrics.Complete = true
+		}
+		return metrics, nil
+	}
+	if !loaded {
+		rawSource, _ := imageConsumerSource(node, host.page.deviceScaleFactor, host.page.viewport.Width)
+		if strings.TrimSpace(rawSource) == "" {
+			metrics.Complete = true
+		} else if _, valid := resolveDocumentImageSource(rawSource, stylesheetBaseURL(host.page.document.Root(), host.page.location)); !valid {
+			metrics.Complete = true
+		}
+	}
+	return metrics, nil
 }

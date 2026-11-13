@@ -769,6 +769,7 @@ func (page *Page) applyNavigationResource(
 	}
 	if result.err != nil {
 		page.navigation.resourcesFailed++
+		page.resources.markImageFailed(result)
 	} else {
 		if page.resources.apply(result) {
 			if result.kind == resource.Stylesheet {
