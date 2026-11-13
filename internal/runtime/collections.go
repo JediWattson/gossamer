@@ -5,6 +5,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf16"
 	"unicode/utf8"
 
@@ -57,6 +58,7 @@ func (intrinsics *Intrinsics) installCollectionBuiltins(context *TaskContext) er
 		{"toString", 0, nativeStringToString}, {"valueOf", 0, nativeStringValueOf},
 		{"concat", 1, nativeStringConcat},
 		{"charAt", 1, nativeStringCharAt}, {"charCodeAt", 1, nativeStringCharCodeAt},
+		{"codePointAt", 1, nativeStringCodePointAt},
 		{"includes", 1, nativeStringIncludes},
 		{"endsWith", 1, nativeStringEndsWith},
 		{"startsWith", 1, nativeStringStartsWith}, {"replace", 2, nativeStringReplace},
@@ -68,7 +70,9 @@ func (intrinsics *Intrinsics) installCollectionBuiltins(context *TaskContext) er
 		{"substring", 2, nativeStringSubstring},
 		{"lastIndexOf", 1, nativeStringLastIndexOf},
 		{"toUpperCase", 0, nativeStringToUpperCase}, {"toLowerCase", 0, nativeStringToLowerCase},
-		{"trim", 0, nativeStringTrim}, {"split", 2, nativeStringSplit}, {"values", 0, nativeStringValues},
+		{"trim", 0, nativeStringTrim}, {"trimStart", 0, nativeStringTrimStart}, {"trimLeft", 0, nativeStringTrimStart},
+		{"trimEnd", 0, nativeStringTrimEnd}, {"trimRight", 0, nativeStringTrimEnd},
+		{"split", 2, nativeStringSplit}, {"values", 0, nativeStringValues},
 	}); err != nil {
 		return err
 	}
@@ -342,6 +346,38 @@ func builtinStringCharCodeAt(execution *execution, _ memory.Ref, _ memory.Functi
 		return memory.NumberValue(math.NaN()), nil
 	}
 	return memory.NumberValue(float64(codeUnits[index])), nil
+}
+
+func builtinStringCodePointAt(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+	text, err := requireString(execution.context, this)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	index, err := integerArgument(execution, arguments, 0, 0)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	if index < 0 {
+		return memory.UndefinedValue(), nil
+	}
+	if isASCIIString(text) {
+		if index >= int64(len(text)) {
+			return memory.UndefinedValue(), nil
+		}
+		return memory.NumberValue(float64(text[index])), nil
+	}
+	codeUnits := utf16.Encode([]rune(text))
+	if index >= int64(len(codeUnits)) {
+		return memory.UndefinedValue(), nil
+	}
+	first := rune(codeUnits[index])
+	if first >= 0xD800 && first <= 0xDBFF && index+1 < int64(len(codeUnits)) {
+		second := rune(codeUnits[index+1])
+		if second >= 0xDC00 && second <= 0xDFFF {
+			return memory.NumberValue(float64(utf16.DecodeRune(first, second))), nil
+		}
+	}
+	return memory.NumberValue(float64(first)), nil
 }
 
 func builtinStringAt(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, arguments []memory.Value) (memory.Value, error) {
@@ -1015,13 +1051,40 @@ func builtinStringToLowerCase(execution *execution, _ memory.Ref, _ memory.Funct
 	return memory.RefValue(ref), err
 }
 
-func builtinStringTrim(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, _ []memory.Value) (memory.Value, error) {
+func isECMAWhitespace(r rune) bool {
+	switch r {
+	case '\t', '\n', '\v', '\f', '\r', ' ', '\u00a0', '\u2028', '\u2029', '\ufeff':
+		return true
+	}
+	return unicode.Is(unicode.Zs, r)
+}
+
+func builtinStringTrimWith(execution *execution, this memory.Value, trimStart, trimEnd bool) (memory.Value, error) {
 	text, err := requireString(execution.context, this)
 	if err != nil {
 		return memory.Value{}, err
 	}
-	ref, err := execution.context.NewString(strings.TrimSpace(text))
+	if trimStart && trimEnd {
+		text = strings.TrimFunc(text, isECMAWhitespace)
+	} else if trimStart {
+		text = strings.TrimLeftFunc(text, isECMAWhitespace)
+	} else if trimEnd {
+		text = strings.TrimRightFunc(text, isECMAWhitespace)
+	}
+	ref, err := execution.context.NewString(text)
 	return memory.RefValue(ref), err
+}
+
+func builtinStringTrim(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, _ []memory.Value) (memory.Value, error) {
+	return builtinStringTrimWith(execution, this, true, true)
+}
+
+func builtinStringTrimStart(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, _ []memory.Value) (memory.Value, error) {
+	return builtinStringTrimWith(execution, this, true, false)
+}
+
+func builtinStringTrimEnd(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, _ []memory.Value) (memory.Value, error) {
+	return builtinStringTrimWith(execution, this, false, true)
 }
 
 func builtinStringSplit(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, arguments []memory.Value) (memory.Value, error) {
@@ -1029,31 +1092,143 @@ func builtinStringSplit(execution *execution, _ memory.Ref, _ memory.Function, t
 	if err != nil {
 		return memory.Value{}, err
 	}
-	parts := []string{text}
-	if len(arguments) != 0 && arguments[0].Kind() != memory.ValueUndefined {
-		separator, err := execution.toString(arguments[0])
+	limit := uint32(math.MaxUint32)
+	if len(arguments) >= 2 && arguments[1].Kind() != memory.ValueUndefined {
+		limitNumber, err := execution.toNumber(arguments[1])
 		if err != nil {
 			return memory.Value{}, err
 		}
-		if separator == "" {
-			parts = make([]string, 0, utf8.RuneCountInString(text))
-			for _, character := range text {
-				parts = append(parts, string(character))
+		limit = toUint32(limitNumber)
+	}
+
+	var parts []*string
+	if len(arguments) != 0 && arguments[0].IsRef() {
+		kind, kindErr := execution.context.HeapKind(arguments[0].Ref())
+		if kindErr != nil {
+			return memory.Value{}, kindErr
+		}
+		if kind == memory.HeapRegExp {
+			parts, err = splitStringByRegExp(execution, text, arguments[0], limit)
+			if err != nil {
+				return memory.Value{}, err
 			}
-		} else {
-			parts = strings.Split(text, separator)
+			return buildSplitResultArray(execution, parts)
 		}
 	}
+
+	if len(arguments) == 0 || arguments[0].Kind() == memory.ValueUndefined {
+		if limit > 0 {
+			copyText := text
+			parts = []*string{&copyText}
+		}
+		return buildSplitResultArray(execution, parts)
+	}
+
+	separator, err := execution.toString(arguments[0])
+	if err != nil {
+		return memory.Value{}, err
+	}
+	if limit == 0 {
+		return buildSplitResultArray(execution, nil)
+	}
+	if separator == "" {
+		parts = make([]*string, 0, utf8.RuneCountInString(text))
+		for _, character := range text {
+			piece := string(character)
+			parts = append(parts, &piece)
+			if uint32(len(parts)) >= limit {
+				break
+			}
+		}
+	} else {
+		rawParts := strings.Split(text, separator)
+		if uint32(len(rawParts)) > limit {
+			rawParts = rawParts[:limit]
+		}
+		parts = make([]*string, len(rawParts))
+		for index := range rawParts {
+			parts[index] = &rawParts[index]
+		}
+	}
+	return buildSplitResultArray(execution, parts)
+}
+
+func splitStringByRegExp(execution *execution, text string, separator memory.Value, limit uint32) ([]*string, error) {
+	if limit == 0 {
+		return nil, nil
+	}
+	_, expression, err := requireRegExp(execution.context, separator)
+	if err != nil {
+		return nil, err
+	}
+	compiled, err := compileRegExp(execution.context, expression)
+	if err != nil {
+		return nil, err
+	}
+	if text == "" {
+		location, err := compiled.FindStringIndex(text)
+		if err != nil {
+			return nil, err
+		}
+		if location != nil {
+			return nil, nil
+		}
+		empty := ""
+		return []*string{&empty}, nil
+	}
+	matches, err := compiled.FindAllStringSubmatchIndex(text, -1)
+	if err != nil {
+		return nil, err
+	}
+	var parts []*string
+	push := func(part *string) bool {
+		parts = append(parts, part)
+		return uint32(len(parts)) >= limit
+	}
+	position := 0
+	for _, match := range matches {
+		start, end := match[0], match[1]
+		if start == end && (end == position || start == len(text)) {
+			continue
+		}
+		prefix := text[position:start]
+		if push(&prefix) {
+			return parts, nil
+		}
+		position = end
+		for group := 2; group+1 < len(match); group += 2 {
+			if match[group] < 0 || match[group+1] < 0 {
+				if push(nil) {
+					return parts, nil
+				}
+				continue
+			}
+			captured := text[match[group]:match[group+1]]
+			if push(&captured) {
+				return parts, nil
+			}
+		}
+	}
+	tail := text[position:]
+	push(&tail)
+	return parts, nil
+}
+
+func buildSplitResultArray(execution *execution, parts []*string) (memory.Value, error) {
 	array, err := execution.context.NewArray(uint32(len(parts)))
 	if err != nil {
 		return memory.Value{}, err
 	}
 	for index, part := range parts {
-		ref, err := execution.context.NewString(part)
-		if err != nil {
-			return memory.Value{}, err
+		value := memory.UndefinedValue()
+		if part != nil {
+			ref, err := execution.context.NewString(*part)
+			if err != nil {
+				return memory.Value{}, err
+			}
+			value = memory.RefValue(ref)
 		}
-		if err := execution.context.SetArrayElement(array, uint32(index), memory.RefValue(ref)); err != nil {
+		if err := execution.context.SetArrayElement(array, uint32(index), value); err != nil {
 			return memory.Value{}, err
 		}
 	}

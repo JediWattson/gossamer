@@ -199,6 +199,9 @@ const (
 	nativeDateGetUTCDate
 	nativeArrayReverse
 	nativeStringCharCodeAt
+	nativeStringCodePointAt
+	nativeStringTrimStart
+	nativeStringTrimEnd
 	nativeStringFromCharCode
 	nativeStringFromCodePoint
 	nativeIntlDisplayNamesConstructor
@@ -651,6 +654,7 @@ func (interpreter *Interpreter) registerBuiltinCallbacks() error {
 		nativeStringValueOf:                   builtinStringToString,
 		nativeStringCharAt:                    builtinStringCharAt,
 		nativeStringCharCodeAt:                builtinStringCharCodeAt,
+		nativeStringCodePointAt:               builtinStringCodePointAt,
 		nativeStringFromCharCode:              builtinStringFromCharCode,
 		nativeStringFromCodePoint:             builtinStringFromCodePoint,
 		nativeIntlDisplayNamesConstructor:     builtinIntlDisplayNamesConstructor,
@@ -671,6 +675,8 @@ func (interpreter *Interpreter) registerBuiltinCallbacks() error {
 		nativeStringToUpperCase:               builtinStringToUpperCase,
 		nativeStringToLowerCase:               builtinStringToLowerCase,
 		nativeStringTrim:                      builtinStringTrim,
+		nativeStringTrimStart:                 builtinStringTrimStart,
+		nativeStringTrimEnd:                   builtinStringTrimEnd,
 		nativeStringSplit:                     builtinStringSplit,
 		nativeStringValues:                    builtinStringValues,
 		nativeIteratorNext:                    builtinIteratorNext,
