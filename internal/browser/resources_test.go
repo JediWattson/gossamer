@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sync"
 	"testing"
 	"time"
 
@@ -455,6 +456,7 @@ func TestIsRenderedReferenceFiltersInactiveAndUnsupportedConsumers(t *testing.T)
 }
 
 type countingImageFetcher struct {
+	mutex sync.Mutex
 	body  []byte
 	calls map[string]int
 }
@@ -487,7 +489,9 @@ func (fetcher *countingImageFetcher) LoadResource(
 	rawURL string,
 	_ loader.Destination,
 ) (*loader.Response, error) {
+	fetcher.mutex.Lock()
 	fetcher.calls[rawURL]++
+	fetcher.mutex.Unlock()
 	parsedURL, err := url.Parse(rawURL)
 	if err != nil {
 		return nil, err
@@ -500,4 +504,98 @@ func (fetcher *countingImageFetcher) LoadResource(
 		Header:     header,
 		Body:       io.NopCloser(bytes.NewReader(fetcher.body)),
 	}, nil
+}
+
+type barrierImageFetcher struct {
+	countingImageFetcher
+	slowURL     string
+	slowStarted chan struct{}
+	slowRelease chan struct{}
+}
+
+func (fetcher *barrierImageFetcher) LoadResource(
+	ctx context.Context,
+	rawURL string,
+	destination loader.Destination,
+) (*loader.Response, error) {
+	if rawURL == fetcher.slowURL {
+		close(fetcher.slowStarted)
+		select {
+		case <-fetcher.slowRelease:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return fetcher.countingImageFetcher.LoadResource(ctx, rawURL, destination)
+}
+
+func TestDynamicImageBatchFetchesConcurrentlyAndDeduplicatesSharedURLs(t *testing.T) {
+	t.Parallel()
+
+	pixel := image.NewNRGBA(image.Rect(0, 0, 1, 1))
+	pixel.SetNRGBA(0, 0, color.NRGBA{R: 0x22, G: 0x88, B: 0x44, A: 0xff})
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, pixel); err != nil {
+		t.Fatal(err)
+	}
+	slowURL, _ := url.Parse("https://example.test/slow.png")
+	fastURL, _ := url.Parse("https://example.test/fast.png")
+	fetcher := &barrierImageFetcher{
+		countingImageFetcher: countingImageFetcher{body: encoded.Bytes(), calls: make(map[string]int)},
+		slowURL:              slowURL.String(),
+		slowStarted:          make(chan struct{}),
+		slowRelease:          make(chan struct{}),
+	}
+	pipeline := resource.NewPipeline(fetcher, resource.PipelineOptions{})
+	requests := []navigationResourceRequest{
+		{kind: resource.Image, url: slowURL, node: 1},
+		{kind: resource.Image, url: fastURL, node: 2},
+		{kind: resource.Image, url: fastURL, node: 3},
+	}
+
+	delivered := make(chan navigationResourceResult, 3)
+	done := make(chan error, 1)
+	go func() {
+		done <- loadDynamicImageBatch(context.Background(), pipeline, 1, requests, maxNavigationImagePixels, func(result navigationResourceResult) error {
+			delivered <- result
+			return nil
+		})
+	}()
+
+	<-fetcher.slowStarted
+	var firstTwo []navigationResourceResult
+	for len(firstTwo) < 2 {
+		select {
+		case res := <-delivered:
+			if res.target.Node == 1 {
+				t.Fatalf("slow image delivered before barrier release")
+			}
+			firstTwo = append(firstTwo, res)
+		case <-time.After(2 * time.Second):
+			close(fetcher.slowRelease)
+			t.Fatalf("timed out waiting for fast dynamic image while slow image blocked")
+		}
+	}
+	if firstTwo[0].image == nil || firstTwo[0].image != firstTwo[1].image {
+		t.Fatalf("expected duplicate fast URLs to share decoded image, got %#v and %#v", firstTwo[0], firstTwo[1])
+	}
+	close(fetcher.slowRelease)
+
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case res := <-delivered:
+		if res.target.Node != 1 || res.err != nil || res.image == nil {
+			t.Fatalf("unexpected slow result: %#v", res)
+		}
+	default:
+		t.Fatal("missing slow image result")
+	}
+	if got := fetcher.calls[fastURL.String()]; got != 1 {
+		t.Fatalf("fast image fetch count = %d, want 1", got)
+	}
+	if got := fetcher.calls[slowURL.String()]; got != 1 {
+		t.Fatalf("slow image fetch count = %d, want 1", got)
+	}
 }

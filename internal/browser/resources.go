@@ -7,6 +7,7 @@ import (
 	"mime"
 	"net/url"
 	"strings"
+	"sync"
 
 	"github.com/JediWattson/gossamer/internal/css"
 	"github.com/JediWattson/gossamer/internal/dom"
@@ -15,7 +16,10 @@ import (
 	browserruntime "github.com/JediWattson/gossamer/internal/runtime"
 )
 
-const maxNavigationImagePixels int64 = 32_000_000
+const (
+	maxNavigationImagePixels int64 = 32_000_000
+	maxDynamicImageWorkers         = 4
+)
 
 var scriptingEnabledUserAgentStylesheet = func() css.Stylesheet {
 	stylesheet, err := css.Parse(`noscript { display: none !important }`)
@@ -317,15 +321,7 @@ func loadNavigationResourceSequence(
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		result := navigationResourceResult{
-			target:               NodeHandle{Document: generation, Node: request.node},
-			kind:                 request.kind,
-			stylesheetGeneration: request.stylesheetGeneration,
-			imageGeneration:      request.imageGeneration,
-			imageSource:          request.imageSource,
-			backgroundImage:      request.backgroundImage,
-			backgroundSource:     request.backgroundSource,
-		}
+		result := newNavigationResourceResult(generation, request)
 		if request.kind == resource.Stylesheet && request.stylesheetSource != "" {
 			result.stylesheet, result.err = loadStylesheetSourceWithImports(
 				ctx, pipeline, request.stylesheetBase, request.stylesheetSource,
@@ -399,24 +395,15 @@ func loadNavigationResourceSequence(
 			}
 
 		case resource.Image:
-			remainingPixels := maxImagePixels - decodedPixels
-			decodeLimit := min(remainingPixels, resource.DefaultMaxImagePixels)
-			decoded, decodeErr := resource.DecodeImageWithLimit(asset, decodeLimit)
+			decodedImg, pixels, decodeErr := decodeImageAssetWithBudget(asset, maxImagePixels-decodedPixels)
 			if decodeErr != nil {
 				result.err = decodeErr
 				failedImages[imageKey] = decodeErr
 				break
 			}
-			bounds := decoded.Image.Bounds()
-			pixels := int64(bounds.Dx()) * int64(bounds.Dy())
-			if pixels <= 0 || pixels > remainingPixels {
-				result.err = fmt.Errorf("%w: image does not fit remaining navigation budget", resource.ErrImageTooLarge)
-				failedImages[imageKey] = result.err
-				break
-			}
 			decodedPixels += pixels
-			decodedImages[imageKey] = decoded.Image
-			result.image = decoded.Image
+			decodedImages[imageKey] = decodedImg
+			result.image = decodedImg
 		}
 		if result.err == nil && request.kind == resource.Stylesheet {
 			result.fonts, result.err = loadStylesheetFonts(ctx, pipeline, result.stylesheet, fontBudget)
@@ -426,6 +413,168 @@ func loadNavigationResourceSequence(
 		}
 	}
 	return nil
+}
+
+func newNavigationResourceResult(generation DocumentGeneration, request navigationResourceRequest) navigationResourceResult {
+	return navigationResourceResult{
+		target:               NodeHandle{Document: generation, Node: request.node},
+		kind:                 request.kind,
+		stylesheetGeneration: request.stylesheetGeneration,
+		imageGeneration:      request.imageGeneration,
+		imageSource:          request.imageSource,
+		backgroundImage:      request.backgroundImage,
+		backgroundSource:     request.backgroundSource,
+	}
+}
+
+func decodeImageAssetWithBudget(asset *resource.Asset, remainingPixels int64) (image.Image, int64, error) {
+	decodeLimit := min(remainingPixels, resource.DefaultMaxImagePixels)
+	if decodeLimit <= 0 {
+		return nil, 0, fmt.Errorf("%w: image does not fit remaining navigation budget", resource.ErrImageTooLarge)
+	}
+	decoded, decodeErr := resource.DecodeImageWithLimit(asset, decodeLimit)
+	if decodeErr != nil {
+		return nil, 0, decodeErr
+	}
+	bounds := decoded.Image.Bounds()
+	pixels := int64(bounds.Dx()) * int64(bounds.Dy())
+	if pixels <= 0 || pixels > remainingPixels {
+		return nil, 0, fmt.Errorf("%w: image does not fit remaining navigation budget", resource.ErrImageTooLarge)
+	}
+	return decoded.Image, pixels, nil
+}
+
+func loadDynamicImageBatch(
+	ctx context.Context,
+	pipeline *resource.Pipeline,
+	generation DocumentGeneration,
+	requests []navigationResourceRequest,
+	maxImagePixels int64,
+	deliver func(navigationResourceResult) error,
+) error {
+	if len(requests) == 0 {
+		return nil
+	}
+	if maxImagePixels <= 0 {
+		maxImagePixels = maxNavigationImagePixels
+	}
+	groups := make(map[string][]navigationResourceRequest)
+	order := make([]string, 0, len(requests))
+	validRequests := make([]navigationResourceRequest, 0, len(requests))
+	for _, request := range requests {
+		if request.url == nil || request.kind != resource.Image {
+			result := newNavigationResourceResult(generation, request)
+			result.err = fmt.Errorf("browser: invalid dynamic image request")
+			if err := deliver(result); err != nil {
+				return err
+			}
+			continue
+		}
+		key := request.url.String()
+		if _, exists := groups[key]; !exists {
+			order = append(order, key)
+		}
+		groups[key] = append(groups[key], request)
+		validRequests = append(validRequests, request)
+	}
+	if len(order) == 0 {
+		return nil
+	}
+	if len(order) == 1 {
+		return loadNavigationResourceSequence(ctx, pipeline, generation, validRequests, maxImagePixels, deliver)
+	}
+
+	jobs := make(chan string)
+	workerCount := min(maxDynamicImageWorkers, len(order))
+	var (
+		budgetMu      sync.Mutex
+		decodedPixels int64
+		errMu         sync.Mutex
+		firstErr      error
+		wg            sync.WaitGroup
+	)
+	recordErr := func(err error) {
+		if err == nil {
+			return
+		}
+		errMu.Lock()
+		if firstErr == nil {
+			firstErr = err
+		}
+		errMu.Unlock()
+	}
+
+	for worker := 0; worker < workerCount; worker++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for key := range jobs {
+				if ctx.Err() != nil {
+					return
+				}
+				group := groups[key]
+				budgetMu.Lock()
+				remaining := maxImagePixels - decodedPixels
+				budgetMu.Unlock()
+
+				var (
+					img      image.Image
+					fetchErr error
+				)
+				if remaining <= 0 {
+					fetchErr = fmt.Errorf("%w: navigation exhausted %d pixel budget", resource.ErrImageTooLarge, maxImagePixels)
+				} else {
+					var asset *resource.Asset
+					asset, fetchErr = pipeline.Fetch(ctx, resource.Reference{Kind: resource.Image, URL: group[0].url})
+					if fetchErr == nil && !usableAsset(asset) {
+						fetchErr = fmt.Errorf("browser: unusable %s response status %d", resource.Image, asset.StatusCode)
+					}
+					if fetchErr == nil {
+						var pixels int64
+						img, pixels, fetchErr = decodeImageAssetWithBudget(asset, remaining)
+						if fetchErr == nil {
+							budgetMu.Lock()
+							if decodedPixels+pixels > maxImagePixels {
+								fetchErr = fmt.Errorf("%w: image does not fit remaining navigation budget", resource.ErrImageTooLarge)
+								img = nil
+							} else {
+								decodedPixels += pixels
+							}
+							budgetMu.Unlock()
+						}
+					}
+				}
+				for _, request := range group {
+					result := newNavigationResourceResult(generation, request)
+					if fetchErr != nil {
+						if ctx.Err() != nil {
+							return
+						}
+						result.err = fetchErr
+					} else {
+						result.image = img
+					}
+					if err := deliver(result); err != nil {
+						recordErr(err)
+						return
+					}
+				}
+			}
+		}()
+	}
+
+	for _, key := range order {
+		select {
+		case <-ctx.Done():
+			close(jobs)
+			wg.Wait()
+			return ctx.Err()
+		case jobs <- key:
+		}
+	}
+	close(jobs)
+	wg.Wait()
+	return firstErr
 }
 
 func isRenderedReference(reference resource.Reference) bool {

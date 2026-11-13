@@ -559,7 +559,7 @@ func (page *Page) loadDynamicImages(
 	requests []navigationResourceRequest,
 ) {
 	pipeline := resource.NewPipeline(fetcher, resource.PipelineOptions{})
-	_ = loadNavigationResourceSequence(ctx, pipeline, generation, requests, maxNavigationImagePixels, func(result navigationResourceResult) error {
+	_ = loadDynamicImageBatch(ctx, pipeline, generation, requests, maxNavigationImagePixels, func(result navigationResourceResult) error {
 		_, _, err := page.browser.scheduler.EnqueueExternalTask(page.Realm, func(task *browserruntime.TaskContext) error {
 			return page.applyDynamicImage(task, generation, result)
 		})
