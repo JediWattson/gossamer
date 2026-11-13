@@ -69,6 +69,7 @@ const (
 	propertyJustifySelf
 	propertyLineHeight
 	propertyListStyleType
+	propertyLogicalInset
 	propertyLogicalPadding
 	propertyMargin
 	propertyMaxHeight
@@ -203,6 +204,10 @@ var propertyDefinitions = [...]propertyDefinition{
 	{name: "grid-template-columns", kind: propertyGridTemplateColumns, invalidation: propertyInvalidatesLayout},
 	{name: "grid-template-rows", kind: propertyGridTemplateRows, invalidation: propertyInvalidatesLayout},
 	{name: "height", kind: propertyHeight, invalidation: propertyInvalidatesLayout},
+	{name: "inset-block-end", kind: propertyLogicalInset, logical: propertyBlockEnd, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
+	{name: "inset-block-start", kind: propertyLogicalInset, logical: propertyBlockStart, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
+	{name: "inset-inline-end", kind: propertyLogicalInset, logical: propertyInlineEnd, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
+	{name: "inset-inline-start", kind: propertyLogicalInset, logical: propertyInlineStart, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "justify-content", kind: propertyJustifyContent, invalidation: propertyInvalidatesLayout},
 	{name: "justify-items", kind: propertyJustifyItems, invalidation: propertyInvalidatesLayout},
 	{name: "justify-self", kind: propertyJustifySelf, invalidation: propertyInvalidatesLayout},
@@ -288,6 +293,9 @@ var shorthandTargets = map[string][]string{
 	"grid-column":     {"grid-column-start", "grid-column-end"},
 	"grid-area":       {"grid-row-start", "grid-column-start", "grid-row-end", "grid-column-end"},
 	"grid-row":        {"grid-row-start", "grid-row-end"},
+	"inset":           {"top", "right", "bottom", "left"},
+	"inset-block":     {"inset-block-start", "inset-block-end"},
+	"inset-inline":    {"inset-inline-start", "inset-inline-end"},
 	"list-style":      {"list-style-type"},
 	"margin":          {"margin-top", "margin-right", "margin-bottom", "margin-left"},
 	"overflow":        {"overflow-x", "overflow-y"},
@@ -333,7 +341,7 @@ func remapLogicalCandidates(style *computedStyle, candidatesByTarget map[string]
 	}
 	for index := range propertyDefinitions {
 		definition := propertyDefinitions[index]
-		if definition.kind != propertyLogicalPadding {
+		if definition.kind != propertyLogicalPadding && definition.kind != propertyLogicalInset {
 			continue
 		}
 		candidates := candidatesByTarget[definition.name]
@@ -341,7 +349,7 @@ func remapLogicalCandidates(style *computedStyle, candidatesByTarget map[string]
 			continue
 		}
 		delete(candidatesByTarget, definition.name)
-		physical := physicalPaddingProperty(physicalEdgeForLogical(style.writingMode, style.direction, definition.logical))
+		physical := physicalBoxProperty(definition.kind, physicalEdgeForLogical(style.writingMode, style.direction, definition.logical))
 		for candidateIndex := range candidates {
 			candidates[candidateIndex].logicalTarget = definition.name
 			candidates[candidateIndex].target = physical
@@ -350,19 +358,32 @@ func remapLogicalCandidates(style *computedStyle, candidatesByTarget map[string]
 	}
 }
 
-func physicalPaddingProperty(edge propertyEdge) string {
-	switch edge {
-	case propertyTop:
-		return "padding-top"
-	case propertyRight:
-		return "padding-right"
-	case propertyBottom:
-		return "padding-bottom"
-	case propertyLeft:
-		return "padding-left"
-	default:
-		panic("style: padding property has no physical edge")
+func physicalBoxProperty(kind propertyKind, edge propertyEdge) string {
+	switch kind {
+	case propertyLogicalPadding:
+		switch edge {
+		case propertyTop:
+			return "padding-top"
+		case propertyRight:
+			return "padding-right"
+		case propertyBottom:
+			return "padding-bottom"
+		case propertyLeft:
+			return "padding-left"
+		}
+	case propertyLogicalInset:
+		switch edge {
+		case propertyTop:
+			return "top"
+		case propertyRight:
+			return "right"
+		case propertyBottom:
+			return "bottom"
+		case propertyLeft:
+			return "left"
+		}
 	}
+	panic("style: logical box property has no physical edge")
 }
 
 func copyComputedProperty(destination *computedStyle, source computedStyle, property string) {
@@ -475,7 +496,7 @@ func (definition propertyDefinition) copy(destination *computedStyle, source com
 		destination.lineHeight = source.lineHeight
 	case propertyListStyleType:
 		destination.listStyleType = source.listStyleType
-	case propertyLogicalPadding:
+	case propertyLogicalInset, propertyLogicalPadding:
 		*definition.logicalBoxLength(destination) = *definition.logicalBoxLength(&source)
 	case propertyMargin:
 		*definition.boxLength(destination) = *definition.boxLength(&source)
@@ -664,7 +685,7 @@ func (definition propertyDefinition) valid(source string, viewport Viewport) boo
 	case propertyHeight, propertyMinHeight, propertyMinWidth, propertyWidth:
 		parsed, ok := parseLength(source, 1, 1, viewport)
 		return ok && nonNegativeLength(parsed)
-	case propertyInset:
+	case propertyInset, propertyLogicalInset:
 		_, ok := parseLength(source, 1, 1, viewport)
 		return ok
 	case propertyLineHeight:
@@ -1031,6 +1052,10 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 	case propertyInset:
 		if parsed, ok := parseLength(source, style.fontSize, style.fontSize, context.viewport); ok {
 			*definition.boxLength(style) = parsed
+		}
+	case propertyLogicalInset:
+		if parsed, ok := parseLength(source, style.fontSize, style.fontSize, context.viewport); ok {
+			*definition.logicalBoxLength(style) = parsed
 		}
 	case propertyJustifyContent:
 		if parsed, ok := parseContentAlignment(source, false); ok {
@@ -1400,7 +1425,7 @@ func (definition propertyDefinition) serialize(computed ComputedStyle) string {
 		return value
 	case propertyListStyleType:
 		return serializeComputedListStyle(computed.listStyleType)
-	case propertyLogicalPadding:
+	case propertyLogicalInset, propertyLogicalPadding:
 		return serializeComputedLength(*definition.logicalBoxLength(&computed))
 	case propertyMargin, propertyPadding:
 		return serializeComputedLength(*definition.boxLength(&computed))
@@ -1600,11 +1625,17 @@ func (definition propertyDefinition) boxLength(style *computedStyle) *length {
 }
 
 func (definition propertyDefinition) logicalBoxLength(style *computedStyle) *length {
-	if definition.kind != propertyLogicalPadding {
-		panic("style: property is not a logical padding")
+	physicalKind := propertyKind(0)
+	switch definition.kind {
+	case propertyLogicalPadding:
+		physicalKind = propertyPadding
+	case propertyLogicalInset:
+		physicalKind = propertyInset
+	default:
+		panic("style: property is not a logical box property")
 	}
 	physical := physicalEdgeForLogical(style.writingMode, style.direction, definition.logical)
-	return propertyDefinition{kind: propertyPadding, edge: physical}.boxLength(style)
+	return propertyDefinition{kind: physicalKind, edge: physical}.boxLength(style)
 }
 
 func physicalEdgeForLogical(mode WritingMode, direction Direction, logical propertyLogicalEdge) propertyEdge {
@@ -1716,6 +1747,9 @@ func validComputedDeclaration(declaration css.Declaration, viewport Viewport) bo
 	case "padding-block", "padding-inline":
 		_, _, ok := parseLogicalPaddingShorthand(declaration.Value, 1, viewport)
 		return ok
+	case "inset-block", "inset-inline":
+		_, _, ok := parseLogicalBoxLengths(declaration.Value, 1, viewport, false)
+		return ok
 	case "border", "border-top", "border-right", "border-bottom", "border-left":
 		_, ok := parseBorderShorthand(declaration.Value, 1, viewport)
 		return ok
@@ -1739,7 +1773,7 @@ func validComputedDeclaration(declaration css.Declaration, viewport Viewport) bo
 	case "list-style":
 		_, ok := parseListStyleType(declaration.Value)
 		return ok
-	case "margin":
+	case "margin", "inset":
 		_, ok := parseBoxLengths(declaration.Value, 1, viewport)
 		return ok
 	case "overflow":
@@ -1774,18 +1808,25 @@ func parseBorderSpacing(source string, fontSize float64, viewport Viewport) (Bor
 }
 
 func parseLogicalPaddingShorthand(source string, fontSize float64, viewport Viewport) (length, length, bool) {
+	return parseLogicalBoxLengths(source, fontSize, viewport, true)
+}
+
+func parseLogicalBoxLengths(source string, fontSize float64, viewport Viewport, requirePadding bool) (length, length, bool) {
 	value, ok := parsePropertyValue(source)
 	if !ok || len(value.terms) < 1 || len(value.terms) > 2 {
 		return length{}, length{}, false
 	}
+	valid := func(candidate length) bool {
+		return !requirePadding || (candidate.unit != lengthAuto && nonNegativeLength(candidate))
+	}
 	start, ok := parseLengthComponent(value.terms[0], value.source, fontSize, viewport)
-	if !ok || start.unit == lengthAuto || !nonNegativeLength(start) {
+	if !ok || !valid(start) {
 		return length{}, length{}, false
 	}
 	end := start
 	if len(value.terms) == 2 {
 		end, ok = parseLengthComponent(value.terms[1], value.source, fontSize, viewport)
-		if !ok || end.unit == lengthAuto || !nonNegativeLength(end) {
+		if !ok || !valid(end) {
 			return length{}, length{}, false
 		}
 	}
@@ -1984,14 +2025,11 @@ func applyDeclaration(style *computedStyle, property, source string, context pro
 		}
 	case "padding-block", "padding-inline":
 		if start, end, ok := parseLogicalPaddingShorthand(source, style.fontSize, context.viewport); ok {
-			startEdge, endEdge := propertyBlockStart, propertyBlockEnd
-			if property == "padding-inline" {
-				startEdge, endEdge = propertyInlineStart, propertyInlineEnd
-			}
-			startDefinition := propertyDefinition{kind: propertyLogicalPadding, logical: startEdge}
-			endDefinition := propertyDefinition{kind: propertyLogicalPadding, logical: endEdge}
-			*startDefinition.logicalBoxLength(style) = start
-			*endDefinition.logicalBoxLength(style) = end
+			applyLogicalBoxShorthand(style, propertyLogicalPadding, property == "padding-inline", start, end)
+		}
+	case "inset-block", "inset-inline":
+		if start, end, ok := parseLogicalBoxLengths(source, style.fontSize, context.viewport, false); ok {
+			applyLogicalBoxShorthand(style, propertyLogicalInset, property == "inset-inline", start, end)
 		}
 	case "flex":
 		if grow, shrink, basis, ok := parseFlexShorthand(source, style.fontSize, context.viewport); ok {
@@ -2070,12 +2108,25 @@ func applyDeclaration(style *computedStyle, property, source string, context pro
 		if values, ok := parseBoxLengths(source, style.fontSize, context.viewport); ok {
 			style.marginTop, style.marginRight, style.marginBottom, style.marginLeft = values[0], values[1], values[2], values[3]
 		}
+	case "inset":
+		if values, ok := parseBoxLengths(source, style.fontSize, context.viewport); ok {
+			style.top, style.right, style.bottom, style.left = values[0], values[1], values[2], values[3]
+		}
 	case "overflow":
 		if x, y, ok := parseOverflowShorthand(source); ok {
 			style.overflowX = x
 			style.overflowY = y
 		}
 	}
+}
+
+func applyLogicalBoxShorthand(style *computedStyle, kind propertyKind, inline bool, start, end length) {
+	startEdge, endEdge := propertyBlockStart, propertyBlockEnd
+	if inline {
+		startEdge, endEdge = propertyInlineStart, propertyInlineEnd
+	}
+	*propertyDefinition{kind: kind, logical: startEdge}.logicalBoxLength(style) = start
+	*propertyDefinition{kind: kind, logical: endEdge}.logicalBoxLength(style) = end
 }
 
 func validOverflowKeyword(keyword string) bool {
