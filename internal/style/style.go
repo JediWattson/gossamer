@@ -1593,6 +1593,7 @@ blockquote { margin-top:1em; margin-right:40px; margin-bottom:1em; margin-left:4
 dd { margin-left:40px }
 a[href] { color:#0000ee; text-decoration-line:underline }
 strong, b { font-weight:700 }
+input[type=hidden i] { display:none }
 `)
 
 func mustParseBuiltInUserAgentStylesheet(source string) css.Stylesheet {

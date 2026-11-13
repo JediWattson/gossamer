@@ -345,6 +345,9 @@ func (context *layoutContext) blockGeneratesOwnContent(node *styledNode) bool {
 	if node.style.Display() == displayListItem && node.style.ListStyleType() != listStyleNone {
 		return true
 	}
+	if isRenderedFormControl(node.node) {
+		return true
+	}
 	return isReplacedElement(node.node) && (node.node.Data == "iframe" || isSVGElement(node.node) ||
 		context.images[node.node] != nil || hasExplicitImageDimensions(node.style))
 }
@@ -562,6 +565,9 @@ func (context *layoutContext) layoutBlockSizedWithSubgrid(node *styledNode, cont
 		X:     box.Bounds.X + border.Left + padding.Left,
 		Y:     box.Bounds.Y + border.Top + padding.Top,
 		Width: width,
+	}
+	if isFormControlElement(node.node) {
+		return context.layoutFormControlBox(node, box, width, containingHeight, hasDefiniteHeight, specifiedContentHeight, availableWidth, verticalInsets)
 	}
 	if style.Display().Inside() == computed.DisplayInsideTable {
 		tableRoot := box
@@ -1653,7 +1659,11 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 			directChildren[node] = struct{}{}
 		}
 	}
-	if len(builder.tokens) == 0 {
+	return context.layoutInlineTokens(builder.tokens, directChildren, x, y, width, containingHeight, containerStyle, tableCellFirstPass)
+}
+
+func (context *layoutContext) layoutInlineTokens(tokens []inlineToken, directChildren map[*styledNode]struct{}, x, y, width float64, containingHeight *float64, containerStyle computedStyle, tableCellFirstPass bool) (inlineLayout, error) {
+	if len(tokens) == 0 {
 		return inlineLayout{}, nil
 	}
 	containerMetrics, err := context.fonts.metricsForStyle("M", containerStyle)
@@ -1835,7 +1845,7 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 	lastWasBreak := false
 	var lastBreakStyle computedStyle
 	verticalTextLayout := containerStyle.verticalLayout()
-	for _, token := range builder.tokens {
+	for _, token := range tokens {
 		if token.lineBreak {
 			if len(line) == 0 {
 				cursorY += token.style.LineHeight().Pixels(token.style.FontSize())
@@ -2116,6 +2126,10 @@ func (context *layoutContext) intrinsicContentWidthsUncached(node *styledNode, a
 			return intrinsicWidths{}, err
 		}
 		return intrinsicWidths{minimum: metrics.width, preferred: metrics.width}, nil
+	}
+	if isFormControlElement(node.node) {
+		width, _ := context.intrinsicFormControlDimensions(node.node, node.style)
+		return intrinsicWidths{minimum: width, preferred: width}, nil
 	}
 	if node.style.Display().Inside() == computed.DisplayInsideTable {
 		return context.intrinsicTableContentWidths(node, availableWidth)
@@ -2613,7 +2627,10 @@ func (builder *inlineTokenBuilder) addAligned(node *styledNode, inheritedOpacity
 		return
 	}
 	opacity := clamp(inheritedOpacity*node.style.Opacity(), 0, 1)
-	if isAtomicInline(node.style.Display()) {
+	if isHiddenInputElement(node.node) {
+		return
+	}
+	if isAtomicInline(node.style.Display()) || isRenderedFormControl(node.node) {
 		leadingSpace := builder.pendingSpace && builder.hasContent
 		builder.tokens = append(builder.tokens, inlineToken{
 			node:          node.node,

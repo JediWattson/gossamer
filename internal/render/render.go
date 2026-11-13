@@ -426,7 +426,7 @@ func paintBox(list *DisplayList, box *Box, styles map[*dom.Node]computedStyle) {
 		list.Commands = append(list.Commands, Command{Kind: BeginOpacityCommand, Node: box.Node, Pseudo: box.Pseudo, Opacity: opacity})
 	}
 	paintBoxDecorations(list, box, style, visible)
-	clipped := hasStyle && clipsOverflow(style)
+	clipped := hasStyle && (clipsOverflow(style) || isRenderedFormControl(box.Node))
 	if clipped {
 		clip := boxClientBounds(box)
 		outer := usedCornerRadii(style, box.Bounds, list.Viewport)
