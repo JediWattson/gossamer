@@ -656,6 +656,30 @@ const (
 	BoxSizingBorderBox
 )
 
+// AspectRatio represents a CSS Box Sizing Level 4 preferred aspect-ratio value.
+type AspectRatio struct {
+	Auto        bool
+	HasRatio    bool
+	Numerator   float64
+	Denominator float64
+}
+
+// Preferred returns the positive width/height ratio if CSS aspect-ratio should
+// apply to a box with or without a natural aspect ratio.
+func (ratio AspectRatio) Preferred(hasNaturalRatio bool) (float64, bool) {
+	if !ratio.HasRatio || ratio.Numerator <= 0 || ratio.Denominator <= 0 {
+		return 0, false
+	}
+	if ratio.Auto && hasNaturalRatio {
+		return 0, false
+	}
+	value := ratio.Numerator / ratio.Denominator
+	if !isFinite(value) || value <= 0 {
+		return 0, false
+	}
+	return value, true
+}
+
 type Visibility uint8
 
 const (
@@ -758,6 +782,7 @@ type ComputedStyle struct {
 	left              Length
 	zIndex            ZIndex
 	boxSizing         BoxSizing
+	aspectRatio       AspectRatio
 	visibility        Visibility
 	pointerEvents     PointerEvents
 	whiteSpace        WhiteSpaceMode
@@ -946,6 +971,7 @@ func (computed ComputedStyle) Bottom() Length                         { return c
 func (computed ComputedStyle) Left() Length                           { return computed.left }
 func (computed ComputedStyle) ZIndex() ZIndex                         { return computed.zIndex }
 func (computed ComputedStyle) BoxSizing() BoxSizing                   { return computed.boxSizing }
+func (computed ComputedStyle) AspectRatio() AspectRatio               { return computed.aspectRatio }
 func (computed ComputedStyle) Visibility() Visibility                 { return computed.visibility }
 func (computed ComputedStyle) PointerEvents() PointerEvents           { return computed.pointerEvents }
 func (computed ComputedStyle) WhiteSpace() WhiteSpaceMode             { return computed.whiteSpace }

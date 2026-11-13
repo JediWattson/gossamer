@@ -28,6 +28,7 @@ const (
 	propertyAlignContent propertyKind = iota
 	propertyAlignItems
 	propertyAlignSelf
+	propertyAspectRatio
 	propertyBackgroundColor
 	propertyBackgroundImage
 	propertyBorderColor
@@ -156,6 +157,7 @@ var propertyDefinitions = [...]propertyDefinition{
 	{name: "align-content", kind: propertyAlignContent, invalidation: propertyInvalidatesLayout},
 	{name: "align-items", kind: propertyAlignItems, invalidation: propertyInvalidatesLayout},
 	{name: "align-self", kind: propertyAlignSelf, invalidation: propertyInvalidatesLayout},
+	{name: "aspect-ratio", kind: propertyAspectRatio, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "background-color", kind: propertyBackgroundColor, invalidation: propertyInvalidatesPaint},
 	{name: "background-image", kind: propertyBackgroundImage, invalidation: propertyInvalidatesPaint},
 	{name: "border-bottom-color", kind: propertyBorderColor, edge: propertyBottom, invalidation: propertyInvalidatesPaint},
@@ -405,6 +407,8 @@ func (definition propertyDefinition) copy(destination *computedStyle, source com
 	case propertyAlignSelf:
 		destination.alignSelf = source.alignSelf
 		destination.alignSelfOvf = source.alignSelfOvf
+	case propertyAspectRatio:
+		destination.aspectRatio = source.aspectRatio
 	case propertyBackgroundColor:
 		destination.background = source.background
 	case propertyBackgroundImage:
@@ -578,6 +582,9 @@ func (definition propertyDefinition) valid(source string, viewport Viewport) boo
 		return ok
 	case propertyAlignSelf, propertyJustifySelf:
 		_, ok := parseSelfAlignment(source, true)
+		return ok
+	case propertyAspectRatio:
+		_, ok := parseAspectRatio(source)
 		return ok
 	case propertyBackgroundColor:
 		_, ok := parseComputedColor(source)
@@ -814,6 +821,10 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 		if parsed, ok := parseSelfAlignment(source, true); ok {
 			style.alignSelf = parsed.position
 			style.alignSelfOvf = parsed.overflow
+		}
+	case propertyAspectRatio:
+		if parsed, ok := parseAspectRatio(source); ok {
+			style.aspectRatio = parsed
 		}
 	case propertyBackgroundColor:
 		if parsed, ok := parseComputedColor(source); ok {
@@ -1296,6 +1307,8 @@ func (definition propertyDefinition) serialize(computed ComputedStyle) string {
 		return serializeSelfAlignment(computed.alignItems, computed.alignItemsOvf)
 	case propertyAlignSelf:
 		return serializeSelfAlignment(computed.alignSelf, computed.alignSelfOvf)
+	case propertyAspectRatio:
+		return serializeAspectRatio(computed.aspectRatio)
 	case propertyBackgroundColor:
 		background, _ := computed.Background()
 		return serializeComputedColor(background)
@@ -2426,4 +2439,64 @@ func serializeOverflowMode(mode OverflowMode) string {
 	default:
 		return "visible"
 	}
+}
+
+func parseAspectRatio(source string) (AspectRatio, bool) {
+	value, ok := parsePropertyValue(source)
+	if !ok || len(value.terms) == 0 {
+		return AspectRatio{}, false
+	}
+	terms := value.terms
+	var result AspectRatio
+	autoBefore := false
+	if kw, isKW := componentKeyword(terms[0]); isKW && kw == "auto" {
+		result.Auto = true
+		autoBefore = true
+		terms = terms[1:]
+	} else if len(terms) > 1 {
+		if kw, isKW := componentKeyword(terms[len(terms)-1]); isKW && kw == "auto" {
+			result.Auto = true
+			terms = terms[:len(terms)-1]
+		}
+	}
+	if len(terms) == 0 {
+		if autoBefore {
+			return AspectRatio{Auto: true}, true
+		}
+		return AspectRatio{}, false
+	}
+	numToken, isNum := componentToken(terms[0])
+	if !isNum || numToken.Kind != css.TokenNumber || !isFinite(numToken.Number) || numToken.Number < 0 {
+		return AspectRatio{}, false
+	}
+	result.HasRatio = true
+	result.Numerator = numToken.Number
+	switch len(terms) {
+	case 1:
+		result.Denominator = 1
+		return result, true
+	case 3:
+		if !isValueDelimiter(terms[1], "/") {
+			return AspectRatio{}, false
+		}
+		denToken, isDen := componentToken(terms[2])
+		if !isDen || denToken.Kind != css.TokenNumber || !isFinite(denToken.Number) || denToken.Number < 0 {
+			return AspectRatio{}, false
+		}
+		result.Denominator = denToken.Number
+		return result, true
+	default:
+		return AspectRatio{}, false
+	}
+}
+
+func serializeAspectRatio(ratio AspectRatio) string {
+	if !ratio.HasRatio {
+		return "auto"
+	}
+	formatted := serializeComputedNumber(ratio.Numerator) + " / " + serializeComputedNumber(ratio.Denominator)
+	if ratio.Auto {
+		return "auto " + formatted
+	}
+	return formatted
 }

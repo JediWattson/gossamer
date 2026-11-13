@@ -77,12 +77,14 @@ func TestComputedPropertyValueSerializesEverySupportedLonghand(t *testing.T) {
 		marginRight:  Length{value: 10, unit: LengthPercent},
 		marginBottom: Length{value: 2, unit: LengthVH},
 		marginLeft:   Length{unit: LengthAuto},
+		aspectRatio:  AspectRatio{HasRatio: true, Numerator: 16, Denominator: 9},
 	}
 
 	want := map[string]string{
 		"align-content":        "space-evenly",
 		"align-items":          "center",
 		"align-self":           "flex-end",
+		"aspect-ratio":         "16 / 9",
 		"background-color":     "rgba(10, 20, 30, 0.5)",
 		"border-bottom-color":  "rgb(0, 128, 0)",
 		"border-bottom-style":  "none",

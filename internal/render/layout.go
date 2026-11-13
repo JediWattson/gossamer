@@ -541,12 +541,27 @@ func (context *layoutContext) layoutBlockSizedWithSubgrid(node *styledNode, cont
 	} else if style.Display().Inside() == computed.DisplayInsideTable && !verticalTable {
 		availableContent := math.Max(0, width)
 		width = math.Min(math.Max(tableIntrinsic.minimum, availableContent), tableIntrinsic.preferred)
+	} else if hasDefiniteHeight && style.Display().Inside() != computed.DisplayInsideTable {
+		if aspectWidth, ok := aspectRatioContentWidth(style, specifiedContentHeight, horizontalInsets, verticalInsets, false); ok {
+			width = aspectWidth
+		}
 	}
 	width = context.constrainWidth(style, math.Max(0, width), availableWidth, horizontalInsets)
 	if style.Display().Inside() == computed.DisplayInsideTable && !verticalTable {
 		// A table's grid and caption minimums override a smaller specified or
 		// max-constrained width; the table overflows rather than crushing tracks.
 		width = math.Max(width, tableIntrinsic.minimum)
+	}
+	aspectHeight := 0.0
+	hasAspectHeight := false
+	if !hasDefiniteHeight && !overrides.ignoreSpecifiedHeight && !overrides.forceZeroContentHeight && overrides.forceContentHeight == nil && style.Display().Inside() != computed.DisplayInsideTable {
+		if derivedHeight, ok := aspectRatioContentHeight(style, width, horizontalInsets, verticalInsets, false); ok {
+			aspectHeight = context.constrainHeight(style, derivedHeight, verticalInsets, containingHeight)
+			hasAspectHeight = true
+			if overrides.childContainingHeight == nil {
+				childContainingHeight = &aspectHeight
+			}
+		}
 	}
 	outerWidth := width + padding.Left + padding.Right + border.Left + border.Right
 	remaining := availableWidth - outerWidth - left - right
@@ -653,6 +668,8 @@ func (context *layoutContext) layoutBlockSizedWithSubgrid(node *styledNode, cont
 		}
 		if hasDefiniteHeight {
 			contentHeight = specifiedContentHeight
+		} else if hasAspectHeight {
+			contentHeight = resolveAspectRatioBlockHeight(style, contentHeight, aspectHeight)
 		}
 		contentHeight = context.constrainHeight(style, contentHeight, verticalInsets, containingHeight)
 		box.ContentBounds.Height = contentHeight
@@ -710,6 +727,8 @@ func (context *layoutContext) layoutBlockSizedWithSubgrid(node *styledNode, cont
 		}
 		if hasDefiniteHeight {
 			contentHeight = specifiedContentHeight
+		} else if hasAspectHeight {
+			contentHeight = resolveAspectRatioBlockHeight(style, contentHeight, aspectHeight)
 		}
 		contentHeight = context.constrainHeight(style, contentHeight, verticalInsets, containingHeight)
 		box.ContentBounds.Height = contentHeight
@@ -822,6 +841,8 @@ func (context *layoutContext) layoutBlockSizedWithSubgrid(node *styledNode, cont
 	contentHeight := math.Max(0, cursorY-box.ContentBounds.Y)
 	if hasDefiniteHeight {
 		contentHeight = specifiedContentHeight
+	} else if hasAspectHeight {
+		contentHeight = resolveAspectRatioBlockHeight(style, contentHeight, aspectHeight)
 	}
 	contentHeight = context.constrainHeight(style, contentHeight, verticalInsets, containingHeight)
 	box.ContentBounds.Height = contentHeight
@@ -2227,6 +2248,18 @@ func (context *layoutContext) intrinsicOuterWidths(node *styledNode, availableWi
 		outer := math.Max(0, content+horizontalInsets+margins)
 		return intrinsicWidths{minimum: outer, preferred: outer}, nil
 	}
+	if style.Height().Unit() != lengthAuto && !style.Height().DependsOnPercent() {
+		verticalInsets := padding.Top + padding.Bottom + border.Top + border.Bottom
+		heightContent := math.Max(0, resolveLength(style.Height(), 0, context.viewport, 0))
+		if style.BoxSizing() == boxSizingBorderBox {
+			heightContent = math.Max(0, heightContent-verticalInsets)
+		}
+		if aspectWidth, ok := aspectRatioContentWidth(style, heightContent, horizontalInsets, verticalInsets, false); ok {
+			content := context.constrainIntrinsicWidth(style, aspectWidth, availableWidth, horizontalInsets)
+			outer := math.Max(0, content+horizontalInsets+margins)
+			return intrinsicWidths{minimum: outer, preferred: outer}, nil
+		}
+	}
 
 	content, err := context.intrinsicContentWidths(node, availableWidth)
 	if err != nil {
@@ -2470,7 +2503,8 @@ func (context *layoutContext) replacedDimensions(node *dom.Node, style computedS
 
 	widthSpecified := style.Width().Unit() != lengthAuto
 	heightSpecified := resolvableHeight(style.Height(), containingHeight)
-	if !hasNaturalSize && !(widthSpecified && heightSpecified) {
+	_, useCSSRatio := style.AspectRatio().Preferred(hasNaturalSize)
+	if !hasNaturalSize && !(widthSpecified && heightSpecified) && !(useCSSRatio && (widthSpecified || heightSpecified)) {
 		return 0, 0, false
 	}
 	width := naturalWidth
@@ -2493,13 +2527,25 @@ func (context *layoutContext) replacedDimensions(node *dom.Node, style computedS
 	}
 	switch {
 	case widthSpecified && !heightSpecified:
-		height = naturalHeight * width / naturalWidth
+		if derivedHeight, ok := aspectRatioContentHeight(style, width, horizontalInsets, verticalInsets, hasNaturalSize); ok {
+			height = derivedHeight
+		} else {
+			height = naturalHeight * width / naturalWidth
+		}
 	case heightSpecified && !widthSpecified:
-		width = naturalWidth * height / naturalHeight
+		if derivedWidth, ok := aspectRatioContentWidth(style, height, horizontalInsets, verticalInsets, hasNaturalSize); ok {
+			width = derivedWidth
+		} else {
+			width = naturalWidth * height / naturalHeight
+		}
 	}
 	constrainedWidth := context.constrainWidth(style, width, availableWidth, horizontalInsets)
 	if constrainedWidth != width && !heightSpecified && width > 0 {
-		height *= constrainedWidth / width
+		if derivedHeight, ok := aspectRatioContentHeight(style, constrainedWidth, horizontalInsets, verticalInsets, hasNaturalSize); ok {
+			height = derivedHeight
+		} else {
+			height *= constrainedWidth / width
+		}
 	}
 	width = constrainedWidth
 	height = context.constrainHeight(style, height, verticalInsets, containingHeight)
@@ -2507,6 +2553,35 @@ func (context *layoutContext) replacedDimensions(node *dom.Node, style computedS
 		return 0, 0, false
 	}
 	return width, height, true
+}
+
+func aspectRatioContentWidth(style computedStyle, contentHeight, horizontalInsets, verticalInsets float64, hasNaturalRatio bool) (float64, bool) {
+	ratio, ok := style.AspectRatio().Preferred(hasNaturalRatio)
+	if !ok {
+		return 0, false
+	}
+	if style.BoxSizing() == boxSizingBorderBox {
+		return math.Max(0, (contentHeight+verticalInsets)*ratio-horizontalInsets), true
+	}
+	return math.Max(0, contentHeight*ratio), true
+}
+
+func aspectRatioContentHeight(style computedStyle, contentWidth, horizontalInsets, verticalInsets float64, hasNaturalRatio bool) (float64, bool) {
+	ratio, ok := style.AspectRatio().Preferred(hasNaturalRatio)
+	if !ok {
+		return 0, false
+	}
+	if style.BoxSizing() == boxSizingBorderBox {
+		return math.Max(0, (contentWidth+horizontalInsets)/ratio-verticalInsets), true
+	}
+	return math.Max(0, contentWidth/ratio), true
+}
+
+func resolveAspectRatioBlockHeight(style computedStyle, contentHeight, aspectHeight float64) float64 {
+	if style.OverflowX() != computed.OverflowVisible || style.OverflowY() != computed.OverflowVisible || style.MinHeight().Unit() != lengthAuto {
+		return aspectHeight
+	}
+	return math.Max(contentHeight, aspectHeight)
 }
 
 func (context *layoutContext) resolvePadding(style computedStyle, availableWidth float64) Edges {

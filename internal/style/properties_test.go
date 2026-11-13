@@ -6,8 +6,8 @@ import (
 )
 
 func TestPropertyDefinitionsAreCanonicalAndComplete(t *testing.T) {
-	if len(propertyDefinitions) != 102 {
-		t.Fatalf("property definition count = %d, want 102", len(propertyDefinitions))
+	if len(propertyDefinitions) != 103 {
+		t.Fatalf("property definition count = %d, want 103", len(propertyDefinitions))
 	}
 	if !slices.IsSorted(computedPropertyNames) {
 		t.Fatalf("computed property names are not sorted: %q", computedPropertyNames)
@@ -86,6 +86,8 @@ func registryTestValue(definition propertyDefinition) string {
 		return "center"
 	case propertyAlignSelf, propertyJustifySelf:
 		return "self-end"
+	case propertyAspectRatio:
+		return "16 / 9"
 	case propertyBackgroundColor, propertyBorderColor, propertyColor:
 		return "red"
 	case propertyBackgroundImage:
