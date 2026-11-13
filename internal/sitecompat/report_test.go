@@ -90,6 +90,47 @@ func TestRunWaitsForSettleWindow(t *testing.T) {
 	}
 }
 
+func TestRunFlushesDirtyFrameAfterSettle(t *testing.T) {
+	var boxCallback browser.ValueHandle
+	engine := fake.NewWithInitializer(func(realm *fake.Realm) error {
+		if err := realm.SetModuleEvaluator(func(host browser.Host, _ browser.ModuleGraph) error {
+			cb, err := realm.RegisterCallback(func(cbHost browser.Host) error {
+				box, ok, lookupErr := cbHost.GetElementByID("app")
+				if lookupErr != nil || !ok {
+					return lookupErr
+				}
+				if err := cbHost.SetAttribute(box, "style", "width:120px;height:20px;background:#ff0000"); err != nil {
+					return err
+				}
+				// Re-queueing before finish() ensures every busy loop iteration
+				// runs ahead of finish()'s trailing render task until Settle ends.
+				return cbHost.QueueCallback(boxCallback)
+			})
+			if err != nil {
+				return err
+			}
+			boxCallback = cb
+			return host.QueueCallback(boxCallback)
+		}); err != nil {
+			return err
+		}
+		return nil
+	})
+	report, err := sitecompat.Run(context.Background(), engine, "https://dirty.test/", dirtyFlushLoader{}, sitecompat.Options{
+		EngineName: "fake", DOMLimit: 20, Settle: 15 * time.Millisecond,
+		Viewport: render.Viewport{Width: 200, Height: 100},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.Passed || report.Frame == nil {
+		t.Fatalf("report = %#v", report)
+	}
+	if report.Frame.Colors < 2 {
+		t.Fatalf("frame colors = %d, want >= 2 after flushing mutated #ff0000 box", report.Frame.Colors)
+	}
+}
+
 type compatLoader struct{}
 
 func (compatLoader) Load(_ context.Context, rawURL string) (*loader.Response, error) {
@@ -108,4 +149,19 @@ func (compatLoader) LoadResource(_ context.Context, rawURL string, _ loader.Dest
 		Header: http.Header{"Content-Type": []string{"text/javascript"}},
 		Body:   io.NopCloser(strings.NewReader(`globalThis.__boot = true;`)),
 	}, nil
+}
+
+type dirtyFlushLoader struct{}
+
+func (dirtyFlushLoader) Load(_ context.Context, rawURL string) (*loader.Response, error) {
+	location, _ := url.Parse(rawURL)
+	return &loader.Response{
+		URL: location, StatusCode: http.StatusOK,
+		Header: http.Header{"Content-Type": []string{"text/html"}},
+		Body:   io.NopCloser(strings.NewReader(`<!doctype html><html><body style="margin:0"><div id="app" style="width:0px;height:0px;background:#ff0000"></div><script type="module" src="/app.js"></script></body></html>`)),
+	}, nil
+}
+
+func (dirtyFlushLoader) LoadResource(ctx context.Context, rawURL string, dest loader.Destination) (*loader.Response, error) {
+	return (compatLoader{}).LoadResource(ctx, rawURL, dest)
 }

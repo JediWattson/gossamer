@@ -118,6 +118,9 @@ func Run(ctx context.Context, engine browser.Engine, rawURL string, client brows
 			}
 			cancelSettle()
 		}
+		if loadErr == nil && page.Dirty() {
+			loadErr = page.Render()
+		}
 	}
 	if loadErr != nil {
 		if page != nil {
