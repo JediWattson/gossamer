@@ -78,3 +78,50 @@ func TestPositionedLayoutRemovesAbsoluteBoxesFromFlowAndSharesStackingOrderWithH
 		t.Fatalf("overlap hit = %#v, want higher z-index node %#v", hit, high)
 	}
 }
+
+func TestPositionedLayoutSizesAutoBoxFromInsetsAndPropagatesPercentHeight(t *testing.T) {
+	t.Parallel()
+
+	document, err := htmlparser.Parse(strings.NewReader(`<!doctype html><html><body style="margin:0">
+		<div style="display:block;position:relative;width:400px;height:300px">
+			<div id="layer" style="display:block;position:absolute;inset:10px 20px;width:auto;height:auto">
+				<div id="shell" style="display:flex;flex-direction:column;height:100%">
+					<div id="body" style="flex:1;min-height:0"></div>
+					<div id="footer" style="height:40px"></div>
+				</div>
+			</div>
+		</div>
+	</body></html>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame, err := render.Render(document, render.Viewport{Width: 400, Height: 300})
+	if err != nil {
+		t.Fatal(err)
+	}
+	geometry := func(id string) render.LayoutGeometry {
+		t.Helper()
+		node := findStaticPageElementByID(document, id)
+		if node == nil {
+			t.Fatalf("element %q is missing", id)
+		}
+		value, ok := frame.Layout.Geometry(node)
+		if !ok {
+			t.Fatalf("element %q has no layout geometry", id)
+		}
+		return value
+	}
+
+	if got := geometry("layer").Bounds; got != (render.Rect{X: 20, Y: 10, Width: 360, Height: 280}) {
+		t.Fatalf("layer bounds = %#v, want {X:20, Y:10, Width:360, Height:280}", got)
+	}
+	if got := geometry("shell").Bounds.Height; got != 280 {
+		t.Fatalf("shell height = %v, want 280", got)
+	}
+	if got := geometry("body").ClientBounds.Height; got != 240 {
+		t.Fatalf("body clientHeight = %v, want 240", got)
+	}
+	if got := geometry("footer").Bounds.Y; got != 250 {
+		t.Fatalf("footer y = %v, want 250", got)
+	}
+}

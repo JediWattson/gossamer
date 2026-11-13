@@ -1383,7 +1383,8 @@ func (context *layoutContext) layoutPositionedDescendants(root *styledNode, root
 			}
 			staticY := usedContainingBlock.Y + resolveLength(node.style.MarginTop(), usedContainingBlock.Width, context.viewport, 0)
 			containingHeight := usedContainingBlock.Height
-			positioned, err := context.layoutBlock(node, usedContainingBlock.X, staticY, usedContainingBlock.Width, &containingHeight)
+			forcedWidth, overrides := context.outOfFlowInsetOverrides(node.style, usedContainingBlock)
+			positioned, err := context.layoutBlockSizedWithSubgrid(node, usedContainingBlock.X, staticY, usedContainingBlock.Width, &containingHeight, forcedWidth, false, nil, overrides)
 			if err != nil {
 				return err
 			}
@@ -1411,6 +1412,38 @@ func (context *layoutContext) layoutPositionedDescendants(root *styledNode, root
 	}
 
 	return visit(root, rootBox, viewport)
+}
+
+func (context *layoutContext) outOfFlowInsetOverrides(style computedStyle, containingBlock Rect) (*float64, blockLayoutOverrides) {
+	padding := context.resolvePadding(style, containingBlock.Width)
+	border := context.resolveBorder(style, containingBlock.Width)
+	horizontalInsets := padding.Left + padding.Right + border.Left + border.Right
+	verticalInsets := padding.Top + padding.Bottom + border.Top + border.Bottom
+
+	var forcedWidth *float64
+	if style.Width().Unit() == lengthAuto && style.Left().Unit() != lengthAuto && style.Right().Unit() != lengthAuto {
+		leftPx := resolveLength(style.Left(), containingBlock.Width, context.viewport, 0)
+		rightPx := resolveLength(style.Right(), containingBlock.Width, context.viewport, 0)
+		marginLeft := resolveLength(style.MarginLeft(), containingBlock.Width, context.viewport, 0)
+		marginRight := resolveLength(style.MarginRight(), containingBlock.Width, context.viewport, 0)
+		contentWidth := math.Max(0, containingBlock.Width-leftPx-rightPx-marginLeft-marginRight-horizontalInsets)
+		contentWidth = context.constrainWidth(style, contentWidth, containingBlock.Width, horizontalInsets)
+		forcedWidth = &contentWidth
+	}
+
+	var overrides blockLayoutOverrides
+	if style.Height().Unit() == lengthAuto && style.Top().Unit() != lengthAuto && style.Bottom().Unit() != lengthAuto {
+		topPx := resolveLength(style.Top(), containingBlock.Height, context.viewport, 0)
+		bottomPx := resolveLength(style.Bottom(), containingBlock.Height, context.viewport, 0)
+		marginTop := resolveLength(style.MarginTop(), containingBlock.Width, context.viewport, 0)
+		marginBottom := resolveLength(style.MarginBottom(), containingBlock.Width, context.viewport, 0)
+		contentHeight := math.Max(0, containingBlock.Height-topPx-bottomPx-marginTop-marginBottom-verticalInsets)
+		containingHeight := containingBlock.Height
+		contentHeight = context.constrainHeight(style, contentHeight, verticalInsets, &containingHeight)
+		overrides.forceContentHeight = &contentHeight
+	}
+
+	return forcedWidth, overrides
 }
 
 func positionOutOfFlowBox(box *Box, style computedStyle, containingBlock Rect, viewport Viewport) {
