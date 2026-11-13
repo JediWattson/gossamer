@@ -33,6 +33,29 @@ if (regionNames.of("US") !== "United States" || regionNames.of("DE") !== "German
     invalidDisplayTypeRejected !== true) {
   throw new Error("Intl builtin parity failed");
 }
+
+const baseCollator = new Intl.Collator(undefined, {sensitivity: "base"});
+if (baseCollator.compare !== baseCollator.compare) {
+  throw new Error("Intl.Collator.compare getter must preserve function identity");
+}
+const cmp = baseCollator.compare;
+if (cmp("a", "A") !== 0 || cmp("cafe", "café") !== 0 || baseCollator.resolvedOptions().sensitivity !== "base") {
+  throw new Error("Intl.Collator base sensitivity failed");
+}
+const numericCollator = Intl.Collator("en", {numeric: true});
+const sortedNumbers = ["10", "2", "1"].sort(numericCollator.compare);
+if (sortedNumbers.join(",") !== "1,2,10" || numericCollator.resolvedOptions().numeric !== true) {
+  throw new Error("Intl.Collator numeric sort failed");
+}
+const punctCollator = new Intl.Collator("en", {ignorePunctuation: true});
+if (punctCollator.compare("a-b", "ab") !== 0 || punctCollator.resolvedOptions().ignorePunctuation !== true) {
+  throw new Error("Intl.Collator ignorePunctuation failed");
+}
+let invalidSensitivityRejected = false;
+try { new Intl.Collator("en", {sensitivity: "invalid"}); } catch (error) { invalidSensitivityRejected = error instanceof RangeError; }
+if (!invalidSensitivityRejected) {
+  throw new Error("Intl.Collator invalid sensitivity should throw RangeError");
+}
 `}); err != nil {
 		t.Fatal(err)
 	}

@@ -203,6 +203,10 @@ const (
 	nativeStringFromCodePoint
 	nativeIntlDisplayNamesConstructor
 	nativeIntlDisplayNamesOf
+	nativeIntlCollatorConstructor
+	nativeIntlCollatorCompareGetter
+	nativeIntlCollatorCompare
+	nativeIntlCollatorResolvedOptions
 	nativeArrayFlat
 	nativeArrayFlatMap
 	nativeStringSearch
@@ -651,6 +655,10 @@ func (interpreter *Interpreter) registerBuiltinCallbacks() error {
 		nativeStringFromCodePoint:             builtinStringFromCodePoint,
 		nativeIntlDisplayNamesConstructor:     builtinIntlDisplayNamesConstructor,
 		nativeIntlDisplayNamesOf:              builtinIntlDisplayNamesOf,
+		nativeIntlCollatorConstructor:        builtinIntlCollatorConstructor,
+		nativeIntlCollatorCompareGetter:      builtinIntlCollatorCompareGetter,
+		nativeIntlCollatorCompare:            builtinIntlCollatorCompare,
+		nativeIntlCollatorResolvedOptions:    builtinIntlCollatorResolvedOptions,
 		nativeArrayFlat:                       builtinArrayFlat,
 		nativeArrayFlatMap:                    builtinArrayFlatMap,
 		nativeStringSearch:                    builtinStringSearch,
