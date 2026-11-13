@@ -8,4 +8,5 @@ import "golang.org/x/image/font/opentype"
 type platformFonts struct {
 	systemRegular *opentype.Font
 	systemItalic  *opentype.Font
+	systemSymbols *opentype.Font
 }

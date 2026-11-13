@@ -23,15 +23,17 @@ import (
 	"golang.org/x/image/font/gofont/gomonoitalic"
 	"golang.org/x/image/font/gofont/goregular"
 	"golang.org/x/image/font/opentype"
+	"golang.org/x/image/font/sfnt"
 	"golang.org/x/image/math/fixed"
 )
 
 type faceKey struct {
-	size   int
-	weight FontWeight
-	style  FontStyle
-	family FontFamily
-	web    uint32
+	size     int
+	weight   FontWeight
+	style    FontStyle
+	family   FontFamily
+	web      uint32
+	fallback uint8
 }
 
 type parsedWebFont struct {
@@ -131,6 +133,9 @@ type fontBook struct {
 	monoBoldItalic *opentype.Font
 	systemRegular  *opentype.Font
 	systemItalic   *opentype.Font
+	systemSymbols  *opentype.Font
+	platformLoaded bool
+	glyphBuffer    sfnt.Buffer
 	faces          map[faceKey]font.Face
 	webFonts       []parsedWebFont
 	webByFamily    map[string][]uint32
@@ -153,8 +158,11 @@ type shapedRun struct {
 }
 
 type shapedGlyph struct {
-	rune rune
-	x    fixed.Int26_6
+	rune    rune
+	x       fixed.Int26_6
+	advance fixed.Int26_6
+	face    font.Face
+	missing bool
 }
 
 type bundledFontSet struct {
@@ -246,12 +254,19 @@ func (book *fontBook) Close() error {
 func (book *fontBook) metrics(text string, size float64, weight FontWeight, style FontStyle, family FontFamily, web ...uint32) (textMetrics, error) {
 	book.mutex.Lock()
 	defer book.mutex.Unlock()
-	face, err := book.face(size, weight, style, family, web...)
+	webID := uint32(0)
+	if len(web) != 0 {
+		webID = web[0]
+	}
+	face, parsed, _, err := book.primaryFaceLocked(size, weight, style, family, webID)
 	if err != nil {
 		return textMetrics{}, err
 	}
 	metrics := face.Metrics()
-	run := shapeText(face, text)
+	run, err := book.shapeRunLocked(face, parsed, size, weight, style, family, webID, text)
+	if err != nil {
+		return textMetrics{}, err
+	}
 	return textMetrics{
 		width:   float64(run.advance) / 64,
 		height:  float64(metrics.Height) / 64,
@@ -299,12 +314,19 @@ func (book *fontBook) draw(
 ) error {
 	book.mutex.Lock()
 	defer book.mutex.Unlock()
-	face, err := book.face(size, weight, style, family, web...)
+	webID := uint32(0)
+	if len(web) != 0 {
+		webID = web[0]
+	}
+	face, parsed, _, err := book.primaryFaceLocked(size, weight, style, family, webID)
 	if err != nil {
 		return err
 	}
 
-	run := shapeText(face, text)
+	run, err := book.shapeRunLocked(face, parsed, size, weight, style, family, webID, text)
+	if err != nil {
+		return err
+	}
 	origin := fixed.Point26_6{
 		X: fixed.Int26_6(math.Round(x * 64)),
 		Y: fixed.Int26_6(math.Round(baselineY * 64)),
@@ -313,7 +335,14 @@ func (book *fontBook) draw(
 	for _, glyph := range run.glyphs {
 		dot := origin
 		dot.X += glyph.x
-		rectangle, mask, maskPoint, _, _ := face.Glyph(dot, glyph.rune)
+		if glyph.missing {
+			drawMissingGlyphBox(destination, missingGlyphRect(dot, size, glyph.advance), textColor)
+			continue
+		}
+		if glyph.face == nil {
+			continue
+		}
+		rectangle, mask, maskPoint, _, _ := glyph.face.Glyph(dot, glyph.rune)
 		if !rectangle.Empty() {
 			draw.DrawMask(destination, rectangle, source, image.Point{}, mask, maskPoint, draw.Over)
 		}
@@ -332,11 +361,14 @@ func (book *fontBook) horizontalTextInkBounds(command Command) (image.Rectangle,
 	}
 	book.mutex.Lock()
 	defer book.mutex.Unlock()
-	face, err := book.face(command.FontSize, command.FontWeight, command.FontStyle, command.FontFamily, command.WebFont)
+	face, parsed, _, err := book.primaryFaceLocked(command.FontSize, command.FontWeight, command.FontStyle, command.FontFamily, command.WebFont)
 	if err != nil {
 		return image.Rectangle{}, false
 	}
-	run := shapeText(face, command.Text)
+	run, err := book.shapeRunLocked(face, parsed, command.FontSize, command.FontWeight, command.FontStyle, command.FontFamily, command.WebFont, command.Text)
+	if err != nil {
+		return image.Rectangle{}, false
+	}
 	origin := fixed.Point26_6{
 		X: fixed.Int26_6(math.Round(command.X * 64)),
 		Y: fixed.Int26_6(math.Round(command.BaselineY * 64)),
@@ -345,7 +377,12 @@ func (book *fontBook) horizontalTextInkBounds(command Command) (image.Rectangle,
 	for _, glyph := range run.glyphs {
 		dot := origin
 		dot.X += glyph.x
-		rectangle, _, _, _, _ := face.Glyph(dot, glyph.rune)
+		var rectangle image.Rectangle
+		if glyph.missing {
+			rectangle = missingGlyphRect(dot, command.FontSize, glyph.advance)
+		} else if glyph.face != nil {
+			rectangle, _, _, _, _ = glyph.face.Glyph(dot, glyph.rune)
+		}
 		if rectangle.Empty() {
 			continue
 		}
@@ -358,60 +395,206 @@ func (book *fontBook) horizontalTextInkBounds(command Command) (image.Rectangle,
 	return bounds, true
 }
 
-func shapeText(face font.Face, text string) shapedRun {
-	run := shapedRun{glyphs: make([]shapedGlyph, 0, len(text))}
-	previous := rune(-1)
-	for _, current := range text {
-		if previous >= 0 {
-			run.advance += face.Kern(previous, current)
-		}
-		run.glyphs = append(run.glyphs, shapedGlyph{rune: current, x: run.advance})
-		advance, _ := face.GlyphAdvance(current)
-		run.advance += advance
-		previous = current
-	}
-	return run
-}
-
-func (book *fontBook) face(size float64, weight FontWeight, style FontStyle, family FontFamily, web ...uint32) (font.Face, error) {
+func (book *fontBook) shapeRunLocked(
+	primaryFace font.Face,
+	primaryFont *opentype.Font,
+	size float64,
+	weight FontWeight,
+	style FontStyle,
+	family FontFamily,
+	webID uint32,
+	text string,
+) (shapedRun, error) {
 	if size <= 0 {
 		size = 16
 	}
-	// The bundled font family does not have a separately slanted oblique face.
-	// Use the italic face as the current oblique fallback and share its cache
-	// entry rather than allocating a duplicate opentype face.
+	run := shapedRun{glyphs: make([]shapedGlyph, 0, len(text))}
+	var prevFace font.Face
+	previous := rune(-1)
+	for _, current := range text {
+		if isZeroWidthIgnorable(current) {
+			continue
+		}
+		activeFace, activeOK := book.resolveRuneFaceLocked(primaryFace, primaryFont, size, weight, style, family, webID, current)
+		if !activeOK {
+			adv := missingGlyphAdvance(size)
+			run.glyphs = append(run.glyphs, shapedGlyph{rune: current, x: run.advance, advance: adv, missing: true})
+			run.advance += adv
+			prevFace = nil
+			previous = -1
+			continue
+		}
+		if prevFace == activeFace && previous >= 0 {
+			run.advance += activeFace.Kern(previous, current)
+		}
+		advance, ok := activeFace.GlyphAdvance(current)
+		if !ok || advance < 0 {
+			advance = 0
+		}
+		run.glyphs = append(run.glyphs, shapedGlyph{rune: current, x: run.advance, advance: advance, face: activeFace})
+		run.advance += advance
+		prevFace = activeFace
+		previous = current
+	}
+	return run, nil
+}
+
+func (book *fontBook) resolveRuneFaceLocked(
+	primaryFace font.Face,
+	primaryFont *opentype.Font,
+	size float64,
+	weight FontWeight,
+	style FontStyle,
+	family FontFamily,
+	webID uint32,
+	r rune,
+) (font.Face, bool) {
+	if book.fontHasGlyphLocked(primaryFont, r) {
+		return primaryFace, true
+	}
+	bundledFallback := book.bundledFontForStyleLocked(weight, style, FontFamilySansSerif)
+	if bundledFallback != nil && bundledFallback != primaryFont && book.fontHasGlyphLocked(bundledFallback, r) {
+		face, err := book.cachedFaceLocked(size, weight, style, FontFamilySansSerif, 0, 1, bundledFallback)
+		if err == nil {
+			return face, true
+		}
+	}
+	book.ensurePlatformFontsLocked()
+	systemCandidate := book.systemRegular
+	if style == FontStyleItalic || style == FontStyleOblique {
+		if book.systemItalic != nil {
+			systemCandidate = book.systemItalic
+		}
+	}
+	if systemCandidate != nil && systemCandidate != primaryFont && book.fontHasGlyphLocked(systemCandidate, r) {
+		face, err := book.cachedFaceLocked(size, weight, style, FontFamilySystemUI, 0, 2, systemCandidate)
+		if err == nil {
+			return face, true
+		}
+	}
+	if book.systemSymbols != nil && book.systemSymbols != primaryFont && book.fontHasGlyphLocked(book.systemSymbols, r) {
+		face, err := book.cachedFaceLocked(size, FontWeightNormal, FontStyleNormal, FontFamilySystemUI, 0, 3, book.systemSymbols)
+		if err == nil {
+			return face, true
+		}
+	}
+	return nil, false
+}
+
+func (book *fontBook) fontHasGlyphLocked(parsed *opentype.Font, r rune) bool {
+	if parsed == nil {
+		return false
+	}
+	glyph, err := parsed.GlyphIndex(&book.glyphBuffer, r)
+	return err == nil && glyph != 0
+}
+
+func (book *fontBook) ensurePlatformFontsLocked() {
+	if book.platformLoaded {
+		return
+	}
+	book.platformLoaded = true
+	platform := loadPlatformFonts()
+	book.systemRegular = platform.systemRegular
+	book.systemItalic = platform.systemItalic
+	book.systemSymbols = platform.systemSymbols
+}
+
+func isZeroWidthIgnorable(r rune) bool {
+	return r == '\u200B' || r == '\u200C' || r == '\u200D' || r == '\u2060' || r == '\uFEFF' || r == '\u00AD' ||
+		(r >= 0xFE00 && r <= 0xFE0F) || (r >= 0xE0100 && r <= 0xE01EF)
+}
+
+func missingGlyphAdvance(size float64) fixed.Int26_6 {
+	if size <= 0 {
+		size = 16
+	}
+	return fixed.Int26_6(math.Round(size * 0.65 * 64))
+}
+
+func missingGlyphRect(dot fixed.Point26_6, size float64, advance fixed.Int26_6) image.Rectangle {
+	if size <= 0 {
+		size = 16
+	}
+	advPx := int(math.Round(float64(advance) / 64))
+	if advPx < 4 {
+		advPx = int(math.Round(math.Max(size*0.6, 4)))
+	}
+	height := int(math.Round(size * 0.72))
+	if height < 4 {
+		height = 4
+	}
+	x0 := dot.X.Round() + 1
+	x1 := dot.X.Round() + advPx - 1
+	if x1 <= x0 {
+		x1 = x0 + 2
+	}
+	baseline := dot.Y.Round()
+	return image.Rect(x0, baseline-height, x1, baseline)
+}
+
+func drawMissingGlyphBox(destination *image.RGBA, rect image.Rectangle, textColor color.NRGBA) {
+	if destination == nil || rect.Empty() || textColor.A == 0 {
+		return
+	}
+	clipped := rect.Intersect(destination.Bounds())
+	if clipped.Empty() {
+		return
+	}
+	borderColor := textColor
+	borderColor.A = uint8(max(1, int(borderColor.A)*2/3))
+	source := image.NewUniform(borderColor)
+	edges := [4]image.Rectangle{
+		image.Rect(rect.Min.X, rect.Min.Y, rect.Max.X, rect.Min.Y+1),
+		image.Rect(rect.Min.X, rect.Max.Y-1, rect.Max.X, rect.Max.Y),
+		image.Rect(rect.Min.X, rect.Min.Y+1, rect.Min.X+1, rect.Max.Y-1),
+		image.Rect(rect.Max.X-1, rect.Min.Y+1, rect.Max.X, rect.Max.Y-1),
+	}
+	for _, edge := range edges {
+		if edgeClipped := edge.Intersect(clipped); !edgeClipped.Empty() {
+			draw.Draw(destination, edgeClipped, source, image.Point{}, draw.Over)
+		}
+	}
+}
+
+func (book *fontBook) primaryFaceLocked(size float64, weight FontWeight, style FontStyle, family FontFamily, webID uint32) (font.Face, *opentype.Font, uint32, error) {
+	if size <= 0 {
+		size = 16
+	}
 	if style == FontStyleOblique {
 		style = FontStyleItalic
 	}
 	if family != FontFamilyMonospace && family != FontFamilySystemUI {
 		family = FontFamilySansSerif
 	}
-	webID := uint32(0)
-	if len(web) != 0 && web[0] > 0 && int(web[0]) <= len(book.webFonts) && book.webFonts[web[0]-1].font != nil {
-		webID = web[0]
+	resolvedWeb := uint32(0)
+	if webID > 0 && int(webID) <= len(book.webFonts) && book.webFonts[webID-1].font != nil {
+		resolvedWeb = webID
 	}
-	key := faceKey{size: int(math.Round(size * 64)), weight: weight, style: style, family: family, web: webID}
-	if face := book.faces[key]; face != nil {
-		return face, nil
-	}
-
 	parsedFont := book.regular
-	if webID != 0 {
-		parsedFont = book.webFonts[webID-1].font
+	if resolvedWeb != 0 {
+		parsedFont = book.webFonts[resolvedWeb-1].font
+	} else {
+		if family == FontFamilySystemUI {
+			book.ensurePlatformFontsLocked()
+		}
+		parsedFont = book.bundledFontForStyleLocked(weight, style, family)
 	}
-	if webID == 0 && family == FontFamilySystemUI && book.systemRegular == nil {
-		platform := loadPlatformFonts()
-		book.systemRegular = platform.systemRegular
-		book.systemItalic = platform.systemItalic
+	face, err := book.cachedFaceLocked(size, weight, style, family, resolvedWeb, 0, parsedFont)
+	if err != nil {
+		return nil, nil, 0, err
 	}
-	if webID != 0 {
-		// A selected @font-face already represents the requested descriptors.
-	} else if family == FontFamilyMonospace {
+	return face, parsedFont, resolvedWeb, nil
+}
+
+func (book *fontBook) bundledFontForStyleLocked(weight FontWeight, style FontStyle, family FontFamily) *opentype.Font {
+	parsedFont := book.regular
+	if family == FontFamilyMonospace {
 		parsedFont = book.monoRegular
 	} else if family == FontFamilySystemUI && book.systemRegular != nil {
 		parsedFont = book.systemRegular
 	}
-	if webID == 0 && style == FontStyleItalic {
+	if style == FontStyleItalic {
 		if family == FontFamilyMonospace {
 			parsedFont = book.monoItalic
 		} else if family == FontFamilySystemUI && book.systemItalic != nil {
@@ -420,7 +603,7 @@ func (book *fontBook) face(size float64, weight FontWeight, style FontStyle, fam
 			parsedFont = book.italic
 		}
 	}
-	if webID == 0 && weight == FontWeightBold && style == FontStyleItalic {
+	if weight == FontWeightBold && style == FontStyleItalic {
 		if family == FontFamilyMonospace {
 			parsedFont = book.monoBoldItalic
 		} else if family == FontFamilySystemUI && book.systemItalic != nil {
@@ -430,7 +613,7 @@ func (book *fontBook) face(size float64, weight FontWeight, style FontStyle, fam
 		} else {
 			parsedFont = book.boldItalic
 		}
-	} else if webID == 0 && weight == FontWeightBold {
+	} else if weight == FontWeightBold {
 		if family == FontFamilyMonospace {
 			parsedFont = book.monoBold
 		} else if family == FontFamilySystemUI && book.systemRegular != nil {
@@ -438,6 +621,17 @@ func (book *fontBook) face(size float64, weight FontWeight, style FontStyle, fam
 		} else {
 			parsedFont = book.bold
 		}
+	}
+	return parsedFont
+}
+
+func (book *fontBook) cachedFaceLocked(size float64, weight FontWeight, style FontStyle, family FontFamily, webID uint32, fallback uint8, parsedFont *opentype.Font) (font.Face, error) {
+	if size <= 0 {
+		size = 16
+	}
+	key := faceKey{size: int(math.Round(size * 64)), weight: weight, style: style, family: family, web: webID, fallback: fallback}
+	if face := book.faces[key]; face != nil {
+		return face, nil
 	}
 	face, err := opentype.NewFace(parsedFont, &opentype.FaceOptions{
 		Size:    size,
@@ -449,6 +643,15 @@ func (book *fontBook) face(size float64, weight FontWeight, style FontStyle, fam
 	}
 	book.faces[key] = face
 	return face, nil
+}
+
+func (book *fontBook) face(size float64, weight FontWeight, style FontStyle, family FontFamily, web ...uint32) (font.Face, error) {
+	webID := uint32(0)
+	if len(web) != 0 {
+		webID = web[0]
+	}
+	face, _, _, err := book.primaryFaceLocked(size, weight, style, family, webID)
+	return face, err
 }
 
 func (book *fontBook) resolveWebFont(familyList string, requestedWeight int, style FontStyle, text string) uint32 {

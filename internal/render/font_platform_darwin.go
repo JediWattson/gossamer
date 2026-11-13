@@ -19,6 +19,7 @@ func loadPlatformFonts() platformFonts {
 		platformFontBook = platformFonts{
 			systemRegular: parsePlatformFont("/System/Library/Fonts/SFNS.ttf"),
 			systemItalic:  parsePlatformFont("/System/Library/Fonts/SFNSItalic.ttf"),
+			systemSymbols: parsePlatformFont("/System/Library/Fonts/Apple Symbols.ttf"),
 		}
 	})
 	return platformFontBook
