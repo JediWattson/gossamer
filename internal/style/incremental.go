@@ -267,7 +267,7 @@ func (snapshot *Snapshot) dirtyStyleRoots(access *dom.ReadAccess, records []dom.
 				return nil, false
 			}
 			selectorDependent := snapshot.mutationDependencies.attribute(name)
-			presentational := node.NamespaceURI == dom.HTMLNamespace && node.Data == "img" && (name == "width" || name == "height")
+			presentational := hasReplacedDimensionHint(node, name)
 			if name != "style" && !selectorDependent && !presentational {
 				continue
 			}
@@ -462,8 +462,15 @@ func (snapshot *Snapshot) attributeMutationRequiresRestyle(access *dom.ReadAcces
 	if !found || node == nil || node.Type != dom.ElementNode {
 		return false
 	}
-	return styleOwnerAttributeAffectsSheet(node, name) || node.NamespaceURI == dom.HTMLNamespace &&
-		node.Data == "img" && (name == "width" || name == "height")
+	return styleOwnerAttributeAffectsSheet(node, name) || hasReplacedDimensionHint(node, name)
+}
+
+func hasReplacedDimensionHint(node *dom.Node, attributeName string) bool {
+	if node == nil || (attributeName != "width" && attributeName != "height") {
+		return false
+	}
+	return (node.NamespaceURI == dom.HTMLNamespace && (node.Data == "img" || node.Data == "iframe")) ||
+		(node.NamespaceURI == dom.SVGNamespace && node.Data == "svg")
 }
 
 func (snapshot *Snapshot) characterMutationRequiresRestyle(access *dom.ReadAccess, record dom.MutationRecord) bool {

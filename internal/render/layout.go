@@ -345,7 +345,7 @@ func (context *layoutContext) blockGeneratesOwnContent(node *styledNode) bool {
 	if node.style.Display() == displayListItem && node.style.ListStyleType() != listStyleNone {
 		return true
 	}
-	return isReplacedElement(node.node) && (node.node.Data == "iframe" ||
+	return isReplacedElement(node.node) && (node.node.Data == "iframe" || isSVGElement(node.node) ||
 		context.images[node.node] != nil || hasExplicitImageDimensions(node.style))
 }
 
@@ -476,6 +476,9 @@ func (context *layoutContext) layoutBlockSizedWithSubgrid(node *styledNode, cont
 				hasStyle:      true,
 			}
 			return context.finalizeBlock(node, box, availableWidth)
+		}
+		if isSVGElement(node.node) {
+			decoded = renderSVGNode(node.node, style, context.styles, imageWidth, imageHeight)
 		}
 		outerWidth := imageWidth + padding.Left + padding.Right + border.Left + border.Right
 		remaining := availableWidth - outerWidth - left - right
@@ -1850,6 +1853,7 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 		atomicBaseline := 0.0
 		imageWidth := 0.0
 		imageHeight := 0.0
+		var replacedImage image.Image
 		var measuredRuns []measuredVerticalTextRun
 		if token.atomic != nil {
 			var err error
@@ -1862,9 +1866,13 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 			wordMetrics.descent = math.Max(0, atomicHeight-atomicBaseline)
 		} else if token.replaced {
 			var ok bool
-			imageWidth, imageHeight, ok = context.replacedDimensions(token.node, token.style, token.image, width, containingHeight, 0, 0)
+			replacedImage = token.image
+			imageWidth, imageHeight, ok = context.replacedDimensions(token.node, token.style, replacedImage, width, containingHeight, 0, 0)
 			if !ok {
 				continue
+			}
+			if isSVGElement(token.node) {
+				replacedImage = renderSVGNode(token.node, token.style, context.styles, imageWidth, imageHeight)
 			}
 			wordMetrics = textMetrics{width: imageWidth, ascent: imageHeight}
 		} else if verticalTextLayout {
@@ -1917,7 +1925,7 @@ func (context *layoutContext) layoutInline(nodes []*styledNode, x, y, width floa
 			line = append(line, inlinePiece{
 				node:                  token.node,
 				style:                 token.style,
-				image:                 token.image,
+				image:                 replacedImage,
 				replaced:              true,
 				percentHeightResolved: token.style.Height().DependsOnPercent() && containingHeight != nil,
 				justifyBefore:         justifyBefore,
@@ -2420,6 +2428,8 @@ func (context *layoutContext) replacedDimensions(node *dom.Node, style computedS
 		naturalWidth = 300
 		naturalHeight = 150
 		hasNaturalSize = true
+	} else if !hasNaturalSize && isSVGElement(node) {
+		naturalWidth, naturalHeight, hasNaturalSize = svgIntrinsicDimensions(node)
 	}
 
 	widthSpecified := style.Width().Unit() != lengthAuto
@@ -2578,8 +2588,9 @@ type inlineTokenBuilder struct {
 }
 
 func isReplacedElement(node *dom.Node) bool {
-	return node != nil && node.Type == dom.ElementNode && node.NamespaceURI == dom.HTMLNamespace &&
-		(node.Data == "img" || node.Data == "iframe")
+	return node != nil && node.Type == dom.ElementNode &&
+		((node.NamespaceURI == dom.HTMLNamespace && (node.Data == "img" || node.Data == "iframe")) ||
+			isSVGElement(node))
 }
 
 func (builder *inlineTokenBuilder) add(node *styledNode, inheritedOpacity float64) {
@@ -2626,7 +2637,7 @@ func (builder *inlineTokenBuilder) addAligned(node *styledNode, inheritedOpacity
 	}
 	if isReplacedElement(node.node) {
 		decoded := builder.images[node.node]
-		if node.node.Data == "iframe" || decoded != nil || hasExplicitImageDimensions(node.style) {
+		if node.node.Data == "iframe" || isSVGElement(node.node) || decoded != nil || hasExplicitImageDimensions(node.style) {
 			leadingSpace := builder.pendingSpace && builder.hasContent
 			builder.tokens = append(builder.tokens, inlineToken{
 				node:          node.node,

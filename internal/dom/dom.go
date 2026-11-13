@@ -103,7 +103,8 @@ func NewElement(name string, attributes ...Attribute) *Node {
 	return node
 }
 
-func newElementNS(namespaceURI, prefix, localName string, attributes ...Attribute) *Node {
+// NewElementNS creates an element node with the given namespace and prefix.
+func NewElementNS(namespaceURI, prefix, localName string, attributes ...Attribute) *Node {
 	node := &Node{
 		Type:         ElementNode,
 		Data:         localName,
@@ -114,6 +115,10 @@ func newElementNS(namespaceURI, prefix, localName string, attributes ...Attribut
 	initializeControlState(node)
 	initializeTemplateContent(node)
 	return node
+}
+
+func newElementNS(namespaceURI, prefix, localName string, attributes ...Attribute) *Node {
+	return NewElementNS(namespaceURI, prefix, localName, attributes...)
 }
 
 func initializeTemplateContent(node *Node) {

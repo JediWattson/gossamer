@@ -1697,7 +1697,8 @@ func applyCascade(style *computedStyle, explanations map[string]PropertyExplanat
 	recordSheets(CascadeOriginUserAgent, context.userAgent)
 	recordSheets(CascadeOriginUser, context.user)
 
-	if pseudo == css.PseudoElementNone && (node.Data == "img" || node.Data == "iframe") {
+	if pseudo == css.PseudoElementNone && ((node.NamespaceURI == dom.HTMLNamespace && (node.Data == "img" || node.Data == "iframe")) ||
+		(node.NamespaceURI == dom.SVGNamespace && node.Data == "svg")) {
 		for declarationIndex, name := range []string{"width", "height"} {
 			order := reserveSourceOrder(CascadeOriginPresentationalHint)
 			value, ok := dimensionAttribute(node, name)
@@ -2881,6 +2882,15 @@ type computedColorValue struct {
 	value        color.NRGBA
 	currentColor bool
 	mix          *computedColorMix
+}
+
+// ParseColor parses one CSS color expression and resolves currentcolor against current.
+func ParseColor(source string, current color.NRGBA) (color.NRGBA, bool) {
+	parsed, ok := parseComputedColor(source)
+	if !ok {
+		return color.NRGBA{}, false
+	}
+	return parsed.resolve(current), true
 }
 
 func parseComputedColor(source string) (computedColorValue, bool) {

@@ -339,6 +339,57 @@ func TestParseReturnsReaderError(t *testing.T) {
 	}
 }
 
+func TestParseSVGNamespaceAndSelfClosingChildren(t *testing.T) {
+	t.Parallel()
+
+	doc := mustParseHTML(t, `<div><svg viewBox="0 0 24 24"><circle cx="5" cy="5" r="2"/><g><path d="M1 1h5"/></g><rect width="3" height="3"/></svg><span>after</span></div>`)
+	var findFirst func(*dom.Node, string) *dom.Node
+	findFirst = func(node *dom.Node, tag string) *dom.Node {
+		if node == nil {
+			return nil
+		}
+		if node.Type == dom.ElementNode && node.Data == tag {
+			return node
+		}
+		for _, child := range node.Children {
+			if found := findFirst(child, tag); found != nil {
+				return found
+			}
+		}
+		return nil
+	}
+	div := findFirst(doc, "div")
+	svg := findFirst(div, "svg")
+	if svg == nil || svg.Data != "svg" || svg.NamespaceURI != dom.SVGNamespace {
+		t.Fatalf("svg = %#v, want svg in %q", svg, dom.SVGNamespace)
+	}
+	if len(svg.Children) != 3 {
+		t.Fatalf("svg children = %d (%s), want 3 siblings", len(svg.Children), SerializeNode(svg))
+	}
+	circle, group, rect := svg.Children[0], svg.Children[1], svg.Children[2]
+	if circle.Data != "circle" || circle.NamespaceURI != dom.SVGNamespace || len(circle.Children) != 0 {
+		t.Fatalf("circle = %#v, want empty circle in SVG namespace", circle)
+	}
+	if group.Data != "g" || group.NamespaceURI != dom.SVGNamespace || len(group.Children) != 1 || group.Children[0].Data != "path" {
+		t.Fatalf("group = %s, want <g><path/></g>", SerializeNode(group))
+	}
+	if rect.Data != "rect" || rect.NamespaceURI != dom.SVGNamespace {
+		t.Fatalf("rect = %#v, want rect in SVG namespace", rect)
+	}
+	span := findFirst(div, "span")
+	if span == nil || span.Data != "span" || span.NamespaceURI != dom.HTMLNamespace || len(div.Children) != 2 {
+		t.Fatalf("div children = %s, want <svg> and sibling <span> in HTML namespace", SerializeChildren(div))
+	}
+
+	fragment, err := ParseFragment(strings.NewReader(`<path d="M0 0"/><circle cx="1" cy="1" r="1"/>`), "svg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fragment.Children) != 2 || fragment.Children[0].NamespaceURI != dom.SVGNamespace || fragment.Children[1].NamespaceURI != dom.SVGNamespace {
+		t.Fatalf("svg fragment children = %s, want 2 sibling SVG elements", SerializeChildren(fragment))
+	}
+}
+
 func FuzzParse(f *testing.F) {
 	for _, seed := range []string{
 		"",

@@ -79,7 +79,13 @@ func ParseFragment(reader io.Reader, contextName string) (*dom.Node, error) {
 	if contextName == "" {
 		contextName = "div"
 	}
-	container := dom.NewElement(strings.ToLower(contextName))
+	lowerContext := strings.ToLower(contextName)
+	var container *dom.Node
+	if lowerContext == "svg" {
+		container = dom.NewElementNS(dom.SVGNamespace, "", "svg")
+	} else {
+		container = dom.NewElement(lowerContext)
+	}
 	tokenizer := NewTokenizer(reader)
 	fragmentParser := &parser{
 		tokenizer:    tokenizer,
@@ -137,6 +143,13 @@ func ParseFragment(reader io.Reader, contextName string) (*dom.Node, error) {
 }
 
 func (parser *parser) process(token Token) bool {
+	if parser.mode != textModeState && parser.inSVGForeignContent() {
+		return parser.processInSVG(token)
+	}
+	return parser.processCurrentMode(token)
+}
+
+func (parser *parser) processCurrentMode(token Token) bool {
 	switch parser.mode {
 	case initialMode:
 		return parser.processInitial(token)
@@ -417,6 +430,13 @@ func (parser *parser) processInBody(token Token) bool {
 			return false
 		case "script":
 			parser.startTextElement(token, scriptDataMode)
+			return false
+		case "svg":
+			parser.closeIfOpen("p")
+			parser.insertElementWithNamespace(token, dom.SVGNamespace)
+			if token.SelfClosing {
+				parser.truncateOpen(len(parser.open) - 1)
+			}
 			return false
 		}
 
@@ -865,18 +885,29 @@ func (parser *parser) startTextElement(token Token, mode textMode) {
 }
 
 func (parser *parser) insertElement(token Token) *dom.Node {
-	element := parser.elementFromToken(token)
+	return parser.insertElementWithNamespace(token, dom.HTMLNamespace)
+}
+
+func (parser *parser) insertElementWithNamespace(token Token, namespaceURI string) *dom.Node {
+	element := parser.elementFromTokenNS(token, namespaceURI)
 	parser.insertNode(element)
 	parser.open = append(parser.open, element)
 	return element
 }
 
 func (parser *parser) elementFromToken(token Token) *dom.Node {
+	return parser.elementFromTokenNS(token, dom.HTMLNamespace)
+}
+
+func (parser *parser) elementFromTokenNS(token Token, namespaceURI string) *dom.Node {
 	attributes := make([]dom.Attribute, 0, len(token.Attributes))
 	for _, attribute := range token.Attributes {
 		attributes = append(attributes, dom.Attribute{Name: attribute.Name, Value: attribute.Value})
 	}
-	return dom.NewElement(token.Data, attributes...)
+	if namespaceURI == "" || namespaceURI == dom.HTMLNamespace {
+		return dom.NewElement(token.Data, attributes...)
+	}
+	return dom.NewElementNS(namespaceURI, "", token.Data, attributes...)
 }
 
 func (parser *parser) insertText(data string) {
@@ -1280,4 +1311,88 @@ func splitLeadingHTMLSpace(data string) (string, string) {
 
 func isAllHTMLSpace(data string) bool {
 	return trimLeadingHTMLSpace(data) == ""
+}
+
+func (parser *parser) inSVGForeignContent() bool {
+	current := parser.currentNode()
+	return current != nil && current.NamespaceURI == dom.SVGNamespace && !isSVGHTMLIntegrationPoint(current)
+}
+
+func (parser *parser) processInSVG(token Token) bool {
+	switch token.Type {
+	case CharacterToken:
+		parser.insertText(token.Data)
+		return false
+	case CommentToken:
+		parser.insertionParent().AppendChild(dom.NewComment(token.Data))
+		return false
+	case ProcessingInstructionToken:
+		parser.insertionParent().AppendChild(dom.NewProcessingInstruction(token.Target, token.Data))
+		return false
+	case DoctypeToken:
+		return false
+	case StartTagToken:
+		if isForeignBreakoutTag(token) {
+			for len(parser.open) > 0 {
+				current := parser.currentNode()
+				if current == nil || current.NamespaceURI == dom.HTMLNamespace || isSVGHTMLIntegrationPoint(current) {
+					break
+				}
+				if parser.fragmentRoot != nil && current == parser.fragmentRoot {
+					break
+				}
+				parser.truncateOpen(len(parser.open) - 1)
+			}
+			return true
+		}
+		parser.insertElementWithNamespace(token, dom.SVGNamespace)
+		if token.SelfClosing {
+			parser.truncateOpen(len(parser.open) - 1)
+		}
+		return false
+	case EndTagToken:
+		for index := len(parser.open) - 1; index >= 0; index-- {
+			node := parser.open[index]
+			if node.NamespaceURI != dom.SVGNamespace {
+				return parser.processCurrentMode(token)
+			}
+			if strings.EqualFold(node.Data, token.Data) {
+				parser.truncateOpen(index)
+				return false
+			}
+		}
+		return false
+	default:
+		return false
+	}
+}
+
+func isSVGHTMLIntegrationPoint(node *dom.Node) bool {
+	if node == nil || node.NamespaceURI != dom.SVGNamespace {
+		return false
+	}
+	switch node.Data {
+	case "foreignObject", "foreignobject", "desc", "title":
+		return true
+	default:
+		return false
+	}
+}
+
+func isForeignBreakoutTag(token Token) bool {
+	switch token.Data {
+	case "b", "big", "blockquote", "body", "br", "center", "code", "dd", "div", "dl", "dt",
+		"em", "embed", "h1", "h2", "h3", "h4", "h5", "h6", "head", "hr", "i", "img", "li",
+		"listing", "menu", "meta", "nobr", "ol", "p", "pre", "ruby", "s", "small", "span",
+		"strong", "strike", "sub", "sup", "table", "tt", "u", "ul", "var":
+		return true
+	case "font":
+		for _, attr := range token.Attributes {
+			switch attr.Name {
+			case "color", "face", "size":
+				return true
+			}
+		}
+	}
+	return false
 }
