@@ -37,6 +37,7 @@ func run(arguments []string, output io.Writer) error {
 	timeout := flags.Duration("timeout", 30*time.Second, "site boot timeout")
 	settle := flags.Duration("settle", 0, "optional post-navigation task settle duration")
 	console := flags.Bool("console", false, "write page console output to stderr")
+	traceHTTP := flags.Bool("trace-http", false, "write HTTP requests and response statuses to stderr")
 	screenshotPath := flags.String("screenshot", "", "optional PNG output path")
 	viewportWidth := flags.Int("viewport-width", render.DefaultViewport.Width, "viewport width in CSS pixels")
 	viewportHeight := flags.Int("viewport-height", render.DefaultViewport.Height, "viewport height in CSS pixels")
@@ -95,7 +96,14 @@ func run(arguments []string, output io.Writer) error {
 		defer screenshotFile.Close()
 		screenshot = screenshotFile
 	}
-	report, runErr := sitecompat.Run(ctx, engine, rawURL, loader.New(nil), sitecompat.Options{
+	documentLoader := loader.New(nil)
+	if *traceHTTP {
+		documentLoader = loader.New(&http.Client{
+			Timeout:   30 * time.Second,
+			Transport: httpTraceTransport{base: http.DefaultTransport, out: os.Stderr},
+		})
+	}
+	report, runErr := sitecompat.Run(ctx, engine, rawURL, documentLoader, sitecompat.Options{
 		EngineName: strings.ToLower(strings.TrimSpace(*engineName)), DOMLimit: *domLimit, Screenshot: screenshot,
 		Viewport: render.Viewport{Width: *viewportWidth, Height: *viewportHeight}, ExpectedPaintSHA256: *expectedPaint,
 		Settle: *settle,
@@ -112,4 +120,20 @@ func run(arguments []string, output io.Writer) error {
 		return fmt.Errorf("compatibility gate failed")
 	}
 	return nil
+}
+
+type httpTraceTransport struct {
+	base http.RoundTripper
+	out  io.Writer
+}
+
+func (transport httpTraceTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	started := time.Now()
+	response, err := transport.base.RoundTrip(request)
+	if err != nil {
+		_, _ = fmt.Fprintf(transport.out, "[http] %s %s -> error (%s): %v\n", request.Method, request.URL, time.Since(started).Round(time.Millisecond), err)
+		return nil, err
+	}
+	_, _ = fmt.Fprintf(transport.out, "[http] %s %s -> %d (%s)\n", request.Method, request.URL, response.StatusCode, time.Since(started).Round(time.Millisecond))
+	return response, nil
 }
