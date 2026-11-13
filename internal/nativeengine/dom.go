@@ -317,6 +317,7 @@ const (
 	bindingAbortSignalPrototype            = "\x00gossamer.abort-signal.prototype"
 	bindingAbortSignalConstructor          = "\x00gossamer.abort-signal.constructor"
 	hostRecordProperty                     = "\x00gossamer.host.record"
+	hostFacadeOwnerProperty                = "\x00gossamer.host.facade-owner"
 )
 
 type browserBindings struct {

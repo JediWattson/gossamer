@@ -59,6 +59,74 @@ func TestCheckpointHeapInvariantVerificationAuditsValidHeap(t *testing.T) {
 	}
 }
 
+func TestDetachedCanvasFacadeKeepsOwningCanvasAliveAcrossGC(t *testing.T) {
+	realm, page := newCheckpointCollectionRealm(t, Config{VerifyHeapInvariants: true})
+	baselineNodes := page.Document().Store().LiveLen()
+
+	if _, err := page.QueueScript(browser.ScriptSource{URL: "https://gossamer.test/facade-gc-1", Source: `
+globalThis.holder = {
+  ctx: (function () {
+    const c = document.createElement('canvas');
+    c.width = 64;
+    c.__marker = 'alive';
+    return c.getContext('2d');
+  })(),
+  computed: getComputedStyle(document.createElement('div')),
+};
+(function () {
+  const dropped = document.createElement('canvas');
+  dropped.getContext('2d');
+})();
+`}); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := realm.CollectGarbage(page); err != nil {
+		t.Fatalf("first CollectGarbage() = %v", err)
+	}
+	if got := page.Document().Store().LiveLen(); got != baselineNodes+2 {
+		t.Fatalf("live nodes after first GC = %d, want %d (baseline %d + 2 retained facades)", got, baselineNodes+2, baselineNodes)
+	}
+
+	if _, err := page.QueueScript(browser.ScriptSource{URL: "https://gossamer.test/facade-gc-2", Source: `
+globalThis.holder.ctx.font = '16px sans-serif';
+if (!(globalThis.holder.ctx.measureText('hello').width > 0)) {
+  throw new Error('measureText returned non-positive width');
+}
+if (globalThis.holder.ctx.canvas.__marker !== 'alive') {
+  throw new Error('canvas wrapper lost expando across GC');
+}
+if (typeof globalThis.holder.computed.color !== 'string') {
+  throw new Error('computed style lost backing element');
+}
+delete globalThis.holder;
+`}); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	// Run a follow-up no-op script task so no completed-task register still
+	// points at the released globals before the second GC checkpoint.
+	if _, err := page.QueueScript(browser.ScriptSource{URL: "https://gossamer.test/facade-gc-3", Source: `void 0;`}); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := realm.CollectGarbage(page); err != nil {
+		t.Fatalf("second CollectGarbage() = %v", err)
+	}
+	if got := len(realm.canvas2DStates); got != 0 {
+		t.Fatalf("len(realm.canvas2DStates) = %d, want 0", got)
+	}
+	if got := page.Document().Store().LiveLen(); got != baselineNodes {
+		t.Fatalf("live nodes after dropping facades = %d, want baseline %d", got, baselineNodes)
+	}
+}
+
 func BenchmarkCheckpointHeapInvariantVerification(b *testing.B) {
 	for _, verify := range []bool{false, true} {
 		name := "disabled"

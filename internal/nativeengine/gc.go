@@ -367,6 +367,7 @@ func (realm *Realm) restoreCanonicalCachesLocked(caches []canonicalCache) ([]bro
 					if err != nil {
 						return nil, err
 					}
+					delete(realm.canvas2DStates, handle)
 					collected = append(collected, handle)
 				}
 				continue

@@ -97,6 +97,11 @@ func (realm *Realm) elementFacade(context *browserruntime.TaskContext, this memo
 	if err != nil {
 		return memory.Value{}, err
 	}
+	// Keep the owning DOM wrapper reachable for as long as its facade is alive
+	// (e.g. cached CanvasRenderingContext2D or ElementCSSInlineStyle).
+	if err := defineData(context, ref, hostFacadeOwnerProperty, this, false, false, false); err != nil {
+		return memory.Value{}, err
+	}
 	if err := context.MapSet(realm.bindings.facadeCache, key, memory.RefValue(ref)); err != nil {
 		return memory.Value{}, err
 	}

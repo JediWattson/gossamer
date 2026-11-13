@@ -44,6 +44,9 @@ func (realm *Realm) globalGetComputedStyle(context *browserruntime.TaskContext, 
 	if err != nil {
 		return memory.Value{}, err
 	}
+	if err := defineData(context, ref, hostFacadeOwnerProperty, argument(arguments, 0), false, false, false); err != nil {
+		return memory.Value{}, err
+	}
 	return memory.RefValue(ref), nil
 }
 

@@ -620,6 +620,11 @@ func (realm *Realm) canvas2DCanvasGet(context *browserruntime.TaskContext, this 
 	if err != nil {
 		return memory.Value{}, err
 	}
+	if owner, found, err := ownProperty(context, this.Ref(), hostFacadeOwnerProperty); err != nil {
+		return memory.Value{}, err
+	} else if found && owner.IsRef() {
+		return owner, nil
+	}
 	return realm.wrappedNodeValue(context, state.handle)
 }
 
