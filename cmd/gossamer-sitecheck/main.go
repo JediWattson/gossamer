@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/JediWattson/gossamer/internal/loader"
+	"github.com/JediWattson/gossamer/internal/nativeengine"
 	"github.com/JediWattson/gossamer/internal/render"
 	"github.com/JediWattson/gossamer/internal/sitecompat"
 )
@@ -34,6 +35,8 @@ func run(arguments []string, output io.Writer) error {
 	dist := flags.String("dist", "", "serve this production distribution directory")
 	domLimit := flags.Int("dom-limit", 200, "maximum DOM dump lines; negative disables the dump")
 	timeout := flags.Duration("timeout", 30*time.Second, "site boot timeout")
+	settle := flags.Duration("settle", 0, "optional post-navigation task settle duration")
+	console := flags.Bool("console", false, "write page console output to stderr")
 	screenshotPath := flags.String("screenshot", "", "optional PNG output path")
 	viewportWidth := flags.Int("viewport-width", render.DefaultViewport.Width, "viewport width in CSS pixels")
 	viewportHeight := flags.Int("viewport-height", render.DefaultViewport.Height, "viewport height in CSS pixels")
@@ -69,7 +72,13 @@ func run(arguments []string, output io.Writer) error {
 		rawURL = flags.Arg(0)
 	}
 
-	engine, err := selectEngine(*engineName, *icuData)
+	var consoleSink func(nativeengine.ConsoleMessage)
+	if *console {
+		consoleSink = func(message nativeengine.ConsoleMessage) {
+			_, _ = fmt.Fprintf(os.Stderr, "[console.%s] %s\n", message.Method, strings.Join(message.Arguments, " "))
+		}
+	}
+	engine, err := selectEngineWithConsole(*engineName, *icuData, consoleSink)
 	if err != nil {
 		return err
 	}
@@ -89,6 +98,7 @@ func run(arguments []string, output io.Writer) error {
 	report, runErr := sitecompat.Run(ctx, engine, rawURL, loader.New(nil), sitecompat.Options{
 		EngineName: strings.ToLower(strings.TrimSpace(*engineName)), DOMLimit: *domLimit, Screenshot: screenshot,
 		Viewport: render.Viewport{Width: *viewportWidth, Height: *viewportHeight}, ExpectedPaintSHA256: *expectedPaint,
+		Settle: *settle,
 	})
 	encoder := json.NewEncoder(output)
 	encoder.SetIndent("", "  ")

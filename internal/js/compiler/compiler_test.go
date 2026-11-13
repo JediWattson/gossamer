@@ -1368,6 +1368,100 @@ verify();
 	}
 }
 
+func TestCompileLowersAsyncTryFinallyEarlyReturnWithContinuation(t *testing.T) {
+	t.Parallel()
+
+	image, err := compiler.Compile(`
+let log = [];
+async function flow(mode) {
+  try {
+    const first = await Promise.resolve("a");
+    log.push("try:" + first);
+    if (mode === "early-try") {
+      return await Promise.resolve("early-try-result");
+    }
+    if (mode === "empty-return") {
+      return;
+    }
+    if (mode === "throw-catch" || mode === "throw-uncaught") {
+      throw new Error("boom");
+    }
+    log.push("try-end");
+  } catch (err) {
+    log.push("catch:" + err.message);
+    if (mode === "throw-catch") {
+      return "caught";
+    }
+    throw err;
+  } finally {
+    log.push("finally");
+  }
+  log.push("after");
+  return await Promise.resolve("fell-through");
+}
+const out = { result: "" };
+(async () => {
+  const a = await flow("early-try");
+  const b = await flow("empty-return");
+  const c = await flow("fallthrough");
+  const d = await flow("throw-catch");
+  let e = "no-throw";
+  try { await flow("throw-uncaught"); } catch (err) { e = err.message; }
+  out.result = [a, String(b), c, d, e, log.join(",")].join("|");
+})();
+out;
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	realm, err := browserruntime.NewRealm(848, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer realm.Close()
+	interpreter := browserruntime.NewInterpreter(browserruntime.InterpreterConfig{})
+	var check string
+	_, err = realm.EnqueueTask(func(task *browserruntime.TaskContext) error {
+		intrinsics, err := interpreter.Bootstrap(task)
+		if err != nil {
+			return err
+		}
+		loaded, err := program.Load(task, image, memory.RefValue(intrinsics.Global))
+		if err != nil {
+			return err
+		}
+		outVal, err := interpreter.Execute(task, loaded.Entry)
+		if err != nil {
+			return err
+		}
+		key, err := task.NewString("result")
+		if err != nil {
+			return err
+		}
+		value, found, err := task.GetOwnProperty(outVal.Ref(), key)
+		if err != nil || !found || !value.IsRef() {
+			return fmt.Errorf("missing __result: found=%v err=%v", found, err)
+		}
+		check, err = task.DerefString(value.Ref())
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	want := "early-try-result|undefined|fell-through|caught|boom|" +
+		"try:a,finally," +
+		"try:a,finally," +
+		"try:a,try-end,finally,after," +
+		"try:a,catch:boom,finally," +
+		"try:a,catch:boom,finally"
+	if check != want {
+		t.Fatalf("async try/finally early return trace =\n  %q\nwant:\n  %q", check, want)
+	}
+}
+
 func execute(t *testing.T, realmID browserruntime.RealmID, image program.Program) memory.Value {
 	return executeWithConfig(t, realmID, image, browserruntime.InterpreterConfig{})
 }

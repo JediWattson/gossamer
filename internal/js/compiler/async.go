@@ -115,13 +115,34 @@ func lowerAsyncStatements(statements []ast.Statement, span lexer.Span, nextTempo
 		}
 	case *ast.TryStatement:
 		if statementContainsAwait(statement) {
-			if len(rest) != 0 && statement.Finalizer != nil &&
-				(statementContainsReturn(statement.Body) || statement.Handler != nil && statementContainsReturn(statement.Handler.Body)) {
-				return nil, fmt.Errorf("await in try/finally with an early return followed by additional statements is not supported yet")
-			}
 			var joinDecl ast.Statement
+			var returnedIdent *ast.Identifier
 			var branchRest []ast.Statement
-			if statement.Finalizer == nil && len(rest) != 0 {
+			tryStatements := append([]ast.Statement(nil), statement.Body.Body...)
+			var catchStatements []ast.Statement
+			if statement.Handler != nil && statement.Handler.Body != nil {
+				catchStatements = append([]ast.Statement(nil), statement.Handler.Body.Body...)
+			}
+			hasEarlyReturn := len(rest) != 0 && statement.Finalizer != nil &&
+				(statementContainsReturn(statement.Body) || statement.Handler != nil && statementContainsReturn(statement.Handler.Body))
+			if hasEarlyReturn {
+				returnedName := fmt.Sprintf("\x00gossamer.async.returned.%d", *nextTemporary)
+				*nextTemporary++
+				returnedIdent = &ast.Identifier{Base: ast.Base{Range: statement.Span()}, Name: returnedName}
+				joinDecl = &ast.VariableDeclaration{
+					Base: ast.Base{Range: statement.Span()},
+					Kind: ast.VariableLet,
+					Declarations: []*ast.VariableDeclarator{{
+						Base: ast.Base{Range: statement.Span()},
+						Name: returnedIdent,
+						Init: &ast.BoolLiteral{Base: ast.Base{Range: statement.Span()}, Value: false},
+					}},
+				}
+				tryStatements = rewriteAsyncTryReturnsInSlice(tryStatements, returnedIdent, nextTemporary)
+				if statement.Handler != nil {
+					catchStatements = rewriteAsyncTryReturnsInSlice(catchStatements, returnedIdent, nextTemporary)
+				}
+			} else if statement.Finalizer == nil && len(rest) != 0 {
 				if statement.Handler != nil {
 					var err error
 					joinDecl, branchRest, err = lowerAsyncSharedContinuation(rest, span, nextTemporary)
@@ -132,14 +153,14 @@ func lowerAsyncStatements(statements []ast.Statement, span lexer.Span, nextTempo
 					branchRest = rest
 				}
 			}
-			tryInput := append(append([]ast.Statement(nil), statement.Body.Body...), branchRest...)
+			tryInput := append(tryStatements, branchRest...)
 			tryBody, err := lowerAsyncStatements(tryInput, statement.Body.Span(), nextTemporary)
 			if err != nil {
 				return nil, err
 			}
 			promise := asyncStatementIIFE(statement.Body.Span(), tryBody)
 			if statement.Handler != nil {
-				catchInput := append(append([]ast.Statement(nil), statement.Handler.Body.Body...), branchRest...)
+				catchInput := append(catchStatements, branchRest...)
 				catchBody, err := lowerAsyncStatements(catchInput, statement.Handler.Body.Span(), nextTemporary)
 				if err != nil {
 					return nil, err
@@ -168,10 +189,33 @@ func lowerAsyncStatements(statements []ast.Statement, span lexer.Span, nextTempo
 					if err != nil {
 						return nil, err
 					}
-					promise = asyncThen(statement.Span(), promise, &ast.ArrowFunctionExpression{
-						Base: ast.Base{Range: statement.Span()},
-						Body: &ast.BlockStatement{Base: ast.Base{Range: statement.Span()}, Body: continuation},
-					})
+					var callback *ast.ArrowFunctionExpression
+					if returnedIdent != nil {
+						valueName := fmt.Sprintf("\x00gossamer.async.tryvalue.%d", *nextTemporary)
+						*nextTemporary++
+						valueIdent := &ast.Identifier{Base: ast.Base{Range: statement.Span()}, Name: valueName}
+						callback = &ast.ArrowFunctionExpression{
+							Base:       ast.Base{Range: statement.Span()},
+							Parameters: []*ast.Identifier{valueIdent},
+							Body: &ast.BlockStatement{
+								Base: ast.Base{Range: statement.Span()},
+								Body: []ast.Statement{
+									&ast.IfStatement{
+										Base:       ast.Base{Range: statement.Span()},
+										Test:       returnedIdent,
+										Consequent: asyncReturn(statement.Span(), valueIdent),
+									},
+									asyncReturn(statement.Span(), asyncStatementIIFE(statement.Span(), continuation)),
+								},
+							},
+						}
+					} else {
+						callback = &ast.ArrowFunctionExpression{
+							Base: ast.Base{Range: statement.Span()},
+							Body: &ast.BlockStatement{Base: ast.Base{Range: statement.Span()}, Body: continuation},
+						}
+					}
+					promise = asyncThen(statement.Span(), promise, callback)
 				}
 			}
 			if joinDecl != nil {
@@ -734,6 +778,115 @@ func statementContainsReturn(statement ast.Statement) bool {
 		return statement.Handler != nil && statementContainsReturn(statement.Handler.Body)
 	}
 	return false
+}
+
+func rewriteAsyncTryReturnsInSlice(statements []ast.Statement, returned *ast.Identifier, nextTemporary *uint32) []ast.Statement {
+	rewritten := make([]ast.Statement, 0, len(statements))
+	for _, statement := range statements {
+		if ret, ok := statement.(*ast.ReturnStatement); ok {
+			rewritten = append(rewritten, asyncReturnReplacementStatements(ret, returned, nextTemporary)...)
+			continue
+		}
+		rewritten = append(rewritten, rewriteAsyncTryReturns(statement, returned, nextTemporary))
+	}
+	return rewritten
+}
+
+func rewriteAsyncTryReturns(statement ast.Statement, returned *ast.Identifier, nextTemporary *uint32) ast.Statement {
+	switch statement := statement.(type) {
+	case nil:
+		return nil
+	case *ast.ReturnStatement:
+		return &ast.BlockStatement{
+			Base: statement.Base,
+			Body: asyncReturnReplacementStatements(statement, returned, nextTemporary),
+		}
+	case *ast.BlockStatement:
+		return &ast.BlockStatement{
+			Base: statement.Base,
+			Body: rewriteAsyncTryReturnsInSlice(statement.Body, returned, nextTemporary),
+		}
+	case *ast.IfStatement:
+		return &ast.IfStatement{
+			Base: statement.Base, Test: statement.Test,
+			Consequent: rewriteAsyncTryReturns(statement.Consequent, returned, nextTemporary),
+			Alternate:  rewriteAsyncTryReturns(statement.Alternate, returned, nextTemporary),
+		}
+	case *ast.SwitchStatement:
+		cases := make([]*ast.SwitchCase, len(statement.Cases))
+		for index, item := range statement.Cases {
+			cases[index] = &ast.SwitchCase{
+				Base:       item.Base,
+				Test:       item.Test,
+				Consequent: rewriteAsyncTryReturnsInSlice(item.Consequent, returned, nextTemporary),
+			}
+		}
+		return &ast.SwitchStatement{Base: statement.Base, Discriminant: statement.Discriminant, Cases: cases}
+	case *ast.WhileStatement:
+		return &ast.WhileStatement{Base: statement.Base, Test: statement.Test, Body: rewriteAsyncTryReturns(statement.Body, returned, nextTemporary)}
+	case *ast.DoWhileStatement:
+		return &ast.DoWhileStatement{Base: statement.Base, Body: rewriteAsyncTryReturns(statement.Body, returned, nextTemporary), Test: statement.Test}
+	case *ast.ForStatement:
+		return &ast.ForStatement{
+			Base: statement.Base, InitDeclaration: statement.InitDeclaration, InitExpression: statement.InitExpression,
+			Test: statement.Test, Update: statement.Update,
+			Body: rewriteAsyncTryReturns(statement.Body, returned, nextTemporary),
+		}
+	case *ast.ForInStatement:
+		return &ast.ForInStatement{
+			Base: statement.Base, LeftDeclaration: statement.LeftDeclaration, LeftExpression: statement.LeftExpression,
+			Right: statement.Right, Of: statement.Of,
+			Body: rewriteAsyncTryReturns(statement.Body, returned, nextTemporary),
+		}
+	case *ast.LabeledStatement:
+		return &ast.LabeledStatement{Base: statement.Base, Label: statement.Label, Body: rewriteAsyncTryReturns(statement.Body, returned, nextTemporary)}
+	case *ast.TryStatement:
+		body := rewriteAsyncTryReturns(statement.Body, returned, nextTemporary).(*ast.BlockStatement)
+		var handler *ast.CatchClause
+		if statement.Handler != nil {
+			catchBody := rewriteAsyncTryReturns(statement.Handler.Body, returned, nextTemporary).(*ast.BlockStatement)
+			handler = &ast.CatchClause{Base: statement.Handler.Base, Parameter: statement.Handler.Parameter, Body: catchBody}
+		}
+		var finalizer *ast.BlockStatement
+		if statement.Finalizer != nil {
+			finalizer = rewriteAsyncTryReturns(statement.Finalizer, returned, nextTemporary).(*ast.BlockStatement)
+		}
+		return &ast.TryStatement{Base: statement.Base, Body: body, Handler: handler, Finalizer: finalizer}
+	default:
+		return statement
+	}
+}
+
+func asyncReturnReplacementStatements(statement *ast.ReturnStatement, returned *ast.Identifier, nextTemporary *uint32) []ast.Statement {
+	markReturned := &ast.ExpressionStatement{
+		Base: statement.Base,
+		Expression: &ast.AssignmentExpression{
+			Base:     statement.Base,
+			Operator: lexer.Assign,
+			Left:     &ast.Identifier{Base: statement.Base, Name: returned.Name},
+			Right:    &ast.BoolLiteral{Base: statement.Base, Value: true},
+		},
+	}
+	if statement.Argument == nil {
+		return []ast.Statement{markReturned, statement}
+	}
+	valueName := fmt.Sprintf("\x00gossamer.async.ret.%d", *nextTemporary)
+	*nextTemporary++
+	valueIdent := &ast.Identifier{Base: statement.Base, Name: valueName}
+	evalDecl := &ast.VariableDeclaration{
+		Base: statement.Base,
+		Kind: ast.VariableConst,
+		Declarations: []*ast.VariableDeclarator{{
+			Base: statement.Base,
+			Name: valueIdent,
+			Init: statement.Argument,
+		}},
+	}
+	return []ast.Statement{
+		evalDecl,
+		markReturned,
+		&ast.ReturnStatement{Base: statement.Base, Argument: valueIdent},
+	}
 }
 
 type awaitContinuation func(ast.Expression) ast.Expression

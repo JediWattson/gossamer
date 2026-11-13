@@ -12,9 +12,13 @@ import (
 )
 
 func selectEngine(name, icuData string) (browser.Engine, error) {
+	return selectEngineWithConsole(name, icuData, nil)
+}
+
+func selectEngineWithConsole(name, icuData string, consoleSink func(nativeengine.ConsoleMessage)) (browser.Engine, error) {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "strand":
-		return nativeengine.New(nativeengine.Config{}), nil
+		return nativeengine.New(nativeengine.Config{ConsoleSink: consoleSink}), nil
 	case "v8":
 		return v8engine.New(v8engine.Config{ICUDataPath: icuData})
 	default:

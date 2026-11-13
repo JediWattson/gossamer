@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/JediWattson/gossamer/internal/browser"
 	"github.com/JediWattson/gossamer/internal/browser/fake"
@@ -74,6 +75,18 @@ func TestRunEnforcesDeterministicPaintAtRequestedViewport(t *testing.T) {
 	}
 	if mismatch.Passed || !strings.Contains(mismatch.FidelityError, first.Frame.PaintSHA256) {
 		t.Fatalf("mismatch report = %#v", mismatch)
+	}
+}
+
+func TestRunWaitsForSettleWindow(t *testing.T) {
+	report, err := sitecompat.Run(context.Background(), fake.New(), "https://compat.test/", compatLoader{}, sitecompat.Options{
+		EngineName: "fake", DOMLimit: 20, Settle: 15 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !report.Passed || report.Frame == nil || len(report.DOM) == 0 || report.Teardown.LiveObjects != 0 {
+		t.Fatalf("settled report = %#v", report)
 	}
 }
 

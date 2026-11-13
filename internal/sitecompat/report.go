@@ -14,6 +14,7 @@ import (
 	"image/png"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/JediWattson/gossamer/internal/browser"
 	"github.com/JediWattson/gossamer/internal/dom"
@@ -27,6 +28,7 @@ type Options struct {
 	Screenshot          io.Writer
 	Viewport            render.Viewport
 	ExpectedPaintSHA256 string
+	Settle              time.Duration
 }
 
 type NavigationReport struct {
@@ -103,6 +105,18 @@ func Run(ctx context.Context, engine browser.Engine, rawURL string, client brows
 		navigation, loadErr = page.Navigate(ctx, rawURL, client)
 		if loadErr == nil {
 			loadErr = page.WaitNavigation(ctx, navigation)
+		}
+		if loadErr == nil && options.Settle > 0 {
+			settleCtx, cancelSettle := context.WithTimeout(ctx, options.Settle)
+			for settleCtx.Err() == nil {
+				if runErr := page.Realm.RunOne(settleCtx); runErr != nil {
+					if !errors.Is(runErr, context.DeadlineExceeded) && !errors.Is(runErr, context.Canceled) {
+						loadErr = runErr
+					}
+					break
+				}
+			}
+			cancelSettle()
 		}
 	}
 	if loadErr != nil {
