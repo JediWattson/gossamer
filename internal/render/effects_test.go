@@ -178,3 +178,50 @@ func assertEffectPixel(t *testing.T, canvas image.Image, x, y int, want color.NR
 		t.Fatalf("pixel (%d,%d) = %#v, want %#v", x, y, got, want)
 	}
 }
+
+func TestBackgroundSizePositionAndRepeatSliceSpriteSheet(t *testing.T) {
+	t.Parallel()
+
+	// 48x48 sprite sheet with 3x3 16x16 tiles: top-left red, center green, bottom-right blue.
+	sprite := image.NewNRGBA(image.Rect(0, 0, 48, 48))
+	for y := 0; y < 48; y++ {
+		for x := 0; x < 48; x++ {
+			c := color.NRGBA{R: 0x22, G: 0x22, B: 0x22, A: 0xff}
+			switch {
+			case x < 16 && y < 16:
+				c = color.NRGBA{R: 0xff, A: 0xff}
+			case x >= 16 && x < 32 && y >= 16 && y < 32:
+				c = color.NRGBA{G: 0xff, A: 0xff}
+			case x >= 32 && y >= 32:
+				c = color.NRGBA{B: 0xff, A: 0xff}
+			}
+			sprite.SetNRGBA(x, y, c)
+		}
+	}
+
+	document := dom.NewDocument()
+	html := dom.NewElement("html")
+	body := dom.NewElement("body", dom.Attribute{Name: "style", Value: "margin:0"})
+	badge := dom.NewElement("div", dom.Attribute{
+		Name:  "style",
+		Value: `width:16px;height:16px;background-image:url("badges.webp");background-position:-16px -16px;background-size:48px 48px;background-repeat:no-repeat`,
+	})
+	body.AppendChild(badge)
+	html.AppendChild(body)
+	document.AppendChild(html)
+
+	frame, err := RenderWithResources(document, Viewport{Width: 48, Height: 48}, Resources{
+		BackgroundImages: map[*dom.Node]map[string]image.Image{badge: {"badges.webp": sprite}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	canvas, err := Rasterize(frame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Badge viewport (0..15, 0..15) shows center green tile; pixels at x=20 stay white.
+	assertEffectPixel(t, canvas, 8, 8, color.NRGBA{G: 0xff, A: 0xff})
+	assertEffectPixel(t, canvas, 20, 8, color.NRGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff})
+	assertEffectPixel(t, canvas, 8, 20, color.NRGBA{R: 0xff, G: 0xff, B: 0xff, A: 0xff})
+}

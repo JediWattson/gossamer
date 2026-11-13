@@ -577,39 +577,178 @@ func paintBoxShadows(list *DisplayList, box *Box, style computedStyle, bounds Re
 }
 
 func paintBackgroundImages(list *DisplayList, box *Box, style computedStyle, bounds Rect, radii CornerRadii) {
+	if bounds.Width <= 0 || bounds.Height <= 0 {
+		return
+	}
 	images := style.BackgroundImages()
 	for index := images.Len() - 1; index >= 0; index-- {
 		background, ok := images.At(index)
 		if !ok {
 			continue
 		}
-		command := Command{Node: box.Node, Pseudo: box.Pseudo, Rect: bounds, Radii: radii}
+		sizeSpec := style.BackgroundSize().AtLayer(index)
+		posSpec := style.BackgroundPosition().AtLayer(index)
+		repeatSpec := style.BackgroundRepeat().AtLayer(index)
+		repeatX := repeatSpec.X == computed.BackgroundRepeatRepeat
+		repeatY := repeatSpec.Y == computed.BackgroundRepeatRepeat
+
 		switch background.Kind() {
 		case computed.BackgroundImageURL:
 			decoded := list.backgroundImages[box.Node][background.URL()]
 			if decoded == nil {
 				continue
 			}
-			command.Kind, command.Image, command.Opacity = DrawImageCommand, decoded, 1
-		case computed.BackgroundImageLinearGradient, computed.BackgroundImageRadialGradient:
-			command.Kind = DrawGradientCommand
-			command.GradientKind = LinearGradient
-			if background.Kind() == computed.BackgroundImageRadialGradient {
-				command.GradientKind = RadialGradient
-			}
-			command.GradientAngle = background.AngleDegrees()
-			command.GradientRepeating = background.Repeating()
-			if !resolveGradientStops(&command, background, bounds, style.Color(), list.Viewport) {
+			natW := float64(decoded.Bounds().Dx())
+			natH := float64(decoded.Bounds().Dy())
+			if natW <= 0 || natH <= 0 {
 				continue
 			}
-		default:
-			continue
+			if natW == 1 && natH == 1 && repeatX && repeatY &&
+				sizeSpec.Kind() == computed.BackgroundSizeAuto &&
+				sizeSpec.Width().Unit() == computed.LengthAuto &&
+				sizeSpec.Height().Unit() == computed.LengthAuto {
+				cmd := Command{
+					Kind: DrawImageCommand, Node: box.Node, Pseudo: box.Pseudo,
+					Rect: bounds, Radii: radii, Image: decoded, Opacity: 1,
+				}
+				appendRoundedClip(&cmd, RoundedClip{Rect: bounds, Radii: radii})
+				list.Commands = append(list.Commands, cmd)
+				continue
+			}
+			tileW, tileH := resolveBackgroundSize(sizeSpec, natW, natH, bounds.Width, bounds.Height, list.Viewport)
+			if tileW <= 0 || tileH <= 0 {
+				continue
+			}
+			originX := bounds.X + resolveLength(posSpec.X(), bounds.Width-tileW, list.Viewport, 0)
+			originY := bounds.Y + resolveLength(posSpec.Y(), bounds.Height-tileH, list.Viewport, 0)
+			for _, tile := range backgroundTileRects(bounds, originX, originY, tileW, tileH, repeatX, repeatY) {
+				cmd := Command{
+					Kind: DrawImageCommand, Node: box.Node, Pseudo: box.Pseudo,
+					Rect: tile, Radii: radii, Image: decoded, Opacity: 1,
+				}
+				clipBackgroundCommand(&cmd, bounds, radii, tile)
+				list.Commands = append(list.Commands, cmd)
+			}
+		case computed.BackgroundImageLinearGradient, computed.BackgroundImageRadialGradient:
+			tileW, tileH := resolveBackgroundSize(sizeSpec, bounds.Width, bounds.Height, bounds.Width, bounds.Height, list.Viewport)
+			if tileW <= 0 || tileH <= 0 {
+				continue
+			}
+			originX := bounds.X + resolveLength(posSpec.X(), bounds.Width-tileW, list.Viewport, 0)
+			originY := bounds.Y + resolveLength(posSpec.Y(), bounds.Height-tileH, list.Viewport, 0)
+			for _, tile := range backgroundTileRects(bounds, originX, originY, tileW, tileH, repeatX, repeatY) {
+				cmd := Command{Kind: DrawGradientCommand, Node: box.Node, Pseudo: box.Pseudo, Rect: tile, Radii: radii}
+				cmd.GradientKind = LinearGradient
+				if background.Kind() == computed.BackgroundImageRadialGradient {
+					cmd.GradientKind = RadialGradient
+				}
+				cmd.GradientAngle = background.AngleDegrees()
+				cmd.GradientRepeating = background.Repeating()
+				if !resolveGradientStops(&cmd, background, tile, style.Color(), list.Viewport) {
+					continue
+				}
+				clipBackgroundCommand(&cmd, bounds, radii, tile)
+				list.Commands = append(list.Commands, cmd)
+			}
 		}
-		if !radii.empty() {
-			appendRoundedClip(&command, RoundedClip{Rect: bounds, Radii: radii})
-		}
-		list.Commands = append(list.Commands, command)
 	}
+}
+
+func clipBackgroundCommand(cmd *Command, bounds Rect, radii CornerRadii, tile Rect) {
+	if !radii.empty() || !rectContainsRect(bounds, tile) {
+		cmd.HasClip = true
+		cmd.Clip = bounds
+	}
+	if !radii.empty() {
+		appendRoundedClip(cmd, RoundedClip{Rect: bounds, Radii: radii})
+	}
+}
+
+func resolveBackgroundSize(spec computed.BackgroundSize, natW, natH, areaW, areaH float64, viewport Viewport) (float64, float64) {
+	switch spec.Kind() {
+	case computed.BackgroundSizeCover:
+		if natW > 0 && natH > 0 {
+			s := math.Max(areaW/natW, areaH/natH)
+			return natW * s, natH * s
+		}
+		return areaW, areaH
+	case computed.BackgroundSizeContain:
+		if natW > 0 && natH > 0 {
+			s := math.Min(areaW/natW, areaH/natH)
+			return natW * s, natH * s
+		}
+		return areaW, areaH
+	default:
+		wAuto := spec.Width().Unit() == computed.LengthAuto
+		hAuto := spec.Height().Unit() == computed.LengthAuto
+		switch {
+		case wAuto && hAuto:
+			return natW, natH
+		case !wAuto && !hAuto:
+			w := resolveLength(spec.Width(), areaW, viewport, natW)
+			h := resolveLength(spec.Height(), areaH, viewport, natH)
+			return w, h
+		case !wAuto:
+			w := resolveLength(spec.Width(), areaW, viewport, natW)
+			if natW > 0 && natH > 0 {
+				return w, w * (natH / natW)
+			}
+			return w, areaH
+		default:
+			h := resolveLength(spec.Height(), areaH, viewport, natH)
+			if natW > 0 && natH > 0 {
+				return h * (natW / natH), h
+			}
+			return areaW, h
+		}
+	}
+}
+
+func backgroundTileRects(bounds Rect, originX, originY, tileW, tileH float64, repeatX, repeatY bool) []Rect {
+	const maxTilesPerAxis = 64
+	collectAxis := func(start, areaStart, areaSize, step float64, repeat bool) []float64 {
+		if !repeat {
+			return []float64{start}
+		}
+		if step < 1 {
+			return []float64{areaStart}
+		}
+		pos := start - math.Ceil((start-areaStart)/step)*step
+		var positions []float64
+		for len(positions) < maxTilesPerAxis && pos < areaStart+areaSize {
+			if pos+step > areaStart {
+				positions = append(positions, pos)
+			}
+			pos += step
+		}
+		return positions
+	}
+	if !repeatX && (originX+tileW <= bounds.X || originX >= bounds.X+bounds.Width) {
+		return nil
+	}
+	if !repeatY && (originY+tileH <= bounds.Y || originY >= bounds.Y+bounds.Height) {
+		return nil
+	}
+	if !repeatX && !repeatY {
+		return []Rect{{X: originX, Y: originY, Width: tileW, Height: tileH}}
+	}
+	xs := collectAxis(originX, bounds.X, bounds.Width, tileW, repeatX)
+	ys := collectAxis(originY, bounds.Y, bounds.Height, tileH, repeatY)
+	tiles := make([]Rect, 0, len(xs)*len(ys))
+	for _, y := range ys {
+		for _, x := range xs {
+			tile := Rect{X: x, Y: y, Width: tileW, Height: tileH}
+			if !rectsOverlap(tile, bounds) {
+				continue
+			}
+			tiles = append(tiles, tile)
+		}
+	}
+	return tiles
+}
+
+func rectsOverlap(a, b Rect) bool {
+	return a.X+a.Width > b.X && b.X+b.Width > a.X && a.Y+a.Height > b.Y && b.Y+b.Height > a.Y
 }
 
 func resolveGradientStops(command *Command, background computed.BackgroundImage, bounds Rect, currentColor color.NRGBA, viewport Viewport) bool {

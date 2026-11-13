@@ -31,6 +31,9 @@ const (
 	propertyAspectRatio
 	propertyBackgroundColor
 	propertyBackgroundImage
+	propertyBackgroundPosition
+	propertyBackgroundRepeat
+	propertyBackgroundSize
 	propertyBorderColor
 	propertyBorderCollapse
 	propertyBorderRadius
@@ -162,6 +165,9 @@ var propertyDefinitions = [...]propertyDefinition{
 	{name: "aspect-ratio", kind: propertyAspectRatio, invalidation: propertyInvalidatesLayout | propertyInvalidatesPaint},
 	{name: "background-color", kind: propertyBackgroundColor, invalidation: propertyInvalidatesPaint},
 	{name: "background-image", kind: propertyBackgroundImage, invalidation: propertyInvalidatesPaint},
+	{name: "background-position", kind: propertyBackgroundPosition, invalidation: propertyInvalidatesPaint},
+	{name: "background-repeat", kind: propertyBackgroundRepeat, invalidation: propertyInvalidatesPaint},
+	{name: "background-size", kind: propertyBackgroundSize, invalidation: propertyInvalidatesPaint},
 	{name: "border-bottom-color", kind: propertyBorderColor, edge: propertyBottom, invalidation: propertyInvalidatesPaint},
 	{name: "border-bottom-left-radius", kind: propertyBorderRadius, corner: propertyBottomLeft, invalidation: propertyInvalidatesPaint},
 	{name: "border-bottom-right-radius", kind: propertyBorderRadius, corner: propertyBottomRight, invalidation: propertyInvalidatesPaint},
@@ -417,6 +423,12 @@ func (definition propertyDefinition) copy(destination *computedStyle, source com
 		destination.background = source.background
 	case propertyBackgroundImage:
 		destination.backgroundImages = source.backgroundImages
+	case propertyBackgroundPosition:
+		destination.backgroundPosition = source.backgroundPosition
+	case propertyBackgroundRepeat:
+		destination.backgroundRepeat = source.backgroundRepeat
+	case propertyBackgroundSize:
+		destination.backgroundSize = source.backgroundSize
 	case propertyBorderColor:
 		destinationSide := definition.borderSide(destination)
 		sourceSide := definition.borderSide(&source)
@@ -599,6 +611,15 @@ func (definition propertyDefinition) valid(source string, viewport Viewport) boo
 		return ok
 	case propertyBackgroundImage:
 		_, ok := parseBackgroundImageList(source, 1, viewport)
+		return ok
+	case propertyBackgroundPosition:
+		_, ok := parseBackgroundPositionList(source, 1, viewport)
+		return ok
+	case propertyBackgroundRepeat:
+		_, ok := parseBackgroundRepeatList(source)
+		return ok
+	case propertyBackgroundSize:
+		_, ok := parseBackgroundSizeList(source, 1, viewport)
 		return ok
 	case propertyBorderColor:
 		_, ok := parseBorderColor(source)
@@ -848,6 +869,18 @@ func (definition propertyDefinition) apply(style *computedStyle, source string, 
 	case propertyBackgroundImage:
 		if parsed, ok := parseBackgroundImageList(source, style.fontSize, context.viewport); ok {
 			style.backgroundImages = parsed
+		}
+	case propertyBackgroundPosition:
+		if parsed, ok := parseBackgroundPositionList(source, style.fontSize, context.viewport); ok {
+			style.backgroundPosition = parsed
+		}
+	case propertyBackgroundRepeat:
+		if parsed, ok := parseBackgroundRepeatList(source); ok {
+			style.backgroundRepeat = parsed
+		}
+	case propertyBackgroundSize:
+		if parsed, ok := parseBackgroundSizeList(source, style.fontSize, context.viewport); ok {
+			style.backgroundSize = parsed
 		}
 	case propertyBorderColor:
 		if parsed, ok := parseBorderColor(source); ok {
@@ -1339,6 +1372,12 @@ func (definition propertyDefinition) serialize(computed ComputedStyle) string {
 		return serializeComputedColor(background)
 	case propertyBackgroundImage:
 		return serializeBackgroundImageList(computed.backgroundImages, computed.color)
+	case propertyBackgroundPosition:
+		return serializeBackgroundPositionList(computed.backgroundPosition)
+	case propertyBackgroundRepeat:
+		return serializeBackgroundRepeatList(computed.backgroundRepeat)
+	case propertyBackgroundSize:
+		return serializeBackgroundSizeList(computed.backgroundSize)
 	case propertyBorderColor:
 		return serializeComputedBorderColor(*definition.borderSide(&computed), computed.color)
 	case propertyBorderCollapse:

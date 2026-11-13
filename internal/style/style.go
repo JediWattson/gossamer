@@ -764,8 +764,11 @@ type ComputedStyle struct {
 	gridTemplateCols  GridTrackList
 	gridTemplateRows  GridTrackList
 	color             color.NRGBA
-	background        computedColorValue
-	backgroundImages  BackgroundImageList
+	background         computedColorValue
+	backgroundImages   BackgroundImageList
+	backgroundPosition BackgroundPositionList
+	backgroundRepeat   BackgroundRepeatList
+	backgroundSize     BackgroundSizeList
 	boxShadows        BoxShadowList
 	fontSize          float64
 	fontFamily        FontFamily
@@ -946,6 +949,15 @@ func (computed ComputedStyle) Background() (color.NRGBA, bool) {
 }
 func (computed ComputedStyle) BackgroundImages() BackgroundImageList {
 	return computed.backgroundImages
+}
+func (computed ComputedStyle) BackgroundPosition() BackgroundPositionList {
+	return computed.backgroundPosition
+}
+func (computed ComputedStyle) BackgroundRepeat() BackgroundRepeatList {
+	return computed.backgroundRepeat
+}
+func (computed ComputedStyle) BackgroundSize() BackgroundSizeList {
+	return computed.backgroundSize
 }
 func (computed ComputedStyle) BoxShadows() BoxShadowList { return computed.boxShadows }
 func (computed ComputedStyle) FontSize() float64         { return computed.fontSize }

@@ -549,7 +549,21 @@ func decodeImageDataURL(source string) (*resource.DecodedImage, error) {
 	if int64(len(data)) > resource.DefaultMaxResourceBytes {
 		return nil, resource.ErrResourceTooLarge
 	}
-	return resource.DecodeImageBytes(data)
+	decoded, err := decodeBrowserImageBytes(data, metadata[0], resource.DefaultMaxImagePixels)
+	return decoded, err
+}
+
+func decodeBrowserImageBytes(data []byte, contentType string, maxPixels int64) (*resource.DecodedImage, error) {
+	decoded, err := resource.DecodeImageBytesWithLimit(data, maxPixels)
+	if err == nil {
+		return decoded, nil
+	}
+	if strings.Contains(strings.ToLower(contentType), "svg") || render.LooksLikeSVG(data) {
+		if svgImg, svgErr := render.DecodeSVGImage(data, maxPixels); svgErr == nil {
+			return &resource.DecodedImage{Image: svgImg, Format: "svg"}, nil
+		}
+	}
+	return nil, err
 }
 
 func (page *Page) loadDynamicImages(

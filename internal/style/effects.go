@@ -105,6 +105,82 @@ type BackgroundImageList struct {
 	count uint8
 }
 
+// BackgroundPositionList retains comma-separated background-position layers.
+type BackgroundPositionList struct {
+	items [maxBackgroundImages]Position2D
+	count uint8
+}
+
+func (positions BackgroundPositionList) Len() int { return int(positions.count) }
+func (positions BackgroundPositionList) AtLayer(layer int) Position2D {
+	if positions.count == 0 {
+		return Position2D{x: length{value: 0, unit: lengthPercent}, y: length{value: 0, unit: lengthPercent}}
+	}
+	return positions.items[layer%int(positions.count)]
+}
+
+// BackgroundRepeatAxis selects repeat behavior along a single axis.
+type BackgroundRepeatAxis uint8
+
+const (
+	BackgroundRepeatRepeat BackgroundRepeatAxis = iota
+	BackgroundRepeatNoRepeat
+)
+
+// BackgroundRepeat retains horizontal and vertical repeat behavior for one layer.
+type BackgroundRepeat struct {
+	X BackgroundRepeatAxis
+	Y BackgroundRepeatAxis
+}
+
+// BackgroundRepeatList retains comma-separated background-repeat layers.
+type BackgroundRepeatList struct {
+	items [maxBackgroundImages]BackgroundRepeat
+	count uint8
+}
+
+func (repeats BackgroundRepeatList) Len() int { return int(repeats.count) }
+func (repeats BackgroundRepeatList) AtLayer(layer int) BackgroundRepeat {
+	if repeats.count == 0 {
+		return BackgroundRepeat{X: BackgroundRepeatRepeat, Y: BackgroundRepeatRepeat}
+	}
+	return repeats.items[layer%int(repeats.count)]
+}
+
+// BackgroundSizeKind selects cover/contain keywords vs explicit dimensions.
+type BackgroundSizeKind uint8
+
+const (
+	BackgroundSizeAuto BackgroundSizeKind = iota
+	BackgroundSizeCover
+	BackgroundSizeContain
+)
+
+// BackgroundSize retains the sizing specification for one background layer.
+type BackgroundSize struct {
+	kind   BackgroundSizeKind
+	width  Length
+	height Length
+}
+
+func (size BackgroundSize) Kind() BackgroundSizeKind { return size.kind }
+func (size BackgroundSize) Width() Length          { return size.width }
+func (size BackgroundSize) Height() Length         { return size.height }
+
+// BackgroundSizeList retains comma-separated background-size layers.
+type BackgroundSizeList struct {
+	items [maxBackgroundImages]BackgroundSize
+	count uint8
+}
+
+func (sizes BackgroundSizeList) Len() int { return int(sizes.count) }
+func (sizes BackgroundSizeList) AtLayer(layer int) BackgroundSize {
+	if sizes.count == 0 {
+		return BackgroundSize{width: length{unit: lengthAuto}, height: length{unit: lengthAuto}}
+	}
+	return sizes.items[layer%int(sizes.count)]
+}
+
 func (images BackgroundImageList) Len() int { return int(images.count) }
 func (images BackgroundImageList) At(index int) (BackgroundImage, bool) {
 	if index < 0 || index >= int(images.count) {
@@ -634,7 +710,14 @@ func parseTransformOperation(function css.ComponentValue, source string, emBase 
 
 func parsePosition2D(source string, emBase float64, viewport Viewport) (Position2D, bool) {
 	value, ok := parsePropertyValue(source)
-	if !ok || len(value.terms) < 1 || len(value.terms) > 2 {
+	if !ok {
+		return Position2D{}, false
+	}
+	return parsePositionTerms(value.terms, source, emBase, viewport)
+}
+
+func parsePositionTerms(terms []css.ComponentValue, source string, emBase float64, viewport Viewport) (Position2D, bool) {
+	if len(terms) < 1 || len(terms) > 2 {
 		return Position2D{}, false
 	}
 	center := length{value: 50, unit: lengthPercent}
@@ -665,22 +748,216 @@ func parsePosition2D(source string, emBase float64, viewport Viewport) (Position
 		parsed, ok := parseLengthComponent(component, source, emBase, viewport)
 		return parsed, ok && parsed.unit != lengthAuto
 	}
-	if len(value.terms) == 1 {
-		if keyword, keywordOK := componentKeyword(value.terms[0]); keywordOK && (keyword == "top" || keyword == "bottom") {
-			y, ok := parseAxis(value.terms[0], false)
+	if len(terms) == 1 {
+		if keyword, keywordOK := componentKeyword(terms[0]); keywordOK && (keyword == "top" || keyword == "bottom") {
+			y, ok := parseAxis(terms[0], false)
 			return Position2D{x: center, y: y}, ok
 		}
-		x, ok := parseAxis(value.terms[0], true)
+		x, ok := parseAxis(terms[0], true)
 		return Position2D{x: x, y: center}, ok
 	}
-	x, xOK := parseAxis(value.terms[0], true)
-	y, yOK := parseAxis(value.terms[1], false)
+	x, xOK := parseAxis(terms[0], true)
+	y, yOK := parseAxis(terms[1], false)
 	if !xOK || !yOK {
 		// Permit the vertical keyword first, as CSS does.
-		y, yOK = parseAxis(value.terms[0], false)
-		x, xOK = parseAxis(value.terms[1], true)
+		y, yOK = parseAxis(terms[0], false)
+		x, xOK = parseAxis(terms[1], true)
 	}
 	return Position2D{x: x, y: y}, xOK && yOK
+}
+
+func parseBackgroundPositionList(source string, emBase float64, viewport Viewport) (BackgroundPositionList, bool) {
+	value, ok := parsePropertyValue(source)
+	if !ok || len(value.terms) == 0 {
+		return BackgroundPositionList{}, false
+	}
+	layers, ok := splitComponentGroups(value.terms, maxBackgroundImages)
+	if !ok {
+		return BackgroundPositionList{}, false
+	}
+	result := BackgroundPositionList{}
+	for _, terms := range layers {
+		parsed, valid := parsePositionTerms(terms, source, emBase, viewport)
+		if !valid {
+			return BackgroundPositionList{}, false
+		}
+		result.items[result.count] = parsed
+		result.count++
+	}
+	return result, true
+}
+
+func parseBackgroundRepeatList(source string) (BackgroundRepeatList, bool) {
+	value, ok := parsePropertyValue(source)
+	if !ok || len(value.terms) == 0 {
+		return BackgroundRepeatList{}, false
+	}
+	layers, ok := splitComponentGroups(value.terms, maxBackgroundImages)
+	if !ok {
+		return BackgroundRepeatList{}, false
+	}
+	result := BackgroundRepeatList{}
+	for _, terms := range layers {
+		parsed, valid := parseBackgroundRepeatTerms(terms)
+		if !valid {
+			return BackgroundRepeatList{}, false
+		}
+		result.items[result.count] = parsed
+		result.count++
+	}
+	return result, true
+}
+
+func parseBackgroundRepeatTerms(terms []css.ComponentValue) (BackgroundRepeat, bool) {
+	if len(terms) == 1 {
+		keyword, ok := componentKeyword(terms[0])
+		if !ok {
+			return BackgroundRepeat{}, false
+		}
+		switch keyword {
+		case "repeat":
+			return BackgroundRepeat{X: BackgroundRepeatRepeat, Y: BackgroundRepeatRepeat}, true
+		case "no-repeat":
+			return BackgroundRepeat{X: BackgroundRepeatNoRepeat, Y: BackgroundRepeatNoRepeat}, true
+		case "repeat-x":
+			return BackgroundRepeat{X: BackgroundRepeatRepeat, Y: BackgroundRepeatNoRepeat}, true
+		case "repeat-y":
+			return BackgroundRepeat{X: BackgroundRepeatNoRepeat, Y: BackgroundRepeatRepeat}, true
+		default:
+			return BackgroundRepeat{}, false
+		}
+	}
+	if len(terms) != 2 {
+		return BackgroundRepeat{}, false
+	}
+	parseAxis := func(component css.ComponentValue) (BackgroundRepeatAxis, bool) {
+		keyword, ok := componentKeyword(component)
+		if !ok {
+			return BackgroundRepeatRepeat, false
+		}
+		switch keyword {
+		case "repeat":
+			return BackgroundRepeatRepeat, true
+		case "no-repeat":
+			return BackgroundRepeatNoRepeat, true
+		default:
+			return BackgroundRepeatRepeat, false
+		}
+	}
+	x, xOK := parseAxis(terms[0])
+	y, yOK := parseAxis(terms[1])
+	return BackgroundRepeat{X: x, Y: y}, xOK && yOK
+}
+
+func parseBackgroundSizeList(source string, emBase float64, viewport Viewport) (BackgroundSizeList, bool) {
+	value, ok := parsePropertyValue(source)
+	if !ok || len(value.terms) == 0 {
+		return BackgroundSizeList{}, false
+	}
+	layers, ok := splitComponentGroups(value.terms, maxBackgroundImages)
+	if !ok {
+		return BackgroundSizeList{}, false
+	}
+	result := BackgroundSizeList{}
+	for _, terms := range layers {
+		parsed, valid := parseBackgroundSizeTerms(terms, source, emBase, viewport)
+		if !valid {
+			return BackgroundSizeList{}, false
+		}
+		result.items[result.count] = parsed
+		result.count++
+	}
+	return result, true
+}
+
+func parseBackgroundSizeTerms(terms []css.ComponentValue, source string, emBase float64, viewport Viewport) (BackgroundSize, bool) {
+	if len(terms) < 1 || len(terms) > 2 {
+		return BackgroundSize{}, false
+	}
+	if len(terms) == 1 {
+		if keyword, ok := componentKeyword(terms[0]); ok {
+			switch keyword {
+			case "cover":
+				return BackgroundSize{kind: BackgroundSizeCover}, true
+			case "contain":
+				return BackgroundSize{kind: BackgroundSizeContain}, true
+			}
+		}
+	}
+	parseDim := func(component css.ComponentValue) (Length, bool) {
+		if keyword, ok := componentKeyword(component); ok && keyword == "auto" {
+			return length{unit: lengthAuto}, true
+		}
+		parsed, ok := parseLengthComponent(component, source, emBase, viewport)
+		return parsed, ok && nonNegativeLength(parsed)
+	}
+	w, ok := parseDim(terms[0])
+	if !ok {
+		return BackgroundSize{}, false
+	}
+	h := length{unit: lengthAuto}
+	if len(terms) == 2 {
+		h, ok = parseDim(terms[1])
+		if !ok {
+			return BackgroundSize{}, false
+		}
+	}
+	return BackgroundSize{kind: BackgroundSizeAuto, width: w, height: h}, true
+}
+
+func serializeBackgroundPositionList(positions BackgroundPositionList) string {
+	if positions.count == 0 {
+		return serializePosition2D(positions.AtLayer(0))
+	}
+	parts := make([]string, positions.count)
+	for index := 0; index < int(positions.count); index++ {
+		parts[index] = serializePosition2D(positions.items[index])
+	}
+	return strings.Join(parts, ", ")
+}
+
+func serializeBackgroundRepeatList(repeats BackgroundRepeatList) string {
+	formatOne := func(r BackgroundRepeat) string {
+		switch {
+		case r.X == BackgroundRepeatRepeat && r.Y == BackgroundRepeatRepeat:
+			return "repeat"
+		case r.X == BackgroundRepeatNoRepeat && r.Y == BackgroundRepeatNoRepeat:
+			return "no-repeat"
+		case r.X == BackgroundRepeatRepeat && r.Y == BackgroundRepeatNoRepeat:
+			return "repeat-x"
+		default:
+			return "repeat-y"
+		}
+	}
+	if repeats.count == 0 {
+		return formatOne(repeats.AtLayer(0))
+	}
+	parts := make([]string, repeats.count)
+	for index := 0; index < int(repeats.count); index++ {
+		parts[index] = formatOne(repeats.items[index])
+	}
+	return strings.Join(parts, ", ")
+}
+
+func serializeBackgroundSizeList(sizes BackgroundSizeList) string {
+	formatOne := func(s BackgroundSize) string {
+		switch s.kind {
+		case BackgroundSizeCover:
+			return "cover"
+		case BackgroundSizeContain:
+			return "contain"
+		default:
+			return serializeComputedLength(s.width) + " " + serializeComputedLength(s.height)
+		}
+	}
+	if sizes.count == 0 {
+		return formatOne(sizes.AtLayer(0))
+	}
+	parts := make([]string, sizes.count)
+	for index := 0; index < int(sizes.count); index++ {
+		parts[index] = formatOne(sizes.items[index])
+	}
+	return strings.Join(parts, ", ")
 }
 
 func parseTranslateValue(source string, emBase float64, viewport Viewport) (TranslateValue, bool) {

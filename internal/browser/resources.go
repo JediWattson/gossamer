@@ -432,7 +432,7 @@ func decodeImageAssetWithBudget(asset *resource.Asset, remainingPixels int64) (i
 	if decodeLimit <= 0 {
 		return nil, 0, fmt.Errorf("%w: image does not fit remaining navigation budget", resource.ErrImageTooLarge)
 	}
-	decoded, decodeErr := resource.DecodeImageWithLimit(asset, decodeLimit)
+	decoded, decodeErr := decodeBrowserImageBytes(asset.Bytes(), asset.ContentType(), decodeLimit)
 	if decodeErr != nil {
 		return nil, 0, decodeErr
 	}

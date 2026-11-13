@@ -150,11 +150,22 @@ func renderSVGNode(
 	cssWidth float64,
 	cssHeight float64,
 ) image.Image {
-	if !isSVGElement(node) || cssWidth <= 0 || cssHeight <= 0 || !isFinite(cssWidth) || !isFinite(cssHeight) {
+	return renderSVGNodeAtScale(node, svgStyle, styles, cssWidth, cssHeight, svgRasterScale)
+}
+
+func renderSVGNodeAtScale(
+	node *dom.Node,
+	svgStyle computedStyle,
+	styles map[*dom.Node]computedStyle,
+	cssWidth float64,
+	cssHeight float64,
+	rasterScale float64,
+) image.Image {
+	if !isSVGElement(node) || cssWidth <= 0 || cssHeight <= 0 || !isFinite(cssWidth) || !isFinite(cssHeight) || rasterScale <= 0 {
 		return nil
 	}
-	pw := int(math.Ceil(cssWidth * svgRasterScale))
-	ph := int(math.Ceil(cssHeight * svgRasterScale))
+	pw := int(math.Ceil(cssWidth * rasterScale))
+	ph := int(math.Ceil(cssHeight * rasterScale))
 	if pw <= 0 || ph <= 0 {
 		return nil
 	}
