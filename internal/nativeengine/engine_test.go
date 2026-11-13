@@ -1185,3 +1185,96 @@ if (!Number.isSafeInteger(9007199254740991) || !Number.isSafeInteger(-9007199254
 		t.Fatal(err)
 	}
 }
+
+func TestObjectGetPrototypeOfBuiltinsPrimitivesAndProxy(t *testing.T) {
+	t.Parallel()
+
+	engine := nativeengine.New(nativeengine.Config{})
+	browserRuntime, err := browser.NewWithEngine(engine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer browserRuntime.Close()
+	location, _ := url.Parse("https://gossamer.test/sub/page")
+	page, err := browserRuntime.NewPage(dom.NewDocument(), location)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer page.Close()
+
+	if _, err := page.QueueScript(browser.ScriptSource{
+		URL: "object-get-prototype-of.js",
+		Source: `
+if (Object.getPrototypeOf(new Date()) !== Date.prototype) {
+  throw new Error("Date prototype mismatch");
+}
+if (Object.getPrototypeOf(/abc/) !== RegExp.prototype) {
+  throw new Error("RegExp prototype mismatch");
+}
+if (Object.getPrototypeOf(new WeakMap()) !== WeakMap.prototype) {
+  throw new Error("WeakMap prototype mismatch");
+}
+if (Object.getPrototypeOf(new WeakSet()) !== WeakSet.prototype) {
+  throw new Error("WeakSet prototype mismatch");
+}
+if (Object.getPrototypeOf(new ArrayBuffer(4)) !== ArrayBuffer.prototype) {
+  throw new Error("ArrayBuffer prototype mismatch");
+}
+if (Object.getPrototypeOf(new Uint8Array(4)) !== Uint8Array.prototype) {
+  throw new Error("Uint8Array prototype mismatch");
+}
+if (Object.getPrototypeOf("hello") !== String.prototype) {
+  throw new Error("string prototype mismatch");
+}
+if (Object.getPrototypeOf(42) !== Number.prototype) {
+  throw new Error("number prototype mismatch");
+}
+if (Object.getPrototypeOf(Symbol("s")) !== Symbol.prototype) {
+  throw new Error("symbol prototype mismatch");
+}
+if (Object.getPrototypeOf(true) === null) {
+  throw new Error("boolean prototype unexpectedly null");
+}
+
+const isPlainObject = (v) => {
+  if (!v || typeof v !== "object") return false;
+  const p = Object.getPrototypeOf(v);
+  return p === Object.prototype || p === null;
+};
+if (isPlainObject(new Date()) || isPlainObject(new Uint8Array(2)) || !isPlainObject({})) {
+  throw new Error("isPlainObject check failed");
+}
+
+const customProto = { custom: 1 };
+const fallbackProxy = new Proxy(Object.create(customProto), {});
+if (Object.getPrototypeOf(fallbackProxy) !== customProto) {
+  throw new Error("Proxy fallback getPrototypeOf failed");
+}
+const trappedProxy = new Proxy({}, { getPrototypeOf() { return customProto; } });
+if (Object.getPrototypeOf(trappedProxy) !== customProto) {
+  throw new Error("Proxy trapped getPrototypeOf failed");
+}
+const nullProxy = new Proxy({}, { getPrototypeOf() { return null; } });
+if (Object.getPrototypeOf(nullProxy) !== null) {
+  throw new Error("Proxy null getPrototypeOf failed");
+}
+
+for (const bad of [null, undefined]) {
+  let threw = false;
+  try {
+    Object.getPrototypeOf(bad);
+  } catch (err) {
+    threw = err instanceof TypeError;
+  }
+  if (!threw) {
+    throw new Error("Object.getPrototypeOf should reject null/undefined");
+  }
+}
+`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}

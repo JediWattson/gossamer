@@ -361,3 +361,25 @@ func (execution *execution) arrayReceiver(value memory.Value) (memory.Ref, error
 		value = target
 	}
 }
+
+func (execution *execution) proxyGetPrototypeOf(target, handler memory.Value) (memory.Value, bool, error) {
+	trap, found, err := execution.proxyTrap(handler, "getPrototypeOf")
+	if err != nil {
+		return memory.Value{}, false, err
+	}
+	if !found {
+		return memory.Value{}, false, nil
+	}
+	callable, _ := requireRef(trap, "Proxy getPrototypeOf trap")
+	result, err := execution.call(callable, handler, []memory.Value{target}, callAny)
+	if err != nil {
+		return memory.Value{}, false, err
+	}
+	if result.Kind() == memory.ValueNull {
+		return result, true, nil
+	}
+	if _, err := requireObjectLike(execution.context, result, "Proxy getPrototypeOf trap result"); err != nil {
+		return memory.Value{}, false, err
+	}
+	return result, true, nil
+}

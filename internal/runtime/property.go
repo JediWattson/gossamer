@@ -691,6 +691,31 @@ func typedArrayElementForName(name string) (memory.ElementKind, bool) {
 	}
 }
 
+func typedArrayNameForElement(element memory.ElementKind) (string, bool) {
+	switch element {
+	case memory.ElementInt8:
+		return "Int8Array", true
+	case memory.ElementUint8:
+		return "Uint8Array", true
+	case memory.ElementUint8Clamped:
+		return "Uint8ClampedArray", true
+	case memory.ElementInt16:
+		return "Int16Array", true
+	case memory.ElementUint16:
+		return "Uint16Array", true
+	case memory.ElementInt32:
+		return "Int32Array", true
+	case memory.ElementUint32:
+		return "Uint32Array", true
+	case memory.ElementFloat32:
+		return "Float32Array", true
+	case memory.ElementFloat64:
+		return "Float64Array", true
+	default:
+		return "", false
+	}
+}
+
 func (execution *execution) propertyName(key memory.Value) (memory.Ref, error) {
 	primitive, err := execution.toPrimitive(key, hintString)
 	if err != nil {

@@ -1305,12 +1305,106 @@ func toPropertyDescriptor(execution *execution, value memory.Value) (memory.Prop
 }
 
 func builtinObjectGetPrototypeOf(execution *execution, _ memory.Ref, _ memory.Function, _ memory.Value, arguments []memory.Value) (memory.Value, error) {
-	object, err := requireObjectLike(execution.context, argument(arguments, 0), "Object.getPrototypeOf target")
+	return execution.objectGetPrototypeOf(argument(arguments, 0))
+}
+
+func (execution *execution) objectGetPrototypeOf(target memory.Value) (memory.Value, error) {
+	seen := make(map[memory.Ref]bool)
+	for {
+		if target.Kind() == memory.ValueUndefined || target.Kind() == memory.ValueNull {
+			return memory.Value{}, fmt.Errorf("%w: Object.getPrototypeOf target", ErrOperandType)
+		}
+		if proxyTarget, handler, proxy, err := execution.proxyRecord(target); err != nil {
+			return memory.Value{}, err
+		} else if proxy {
+			if seen[target.Ref()] {
+				return memory.Value{}, fmt.Errorf("%w: cyclic Proxy target", ErrOperandType)
+			}
+			seen[target.Ref()] = true
+			if proto, handled, err := execution.proxyGetPrototypeOf(proxyTarget, handler); err != nil || handled {
+				return proto, err
+			}
+			target = proxyTarget
+			continue
+		}
+		switch target.Kind() {
+		case memory.ValueNumber:
+			return memory.RefValue(execution.context.intrinsics.NumberPrototype), nil
+		case memory.ValueBool:
+			return memory.RefValue(execution.context.intrinsics.ObjectPrototype), nil
+		}
+		ref, err := requireRef(target, "Object.getPrototypeOf target")
+		if err != nil {
+			return memory.Value{}, err
+		}
+		kind, err := execution.context.HeapKind(ref)
+		if err != nil {
+			return memory.Value{}, err
+		}
+		switch kind {
+		case memory.HeapObject, memory.HeapArray, memory.HeapFunction, memory.HeapPromise,
+			memory.HeapMap, memory.HeapSet, memory.HeapError, memory.HeapIterator:
+			header, err := execution.context.DerefObjectHeader(ref)
+			return header.Prototype, err
+		case memory.HeapString:
+			return memory.RefValue(execution.context.intrinsics.StringPrototype), nil
+		case memory.HeapSymbol:
+			return memory.RefValue(execution.context.intrinsics.SymbolPrototype), nil
+		case memory.HeapDate:
+			return memory.RefValue(execution.context.intrinsics.DatePrototype), nil
+		case memory.HeapRegExp:
+			return memory.RefValue(execution.context.intrinsics.RegExpPrototype), nil
+		case memory.HeapWeakMap:
+			return memory.RefValue(execution.context.intrinsics.WeakMapPrototype), nil
+		case memory.HeapWeakSet:
+			return memory.RefValue(execution.context.intrinsics.WeakSetPrototype), nil
+		case memory.HeapArrayBuffer:
+			return execution.globalConstructorPrototype("ArrayBuffer")
+		case memory.HeapTypedArray:
+			view, err := execution.context.DerefTypedArray(ref)
+			if err != nil {
+				return memory.Value{}, err
+			}
+			if name, ok := typedArrayNameForElement(view.Element); ok {
+				return execution.globalConstructorPrototype(name)
+			}
+			return memory.RefValue(execution.context.intrinsics.ObjectPrototype), nil
+		case memory.HeapBigInt, memory.HeapHostObject:
+			return memory.RefValue(execution.context.intrinsics.ObjectPrototype), nil
+		default:
+			return memory.Value{}, fmt.Errorf("%w: Object.getPrototypeOf target", ErrOperandType)
+		}
+	}
+}
+
+func (execution *execution) globalConstructorPrototype(name string) (memory.Value, error) {
+	if execution.context == nil || execution.context.intrinsics == nil {
+		return memory.NullValue(), nil
+	}
+	fallback := memory.RefValue(execution.context.intrinsics.ObjectPrototype)
+	ctorKey, err := execution.context.NewString(name)
 	if err != nil {
 		return memory.Value{}, err
 	}
-	header, err := execution.context.DerefObjectHeader(object)
-	return header.Prototype, err
+	ctor, found, err := execution.context.ResolveBinding(execution.context.intrinsics.Global, ctorKey)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	if !found || !ctor.IsRef() {
+		return fallback, nil
+	}
+	protoKey, err := execution.context.NewString("prototype")
+	if err != nil {
+		return memory.Value{}, err
+	}
+	proto, found, err := execution.getProperty(ctor, memory.RefValue(protoKey))
+	if err != nil {
+		return memory.Value{}, err
+	}
+	if !found || (!proto.IsRef() && proto.Kind() != memory.ValueNull) {
+		return fallback, nil
+	}
+	return proto, nil
 }
 
 func builtinObjectSetPrototypeOf(execution *execution, _ memory.Ref, _ memory.Function, _ memory.Value, arguments []memory.Value) (memory.Value, error) {
