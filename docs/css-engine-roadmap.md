@@ -640,11 +640,24 @@ produces a version-keyed stable-ID damage summary for targeted snapshots. Paint-
 computed changes clone paint-bearing boxes/fragments while retaining used
 geometry, and style/layout-neutral attribute or native-state changes advance
 only an immutable layout header. Layout snapshots expose conservative document-
-space damage bounds; text/tree edits, direct table/list/replaced-content
-attributes, generated `attr()` inputs, collapsed-border color changes, resource
-revisions, and every geometry-affecting property still fail closed to full
-layout. A display-list/full-layout oracle, fuzz target, and benchmark verify the
-retained geometry and paint output.
+space damage bounds across text fragments, inline runs, outer box shadows, 2D
+transforms, overflow clips, and coalesced multi-element damage while treating
+`display: none` subtrees as zero-damage; text/tree edits, direct
+table/list/replaced-content attributes, generated `attr()` inputs,
+collapsed-border color changes, separated-table structural background changes,
+resource revisions, and every geometry-affecting property still fail closed to
+full layout. Paint-neutral DOM mutations also advance only an immutable `Frame`
+header (`ReuseFrameWithLayoutSnapshot` / `ReuseFrameReadViewWithLayoutSnapshot`),
+preserving the prior `DisplayList` and `PaintArtifactID` so the browser page
+and window session compositor skip redundant display-list rebuilds, scroll
+reprojections, and Retina frame re-rasters while retaining incremental scroll
+underlays. The retained `FrameRasterizer` shifts existing framebuffer pixels for
+root and nested element scrollers, separates fixed/sticky overlay commands onto
+a retained underlay with bounded rounded-corner coverage and effect-layer
+caches, and falls back to full rasterization whenever exact parity preconditions
+do not hold. Display-list, pixel-damage, and full-raster equivalence oracles,
+fuzz targets, and benchmarks verify the retained geometry, paint, and raster
+paths.
 
 - Extend parsed-rule caches with script-visible stylesheet identities and
   generation-aware rule handles.

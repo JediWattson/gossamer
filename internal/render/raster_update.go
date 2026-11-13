@@ -531,7 +531,7 @@ func (rasterizer *FrameRasterizer) retainedUnderlayMissLocked(frame *Frame, scal
 		return "empty"
 	case rasterizer.scrollBase.Bounds() != bounds:
 		return "bounds"
-	case rasterizer.scrollBaseFrame != frame:
+	case !sameRetainedUnderlayFrame(rasterizer.scrollBaseFrame, frame):
 		return "frame"
 	case rasterizer.scrollBaseScale != scale:
 		return "scale"
@@ -543,6 +543,32 @@ func (rasterizer *FrameRasterizer) retainedUnderlayMissLocked(frame *Frame, scal
 	default:
 		return ""
 	}
+}
+
+func sameRetainedUnderlayFrame(left, right *Frame) bool {
+	if left == right {
+		return left != nil
+	}
+	if left == nil || right == nil {
+		return false
+	}
+	if left.paintArtifact == 0 || left.paintArtifact != right.paintArtifact {
+		return false
+	}
+	if left.Viewport != right.Viewport || left.DisplayList.Viewport != right.DisplayList.Viewport {
+		return false
+	}
+	return sameCommandSlice(left.DisplayList.Commands, right.DisplayList.Commands)
+}
+
+func sameCommandSlice(left, right []Command) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	if len(left) == 0 {
+		return true
+	}
+	return &left[0] == &right[0]
 }
 
 func retainedUnderlayBoundariesEquivalent(commands []Command, left, right int) bool {

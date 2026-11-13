@@ -122,6 +122,7 @@ type paintState struct {
 	documentVersion uint64
 	styleRevision   uint64
 	layoutRevision  uint64
+	incremental     bool
 }
 
 func newPage(
@@ -706,8 +707,10 @@ func (page *Page) renderLocked(onlyIfDirty bool) error {
 		return nil
 	}
 	resources := page.resources.rendererResources(page.document, page.script != nil, page.viewport)
+	previousPaint := page.paint
 	var frame *render.Frame
 	var renderedVersion uint64
+	var reusedPaint bool
 	var backgroundRequests []navigationResourceRequest
 	err := page.document.WithReadView(func(view dom.ReadView) error {
 		snapshot, snapshotErr := page.styleSnapshotForViewLocked(view, resources)
@@ -727,6 +730,21 @@ func (page *Page) renderLocked(onlyIfDirty bool) error {
 		if layoutErr != nil {
 			return layoutErr
 		}
+		if previousPaint.frame != nil &&
+			previousPaint.document == page.documentGeneration &&
+			previousPaint.styleRevision == page.styleRevision &&
+			previousPaint.layoutRevision == page.layoutRevision {
+			reusedFrame, reused, reuseErr := render.ReuseFrameReadViewWithLayoutSnapshot(view, previousPaint.frame, layout)
+			if reuseErr != nil {
+				return reuseErr
+			}
+			if reused {
+				frame = reusedFrame
+				renderedVersion = view.Version()
+				reusedPaint = true
+				return nil
+			}
+		}
 		var renderErr error
 		frame, renderErr = render.RenderReadViewWithLayoutSnapshot(view, layout)
 		if renderErr == nil {
@@ -740,6 +758,7 @@ func (page *Page) renderLocked(onlyIfDirty bool) error {
 	page.paint = paintState{
 		frame: frame, document: page.documentGeneration, documentVersion: renderedVersion,
 		styleRevision: page.styleRevision, layoutRevision: page.layoutRevision,
+		incremental: reusedPaint,
 	}
 	page.publishPaintFrameLocked(frame, renderedVersion)
 	if len(backgroundRequests) > 0 && page.resourceFetcher != nil && page.documentContext != nil {
@@ -750,27 +769,47 @@ func (page *Page) renderLocked(onlyIfDirty bool) error {
 
 func (page *Page) publishPaintFrameLocked(frame *render.Frame, renderedVersion uint64) {
 	transforms := page.visualTransformsLocked(frame)
-	published := render.TransformDisplayList(frame, transforms)
-	for nodeID, child := range page.children {
-		childFrame := child.Frame()
-		if childFrame == nil || published.Layout == nil {
-			continue
+	var published *render.Frame
+	if len(transforms) > 0 &&
+		page.frame != nil &&
+		page.frameGeneration == page.documentGeneration &&
+		len(page.children) == 0 &&
+		frame != nil &&
+		frame.PaintArtifactID() != 0 &&
+		page.frame.PaintArtifactID() == frame.PaintArtifactID() &&
+		page.frame.Viewport == frame.Viewport &&
+		sameVisualTransforms(page.frameTransforms, transforms) {
+		if page.frame.Layout == frame.Layout && page.frame.ComputedStyles == frame.ComputedStyles {
+			published = page.frame
+		} else {
+			reused := *page.frame
+			reused.Layout = frame.Layout
+			reused.ComputedStyles = frame.ComputedStyles
+			published = &reused
 		}
-		geometry, ok := published.Layout.GeometryID(nodeID)
-		if !ok {
-			continue
-		}
-		bounds := geometry.ContentBounds
-		if node, found := page.document.Resolve(nodeID); found {
-			if visual, transformed := transforms[node]; transformed {
-				bounds.X -= visual.OffsetX
-				bounds.Y -= visual.OffsetY
-				if visual.HasClip {
-					bounds = intersectBrowserRects(bounds, visual.Clip)
+	} else {
+		published = render.TransformDisplayList(frame, transforms)
+		for nodeID, child := range page.children {
+			childFrame := child.Frame()
+			if childFrame == nil || published.Layout == nil {
+				continue
+			}
+			geometry, ok := published.Layout.GeometryID(nodeID)
+			if !ok {
+				continue
+			}
+			bounds := geometry.ContentBounds
+			if node, found := page.document.Resolve(nodeID); found {
+				if visual, transformed := transforms[node]; transformed {
+					bounds.X -= visual.OffsetX
+					bounds.Y -= visual.OffsetY
+					if visual.HasClip {
+						bounds = intersectBrowserRects(bounds, visual.Clip)
+					}
 				}
 			}
+			published = render.EmbedFrame(published, childFrame, bounds)
 		}
-		published = render.EmbedFrame(published, childFrame, bounds)
 	}
 	// The transform map is immutable after publication and belongs to this
 	// exact frame projection. Publish both while holding Page.mutex so input
@@ -780,6 +819,18 @@ func (page *Page) publishPaintFrameLocked(frame *render.Frame, renderedVersion u
 	page.frameGeneration = page.documentGeneration
 	page.renderedVersion = renderedVersion
 	page.dirty = false
+}
+
+func sameVisualTransforms(left, right map[*dom.Node]render.VisualTransform) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for node, leftTransform := range left {
+		if rightTransform, ok := right[node]; !ok || rightTransform != leftTransform {
+			return false
+		}
+	}
+	return true
 }
 
 func intersectBrowserRects(left, right render.Rect) render.Rect {

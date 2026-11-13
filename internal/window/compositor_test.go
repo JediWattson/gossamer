@@ -192,6 +192,130 @@ func TestSessionCompositorFallsBackWhenPaintArtifactChanges(t *testing.T) {
 	}
 }
 
+func TestSessionCompositorSkipsRasterAndPreservesIncrementalScrollAcrossNeutralMutations(t *testing.T) {
+	t.Parallel()
+
+	page, closePage := newShellTestPage(t, shellTestLoader{document: `
+		<html><body style="margin:0;background:#182432">
+		<div style="position:fixed;top:0;left:0;width:120px;height:28px;background:rgba(240,120,40,0.75)">fixed</div>
+		<div id="content" style="height:1800px;padding-top:36px;color:white">retained scroll pixels</div>
+		</body></html>
+	`})
+	defer closePage()
+	compositor := newSessionCompositor(nil)
+	defer compositor.close()
+	compositor.setDeviceScale(2)
+
+	initialFrame := page.Frame()
+	initial, err := compositor.pageCanvas(page, initialFrame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, found := page.Document().ElementByID("content")
+	if !found {
+		t.Fatal("content element not indexed")
+	}
+
+	if err := page.Document().SetAttribute(content, "data-unrelated", "1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := page.QueueRender(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pumpPageTasks(context.Background(), page); err != nil {
+		t.Fatal(err)
+	}
+	neutralUnscrolledFrame := page.Frame()
+	if neutralUnscrolledFrame == initialFrame {
+		t.Fatal("neutral mutation did not publish a new frame header")
+	}
+	neutralUnscrolled, err := compositor.pageCanvas(page, neutralUnscrolledFrame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if neutralUnscrolled.rasterized || neutralUnscrolled.canvas != initial.canvas || compositor.rasterizations != 1 {
+		t.Fatalf("unscrolled neutral raster = %#v, rasterizations=%d want 1", neutralUnscrolled, compositor.rasterizations)
+	}
+
+	if err := page.Document().SetAttribute(content, "data-unrelated", "2"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := page.ScrollViewport(0, 24); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := page.QueueRender(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pumpPageTasks(context.Background(), page); err != nil {
+		t.Fatal(err)
+	}
+	firstScrolledFrame := page.Frame()
+	firstScrolled, err := compositor.pageCanvas(page, firstScrolledFrame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !firstScrolled.rasterized || !firstScrolled.incremental || firstScrolled.canvas != initial.canvas {
+		t.Fatalf("scroll + neutral mutation raster = %#v, want incremental in-place update", firstScrolled)
+	}
+	firstReference, err := render.RasterizeAtScale(firstScrolledFrame, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(firstScrolled.canvas.Pix, firstReference.Pix) {
+		t.Fatal("scroll + neutral mutation pixels differ from a full Retina raster")
+	}
+
+	if err := page.Document().SetAttribute(content, "data-unrelated", "3"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := page.QueueRender(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pumpPageTasks(context.Background(), page); err != nil {
+		t.Fatal(err)
+	}
+	neutralScrolledFrame := page.Frame()
+	if neutralScrolledFrame == firstScrolledFrame {
+		t.Fatal("scrolled neutral mutation did not publish a new frame header")
+	}
+	neutralScrolled, err := compositor.pageCanvas(page, neutralScrolledFrame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if neutralScrolled.rasterized || neutralScrolled.canvas != initial.canvas || compositor.rasterizations != 2 {
+		t.Fatalf("scrolled neutral raster = %#v, rasterizations=%d want 2", neutralScrolled, compositor.rasterizations)
+	}
+
+	if _, err := page.ScrollViewport(0, 20); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := page.QueueRender(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pumpPageTasks(context.Background(), page); err != nil {
+		t.Fatal(err)
+	}
+	secondScrolledFrame := page.Frame()
+	secondScrolled, err := compositor.pageCanvas(page, secondScrolledFrame)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !secondScrolled.rasterized || !secondScrolled.incremental || !secondScrolled.underlayCacheHit {
+		t.Fatalf("second scroll after neutral mutation = %#v, want incremental with retained underlay hit", secondScrolled)
+	}
+	secondReference, err := render.RasterizeAtScale(secondScrolledFrame, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(secondScrolled.canvas.Pix, secondReference.Pix) {
+		t.Fatal("second scroll after neutral mutation pixels differ from a full Retina raster")
+	}
+	if compositor.rasterizations != 3 || compositor.fullRasters != 1 || compositor.incrementalRasters != 2 || compositor.incrementalFallbacks != 0 {
+		t.Fatalf("compositor counters = raster %d full %d incremental %d fallback %d",
+			compositor.rasterizations, compositor.fullRasters, compositor.incrementalRasters, compositor.incrementalFallbacks)
+	}
+}
+
 func TestSessionCompositorCloseReleasesRetainedFramebuffer(t *testing.T) {
 	t.Parallel()
 	compositor := newSessionCompositor(nil)

@@ -113,7 +113,8 @@ func (compositor *sessionCompositor) pageCanvas(page *browser.Page, frame *rende
 	if compositor.closed {
 		return pageRasterResult{}, fmt.Errorf("window: compositor is closed")
 	}
-	if cached, ok := compositor.pages[page]; ok && cached.frame == frame && cached.canvas != nil {
+	if cached, ok := compositor.pages[page]; ok && cached.canvas != nil && sameCompositorFrame(cached.frame, frame) {
+		compositor.pages[page] = pageRasterCache{frame: frame, canvas: cached.canvas}
 		return pageRasterResult{canvas: cached.canvas}, nil
 	}
 	for cachedPage := range compositor.pages {
@@ -219,4 +220,30 @@ func (compositor *sessionCompositor) prune(livePages []*browser.Page) {
 			delete(compositor.pages, page)
 		}
 	}
+}
+
+func sameCompositorFrame(left, right *render.Frame) bool {
+	if left == right {
+		return left != nil
+	}
+	if left == nil || right == nil {
+		return false
+	}
+	if left.PaintArtifactID() == 0 || left.PaintArtifactID() != right.PaintArtifactID() {
+		return false
+	}
+	if left.Viewport != right.Viewport || left.DisplayList.Viewport != right.DisplayList.Viewport {
+		return false
+	}
+	return sameDisplayListCommandSlice(left.DisplayList.Commands, right.DisplayList.Commands)
+}
+
+func sameDisplayListCommandSlice(left, right []render.Command) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	if len(left) == 0 {
+		return true
+	}
+	return &left[0] == &right[0]
 }
