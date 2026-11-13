@@ -105,6 +105,7 @@ type Realm struct {
 	resizeObservers              map[uint64]*resizeObserverState
 	nextResizeObserver           uint64
 	canvas2DStates               map[browser.NodeHandle]*canvas2DState
+	mediaStates                  map[browser.NodeHandle]*mediaElementState
 	collectedWrappers            []browser.NodeHandle
 	listeners                    map[eventListenerKey][]eventListener
 	listenerTargets              map[eventTargetID]uint64

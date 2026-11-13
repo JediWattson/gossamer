@@ -868,6 +868,7 @@ func (realm *Realm) installBrowserNatives() error {
 		)
 	}
 	registrations = append(registrations, realm.canvasNativeRegistrations()...)
+	registrations = append(registrations, realm.mediaNativeRegistrations()...)
 	for _, registration := range registrations {
 		if err := realm.interpreter.RegisterNative(registration.id, registration.callback); err != nil {
 			return err
@@ -1318,6 +1319,10 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 	if err != nil {
 		return err
 	}
+	audioConstructor, err := realm.newAudioConstructor(context)
+	if err != nil {
+		return err
+	}
 	navigator, err := realm.newNavigator(context)
 	if err != nil {
 		return err
@@ -1374,6 +1379,7 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{"scrollTo", memory.RefValue(scrollToFn)},
 		{"scrollBy", memory.RefValue(scrollByFn)},
 		{"Image", memory.RefValue(imageConstructor)},
+		{"Audio", memory.RefValue(audioConstructor)},
 		{"fetch", memory.RefValue(fetch)},
 		{"console", memory.RefValue(console)},
 		{"crypto", memory.RefValue(cryptoObject)},
@@ -1534,6 +1540,7 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{"scrollTo", scrollToFn, true},
 		{"scrollBy", scrollByFn, true},
 		{"Image", imageConstructor, true},
+		{"Audio", audioConstructor, true},
 		{"fetch", fetch, true},
 		{"console", console, false},
 		{"crypto", cryptoObject, false},
@@ -1961,7 +1968,10 @@ func (realm *Realm) installDOMPrototypeProperties(context *browserruntime.TaskCo
 			return err
 		}
 	}
-	return realm.installCanvasPrototypeProperties(context)
+	if err := realm.installCanvasPrototypeProperties(context); err != nil {
+		return err
+	}
+	return realm.installMediaPrototypeProperties(context)
 }
 
 func (realm *Realm) installHTMLCollectionIteration(context *browserruntime.TaskContext) error {
