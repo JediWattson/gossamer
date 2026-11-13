@@ -60,8 +60,10 @@ func (page *Page) hitTestLocked(x, y float64) (NodeHandle, bool) {
 		return NodeHandle{}, false
 	}
 	// Retained layout stays in document coordinates. Paint and external input
-	// share the same Page-owned root/nested-scroll visual projection.
-	node := render.HitTestVisual(page.frame, x, y, page.visualTransformsLocked(page.frame))
+	// share the exact immutable root/nested-scroll visual projection published
+	// with this frame. Current scroll state may already be newer while a render
+	// is pending, so rebuilding the map here could target pixels not yet shown.
+	node := render.HitTestVisual(page.frame, x, y, page.frameTransforms)
 	if node == nil {
 		return NodeHandle{}, false
 	}
@@ -2173,6 +2175,24 @@ func (host *taskHost) finish() error {
 			err = errors.Join(err, fmt.Errorf("browser: synchronize child frames: %w", syncErr))
 		}
 	}
+	shouldRender := host.mutated || host.scrolled || host.resized || host.styleChanged
+	if host.followupQueued && host.styleChanged && !host.mutated && !host.scrolled && !host.resized {
+		shouldRender = false
+	}
+	// Publish a pure scroll offset before dispatching the ordered scroll event.
+	// Native browsers can move an already-painted scrolling layer while the
+	// main thread runs listeners; queuing this render first gives the
+	// single-threaded host the same responsive boundary. Listener mutations
+	// still queue and publish their own later render through eventHost.finish.
+	renderQueued := false
+	pureScroll := host.scrolled && !host.mutated && !host.resized && !host.styleChanged
+	if host.autoRender && pureScroll && shouldRender {
+		if queueErr := host.page.queueScrollRenderFromTask(host.task); queueErr != nil {
+			err = errors.Join(err, fmt.Errorf("browser: queue scroll render: %w", queueErr))
+		} else {
+			renderQueued = true
+		}
+	}
 	if host.scrolled {
 		if queueErr := host.page.queueScrollEventsFromTask(host.task, host.scrollTargets); queueErr != nil {
 			err = errors.Join(err, fmt.Errorf("browser: queue scroll events: %w", queueErr))
@@ -2186,11 +2206,7 @@ func (host *taskHost) finish() error {
 	if !host.autoRender {
 		return err
 	}
-	shouldRender := host.mutated || host.scrolled || host.resized || host.styleChanged
-	if host.followupQueued && host.styleChanged && !host.mutated && !host.scrolled && !host.resized {
-		shouldRender = false
-	}
-	if shouldRender {
+	if shouldRender && !renderQueued {
 		if queueErr := host.page.queueRenderFromTask(host.task); queueErr != nil {
 			err = errors.Join(err, fmt.Errorf("browser: queue render: %w", queueErr))
 		}

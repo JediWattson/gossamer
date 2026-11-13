@@ -641,6 +641,10 @@ func (page *Page) commitNavigationDocument(
 	page.nodeLifetimes = replacementLifetimes
 	page.document = prepared.document
 	page.documentGeneration = generation
+	page.frame = nil
+	page.frameTransforms = nil
+	page.frameGeneration = 0
+	page.paint = paintState{}
 	page.documentLanguage = prepared.defaultLanguage
 	page.activeElement = dom.InvalidNodeID
 	page.hoveredElement = dom.InvalidNodeID

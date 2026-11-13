@@ -1,6 +1,7 @@
 package render
 
 import (
+	"bytes"
 	"fmt"
 	"image"
 	"image/color"
@@ -38,7 +39,88 @@ type parsedWebFont struct {
 	font       *opentype.Font
 }
 
+// webFontIdentity is a zero-copy identity for immutable frame font data. The
+// Frame contract keeps Data and UnicodeRanges immutable while retained, so
+// backing-array identity plus descriptor values can be compared on every
+// frame without hashing or copying multi-megabyte font programs.
+type webFontIdentity struct {
+	family        string
+	style         FontStyle
+	weightMin     int
+	weightMax     int
+	source        string
+	data          *byte
+	dataLength    int
+	dataBytes     []byte
+	unicodeRanges *css.UnicodeRange
+	rangeLength   int
+	ranges        []css.UnicodeRange
+}
+
+func snapshotWebFonts(fonts []WebFontFace) []webFontIdentity {
+	if len(fonts) == 0 {
+		return nil
+	}
+	result := make([]webFontIdentity, len(fonts))
+	for index := range fonts {
+		result[index] = identifyWebFont(fonts[index])
+	}
+	return result
+}
+
+func sameWebFonts(snapshot []webFontIdentity, fonts []WebFontFace) bool {
+	if len(snapshot) != len(fonts) {
+		return false
+	}
+	for index := range fonts {
+		if !sameWebFont(snapshot[index], fonts[index]) {
+			return false
+		}
+	}
+	return true
+}
+
+func sameWebFont(snapshot webFontIdentity, face WebFontFace) bool {
+	current := identifyWebFont(face)
+	if snapshot.family != current.family || snapshot.style != current.style ||
+		snapshot.weightMin != current.weightMin || snapshot.weightMax != current.weightMax ||
+		snapshot.source != current.source || snapshot.dataLength != current.dataLength ||
+		snapshot.rangeLength != current.rangeLength {
+		return false
+	}
+	if snapshot.data != current.data && !bytes.Equal(snapshot.dataBytes, current.dataBytes) {
+		return false
+	}
+	if snapshot.unicodeRanges == current.unicodeRanges {
+		return true
+	}
+	for index := range snapshot.ranges {
+		if snapshot.ranges[index] != current.ranges[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func identifyWebFont(face WebFontFace) webFontIdentity {
+	var data *byte
+	if len(face.Data) != 0 {
+		data = &face.Data[0]
+	}
+	var ranges *css.UnicodeRange
+	if len(face.UnicodeRanges) != 0 {
+		ranges = &face.UnicodeRanges[0]
+	}
+	return webFontIdentity{
+		family: face.Family, style: face.Style,
+		weightMin: face.WeightMin, weightMax: face.WeightMax,
+		source: face.Source, data: data, dataLength: len(face.Data), dataBytes: face.Data,
+		unicodeRanges: ranges, rangeLength: len(face.UnicodeRanges), ranges: face.UnicodeRanges,
+	}
+}
+
 type fontBook struct {
+	mutex          sync.Mutex
 	regular        *opentype.Font
 	bold           *opentype.Font
 	italic         *opentype.Font
@@ -145,6 +227,8 @@ func newFontBook(webFontSets ...[]WebFontFace) (*fontBook, error) {
 }
 
 func (book *fontBook) Close() error {
+	book.mutex.Lock()
+	defer book.mutex.Unlock()
 	var firstError error
 	for _, face := range book.faces {
 		closer, ok := face.(io.Closer)
@@ -160,6 +244,8 @@ func (book *fontBook) Close() error {
 }
 
 func (book *fontBook) metrics(text string, size float64, weight FontWeight, style FontStyle, family FontFamily, web ...uint32) (textMetrics, error) {
+	book.mutex.Lock()
+	defer book.mutex.Unlock()
 	face, err := book.face(size, weight, style, family, web...)
 	if err != nil {
 		return textMetrics{}, err
@@ -185,6 +271,8 @@ func (book *fontBook) xHeightForStyle(style computedStyle) (float64, error) {
 }
 
 func (book *fontBook) xHeight(size float64, weight FontWeight, style FontStyle, family FontFamily, web ...uint32) (float64, error) {
+	book.mutex.Lock()
+	defer book.mutex.Unlock()
 	face, err := book.face(size, weight, style, family, web...)
 	if err != nil {
 		return 0, err
@@ -209,6 +297,8 @@ func (book *fontBook) draw(
 	textColor color.NRGBA,
 	web ...uint32,
 ) error {
+	book.mutex.Lock()
+	defer book.mutex.Unlock()
 	face, err := book.face(size, weight, style, family, web...)
 	if err != nil {
 		return err
@@ -229,6 +319,43 @@ func (book *fontBook) draw(
 		}
 	}
 	return nil
+}
+
+// horizontalTextInkBounds returns the exact hinted device-pixel rectangles
+// used by draw for one already device-scaled command. Line/advance geometry is
+// deliberately insufficient here because italic and web-font glyphs may
+// overhang it. Vertical text is painted through intermediate surfaces and is
+// reported as inexact so callers can choose a conservative clip.
+func (book *fontBook) horizontalTextInkBounds(command Command) (image.Rectangle, bool) {
+	if book == nil || command.Kind != DrawTextCommand || command.textOrientation != textPaintHorizontal {
+		return image.Rectangle{}, false
+	}
+	book.mutex.Lock()
+	defer book.mutex.Unlock()
+	face, err := book.face(command.FontSize, command.FontWeight, command.FontStyle, command.FontFamily, command.WebFont)
+	if err != nil {
+		return image.Rectangle{}, false
+	}
+	run := shapeText(face, command.Text)
+	origin := fixed.Point26_6{
+		X: fixed.Int26_6(math.Round(command.X * 64)),
+		Y: fixed.Int26_6(math.Round(command.BaselineY * 64)),
+	}
+	var bounds image.Rectangle
+	for _, glyph := range run.glyphs {
+		dot := origin
+		dot.X += glyph.x
+		rectangle, _, _, _, _ := face.Glyph(dot, glyph.rune)
+		if rectangle.Empty() {
+			continue
+		}
+		if bounds.Empty() {
+			bounds = rectangle
+		} else {
+			bounds = bounds.Union(rectangle)
+		}
+	}
+	return bounds, true
 }
 
 func shapeText(face font.Face, text string) shapedRun {

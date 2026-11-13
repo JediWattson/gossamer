@@ -49,6 +49,57 @@ type shellFontBook struct {
 	faces   map[shellFaceKey]font.Face
 }
 
+type graphiteTabChromeState struct {
+	page          *browser.Page
+	title         string
+	faviconURL    string
+	faviconReady  bool
+	faviconBounds image.Rectangle
+}
+
+// graphiteStaticChromeState is the complete set of shell-owned values that
+// affect the stable tab, toolbar, and rail pixels. Page overlays deliberately
+// stay out of this state so scrolling and animation frames can reuse chrome.
+type graphiteStaticChromeState struct {
+	tabs           [maximumGraphiteTabs]graphiteTabChromeState
+	tabCount       int
+	activeTab      int
+	hoveredTab     int
+	tabOffset      int
+	showNewTab     bool
+	address        string
+	addressFocused bool
+	selectAll      bool
+	inspectorOpen  bool
+	inspectorPanel inspectorPanel
+	chromeFocus    shellFocus
+	loading        bool
+	canGoBack      bool
+	canGoForward   bool
+	navigationErr  string
+	security       shellSecurityState
+}
+
+type graphiteChromeCacheKey struct {
+	width, height int
+	scaleBits     uint64
+	revision      uint64
+}
+
+// graphiteChromeCache retains only the device-pixel chrome strips rather than
+// a full-window bitmap. scales is intentionally observable to package tests so
+// the page-only fast path has a regression gate.
+type graphiteChromeCache struct {
+	state      graphiteStaticChromeState
+	stateValid bool
+	revision   uint64
+	key        graphiteChromeCacheKey
+	keyValid   bool
+	top        *image.RGBA
+	rail       *image.RGBA
+	scales     uint64
+}
+
 func newShellFontBook() (*shellFontBook, error) {
 	regular, err := opentype.Parse(goregular.TTF)
 	if err != nil {
@@ -141,7 +192,19 @@ func (shell *graphiteShell) compose(pageCanvas *image.RGBA, page *browser.Page) 
 	if err := shell.drawInteractionOverlay(canvas, layout, page); err != nil {
 		return nil, err
 	}
+	if err := shell.drawStaticChrome(canvas, layout); err != nil {
+		return nil, err
+	}
+	if shell.inspectorOpen {
+		if err := shell.drawInspector(canvas, layout, page); err != nil {
+			return nil, err
+		}
+	}
+	shell.drawLoadingProgress(canvas, layout, page)
+	return canvas, nil
+}
 
+func (shell *graphiteShell) drawStaticChrome(canvas *image.RGBA, layout shellLayout) error {
 	fillRect(canvas, image.Rect(0, 0, layout.rail.Min.X, graphiteTabHeight), graphitePalette.top)
 	fillRect(canvas, image.Rect(0, graphiteTabHeight, layout.rail.Min.X, graphiteChromeHeight), graphitePalette.surface)
 	fillRect(canvas, layout.rail, graphitePalette.top)
@@ -150,21 +213,30 @@ func (shell *graphiteShell) compose(pageCanvas *image.RGBA, page *browser.Page) 
 	fillRect(canvas, image.Rect(layout.rail.Min.X, 0, layout.rail.Min.X+1, shell.height), graphitePalette.border)
 
 	if err := shell.drawTabs(canvas, layout); err != nil {
-		return nil, err
+		return err
 	}
 	if err := shell.drawToolbar(canvas, layout); err != nil {
-		return nil, err
+		return err
 	}
-	if err := shell.drawRail(canvas, layout, page); err != nil {
-		return nil, err
+	shell.drawRailChrome(canvas, layout)
+	return nil
+}
+
+func (shell *graphiteShell) drawLoadingProgress(canvas *image.RGBA, layout shellLayout, page *browser.Page) {
+	if !shell.loading || page == nil {
+		return
 	}
-	if shell.loading && page != nil {
-		progress := shellNavigationProgress(page.Navigation())
-		lineRight := layout.content.Min.X + int(math.Round(float64(layout.content.Dx())*progress))
-		lineRight = maxInt(layout.content.Min.X+2, minInt(layout.content.Max.X, lineRight))
-		fillRect(canvas, image.Rect(0, graphiteChromeHeight-2, lineRight, graphiteChromeHeight), graphitePalette.teal)
+	fillRect(canvas, shell.loadingProgressBounds(layout, page), graphitePalette.teal)
+}
+
+func (shell *graphiteShell) loadingProgressBounds(layout shellLayout, page *browser.Page) image.Rectangle {
+	if !shell.loading || page == nil {
+		return image.Rectangle{}
 	}
-	return canvas, nil
+	progress := shellNavigationProgress(page.Navigation())
+	lineRight := layout.content.Min.X + int(math.Round(float64(layout.content.Dx())*progress))
+	lineRight = maxInt(layout.content.Min.X+2, minInt(layout.content.Max.X, lineRight))
+	return image.Rect(0, graphiteChromeHeight-2, lineRight, graphiteChromeHeight).Intersect(layout.window)
 }
 
 func (shell *graphiteShell) composeAtScale(pageCanvas *image.RGBA, page *browser.Page, scale float64) (*image.RGBA, error) {
@@ -174,18 +246,10 @@ func (shell *graphiteShell) composeAtScale(pageCanvas *image.RGBA, page *browser
 	if !finiteDeviceScale(scale) {
 		return nil, fmt.Errorf("window: invalid Graphite device scale %g", scale)
 	}
-	// Chrome is still authored in CSS pixels. Scale that stable layer once,
-	// then place the independently high-resolution page raster into its device-
-	// pixel content rectangle. Website pixels therefore never take a lossy
-	// CSS-pixel round trip on Retina displays.
-	cssChrome, err := shell.compose(nil, page)
-	if err != nil {
-		return nil, err
-	}
 	layout := shell.layout()
 	windowBounds := scaleImageRectangle(layout.window, scale)
 	canvas := image.NewRGBA(windowBounds)
-	xdraw.CatmullRom.Scale(canvas, windowBounds, cssChrome, cssChrome.Bounds(), draw.Src, nil)
+	fillRect(canvas, windowBounds, graphitePalette.ink)
 	content := scaleImageRectangle(layout.content, scale)
 	if pageCanvas != nil && !content.Empty() {
 		if pageCanvas.Bounds().Size() == content.Size() {
@@ -194,18 +258,133 @@ func (shell *graphiteShell) composeAtScale(pageCanvas *image.RGBA, page *browser
 			xdraw.CatmullRom.Scale(canvas, content, pageCanvas, pageCanvas.Bounds(), draw.Src, nil)
 		}
 	}
-	overlay := image.NewRGBA(layout.window)
-	if err := shell.drawScrollbars(overlay, layout, page); err != nil {
+	if err := shell.drawScaledPageOverlays(canvas, layout, page, scale); err != nil {
 		return nil, err
 	}
-	if err := shell.drawPageStatus(overlay, layout, page); err != nil {
+	top, rail, err := shell.scaledStaticChrome(layout, scale)
+	if err != nil {
 		return nil, err
 	}
-	if err := shell.drawInteractionOverlay(overlay, layout, page); err != nil {
-		return nil, err
+	for _, layer := range []*image.RGBA{top, rail} {
+		if layer != nil && !layer.Bounds().Empty() {
+			draw.Draw(canvas, layer.Bounds(), layer, layer.Bounds().Min, draw.Src)
+		}
 	}
-	xdraw.CatmullRom.Scale(canvas, windowBounds, overlay, overlay.Bounds(), draw.Over, nil)
+	if shell.inspectorOpen && !layout.inspector.Empty() {
+		if err := drawScaledShellRegion(canvas, layout.window, layout.inspector, scale, func(layer *image.RGBA) error {
+			return shell.drawInspector(layer, layout, page)
+		}); err != nil {
+			return nil, err
+		}
+	}
+	if progress := shell.loadingProgressBounds(layout, page); !progress.Empty() {
+		if err := drawScaledShellRegion(canvas, layout.window, progress, scale, func(layer *image.RGBA) error {
+			fillRect(layer, progress, graphitePalette.teal)
+			return nil
+		}); err != nil {
+			return nil, err
+		}
+	}
 	return canvas, nil
+}
+
+func (shell *graphiteShell) staticChromeState() graphiteStaticChromeState {
+	state := graphiteStaticChromeState{
+		tabCount: len(shell.tabs), activeTab: shell.activeTab, hoveredTab: shell.hoveredTab,
+		tabOffset: shell.tabOffset, showNewTab: shell.opener != nil && len(shell.tabs) < maximumGraphiteTabs,
+		address: shell.address, addressFocused: shell.addressFocused, selectAll: shell.selectAll,
+		inspectorOpen: shell.inspectorOpen, inspectorPanel: shell.inspectorPanel, chromeFocus: shell.chromeFocus,
+		loading: shell.loading, canGoBack: shell.canGoBack, canGoForward: shell.canGoForward,
+		navigationErr: shell.navigationErr, security: shellSecurityFor(shell.activePage(), shell.navigationErr),
+	}
+	for index := range shell.tabs {
+		if index >= len(state.tabs) {
+			break
+		}
+		page := shell.tabs[index].page
+		metadata := page.Metadata()
+		faviconURL := ""
+		if metadata.FaviconURL != nil {
+			faviconURL = metadata.FaviconURL.String()
+		}
+		favicon := page.Favicon()
+		tab := graphiteTabChromeState{page: page, title: shellTabTitle(page), faviconURL: faviconURL}
+		if favicon != nil {
+			tab.faviconReady = true
+			tab.faviconBounds = favicon.Bounds()
+		}
+		state.tabs[index] = tab
+	}
+	return state
+}
+
+func (shell *graphiteShell) scaledStaticChrome(layout shellLayout, scale float64) (*image.RGBA, *image.RGBA, error) {
+	state := shell.staticChromeState()
+	if !shell.chromeCache.stateValid || shell.chromeCache.state != state {
+		shell.chromeCache.state = state
+		shell.chromeCache.stateValid = true
+		shell.chromeCache.revision++
+		shell.chromeCache.keyValid = false
+	}
+	key := graphiteChromeCacheKey{
+		width: shell.width, height: shell.height, scaleBits: math.Float64bits(scale),
+		revision: shell.chromeCache.revision,
+	}
+	if shell.chromeCache.keyValid && shell.chromeCache.key == key {
+		return shell.chromeCache.top, shell.chromeCache.rail, nil
+	}
+	cssChrome := image.NewRGBA(layout.window)
+	fillRect(cssChrome, layout.window, graphitePalette.ink)
+	if err := shell.drawStaticChrome(cssChrome, layout); err != nil {
+		return nil, nil, err
+	}
+	deviceBounds := scaleImageRectangle(layout.window, scale)
+	scaled := image.NewRGBA(deviceBounds)
+	xdraw.CatmullRom.Scale(scaled, deviceBounds, cssChrome, cssChrome.Bounds(), draw.Src, nil)
+	topBounds := scaleImageRectangle(image.Rect(0, 0, layout.rail.Min.X, graphiteChromeHeight).Intersect(layout.window), scale)
+	railBounds := scaleImageRectangle(layout.rail, scale)
+	shell.chromeCache.top = cloneRGBARegion(scaled, topBounds)
+	shell.chromeCache.rail = cloneRGBARegion(scaled, railBounds)
+	shell.chromeCache.key = key
+	shell.chromeCache.keyValid = true
+	shell.chromeCache.scales++
+	return shell.chromeCache.top, shell.chromeCache.rail, nil
+}
+
+func cloneRGBARegion(source *image.RGBA, bounds image.Rectangle) *image.RGBA {
+	bounds = bounds.Intersect(source.Bounds())
+	if bounds.Empty() {
+		return nil
+	}
+	result := image.NewRGBA(bounds)
+	draw.Draw(result, bounds, source, bounds.Min, draw.Src)
+	return result
+}
+
+func drawScaledShellRegion(
+	destination *image.RGBA,
+	window, bounds image.Rectangle,
+	scale float64,
+	paint func(*image.RGBA) error,
+) error {
+	if destination == nil || paint == nil {
+		return nil
+	}
+	// Keep Catmull-Rom's support pixels around the tight paint bounds without
+	// scaling the rest of the transparent window-sized overlay.
+	bounds = bounds.Inset(-2).Intersect(window)
+	if bounds.Empty() {
+		return nil
+	}
+	cssLayer := image.NewRGBA(bounds)
+	if err := paint(cssLayer); err != nil {
+		return err
+	}
+	deviceBounds := scaleImageRectangle(bounds, scale)
+	deviceLayer := image.NewRGBA(deviceBounds)
+	xdraw.CatmullRom.Scale(deviceLayer, deviceBounds, cssLayer, bounds, draw.Src, nil)
+	draw.Draw(destination, deviceBounds, deviceLayer, deviceBounds.Min, draw.Over)
+	return nil
 }
 
 func finiteDeviceScale(scale float64) bool {
@@ -221,18 +400,42 @@ func scaleImageRectangle(rectangle image.Rectangle, scale float64) image.Rectang
 	)
 }
 
+type graphiteScrollbarThumbPaint struct {
+	bounds image.Rectangle
+	color  color.NRGBA
+}
+
 func (shell *graphiteShell) drawScrollbars(canvas *image.RGBA, layout shellLayout, page *browser.Page) error {
+	thumbs, err := shell.scrollbarThumbPaints(layout, page)
+	if err != nil {
+		return err
+	}
+	for _, thumb := range thumbs {
+		fillRoundedRect(canvas, thumb.bounds, graphiteScrollbarSize/2, thumb.color)
+	}
+	return nil
+}
+
+func (shell *graphiteShell) scrollbarThumbPaints(layout shellLayout, page *browser.Page) ([]graphiteScrollbarThumbPaint, error) {
 	if page == nil {
-		return nil
+		return nil, nil
 	}
 	state := shell.activeInputState()
 	if state == nil {
-		return nil
+		return nil, nil
 	}
 	content := visibleScrollbarContent(layout)
 	geometry, err := page.ViewportGeometry()
 	if err != nil {
-		return err
+		return nil, err
+	}
+	var result []graphiteScrollbarThumbPaint
+	appendThumbs := func(bars shellScrollbars, thumbColor color.NRGBA) {
+		for _, thumb := range []image.Rectangle{bars.horizontalThumb, bars.verticalThumb} {
+			if !thumb.Empty() {
+				result = append(result, graphiteScrollbarThumbPaint{bounds: thumb, color: thumbColor})
+			}
+		}
 	}
 	activity := shell.scrollbarActivityActive(state)
 	draggingRoot := shell.scrollbarDrag.axis != shellScrollbarNone && shell.scrollbarDrag.target.Node == 0
@@ -241,7 +444,7 @@ func (shell *graphiteShell) drawScrollbars(canvas *image.RGBA, layout shellLayou
 		if state.scrollbarHoverRoot || draggingRoot {
 			rootColor = graphitePalette.muted
 		}
-		drawScrollbarThumbs(canvas, graphiteScrollbars(content, geometry), rootColor)
+		appendThumbs(graphiteScrollbars(content, geometry), rootColor)
 	}
 
 	target := state.scrollbarHover
@@ -258,18 +461,88 @@ func (shell *graphiteShell) drawScrollbars(canvas *image.RGBA, layout shellLayou
 			if target == state.scrollbarHover || target == shell.scrollbarDrag.target {
 				thumbColor = graphitePalette.muted
 			}
-			drawScrollbarThumbs(canvas, bars, thumbColor)
+			appendThumbs(bars, thumbColor)
+		}
+	}
+	return result, nil
+}
+
+func (shell *graphiteShell) drawScaledPageOverlays(
+	canvas *image.RGBA,
+	layout shellLayout,
+	page *browser.Page,
+	scale float64,
+) error {
+	thumbs, err := shell.scrollbarThumbPaints(layout, page)
+	if err != nil {
+		return err
+	}
+	for _, thumb := range thumbs {
+		thumb := thumb
+		if err := drawScaledShellRegion(canvas, layout.window, thumb.bounds, scale, func(layer *image.RGBA) error {
+			fillRoundedRect(layer, thumb.bounds, graphiteScrollbarSize/2, thumb.color)
+			return nil
+		}); err != nil {
+			return err
+		}
+	}
+	if bounds := shell.pageStatusPaintBounds(layout, page); !bounds.Empty() {
+		if err := drawScaledShellRegion(canvas, layout.window, bounds, scale, func(layer *image.RGBA) error {
+			return shell.drawPageStatus(layer, layout, page)
+		}); err != nil {
+			return err
+		}
+	}
+	if bounds := shell.interactionOverlayPaintBounds(layout, page); !bounds.Empty() {
+		if err := drawScaledShellRegion(canvas, layout.window, bounds, scale, func(layer *image.RGBA) error {
+			return shell.drawInteractionOverlay(layer, layout, page)
+		}); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
-func drawScrollbarThumbs(canvas *image.RGBA, bars shellScrollbars, thumbColor color.NRGBA) {
-	for _, thumb := range []image.Rectangle{bars.horizontalThumb, bars.verticalThumb} {
-		if !thumb.Empty() {
-			fillRoundedRect(canvas, thumb, graphiteScrollbarSize/2, thumbColor)
+func (shell *graphiteShell) pageStatusPaintBounds(layout shellLayout, page *browser.Page) image.Rectangle {
+	if page == nil || page.URL() == nil {
+		return layout.content.Inset(24)
+	}
+	if shell.navigationErr != "" {
+		return layout.errorBanner
+	}
+	return image.Rectangle{}
+}
+
+func (shell *graphiteShell) interactionOverlayPaintBounds(layout shellLayout, page *browser.Page) image.Rectangle {
+	if shell == nil || page == nil {
+		return image.Rectangle{}
+	}
+	state := shell.activeInputState()
+	if state == nil {
+		return image.Rectangle{}
+	}
+	focus := state.focusTarget
+	if focus.Node == 0 {
+		if active, ok := page.ActiveElementHandle(); ok {
+			focus = active
 		}
 	}
+	if focus.Node == 0 {
+		return image.Rectangle{}
+	}
+	if _, err := page.TextControlPresentation(focus); err != nil {
+		return image.Rectangle{}
+	}
+	geometry, err := page.ElementGeometry(focus)
+	if err != nil || geometry.Rect.Width <= 2 || geometry.Rect.Height <= 2 {
+		return image.Rectangle{}
+	}
+	return image.Rect(
+		layout.content.Min.X+int(math.Round(geometry.Rect.X)),
+		layout.content.Min.Y+int(math.Round(geometry.Rect.Y)),
+		layout.content.Min.X+int(math.Round(geometry.Rect.X+geometry.Rect.Width)),
+		layout.content.Min.Y+int(math.Round(geometry.Rect.Y+geometry.Rect.Height)),
+	).Intersect(layout.content)
 }
 
 func (shell *graphiteShell) drawTabs(canvas *image.RGBA, layout shellLayout) error {
@@ -501,7 +774,7 @@ func drawScaledImage(destination *image.RGBA, bounds image.Rectangle, source ima
 	scaler.Scale(destination, bounds, source, sourceBounds, draw.Over, nil)
 }
 
-func (shell *graphiteShell) drawRail(canvas *image.RGBA, layout shellLayout, page *browser.Page) error {
+func (shell *graphiteShell) drawRailChrome(canvas *image.RGBA, layout shellLayout) {
 	centerX := center(layout.rail).X
 	drawKnot(canvas, image.Pt(centerX, 22), 9)
 	kinds := [...]string{"nodes", "list", "box", "pulse", "memory"}
@@ -520,10 +793,6 @@ func (shell *graphiteShell) drawRail(canvas *image.RGBA, layout shellLayout, pag
 	}
 	drawChevron(canvas, center(layout.railDisclosure), !shell.inspectorOpen, disclosureColor)
 	drawGear(canvas, image.Pt(centerX, shell.height-24), graphitePalette.dim)
-	if shell.inspectorOpen {
-		return shell.drawInspector(canvas, layout, page)
-	}
-	return nil
 }
 
 func (shell *graphiteShell) drawInspector(canvas *image.RGBA, layout shellLayout, page *browser.Page) error {

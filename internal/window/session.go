@@ -18,7 +18,7 @@ const maximumTasksPerPump = 4096
 // context is canceled. It serializes native UI access on the caller's OS
 // thread while Page tasks continue to own all DOM, script, and frame changes.
 func Run(ctx context.Context, page *browser.Page, backend Backend, title string) (result error) {
-	return runSession(ctx, page, backend, Config{Title: title}, nil, nil)
+	return runSession(ctx, page, backend, Config{Title: title}, nil, nil, nil)
 }
 
 // RunBrowser presents page inside Gossamer's browser-owned Graphite shell.
@@ -37,11 +37,19 @@ func RunBrowser(ctx context.Context, page *browser.Page, backend Backend, config
 	if title == "" {
 		title = "Gossamer"
 	}
-	result = runSession(ctx, page, backend, Config{Title: title}, shell, config.Startup)
+	result = runSession(ctx, page, backend, Config{Title: title}, shell, config.Startup, config.FrameTiming)
 	return errors.Join(result, shell.saveSession(context.WithoutCancel(ctx)))
 }
 
-func runSession(ctx context.Context, page *browser.Page, backend Backend, config Config, shell *graphiteShell, startupObserver StartupObserver) (result error) {
+func runSession(
+	ctx context.Context,
+	page *browser.Page,
+	backend Backend,
+	config Config,
+	shell *graphiteShell,
+	startupObserver StartupObserver,
+	frameObserver FrameTimingObserver,
+) (result error) {
 	if page == nil || page.Realm == nil {
 		return fmt.Errorf("window: nil page")
 	}
@@ -93,7 +101,23 @@ func runSession(ctx context.Context, page *browser.Page, backend Backend, config
 	var accessibilityRevision uint64
 	var accessibilityFrame *render.Frame
 	compositor := newSessionCompositor(nil)
+	defer func() { result = errors.Join(result, compositor.close()) }()
 	compositor.setDeviceScale(deviceScale)
+	var frameSequence uint64
+	var lastPresentedAt time.Time
+	var pendingFrameWorkStarted time.Time
+	observeFrame := func(timing FrameTiming) error {
+		if frameObserver == nil {
+			return nil
+		}
+		frameSequence++
+		timing.Sequence = frameSequence
+		if !lastPresentedAt.IsZero() {
+			timing.SincePrevious = timing.PresentedAt.Sub(lastPresentedAt)
+		}
+		lastPresentedAt = timing.PresentedAt
+		return frameObserver(timing)
+	}
 	if err := setPageDeviceScale(startupPage, deviceScale); err != nil {
 		return err
 	}
@@ -108,10 +132,25 @@ func runSession(ctx context.Context, page *browser.Page, backend Backend, config
 	if shell != nil {
 		shell.syncPage(activePage)
 	}
+	initialStarted := time.Time{}
+	if frameObserver != nil {
+		initialStarted = time.Now()
+	}
 	frame = activePage.Frame()
-	canvas, err := compositor.pageCanvas(activePage, frame)
+	rasterStarted := time.Time{}
+	if frameObserver != nil {
+		rasterStarted = time.Now()
+	}
+	pageRaster, err := compositor.pageCanvas(activePage, frame)
 	if err != nil {
 		return fmt.Errorf("window: rasterize initial frame: %w", err)
+	}
+	canvas := pageRaster.canvas
+	rasterDuration := time.Duration(0)
+	compositeStarted := time.Time{}
+	if frameObserver != nil {
+		rasterDuration = time.Since(rasterStarted)
+		compositeStarted = time.Now()
 	}
 	if shell != nil {
 		canvas, err = shell.composeAtScale(canvas, activePage, deviceScale)
@@ -119,8 +158,52 @@ func runSession(ctx context.Context, page *browser.Page, backend Backend, config
 			return fmt.Errorf("window: compose initial Graphite shell: %w", err)
 		}
 	}
+	compositeDuration := time.Duration(0)
+	presentStarted := time.Time{}
+	if frameObserver != nil {
+		compositeDuration = time.Since(compositeStarted)
+		presentStarted = time.Now()
+	}
 	if err := backend.Present(canvas); err != nil {
 		return fmt.Errorf("window: present initial frame: %w", err)
+	}
+	if frameObserver != nil {
+		presentedAt := time.Now()
+		if err := observeFrame(FrameTiming{
+			PresentedAt: presentedAt,
+			Raster:      rasterDuration, Composite: compositeDuration,
+			Present: presentedAt.Sub(presentStarted), Total: presentedAt.Sub(initialStarted),
+			PageChanged: true, ShellChanged: shell != nil,
+			IncrementalRaster: pageRaster.incremental, DamagePixels: uint64(maxInt(0, pageRaster.damagePixels)),
+			DamageRects:               uint64(maxInt(0, pageRaster.damageRects)),
+			PlannedDamagePixels:       uint64(maxInt(0, pageRaster.plannedDamagePixels)),
+			PlannedDamageRects:        uint64(maxInt(0, pageRaster.plannedDamageRects)),
+			PlannedScrollClipArea:     uint64(maxInt(0, pageRaster.plannedScrollClipArea)),
+			PlannedRawDamageRects:     uint64(maxInt(0, pageRaster.plannedRawDamageRects)),
+			PlannedExactDamagePixels:  uint64(maxInt(0, pageRaster.plannedExactDamagePixels)),
+			PlannedExactDamageRects:   uint64(maxInt(0, pageRaster.plannedExactDamageRects)),
+			PlannedDamageSource:       pageRaster.plannedDamageSource,
+			PlannedSourceDamagePixels: uint64(maxInt(0, pageRaster.plannedSourceDamagePixels)),
+			PlannedSourceDamageRects:  uint64(maxInt(0, pageRaster.plannedSourceDamageRects)),
+			PlannedScrollDeltaX:       int64(pageRaster.plannedScrollDeltaX),
+			PlannedScrollDeltaY:       int64(pageRaster.plannedScrollDeltaY),
+			PlannedScrollCommands:     uint64(maxInt(0, pageRaster.plannedScrollCommands)),
+			PlannedMovingCommands:     uint64(maxInt(0, pageRaster.plannedMovingCommands)),
+			RetainedUnderlay:          pageRaster.retainedUnderlay,
+			UnderlayCacheHit:          pageRaster.underlayCacheHit,
+			UnderlayCacheMiss:         pageRaster.underlayCacheMiss,
+			OverlaySuffixCommands:     uint64(maxInt(0, pageRaster.overlaySuffixCommands)),
+			OverlayRegions:            uint64(maxInt(0, pageRaster.overlayRegions)),
+			UnderlayCopyPixels:        uint64(maxInt(0, pageRaster.underlayCopyPixels)),
+			UnderlayBuild:             pageRaster.underlayBuild,
+			ScrollCopy:                pageRaster.scrollCopy,
+			DamageReplay:              pageRaster.damageReplay,
+			UnderlayCopy:              pageRaster.underlayCopy,
+			OverlayReplay:             pageRaster.overlayReplay,
+			RasterFallback:            pageRaster.fallback,
+		}); err != nil {
+			return fmt.Errorf("window: observe initial frame timing: %w", err)
+		}
 	}
 	presented = frame
 	if shell != nil {
@@ -131,6 +214,16 @@ func runSession(ctx context.Context, page *browser.Page, backend Backend, config
 	}
 
 	for {
+		iterationStarted := time.Time{}
+		tasksStarted := time.Time{}
+		if frameObserver != nil {
+			iterationStarted = pendingFrameWorkStarted
+			pendingFrameWorkStarted = time.Time{}
+			if iterationStarted.IsZero() {
+				iterationStarted = time.Now()
+			}
+			tasksStarted = iterationStarted
+		}
 		activePage = page
 		activeState := &state
 		pages := []*browser.Page{page}
@@ -148,12 +241,19 @@ func runSession(ctx context.Context, page *browser.Page, backend Backend, config
 			}
 		}
 		compositor.prune(pages)
+		yieldedActiveFrame := false
 		for _, currentPage := range pages {
 			var afterTask func() error
 			if currentPage == startupPage {
 				afterTask = func() error { return startup.observeNavigation(currentPage.Navigation()) }
 			}
-			if _, err := pumpPageTasksObserved(ctx, currentPage, afterTask); err != nil {
+			var stopAfterScrollRevision *uint64
+			if currentPage == activePage {
+				revision := currentPage.ScrollPresentationRevision()
+				stopAfterScrollRevision = &revision
+			}
+			_, yieldedFrame, err := pumpPageTasksObservedUntilScrollPresentation(ctx, currentPage, afterTask, stopAfterScrollRevision)
+			if err != nil {
 				if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 					return nil
 				}
@@ -163,6 +263,10 @@ func runSession(ctx context.Context, page *browser.Page, backend Backend, config
 				if err := startup.observeNavigation(currentPage.Navigation()); err != nil {
 					return fmt.Errorf("window: observe startup navigation: %w", err)
 				}
+			}
+			if yieldedFrame {
+				yieldedActiveFrame = true
+				break
 			}
 			if shell != nil && shell.checkpoint != nil {
 				if err := shell.checkpoint(currentPage); err != nil {
@@ -191,11 +295,28 @@ func runSession(ctx context.Context, page *browser.Page, backend Backend, config
 			accessibilityRevision = shell.revision
 			accessibilityFrame = frame
 		}
+		tasksDuration := time.Duration(0)
+		if frameObserver != nil {
+			tasksDuration = time.Since(tasksStarted)
+		}
 		shellChanged := shell != nil && shell.revision != presentedShellRevision
+		presentedDuringIteration := false
 		if frame != nil && (frame != presented || shellChanged) {
-			canvas, err := compositor.pageCanvas(activePage, frame)
+			pageChanged := frame != presented
+			rasterStarted := time.Time{}
+			if frameObserver != nil {
+				rasterStarted = time.Now()
+			}
+			pageRaster, err := compositor.pageCanvas(activePage, frame)
 			if err != nil {
 				return fmt.Errorf("window: rasterize frame: %w", err)
+			}
+			canvas := pageRaster.canvas
+			rasterDuration := time.Duration(0)
+			compositeStarted := time.Time{}
+			if frameObserver != nil {
+				rasterDuration = time.Since(rasterStarted)
+				compositeStarted = time.Now()
 			}
 			if shell != nil {
 				canvas, err = shell.composeAtScale(canvas, activePage, deviceScale)
@@ -203,18 +324,68 @@ func runSession(ctx context.Context, page *browser.Page, backend Backend, config
 					return fmt.Errorf("window: compose Graphite shell: %w", err)
 				}
 			}
+			compositeDuration := time.Duration(0)
+			presentStarted := time.Time{}
+			if frameObserver != nil {
+				compositeDuration = time.Since(compositeStarted)
+				presentStarted = time.Now()
+			}
 			if err := backend.Present(canvas); err != nil {
 				return fmt.Errorf("window: present frame: %w", err)
+			}
+			if frameObserver != nil {
+				presentedAt := time.Now()
+				if err := observeFrame(FrameTiming{
+					PresentedAt: presentedAt, Tasks: tasksDuration,
+					Raster: rasterDuration, Composite: compositeDuration,
+					Present: presentedAt.Sub(presentStarted), Total: presentedAt.Sub(iterationStarted),
+					PageChanged: pageChanged, ShellChanged: shellChanged, ScrollFrame: yieldedActiveFrame,
+					IncrementalRaster: pageRaster.incremental, DamagePixels: uint64(maxInt(0, pageRaster.damagePixels)),
+					DamageRects:               uint64(maxInt(0, pageRaster.damageRects)),
+					PlannedDamagePixels:       uint64(maxInt(0, pageRaster.plannedDamagePixels)),
+					PlannedDamageRects:        uint64(maxInt(0, pageRaster.plannedDamageRects)),
+					PlannedScrollClipArea:     uint64(maxInt(0, pageRaster.plannedScrollClipArea)),
+					PlannedRawDamageRects:     uint64(maxInt(0, pageRaster.plannedRawDamageRects)),
+					PlannedExactDamagePixels:  uint64(maxInt(0, pageRaster.plannedExactDamagePixels)),
+					PlannedExactDamageRects:   uint64(maxInt(0, pageRaster.plannedExactDamageRects)),
+					PlannedDamageSource:       pageRaster.plannedDamageSource,
+					PlannedSourceDamagePixels: uint64(maxInt(0, pageRaster.plannedSourceDamagePixels)),
+					PlannedSourceDamageRects:  uint64(maxInt(0, pageRaster.plannedSourceDamageRects)),
+					PlannedScrollDeltaX:       int64(pageRaster.plannedScrollDeltaX),
+					PlannedScrollDeltaY:       int64(pageRaster.plannedScrollDeltaY),
+					PlannedScrollCommands:     uint64(maxInt(0, pageRaster.plannedScrollCommands)),
+					PlannedMovingCommands:     uint64(maxInt(0, pageRaster.plannedMovingCommands)),
+					RetainedUnderlay:          pageRaster.retainedUnderlay,
+					UnderlayCacheHit:          pageRaster.underlayCacheHit,
+					UnderlayCacheMiss:         pageRaster.underlayCacheMiss,
+					OverlaySuffixCommands:     uint64(maxInt(0, pageRaster.overlaySuffixCommands)),
+					OverlayRegions:            uint64(maxInt(0, pageRaster.overlayRegions)),
+					UnderlayCopyPixels:        uint64(maxInt(0, pageRaster.underlayCopyPixels)),
+					UnderlayBuild:             pageRaster.underlayBuild,
+					ScrollCopy:                pageRaster.scrollCopy,
+					DamageReplay:              pageRaster.damageReplay,
+					UnderlayCopy:              pageRaster.underlayCopy,
+					OverlayReplay:             pageRaster.overlayReplay,
+					RasterFallback:            pageRaster.fallback,
+				}); err != nil {
+					return fmt.Errorf("window: observe frame timing: %w", err)
+				}
 			}
 			presented = frame
 			if shell != nil {
 				presentedShellRevision = shell.revision
 			}
+			presentedDuringIteration = true
 			if activePage == startupPage && frame != startupFrame && startupPage.Navigation().State == browser.NavigationComplete {
 				if err := startup.observe(StartupFirstContentPresent, startupPage.Navigation()); err != nil {
 					return fmt.Errorf("window: observe first content presentation: %w", err)
 				}
 			}
+		}
+		if yieldedActiveFrame && presentedDuringIteration {
+			// Let a newly rendered active-page frame reach the native window
+			// before draining follow-up listener and reconciliation tasks.
+			continue
 		}
 
 		event, err := backend.NextEvent(ctx)
@@ -226,6 +397,11 @@ func runSession(ctx context.Context, page *browser.Page, backend Backend, config
 		}
 		if event.Kind == EventClose {
 			return nil
+		}
+		if frameObserver != nil {
+			// Carry the admitted event's start into the next loop so synchronous
+			// input routing and page-task work are included in the presentation.
+			pendingFrameWorkStarted = time.Now()
 		}
 		if event.DeviceScaleFactor > 0 && event.DeviceScaleFactor != deviceScale {
 			if !finiteDeviceScale(event.DeviceScaleFactor) {
@@ -384,24 +560,37 @@ func pumpPageTasks(ctx context.Context, page *browser.Page) (int, error) {
 }
 
 func pumpPageTasksObserved(ctx context.Context, page *browser.Page, afterTask func() error) (int, error) {
+	count, _, err := pumpPageTasksObservedUntilScrollPresentation(ctx, page, afterTask, nil)
+	return count, err
+}
+
+func pumpPageTasksObservedUntilScrollPresentation(
+	ctx context.Context,
+	page *browser.Page,
+	afterTask func() error,
+	stopAfterRevision *uint64,
+) (int, bool, error) {
 	count := 0
 	for ; page.Realm.Tasks.Len() != 0; count++ {
 		if count >= maximumTasksPerPump {
-			return count, fmt.Errorf("window: page task pump exceeded %d tasks", maximumTasksPerPump)
+			return count, false, fmt.Errorf("window: page task pump exceeded %d tasks", maximumTasksPerPump)
 		}
 		if err := page.Realm.RunOne(ctx); err != nil {
-			return count, err
+			return count, false, err
 		}
 		if afterTask != nil {
 			if err := afterTask(); err != nil {
-				return count + 1, fmt.Errorf("window: observe page task: %w", err)
+				return count + 1, false, fmt.Errorf("window: observe page task: %w", err)
 			}
+		}
+		if stopAfterRevision != nil && page.ScrollPresentationRevision() != *stopAfterRevision {
+			return count + 1, true, nil
 		}
 	}
 	if _, err := page.CollectScriptMemoryAtCheckpoint(); err != nil {
-		return count, fmt.Errorf("window: collect script memory at task checkpoint: %w", err)
+		return count, false, fmt.Errorf("window: collect script memory at task checkpoint: %w", err)
 	}
-	return count, ctx.Err()
+	return count, false, ctx.Err()
 }
 
 func routeEvent(page *browser.Page, event Event, state *inputState) error {

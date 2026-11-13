@@ -46,6 +46,9 @@ type ShellConfig struct {
 	// Checkpoint observes a Page after its task queue is drained and any
 	// engine-owned deterministic collection has completed.
 	Checkpoint func(*browser.Page) error
+	// FrameTiming observes optional stage timings for each native presentation.
+	// It receives value-only records and is disabled when nil.
+	FrameTiming FrameTimingObserver
 }
 
 type shellLayout struct {
@@ -161,6 +164,7 @@ type graphiteShell struct {
 	suppressedKeys map[string]bool
 	scrollbarDrag  shellScrollbarDrag
 	revision       uint64
+	chromeCache    graphiteChromeCache
 }
 
 func newGraphiteShell(page *browser.Page, config ShellConfig) (*graphiteShell, error) {

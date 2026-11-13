@@ -34,7 +34,9 @@ type cachedDocumentState struct {
 	timeOrigin       time.Time
 	lastFrameTime    float64
 	frame            *render.Frame
+	frameTransforms  map[*dom.Node]render.VisualTransform
 	frameGeneration  DocumentGeneration
+	paint            paintState
 	computedStyle    computedStyleState
 	styleRevision    uint64
 	layout           layoutState
@@ -99,7 +101,8 @@ func (page *Page) captureCurrentDocumentLocked() *cachedDocumentState {
 		scrollX: page.scrollX, scrollY: page.scrollY,
 		elementScroll: cloneElementScroll(page.elementScroll),
 		timeOrigin:    page.timeOrigin, lastFrameTime: page.lastFrameTime,
-		frame: page.frame, frameGeneration: page.frameGeneration,
+		frame: page.frame, frameTransforms: page.frameTransforms,
+		frameGeneration: page.frameGeneration, paint: page.paint,
 		computedStyle: page.computedStyle, styleRevision: page.styleRevision,
 		layout: page.layout, layoutRevision: page.layoutRevision,
 		dirty: page.dirty, renderedVersion: page.renderedVersion,
@@ -299,7 +302,9 @@ func (page *Page) restoreBackForwardCacheDocument(
 	page.timeOrigin = restored.timeOrigin
 	page.lastFrameTime = restored.lastFrameTime
 	page.frame = restored.frame
+	page.frameTransforms = restored.frameTransforms
 	page.frameGeneration = restored.frameGeneration
+	page.paint = restored.paint
 	page.computedStyle = restored.computedStyle
 	page.styleRevision = restored.styleRevision
 	page.layout = restored.layout

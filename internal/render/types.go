@@ -5,6 +5,7 @@ import (
 	"image"
 	"image/color"
 	"math"
+	"sync/atomic"
 
 	"github.com/JediWattson/gossamer/internal/css"
 	"github.com/JediWattson/gossamer/internal/dom"
@@ -436,6 +437,31 @@ type Frame struct {
 	ComputedStyles *computed.Snapshot
 	DisplayList    DisplayList
 	Fonts          []WebFontFace
+	paintArtifact  PaintArtifactID
+}
+
+// PaintArtifactID identifies one immutable ordered set of paint operations.
+// Visual scroll projections preserve the ID; rebuilding paint or composing a
+// child frame creates a new one. Zero identifies synthetic or unstamped frames
+// and is never eligible for retained framebuffer reuse.
+type PaintArtifactID uint64
+
+var paintArtifactSequence atomic.Uint64
+
+func newPaintArtifactID() PaintArtifactID {
+	for {
+		if id := PaintArtifactID(paintArtifactSequence.Add(1)); id != 0 {
+			return id
+		}
+	}
+}
+
+// PaintArtifactID returns the immutable paint identity carried by frame.
+func (frame *Frame) PaintArtifactID() PaintArtifactID {
+	if frame == nil {
+		return 0
+	}
+	return frame.paintArtifact
 }
 
 // EmbedFrame returns a shallow parent-frame copy whose display list contains
@@ -447,6 +473,7 @@ func EmbedFrame(parent, child *Frame, bounds Rect) *Frame {
 		return parent
 	}
 	result := *parent
+	result.paintArtifact = newPaintArtifactID()
 	result.DisplayList = parent.DisplayList
 	result.DisplayList.Commands = make([]Command, 0, len(parent.DisplayList.Commands)+len(child.DisplayList.Commands)+2)
 	result.DisplayList.Commands = append(result.DisplayList.Commands, parent.DisplayList.Commands...)

@@ -87,6 +87,68 @@ opening a desktop window:
 GOCACHE=/tmp/gossamer-go-cache tools/v8/window.sh --check -count=1
 ```
 
+The native launcher can write a value-only JSONL frame trace for either engine:
+
+```sh
+GOCACHE=/tmp/gossamer-go-cache go run ./cmd/gossamer-window \
+  --engine=strand --frame-profile=/tmp/gossamer-frames.jsonl \
+  https://example.com
+```
+
+For a repeatable non-interactive scroll sample, retain the same shell,
+compositor, device-scale, and input path while replacing manual gestures with
+a bounded sequence:
+
+```sh
+GOCACHE=/tmp/gossamer-go-cache go run ./cmd/gossamer-window \
+  --engine=strand --frame-profile=/tmp/gossamer-scroll.jsonl \
+  --profile-scroll-count=20 --profile-device-scale=2 \
+  https://example.com
+```
+
+The profiler waits for navigation completion plus the configured warmup,
+scrolls at the content center, and closes after the final presentation.
+
+Each presentation records task, page-raster, Graphite-composite, native-present,
+total-work, and inter-frame durations in nanoseconds. A 60 Hz frame budget is
+16.67 milliseconds. `scroll_frame` distinguishes the compositor-style frame
+published before ordered scroll listeners from later listener reconciliation;
+`incremental_raster`, `damage_pixels`, `damage_rects`, and `raster_fallback`
+show whether that frame reused its retained page pixels, how much of the
+changing underlay prefix it repaired, how fragmented that repair was, or why it
+safely fell back to a full raster. On the retained-underlay path,
+`damage_pixels` does not include the separate underlay copy or stationary
+overlay replay work.
+On a fallback, `planned_damage_pixels`, `planned_damage_rects`, and
+`planned_scroll_clip_area` retain the rejected conservative plan.
+`planned_raw_damage_rects`, `planned_exact_damage_pixels`, and
+`planned_exact_damage_rects` also report the unmerged inputs and their exact
+geometric union, so a profile can distinguish real damage, fragmentation, and
+area introduced by conservative merging. `planned_damage_source` and its
+source pixel/rectangle counts identify the largest exact contributor class.
+The planned scroll delta and moving/scroll command counts reveal when one
+outlier motion was mistaken for the dominant scroll.
+`retained_underlay` means that the update used the separate scrolling-base
+path; it does not merely report whether a base is resident.
+`underlay_cache_hit` says whether that update reused the base, while
+`underlay_cache_miss` is empty on a hit and otherwise reports `empty`, `bounds`,
+`frame`, `scale`, or `boundary`. These fields remain false or empty when the
+path was not attempted. `underlay_copy_pixels` reports the base-to-visible
+framebuffer copy separately. `overlay_suffix_commands` and `overlay_regions`
+describe the stationary suffix and its disjoint replay components.
+`underlay_build_ns`, `scroll_copy_ns`, `damage_replay_ns`, `underlay_copy_ns`,
+and `overlay_replay_ns` divide retained raster time into the phases used for
+profile-driven optimization.
+
+Retained scrolling trades bounded memory for frame time: at most one extra
+device-sized RGBA underlay is held by the session rasterizer, plus independent
+8 MiB caps for rounded-shape coverage and effect-layer paint caches. The latter
+shares its budget between pre-opacity RGBA layers and byte-exact 16-bit
+premultiplied transform samples. The session's `Close` releases those buffers
+and its lazy replay workers.
+Profiling output is buffered so the trace itself does not add one file write to
+every frame.
+
 The stock-V8 conformance tests drive Graphite resize, translated pointer,
 click, focus, keyboard editing, scroll, blur, tab creation, switching,
 navigation, and closure through `MemoryBackend`. They check JavaScript event
@@ -104,5 +166,6 @@ and composition foundations, and an engine/kernel telemetry rail. It does not
 yet have author-defined scrollbar styling or layout-affecting scrollbar chrome,
 clipboard DOM events or `navigator.clipboard`, complete marked-text candidate
 UI, touch, drag-and-drop, accessibility tree, GPU compositor, or non-macOS
-backend. Event polling and CPU rasterization are intentionally serial until
-correctness and profiling establish where concurrency is valuable.
+backend. Event polling remains serial. Exact disjoint damage and stationary
+overlay components use bounded CPU replay workers; ambiguous paint groups stay
+on a conservative single-region path.

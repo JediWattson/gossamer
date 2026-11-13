@@ -64,7 +64,10 @@ type Page struct {
 	nextAnimationFrame  AnimationFrameID
 	animationFrames     map[AnimationFrameID]*pageAnimationFrame
 	frame               *render.Frame
+	frameTransforms     map[*dom.Node]render.VisualTransform
 	frameGeneration     DocumentGeneration
+	scrollPresentation  uint64
+	paint               paintState
 	computedStyle       computedStyleState
 	styleRevision       uint64
 	layout              layoutState
@@ -108,6 +111,17 @@ type layoutState struct {
 	layoutRevision   uint64
 	mutationSequence uint64
 	incremental      bool
+}
+
+// paintState retains the document-space display list independently of live
+// root and element scroll offsets. A scroll-only render can project this base
+// frame without rebuilding paint commands from the unchanged DOM and layout.
+type paintState struct {
+	frame           *render.Frame
+	document        DocumentGeneration
+	documentVersion uint64
+	styleRevision   uint64
+	layoutRevision  uint64
 }
 
 func newPage(
@@ -296,6 +310,20 @@ func (page *Page) Frame() *render.Frame {
 	frame := page.frame
 	page.mutex.RUnlock()
 	return frame
+}
+
+// ScrollPresentationRevision advances only when a pure-scroll render has
+// published pixels ahead of its ordered scroll event. Window sessions use it
+// to yield at that explicit compositor boundary without exposing intermediate
+// frames from unrelated mutation, navigation, or animation tasks.
+func (page *Page) ScrollPresentationRevision() uint64 {
+	if page == nil {
+		return 0
+	}
+	page.mutex.RLock()
+	revision := page.scrollPresentation
+	page.mutex.RUnlock()
+	return revision
 }
 
 func (page *Page) Dirty() bool {
@@ -555,6 +583,14 @@ func (page *Page) QueueRender() (browserruntime.TaskID, error) {
 }
 
 func (page *Page) queueRenderFromTask(context *browserruntime.TaskContext) error {
+	return page.queueRenderFromTaskWithCause(context, false)
+}
+
+func (page *Page) queueScrollRenderFromTask(context *browserruntime.TaskContext) error {
+	return page.queueRenderFromTaskWithCause(context, true)
+}
+
+func (page *Page) queueRenderFromTaskWithCause(context *browserruntime.TaskContext, scrollPresentation bool) error {
 	page.mutex.RLock()
 	generation := page.documentGeneration
 	page.mutex.RUnlock()
@@ -569,6 +605,9 @@ func (page *Page) queueRenderFromTask(context *browserruntime.TaskContext) error
 			return nil
 		}
 		renderErr := page.renderLocked(true)
+		if renderErr == nil && scrollPresentation {
+			page.scrollPresentation++
+		}
 		page.mutex.Unlock()
 		if renderErr != nil {
 			return renderErr
@@ -598,6 +637,9 @@ func (page *Page) Close() error {
 	page.documentCancel = nil
 	page.documentContext = nil
 	page.frame = nil
+	page.frameTransforms = nil
+	page.frameGeneration = 0
+	page.paint = paintState{}
 	page.resources = pageResources{}
 	page.scrollX = 0
 	page.scrollY = 0
@@ -655,6 +697,14 @@ func (page *Page) renderLocked(onlyIfDirty bool) error {
 	if _, err := page.syncStylesheetsLocked(); err != nil {
 		return err
 	}
+	if onlyIfDirty && page.paint.frame != nil &&
+		page.paint.document == page.documentGeneration &&
+		page.paint.documentVersion == page.document.Version() &&
+		page.paint.styleRevision == page.styleRevision &&
+		page.paint.layoutRevision == page.layoutRevision {
+		page.publishPaintFrameLocked(page.paint.frame, page.paint.documentVersion)
+		return nil
+	}
 	resources := page.resources.rendererResources(page.document, page.script != nil, page.viewport)
 	var frame *render.Frame
 	var renderedVersion uint64
@@ -687,14 +737,26 @@ func (page *Page) renderLocked(onlyIfDirty bool) error {
 	if err != nil {
 		return err
 	}
+	page.paint = paintState{
+		frame: frame, document: page.documentGeneration, documentVersion: renderedVersion,
+		styleRevision: page.styleRevision, layoutRevision: page.layoutRevision,
+	}
+	page.publishPaintFrameLocked(frame, renderedVersion)
+	if len(backgroundRequests) > 0 && page.resourceFetcher != nil && page.documentContext != nil {
+		go page.loadDynamicImages(page.documentContext, page.documentGeneration, page.resourceFetcher, backgroundRequests)
+	}
+	return nil
+}
+
+func (page *Page) publishPaintFrameLocked(frame *render.Frame, renderedVersion uint64) {
 	transforms := page.visualTransformsLocked(frame)
-	page.frame = render.TransformDisplayList(frame, transforms)
+	published := render.TransformDisplayList(frame, transforms)
 	for nodeID, child := range page.children {
 		childFrame := child.Frame()
-		if childFrame == nil || page.frame.Layout == nil {
+		if childFrame == nil || published.Layout == nil {
 			continue
 		}
-		geometry, ok := page.frame.Layout.GeometryID(nodeID)
+		geometry, ok := published.Layout.GeometryID(nodeID)
 		if !ok {
 			continue
 		}
@@ -708,15 +770,16 @@ func (page *Page) renderLocked(onlyIfDirty bool) error {
 				}
 			}
 		}
-		page.frame = render.EmbedFrame(page.frame, childFrame, bounds)
+		published = render.EmbedFrame(published, childFrame, bounds)
 	}
+	// The transform map is immutable after publication and belongs to this
+	// exact frame projection. Publish both while holding Page.mutex so input
+	// can never observe new scroll transforms paired with older pixels.
+	page.frame = published
+	page.frameTransforms = transforms
 	page.frameGeneration = page.documentGeneration
 	page.renderedVersion = renderedVersion
 	page.dirty = false
-	if len(backgroundRequests) > 0 && page.resourceFetcher != nil && page.documentContext != nil {
-		go page.loadDynamicImages(page.documentContext, page.documentGeneration, page.resourceFetcher, backgroundRequests)
-	}
-	return nil
 }
 
 func intersectBrowserRects(left, right render.Rect) render.Rect {

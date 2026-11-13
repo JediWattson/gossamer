@@ -7,6 +7,7 @@ import (
 	"io"
 	"math"
 	"sort"
+	"sync"
 
 	"github.com/JediWattson/gossamer/internal/dom"
 	computed "github.com/JediWattson/gossamer/internal/style"
@@ -332,6 +333,7 @@ func frameFromLayout(document *dom.Node, layout *LayoutSnapshot) *Frame {
 		ComputedStyles: layout.computedStyles,
 		DisplayList:    displayList,
 		Fonts:          layout.fonts,
+		paintArtifact:  newPaintArtifactID(),
 	}
 }
 
@@ -1173,6 +1175,116 @@ func findElement(root *dom.Node, name string) *dom.Node {
 	return nil
 }
 
+// FrameRasterizer replays immutable frames while retaining parsed font faces,
+// a scrolling underlay, bounded paint caches, and lazy overlay workers across
+// presentations. Calls and Close are serialized so one rasterizer is safe to
+// keep at a session boundary even when presentation and teardown race. A zero
+// FrameRasterizer is ready for use.
+type FrameRasterizer struct {
+	mutex           sync.Mutex
+	fonts           *fontBook
+	fontSet         []webFontIdentity
+	scrollBase      *image.RGBA
+	scrollBaseFrame *Frame
+	scrollBaseScale float64
+	scrollBaseStart int
+	scrollOverlay   retainedOverlayIdentity
+	overlayPaint    rasterOverlayPaintCache
+	overlayJobs     chan overlayReplayJob
+	overlayResults  chan overlayReplayResult
+	overlayWorkers  sync.WaitGroup
+	closed          bool
+}
+
+// NewFrameRasterizer creates a reusable frame painter. Call Close when its
+// session ends so retained fonts, framebuffers, paint caches, and workers can
+// release their resources.
+func NewFrameRasterizer() *FrameRasterizer {
+	return &FrameRasterizer{}
+}
+
+// Rasterize paints a frame at one device pixel per CSS pixel.
+func (rasterizer *FrameRasterizer) Rasterize(frame *Frame) (*image.RGBA, error) {
+	return rasterizer.RasterizeAtScale(frame, 1)
+}
+
+// RasterizeAtScale paints CSS-pixel display-list geometry into a device-pixel
+// image and retains compatible font faces for the next frame.
+func (rasterizer *FrameRasterizer) RasterizeAtScale(frame *Frame, scale float64) (*image.RGBA, error) {
+	if rasterizer == nil {
+		return nil, fmt.Errorf("render: nil frame rasterizer")
+	}
+	if frame == nil {
+		return nil, fmt.Errorf("render: nil frame")
+	}
+	viewport, err := scaledViewport(frame.DisplayList.Viewport, scale)
+	if err != nil {
+		return nil, err
+	}
+
+	rasterizer.mutex.Lock()
+	defer rasterizer.mutex.Unlock()
+	if rasterizer.closed {
+		return nil, fmt.Errorf("render: frame rasterizer is closed")
+	}
+	if err := rasterizer.prepareFontsLocked(frame.Fonts); err != nil {
+		return nil, err
+	}
+	return rasterizer.rasterizeFullFrameLocked(frame, scale, viewport)
+}
+
+func (rasterizer *FrameRasterizer) prepareFontsLocked(frameFonts []WebFontFace) error {
+	if rasterizer.fonts == nil || !sameWebFonts(rasterizer.fontSet, frameFonts) {
+		fonts, err := newFontBook(frameFonts)
+		if err != nil {
+			return err
+		}
+		previous := rasterizer.fonts
+		rasterizer.fonts = fonts
+		rasterizer.fontSet = snapshotWebFonts(frameFonts)
+		rasterizer.scrollBase = nil
+		rasterizer.scrollBaseFrame = nil
+		rasterizer.scrollBaseScale = 0
+		// Cached opacity layers can contain glyphs rendered through the old
+		// font book. Rounded coverage shares the same bounded cache owner and
+		// is cheap to rebuild when a document's immutable font set changes.
+		rasterizer.overlayPaint.clear()
+		if previous != nil {
+			if err := previous.Close(); err != nil {
+				return fmt.Errorf("render: replace retained fonts: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
+// Close releases all retained font faces. It is safe to call more than once.
+func (rasterizer *FrameRasterizer) Close() error {
+	if rasterizer == nil {
+		return nil
+	}
+	rasterizer.mutex.Lock()
+	defer rasterizer.mutex.Unlock()
+	if rasterizer.closed {
+		return nil
+	}
+	rasterizer.closed = true
+	fonts := rasterizer.fonts
+	rasterizer.fonts = nil
+	rasterizer.fontSet = nil
+	rasterizer.scrollBase = nil
+	rasterizer.scrollBaseFrame = nil
+	rasterizer.scrollBaseScale = 0
+	rasterizer.scrollBaseStart = 0
+	rasterizer.scrollOverlay = retainedOverlayIdentity{}
+	rasterizer.overlayPaint.clear()
+	rasterizer.closeOverlayWorkersLocked()
+	if fonts != nil {
+		return fonts.Close()
+	}
+	return nil
+}
+
 // Rasterize paints a frame to an in-memory image. Window backends can instead
 // consume Frame.DisplayList directly.
 func Rasterize(frame *Frame) (*image.RGBA, error) {
@@ -1181,12 +1293,13 @@ func Rasterize(frame *Frame) (*image.RGBA, error) {
 
 // RasterizeAtScale paints CSS-pixel display-list geometry into a device-pixel
 // image. Layout and hit testing remain in CSS pixels; only this final immutable
-// paint projection is scaled for a high-density presentation surface.
+// paint projection is scaled for a high-density presentation surface. Use a
+// FrameRasterizer when painting multiple frames in one session.
 func RasterizeAtScale(frame *Frame, scale float64) (*image.RGBA, error) {
 	if frame == nil {
 		return nil, fmt.Errorf("render: nil frame")
 	}
-	displayList, err := scaledDisplayList(frame.DisplayList, scale)
+	viewport, err := scaledViewport(frame.DisplayList.Viewport, scale)
 	if err != nil {
 		return nil, err
 	}
@@ -1195,5 +1308,5 @@ func RasterizeAtScale(frame *Frame, scale float64) (*image.RGBA, error) {
 		return nil, err
 	}
 	defer fonts.Close()
-	return rasterize(displayList, fonts)
+	return rasterizeAtScale(frame.DisplayList, fonts, scale, viewport)
 }

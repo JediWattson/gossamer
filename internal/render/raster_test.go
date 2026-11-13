@@ -1,10 +1,15 @@
 package render
 
 import (
+	"fmt"
 	"image"
 	"image/color"
+	"image/draw"
 	"strings"
 	"testing"
+
+	xdraw "golang.org/x/image/draw"
+	"golang.org/x/image/math/f64"
 )
 
 func TestRasterizeAtScaleKeepsCSSGeometryAndProducesDevicePixels(t *testing.T) {
@@ -44,6 +49,225 @@ func TestCommandScratchBoundsUsesClipIntersection(t *testing.T) {
 	if got, want := commandScratchBounds(command, image.Rect(0, 0, 800, 600)), image.Rect(30, 10, 50, 25); got != want {
 		t.Fatalf("scratch bounds = %v, want %v", got, want)
 	}
+}
+
+func TestVectorPaintBoundsTightenToVisibleShapePixels(t *testing.T) {
+	t.Parallel()
+
+	shape := Rect{X: 721.25, Y: 413.75, Width: 31.5, Height: 18.25}
+	if got, want := vectorPaintBounds(image.Rect(100, 200, 1300, 1000), shape), image.Rect(721, 413, 753, 432); got != want {
+		t.Fatalf("vector paint bounds = %v, want %v", got, want)
+	}
+	if got, want := vectorPaintBounds(image.Rect(730, 420, 740, 428), shape), image.Rect(730, 420, 740, 428); got != want {
+		t.Fatalf("clipped vector paint bounds = %v, want %v", got, want)
+	}
+	if got := vectorPaintBounds(image.Rect(0, 0, 20, 20), shape); !got.Empty() {
+		t.Fatalf("offscreen vector paint bounds = %v, want empty", got)
+	}
+	tight := image.Rect(721, 413, 753, 432)
+	if got, want := newShapeRasterizer(tight, image.Rect(100, 200, 1300, 1000)).Size(), (image.Point{X: 513, Y: 19}); got != want {
+		t.Fatalf("large-target rasterizer size = %v, want %v", got, want)
+	}
+	if got, want := newShapeRasterizer(tight, image.Rect(700, 400, 800, 500)).Size(), tight.Size(); got != want {
+		t.Fatalf("small-target rasterizer size = %v, want %v", got, want)
+	}
+}
+
+func TestTightVectorRasterizationMatchesFullTargetPixels(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		clip  image.Rectangle
+		paint func(target draw.Image, tight bool)
+	}{
+		{
+			name: "fractional ellipse on non-zero canvas",
+			clip: image.Rect(100, 200, 1300, 1000),
+			paint: func(target draw.Image, tight bool) {
+				rectangle := Rect{X: 721.25, Y: 413.75, Width: 31.5, Height: 18.25}
+				fill := color.NRGBA{R: 0xe4, G: 0x61, B: 0x8d, A: 0xb7}
+				if tight {
+					paintEllipse(target, rectangle, fill)
+				} else {
+					paintEllipseWithin(target, rectangle, fill, target.Bounds())
+				}
+			},
+		},
+		{
+			name: "rounded rectangle through subimage clip",
+			clip: image.Rect(714, 410, 744, 429),
+			paint: func(target draw.Image, tight bool) {
+				rectangle := Rect{X: 708.5, Y: 404.25, Width: 48.75, Height: 32.5}
+				radii := CornerRadii{
+					TopLeft: CornerRadius{X: 11.25, Y: 8.5}, TopRight: CornerRadius{X: 7.5, Y: 12.25},
+					BottomRight: CornerRadius{X: 13.25, Y: 6.75}, BottomLeft: CornerRadius{X: 4.5, Y: 9.25},
+				}
+				fill := color.NRGBA{R: 0x37, G: 0xb8, B: 0x73, A: 0xcf}
+				if tight {
+					paintRoundedRect(target, rectangle, radii, fill)
+				} else {
+					paintRoundedRectWithin(target, rectangle, radii, fill, target.Bounds())
+				}
+			},
+		},
+		{
+			name: "fractional rounded rectangle on non-zero canvas",
+			clip: image.Rect(100, 200, 1300, 1000),
+			paint: func(target draw.Image, tight bool) {
+				rectangle := Rect{X: 811.375, Y: 602.625, Width: 43.25, Height: 27.5}
+				radii := CornerRadii{
+					TopLeft: CornerRadius{X: 9.5, Y: 7.25}, TopRight: CornerRadius{X: 4.75, Y: 10.5},
+					BottomRight: CornerRadius{X: 12.25, Y: 5.5}, BottomLeft: CornerRadius{X: 6.5, Y: 8.75},
+				}
+				fill := color.NRGBA{R: 0x37, G: 0xb8, B: 0x73, A: 0xcf}
+				if tight {
+					paintRoundedRect(target, rectangle, radii, fill)
+				} else {
+					paintRoundedRectWithin(target, rectangle, radii, fill, target.Bounds())
+				}
+			},
+		},
+	}
+
+	canvasBounds := image.Rect(100, 200, 1300, 1000)
+	background := image.NewUniform(color.NRGBA{R: 0x19, G: 0x2d, B: 0x4a, A: 0xd3})
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			tight := image.NewRGBA(canvasBounds)
+			full := image.NewRGBA(canvasBounds)
+			draw.Draw(tight, canvasBounds, background, image.Point{}, draw.Src)
+			draw.Draw(full, canvasBounds, background, image.Point{}, draw.Src)
+			test.paint(tight.SubImage(test.clip).(*image.RGBA), true)
+			test.paint(full.SubImage(test.clip).(*image.RGBA), false)
+			assertRGBAEqual(t, tight, full)
+		})
+	}
+}
+
+func TestVectorDamageCropPreservesStableLayerOrigin(t *testing.T) {
+	t.Parallel()
+
+	layerBounds := image.Rect(7, 6, 113, 100)
+	damageBounds := image.Rect(5, 59, 115, 86).Intersect(layerBounds)
+	background := image.NewUniform(color.NRGBA{R: 0x19, G: 0x2d, B: 0x4a, A: 0xd3})
+	tests := []struct {
+		name  string
+		paint func(draw.Image)
+	}{
+		{
+			name: "rounded rectangle",
+			paint: func(target draw.Image) {
+				paintRoundedRectWithMode(target, Rect{X: 7, Y: 6, Width: 106, Height: 78}, CornerRadii{
+					TopLeft: CornerRadius{X: 14, Y: 12}, TopRight: CornerRadius{X: 10, Y: 16},
+					BottomRight: CornerRadius{X: 16, Y: 11}, BottomLeft: CornerRadius{X: 12, Y: 15},
+				}, color.NRGBA{R: 0x34, G: 0x42, B: 0x5c, A: 0xff}, layerBounds)
+			},
+		},
+		{
+			name: "fractional ellipse",
+			paint: func(target draw.Image) {
+				paintEllipseWithMode(target, Rect{X: 23.25, Y: 28.5, Width: 67.5, Height: 52.75}, color.NRGBA{R: 0xd8, G: 0x78, B: 0x49, A: 0xc9}, layerBounds)
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			reference := image.NewRGBA(layerBounds)
+			actual := image.NewRGBA(layerBounds)
+			draw.Draw(reference, layerBounds, background, image.Point{}, draw.Src)
+			draw.Draw(actual, layerBounds, background, image.Point{}, draw.Src)
+			test.paint(reference)
+			test.paint(actual.SubImage(damageBounds).(*image.RGBA))
+			assertRGBARegionEqual(t, actual, reference, damageBounds)
+		})
+	}
+}
+
+func TestRoundedAlphaDamageCropPreservesStableLayerOrigin(t *testing.T) {
+	t.Parallel()
+
+	layerBounds := image.Rect(7, 6, 113, 100)
+	damageBounds := image.Rect(5, 59, 115, 86).Intersect(layerBounds)
+	rectangle := Rect{X: 7, Y: 6, Width: 106, Height: 78}
+	radii := CornerRadii{
+		TopLeft: CornerRadius{X: 14, Y: 12}, TopRight: CornerRadius{X: 10, Y: 16},
+		BottomRight: CornerRadius{X: 16, Y: 11}, BottomLeft: CornerRadius{X: 12, Y: 15},
+	}
+	reference := image.NewAlpha(layerBounds)
+	actual := image.NewAlpha(layerBounds)
+	background := image.NewUniform(color.Alpha{A: 0x35})
+	draw.Draw(reference, layerBounds, background, image.Point{}, draw.Src)
+	draw.Draw(actual, layerBounds, background, image.Point{}, draw.Src)
+	paintRoundedRectWithMode(reference, rectangle, radii, color.NRGBA{A: 0xc7}, layerBounds)
+	paintRoundedRectWithMode(actual.SubImage(damageBounds).(*image.Alpha), rectangle, radii, color.NRGBA{A: 0xc7}, layerBounds)
+	for y := damageBounds.Min.Y; y < damageBounds.Max.Y; y++ {
+		for x := damageBounds.Min.X; x < damageBounds.Max.X; x++ {
+			if got, want := actual.AlphaAt(x, y), reference.AlphaAt(x, y); got != want {
+				t.Fatalf("alpha at (%d,%d) = %#v, want %#v", x, y, got, want)
+			}
+		}
+	}
+}
+
+func TestRoundedRectAlphaMaskPreservesFullTargetPixels(t *testing.T) {
+	t.Parallel()
+
+	bounds := image.Rect(300, 400, 1500, 1200)
+	rectangle := Rect{X: 811.375, Y: 602.625, Width: 43.25, Height: 27.5}
+	radii := CornerRadii{
+		TopLeft: CornerRadius{X: 9.5, Y: 7.25}, TopRight: CornerRadius{X: 4.75, Y: 10.5},
+		BottomRight: CornerRadius{X: 12.25, Y: 5.5}, BottomLeft: CornerRadius{X: 6.5, Y: 8.75},
+	}
+	tight := image.NewAlpha(bounds)
+	full := image.NewAlpha(bounds)
+	paintRoundedRect(tight, rectangle, radii, color.NRGBA{A: 0xc7})
+	paintRoundedRectWithin(full, rectangle, radii, color.NRGBA{A: 0xc7}, full.Bounds())
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			if got, want := tight.AlphaAt(x, y), full.AlphaAt(x, y); got != want {
+				t.Fatalf("alpha at (%d,%d) = %#v, want %#v", x, y, got, want)
+			}
+		}
+	}
+}
+
+func BenchmarkPaintTightVectorShapes(b *testing.B) {
+	canvas := image.NewRGBA(image.Rect(0, 0, 1920, 1080))
+	b.Run("rounded rectangle", func(b *testing.B) {
+		rectangle := Rect{X: 900.25, Y: 500.75, Width: 48.5, Height: 28.25}
+		radii := CornerRadii{
+			TopLeft: CornerRadius{X: 8, Y: 8}, TopRight: CornerRadius{X: 8, Y: 8},
+			BottomRight: CornerRadius{X: 8, Y: 8}, BottomLeft: CornerRadius{X: 8, Y: 8},
+		}
+		b.Run("tight", func(b *testing.B) {
+			b.ReportAllocs()
+			for range b.N {
+				paintRoundedRect(canvas, rectangle, radii, opaqueWhite)
+			}
+		})
+		b.Run("full target baseline", func(b *testing.B) {
+			b.ReportAllocs()
+			for range b.N {
+				paintRoundedRectWithin(canvas, rectangle, radii, opaqueWhite, canvas.Bounds())
+			}
+		})
+	})
+	b.Run("ellipse", func(b *testing.B) {
+		rectangle := Rect{X: 900.25, Y: 500.75, Width: 32.5, Height: 32.5}
+		b.Run("tight", func(b *testing.B) {
+			b.ReportAllocs()
+			for range b.N {
+				paintEllipse(canvas, rectangle, opaqueWhite)
+			}
+		})
+		b.Run("full target baseline", func(b *testing.B) {
+			b.ReportAllocs()
+			for range b.N {
+				paintEllipseWithin(canvas, rectangle, opaqueWhite, canvas.Bounds())
+			}
+		})
+	})
 }
 
 func TestRasterizeCompositesOpacityAsAGroup(t *testing.T) {
@@ -272,7 +496,117 @@ func TestRasterizeUprightTextBudgetsFailBeforeDrawing(t *testing.T) {
 	}
 }
 
+func TestDrawRGBAOpacityOverMatchesDrawMask(t *testing.T) {
+	t.Parallel()
+	bounds := image.Rect(3, 5, 29, 18)
+	destination := image.NewRGBA(bounds)
+	source := image.NewRGBA(bounds)
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			destination.SetRGBA(x, y, color.RGBA{
+				R: uint8((x*7 + y*3) % 96), G: uint8((x*5 + y*11) % 128),
+				B: uint8((x*13 + y) % 160), A: 191,
+			})
+			source.SetRGBA(x, y, color.RGBA{
+				R: uint8((x*3 + y*5) % 128), G: uint8((x + y*7) % 96),
+				B: uint8((x*9 + y*3) % 144), A: 173,
+			})
+		}
+	}
+
+	for _, alpha := range []uint8{0, 1, 63, 127, 242, 254, 255} {
+		alpha := alpha
+		t.Run(fmt.Sprintf("alpha_%d", alpha), func(t *testing.T) {
+			got := cloneRGBA(destination)
+			want := cloneRGBA(destination)
+			drawRGBAOpacityOver(got, bounds, source, bounds.Min, alpha)
+			draw.DrawMask(want, bounds, source, bounds.Min, image.NewUniform(color.Alpha{A: alpha}), bounds.Min, draw.Over)
+			assertRGBAEqual(t, got, want)
+		})
+	}
+}
+
+func TestCachedRGBA64TransformSamplesMatchDirectApproxBiLinearOver(t *testing.T) {
+	t.Parallel()
+
+	sourceBounds := image.Rect(7, 5, 43, 31)
+	destinationBounds := image.Rect(0, 0, 96, 80)
+	source := image.NewRGBA(sourceBounds)
+	background := image.NewRGBA(destinationBounds)
+	for y := sourceBounds.Min.Y; y < sourceBounds.Max.Y; y++ {
+		for x := sourceBounds.Min.X; x < sourceBounds.Max.X; x++ {
+			alpha := uint8(40 + (x*17+y*29)%216)
+			source.SetRGBA(x, y, color.RGBA{
+				R: uint8((x*11 + y*7) % (int(alpha) + 1)),
+				G: uint8((x*5 + y*13) % (int(alpha) + 1)),
+				B: uint8((x*19 + y*3) % (int(alpha) + 1)), A: alpha,
+			})
+		}
+	}
+	for y := destinationBounds.Min.Y; y < destinationBounds.Max.Y; y++ {
+		for x := destinationBounds.Min.X; x < destinationBounds.Max.X; x++ {
+			alpha := uint8(80 + (x*23+y*31)%176)
+			background.SetRGBA(x, y, color.RGBA{
+				R: uint8((x*7 + y*17) % (int(alpha) + 1)),
+				G: uint8((x*3 + y*11) % (int(alpha) + 1)),
+				B: uint8((x*13 + y*5) % (int(alpha) + 1)), A: alpha,
+			})
+		}
+	}
+	transforms := []AffineTransform{
+		{A: 1, D: 1, E: 18.25, F: 13.5},
+		{A: 0.93, B: 0.21, C: -0.17, D: 1.04, E: 24.75, F: 8.125},
+		{A: 1.22, B: -0.08, C: 0.14, D: 0.81, E: 11.375, F: 20.625},
+	}
+	for _, transform := range transforms {
+		matrix := f64.Aff3{
+			transform.A, transform.C, transform.E,
+			transform.B, transform.D, transform.F,
+		}
+		cacheBounds := expandDamageRect(transformedGroupBounds(sourceBounds, transform), 2).Intersect(destinationBounds)
+		cached := image.NewRGBA64(cacheBounds)
+		xdraw.ApproxBiLinear.Transform(cached, matrix, source, source.Bounds(), draw.Src, nil)
+		for _, crop := range []image.Rectangle{
+			destinationBounds,
+			image.Rect(9, 7, 71, 59),
+			image.Rect(35, 18, 88, 73),
+		} {
+			direct := cloneRGBA(background)
+			xdraw.ApproxBiLinear.Transform(direct.SubImage(crop).(*image.RGBA), matrix, source, source.Bounds(), draw.Over, nil)
+			got := cloneRGBA(background)
+			drawRGBA64Over(got.SubImage(crop).(*image.RGBA), cached)
+			assertRGBAEqual(t, got, direct)
+		}
+	}
+}
+
 func withinOne(got, want uint8) bool {
 	difference := int(got) - int(want)
 	return difference >= -1 && difference <= 1
+}
+
+func assertRGBAEqual(t *testing.T, got, want *image.RGBA) {
+	t.Helper()
+	if got.Bounds() != want.Bounds() {
+		t.Fatalf("image bounds = %v, want %v", got.Bounds(), want.Bounds())
+	}
+	bounds := got.Bounds()
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			if gotPixel, wantPixel := got.RGBAAt(x, y), want.RGBAAt(x, y); gotPixel != wantPixel {
+				t.Fatalf("pixel at (%d,%d) = %#v, want %#v", x, y, gotPixel, wantPixel)
+			}
+		}
+	}
+}
+
+func assertRGBARegionEqual(t *testing.T, got, want *image.RGBA, bounds image.Rectangle) {
+	t.Helper()
+	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
+		for x := bounds.Min.X; x < bounds.Max.X; x++ {
+			if gotPixel, wantPixel := got.RGBAAt(x, y), want.RGBAAt(x, y); gotPixel != wantPixel {
+				t.Fatalf("pixel at (%d,%d) = %#v, want %#v", x, y, gotPixel, wantPixel)
+			}
+		}
+	}
 }
