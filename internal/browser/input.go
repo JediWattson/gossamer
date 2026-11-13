@@ -395,6 +395,7 @@ type taskHost struct {
 	animationRequested bool
 	resized            bool
 	styleChanged       bool
+	canvasChanged      bool
 	followupQueued     bool
 	autoRender         bool
 }
@@ -437,6 +438,8 @@ func (host *taskHost) RuntimeTaskContext() *browserruntime.TaskContext {
 var _ DOMComputedStyleHost = (*taskHost)(nil)
 var _ DOMMutationObserverHost = (*taskHost)(nil)
 var _ DOMGeometryHost = (*taskHost)(nil)
+var _ DOMImageHost = (*taskHost)(nil)
+var _ DOMCanvasHost = (*taskHost)(nil)
 var _ AnimationFrameHost = (*taskHost)(nil)
 var _ SessionHistoryHost = (*taskHost)(nil)
 var _ NativeTaskHost = (*taskHost)(nil)
@@ -2175,8 +2178,8 @@ func (host *taskHost) finish() error {
 			err = errors.Join(err, fmt.Errorf("browser: synchronize child frames: %w", syncErr))
 		}
 	}
-	shouldRender := host.mutated || host.scrolled || host.resized || host.styleChanged
-	if host.followupQueued && host.styleChanged && !host.mutated && !host.scrolled && !host.resized {
+	shouldRender := host.mutated || host.scrolled || host.resized || host.styleChanged || host.canvasChanged
+	if host.followupQueued && host.styleChanged && !host.mutated && !host.scrolled && !host.resized && !host.canvasChanged {
 		shouldRender = false
 	}
 	// Publish a pure scroll offset before dispatching the ordered scroll event.
@@ -2185,7 +2188,7 @@ func (host *taskHost) finish() error {
 	// single-threaded host the same responsive boundary. Listener mutations
 	// still queue and publish their own later render through eventHost.finish.
 	renderQueued := false
-	pureScroll := host.scrolled && !host.mutated && !host.resized && !host.styleChanged
+	pureScroll := host.scrolled && !host.mutated && !host.resized && !host.styleChanged && !host.canvasChanged
 	if host.autoRender && pureScroll && shouldRender {
 		if queueErr := host.page.queueScrollRenderFromTask(host.task); queueErr != nil {
 			err = errors.Join(err, fmt.Errorf("browser: queue scroll render: %w", queueErr))

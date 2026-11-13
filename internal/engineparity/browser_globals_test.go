@@ -45,8 +45,12 @@ if (!wide.matches || wide.media !== "screen and (min-width: 800px) and (orientat
 const script = document.createElement("script");
 const video = document.createElement("video");
 const image = new Image();
+const canvas = document.createElement("canvas");
+const ctx2d = canvas.getContext("2d");
 if (!(document.head instanceof HTMLHeadElement) || !(script instanceof HTMLScriptElement) ||
     !(video instanceof HTMLMediaElement) || !(image instanceof Image) || !(image instanceof HTMLImageElement) ||
+    !(canvas instanceof HTMLCanvasElement) || !(ctx2d instanceof CanvasRenderingContext2D) ||
+    typeof ImageData !== "function" || canvas.width !== 300 || canvas.height !== 150 ||
     image.localName !== "img" || HTMLMediaElement.HAVE_METADATA !== 1 || video.HAVE_ENOUGH_DATA !== 4) {
   throw new Error("specialized HTML interface parity failed");
 }

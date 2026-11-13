@@ -490,7 +490,7 @@ func projectPseudoStyle(
 	pseudo css.PseudoElement,
 	lookup func(*dom.Node, css.PseudoElement) (computedStyle, bool),
 ) *styledNode {
-	if origin == nil || origin.Type != dom.ElementNode || origin.Data == "img" || origin.Data == "iframe" {
+	if origin == nil || origin.Type != dom.ElementNode || origin.Data == "img" || origin.Data == "iframe" || dom.IsHTMLCanvas(origin) {
 		return nil
 	}
 	value, ok := lookup(origin, pseudo)

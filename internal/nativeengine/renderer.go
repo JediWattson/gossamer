@@ -117,7 +117,7 @@ func (realm *Realm) facadeRecord(context *browserruntime.TaskContext, object mem
 		return memory.HostObject{}, false, err
 	}
 	switch record.Class {
-	case hostClassClassList, hostClassDataset, hostClassStyle, hostClassComputedStyle, hostClassFormElements, hostClassSelectOptions, hostClassLocation:
+	case hostClassClassList, hostClassDataset, hostClassStyle, hostClassComputedStyle, hostClassFormElements, hostClassSelectOptions, hostClassLocation, hostClassCanvas2D:
 		return record, true, nil
 	default:
 		return memory.HostObject{}, false, nil
@@ -242,6 +242,9 @@ func (realm *Realm) facadePropertySet(context *browserruntime.TaskContext, objec
 			return true, fmt.Errorf("nativeengine: browser host does not expose location")
 		}
 		return true, host.SetLocationComponent(component, text)
+	}
+	if record.Class == hostClassCanvas2D {
+		return false, nil
 	}
 	handle := browser.NodeHandle{Document: browser.DocumentGeneration(record.Scope), Node: dom.NodeID(record.Identity)}
 	if record.Class == hostClassFormElements || record.Class == hostClassSelectOptions {

@@ -50,6 +50,7 @@ type Node struct {
 	Parent          *Node
 	Children        []*Node
 	Control         *ControlState
+	Canvas          *CanvasState
 	TemplateContent *Node
 	ShadowRoot      *Node
 	ShadowHost      *Node

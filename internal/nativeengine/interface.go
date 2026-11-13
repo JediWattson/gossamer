@@ -79,6 +79,7 @@ func (realm *Realm) newDOMInterfaces(context *browserruntime.TaskContext, bindin
 		{"HTMLDialogElement", &bindings.htmlDialogElementPrototype},
 		{"HTMLMediaElement", &bindings.htmlMediaElementPrototype},
 		{"HTMLImageElement", &bindings.htmlImageElementPrototype},
+		{"HTMLCanvasElement", &bindings.htmlCanvasElementPrototype},
 	} {
 		if err := add(definition.name, bindings.htmlElementPrototype, definition.destination); err != nil {
 			return nil, err
@@ -171,6 +172,8 @@ func (bindings *browserBindings) prototypeForNode(metadata browser.NodeMetadata)
 			return bindings.htmlMediaElementPrototype, nil
 		case "img":
 			return bindings.htmlImageElementPrototype, nil
+		case "canvas":
+			return bindings.htmlCanvasElementPrototype, nil
 		default:
 			return bindings.htmlElementPrototype, nil
 		}

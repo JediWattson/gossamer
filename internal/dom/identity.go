@@ -1060,16 +1060,29 @@ func (document *Document) SetAttribute(id NodeID, name, value string) error {
 			continue
 		}
 		if node.Attributes[index].Value == value {
+			if IsHTMLCanvas(node) && (name == "width" || name == "height") {
+				resetCanvasLocked(node)
+				document.recordStateMutationLocked(node, "canvas")
+				document.version.Add(1)
+			}
 			return nil
 		}
 		oldValue := node.Attributes[index].Value
 		node.Attributes[index].Value = value
 		document.recordAttributeMutationLocked(node, name, oldValue, true)
+		if IsHTMLCanvas(node) && (name == "width" || name == "height") {
+			resetCanvasLocked(node)
+			document.recordStateMutationLocked(node, "canvas")
+		}
 		document.version.Add(1)
 		return nil
 	}
 	node.Attributes = append(node.Attributes, Attribute{Name: name, Value: value})
 	document.recordAttributeMutationLocked(node, name, "", false)
+	if IsHTMLCanvas(node) && (name == "width" || name == "height") {
+		resetCanvasLocked(node)
+		document.recordStateMutationLocked(node, "canvas")
+	}
 	document.version.Add(1)
 	return nil
 }
@@ -1097,6 +1110,10 @@ func (document *Document) RemoveAttribute(id NodeID, name string) error {
 		node.Attributes[len(node.Attributes)-1] = Attribute{}
 		node.Attributes = node.Attributes[:len(node.Attributes)-1]
 		document.recordAttributeMutationLocked(node, name, oldValue, true)
+		if IsHTMLCanvas(node) && (name == "width" || name == "height") {
+			resetCanvasLocked(node)
+			document.recordStateMutationLocked(node, "canvas")
+		}
 		document.version.Add(1)
 		return nil
 	}

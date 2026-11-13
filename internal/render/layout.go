@@ -349,7 +349,7 @@ func (context *layoutContext) blockGeneratesOwnContent(node *styledNode) bool {
 		return true
 	}
 	return isReplacedElement(node.node) && (node.node.Data == "iframe" || isSVGElement(node.node) ||
-		context.images[node.node] != nil || hasExplicitImageDimensions(node.style))
+		dom.IsHTMLCanvas(node.node) || context.images[node.node] != nil || hasExplicitImageDimensions(node.style))
 }
 
 func (context *layoutContext) layoutBlock(node *styledNode, containingX, contentY, availableWidth float64, containingHeight *float64) (*Box, error) {
@@ -466,6 +466,9 @@ func (context *layoutContext) layoutBlockSizedWithSubgrid(node *styledNode, cont
 	}
 	if isReplacedElement(node.node) {
 		decoded := context.images[node.node]
+		if decoded == nil && dom.IsHTMLCanvas(node.node) {
+			decoded = node.node.CanvasImage()
+		}
 		imageWidth, imageHeight, ok := context.replacedDimensions(node.node, style, decoded, availableWidth, containingHeight, horizontalInsets, verticalInsets)
 		if !ok {
 			box := &Box{
@@ -1886,6 +1889,9 @@ func (context *layoutContext) layoutInlineTokens(tokens []inlineToken, directChi
 		} else if token.replaced {
 			var ok bool
 			replacedImage = token.image
+			if replacedImage == nil && dom.IsHTMLCanvas(token.node) {
+				replacedImage = token.node.CanvasImage()
+			}
 			imageWidth, imageHeight, ok = context.replacedDimensions(token.node, token.style, replacedImage, width, containingHeight, 0, 0)
 			if !ok {
 				continue
@@ -2453,6 +2459,13 @@ func (context *layoutContext) replacedDimensions(node *dom.Node, style computedS
 		hasNaturalSize = true
 	} else if !hasNaturalSize && isSVGElement(node) {
 		naturalWidth, naturalHeight, hasNaturalSize = svgIntrinsicDimensions(node)
+	} else if !hasNaturalSize && dom.IsHTMLCanvas(node) {
+		cw, ch, ok := node.CanvasDimensions()
+		if ok {
+			naturalWidth = float64(cw)
+			naturalHeight = float64(ch)
+			hasNaturalSize = naturalWidth > 0 && naturalHeight > 0
+		}
 	}
 
 	widthSpecified := style.Width().Unit() != lengthAuto
@@ -2612,7 +2625,7 @@ type inlineTokenBuilder struct {
 
 func isReplacedElement(node *dom.Node) bool {
 	return node != nil && node.Type == dom.ElementNode &&
-		((node.NamespaceURI == dom.HTMLNamespace && (node.Data == "img" || node.Data == "iframe")) ||
+		((node.NamespaceURI == dom.HTMLNamespace && (node.Data == "img" || node.Data == "iframe" || node.Data == "canvas")) ||
 			isSVGElement(node))
 }
 
@@ -2663,7 +2676,7 @@ func (builder *inlineTokenBuilder) addAligned(node *styledNode, inheritedOpacity
 	}
 	if isReplacedElement(node.node) {
 		decoded := builder.images[node.node]
-		if node.node.Data == "iframe" || isSVGElement(node.node) || decoded != nil || hasExplicitImageDimensions(node.style) {
+		if node.node.Data == "iframe" || isSVGElement(node.node) || dom.IsHTMLCanvas(node.node) || decoded != nil || hasExplicitImageDimensions(node.style) {
 			leadingSpace := builder.pendingSpace && builder.hasContent
 			builder.tokens = append(builder.tokens, inlineToken{
 				node:          node.node,

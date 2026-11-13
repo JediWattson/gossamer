@@ -1,6 +1,7 @@
 package browser
 
 import (
+	"image"
 	"net/http"
 	"time"
 
@@ -716,6 +717,15 @@ type DOMImageMetrics struct {
 // intrinsic pixel dimensions to script bindings without exposing image buffers.
 type DOMImageHost interface {
 	ImageMetrics(NodeHandle) (DOMImageMetrics, error)
+}
+
+// DOMCanvasHost exposes HTML <canvas> backing bitmap dimensions and mutations
+// to script bindings while keeping DOM storage synchronization in the browser.
+type DOMCanvasHost interface {
+	CanvasSize(NodeHandle) (width, height int, revision uint64, err error)
+	SetCanvasDimension(handle NodeHandle, name, value string) (width, height int, revision uint64, err error)
+	ReadCanvas(NodeHandle, func(width, height int, revision uint64, bitmap *image.RGBA)) error
+	MutateCanvas(NodeHandle, func(width, height int, bitmap *image.RGBA) bool) (revision uint64, err error)
 }
 
 // DOMMutationObserverHost exposes the document-owned mutation journal to a

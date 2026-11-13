@@ -104,6 +104,7 @@ type Realm struct {
 	nextMutationObserver         uint64
 	resizeObservers              map[uint64]*resizeObserverState
 	nextResizeObserver           uint64
+	canvas2DStates               map[browser.NodeHandle]*canvas2DState
 	collectedWrappers            []browser.NodeHandle
 	listeners                    map[eventListenerKey][]eventListener
 	listenerTargets              map[eventTargetID]uint64

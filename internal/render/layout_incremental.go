@@ -181,11 +181,16 @@ func layoutMutationRecordsNeutral(
 				return false
 			}
 			name := lowerASCIIAttribute(record.AttributeName)
-			if directLayoutAttribute(name) || previous.GeneratedContentDependsOnAttribute(name) ||
+			if directLayoutAttribute(name) ||
+				(dom.IsHTMLCanvas(node) && (name == "width" || name == "height")) ||
+				previous.GeneratedContentDependsOnAttribute(name) ||
 				current.GeneratedContentDependsOnAttribute(name) {
 				return false
 			}
 		case dom.MutationState:
+			if record.StateName == "canvas" {
+				return false
+			}
 			// Native state reaches layout only through computed properties in the
 			// currently implemented form-control rendering model.
 			continue

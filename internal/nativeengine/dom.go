@@ -225,6 +225,7 @@ const (
 	hostClassSelectOptions
 	hostClassLocation
 	hostClassResizeObserver
+	hostClassCanvas2D
 )
 
 const (
@@ -249,6 +250,11 @@ const (
 	bindingHTMLDialogElementPrototype      = "\x00gossamer.html-dialog-element.prototype"
 	bindingHTMLMediaElementPrototype       = "\x00gossamer.html-media-element.prototype"
 	bindingHTMLImageElementPrototype       = "\x00gossamer.html-image-element.prototype"
+	bindingHTMLCanvasElementPrototype      = "\x00gossamer.html-canvas-element.prototype"
+	bindingCanvasRenderingContext2DProto   = "\x00gossamer.canvas-rendering-context-2d.prototype"
+	bindingCanvasRenderingContext2DCtor    = "\x00gossamer.canvas-rendering-context-2d.constructor"
+	bindingImageDataPrototype              = "\x00gossamer.image-data.prototype"
+	bindingImageDataConstructor            = "\x00gossamer.image-data.constructor"
 	bindingHTMLCollectionPrototype         = "\x00gossamer.html-collection.prototype"
 	bindingTemplatePrototype               = "\x00gossamer.template.prototype"
 	bindingTextPrototype                   = "\x00gossamer.text.prototype"
@@ -335,6 +341,11 @@ type browserBindings struct {
 	htmlDialogElementPrototype      memory.Ref
 	htmlMediaElementPrototype       memory.Ref
 	htmlImageElementPrototype       memory.Ref
+	htmlCanvasElementPrototype      memory.Ref
+	canvas2DPrototype               memory.Ref
+	canvas2DConstructor             memory.Ref
+	imageDataPrototype              memory.Ref
+	imageDataConstructor            memory.Ref
 	htmlCollectionPrototype         memory.Ref
 	templatePrototype               memory.Ref
 	textPrototype                   memory.Ref
@@ -856,6 +867,7 @@ func (realm *Realm) installBrowserNatives() error {
 			nativeRegistration{id: spec.nativeFrom, callback: realm.typedArrayFromFor(spec)},
 		)
 	}
+	registrations = append(registrations, realm.canvasNativeRegistrations()...)
 	for _, registration := range registrations {
 		if err := realm.interpreter.RegisterNative(registration.id, registration.callback); err != nil {
 			return err
@@ -902,6 +914,11 @@ func (realm *Realm) prepareBrowserBindingsLocked(context *browserruntime.TaskCon
 			{bindingHTMLDialogElementPrototype, &bindings.htmlDialogElementPrototype},
 			{bindingHTMLMediaElementPrototype, &bindings.htmlMediaElementPrototype},
 			{bindingHTMLImageElementPrototype, &bindings.htmlImageElementPrototype},
+			{bindingHTMLCanvasElementPrototype, &bindings.htmlCanvasElementPrototype},
+			{bindingCanvasRenderingContext2DProto, &bindings.canvas2DPrototype},
+			{bindingCanvasRenderingContext2DCtor, &bindings.canvas2DConstructor},
+			{bindingImageDataPrototype, &bindings.imageDataPrototype},
+			{bindingImageDataConstructor, &bindings.imageDataConstructor},
 			{bindingHTMLCollectionPrototype, &bindings.htmlCollectionPrototype},
 			{bindingTemplatePrototype, &bindings.templatePrototype},
 			{bindingTextPrototype, &bindings.textPrototype},
@@ -1155,6 +1172,18 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 	if err != nil {
 		return err
 	}
+	bindings.canvas2DConstructor, err = realm.newDOMInterfaceConstructor(context, "CanvasRenderingContext2D", realm.active.ObjectPrototype)
+	if err != nil {
+		return err
+	}
+	bindings.canvas2DPrototype, err = constructorPrototype(context, bindings.canvas2DConstructor, "CanvasRenderingContext2D")
+	if err != nil {
+		return err
+	}
+	bindings.imageDataConstructor, bindings.imageDataPrototype, err = realm.newImageDataConstructor(context)
+	if err != nil {
+		return err
+	}
 	realm.bindings = bindings
 	if err := realm.installDOMPrototypeProperties(context); err != nil {
 		return err
@@ -1377,6 +1406,8 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{"getSelection", memory.RefValue(getSelection)},
 		{"Range", memory.RefValue(rangeConstructor)},
 		{"Selection", memory.RefValue(selectionConstructor)},
+		{"CanvasRenderingContext2D", memory.RefValue(bindings.canvas2DConstructor)},
+		{"ImageData", memory.RefValue(bindings.imageDataConstructor)},
 	}
 	for _, spec := range typedArraySpecs {
 		windowProperties = append(windowProperties, struct {
@@ -1421,6 +1452,11 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{bindingHTMLDialogElementPrototype, bindings.htmlDialogElementPrototype, false},
 		{bindingHTMLMediaElementPrototype, bindings.htmlMediaElementPrototype, false},
 		{bindingHTMLImageElementPrototype, bindings.htmlImageElementPrototype, false},
+		{bindingHTMLCanvasElementPrototype, bindings.htmlCanvasElementPrototype, false},
+		{bindingCanvasRenderingContext2DProto, bindings.canvas2DPrototype, false},
+		{bindingCanvasRenderingContext2DCtor, bindings.canvas2DConstructor, false},
+		{bindingImageDataPrototype, bindings.imageDataPrototype, false},
+		{bindingImageDataConstructor, bindings.imageDataConstructor, false},
 		{bindingHTMLCollectionPrototype, bindings.htmlCollectionPrototype, false},
 		{bindingTemplatePrototype, bindings.templatePrototype, false},
 		{bindingTextPrototype, bindings.textPrototype, false},
@@ -1513,6 +1549,8 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{"URL", bindings.urlConstructor, true},
 		{"TextEncoder", bindings.textEncoderConstructor, true},
 		{"TextDecoder", bindings.textDecoderConstructor, true},
+		{"CanvasRenderingContext2D", bindings.canvas2DConstructor, true},
+		{"ImageData", bindings.imageDataConstructor, true},
 		{"ArrayBuffer", bindings.arrayBufferConstructor, true},
 		{"Headers", bindings.headersConstructor, true},
 		{"Request", bindings.requestConstructor, true},
@@ -1923,7 +1961,7 @@ func (realm *Realm) installDOMPrototypeProperties(context *browserruntime.TaskCo
 			return err
 		}
 	}
-	return nil
+	return realm.installCanvasPrototypeProperties(context)
 }
 
 func (realm *Realm) installHTMLCollectionIteration(context *browserruntime.TaskContext) error {
