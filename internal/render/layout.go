@@ -842,12 +842,9 @@ type flexLayoutItem struct {
 }
 
 func (context *layoutContext) layoutFlexContainer(node *styledNode, box *Box, contentWidth float64, definiteHeight *float64) (float64, error) {
-	items := make([]flexLayoutItem, 0, len(node.children))
-	for index, child := range node.children {
-		if child.generated || child.node == nil || child.node.Type != dom.ElementNode ||
-			child.style.Display() == displayNone || isOutOfFlow(child.style.Position()) {
-			continue
-		}
+	childNodes := collectFlexChildNodes(node)
+	items := make([]flexLayoutItem, 0, len(childNodes))
+	for index, child := range childNodes {
 		items = append(items, flexLayoutItem{node: child, originalIndex: index})
 	}
 	sort.SliceStable(items, func(left, right int) bool {
@@ -1383,7 +1380,10 @@ func (context *layoutContext) layoutPositionedDescendants(root *styledNode, root
 			}
 			staticY := usedContainingBlock.Y + resolveLength(node.style.MarginTop(), usedContainingBlock.Width, context.viewport, 0)
 			containingHeight := usedContainingBlock.Height
-			forcedWidth, overrides := context.outOfFlowInsetOverrides(node.style, usedContainingBlock)
+			forcedWidth, overrides, err := context.outOfFlowInsetOverrides(node, usedContainingBlock)
+			if err != nil {
+				return err
+			}
 			positioned, err := context.layoutBlockSizedWithSubgrid(node, usedContainingBlock.X, staticY, usedContainingBlock.Width, &containingHeight, forcedWidth, false, nil, overrides)
 			if err != nil {
 				return err
@@ -1414,21 +1414,42 @@ func (context *layoutContext) layoutPositionedDescendants(root *styledNode, root
 	return visit(root, rootBox, viewport)
 }
 
-func (context *layoutContext) outOfFlowInsetOverrides(style computedStyle, containingBlock Rect) (*float64, blockLayoutOverrides) {
+func (context *layoutContext) outOfFlowInsetOverrides(node *styledNode, containingBlock Rect) (*float64, blockLayoutOverrides, error) {
+	style := node.style
 	padding := context.resolvePadding(style, containingBlock.Width)
 	border := context.resolveBorder(style, containingBlock.Width)
 	horizontalInsets := padding.Left + padding.Right + border.Left + border.Right
 	verticalInsets := padding.Top + padding.Bottom + border.Top + border.Bottom
 
 	var forcedWidth *float64
-	if style.Width().Unit() == lengthAuto && style.Left().Unit() != lengthAuto && style.Right().Unit() != lengthAuto {
+	if style.Width().Unit() == lengthAuto {
+		leftAuto := style.Left().Unit() == lengthAuto
+		rightAuto := style.Right().Unit() == lengthAuto
 		leftPx := resolveLength(style.Left(), containingBlock.Width, context.viewport, 0)
 		rightPx := resolveLength(style.Right(), containingBlock.Width, context.viewport, 0)
 		marginLeft := resolveLength(style.MarginLeft(), containingBlock.Width, context.viewport, 0)
 		marginRight := resolveLength(style.MarginRight(), containingBlock.Width, context.viewport, 0)
-		contentWidth := math.Max(0, containingBlock.Width-leftPx-rightPx-marginLeft-marginRight-horizontalInsets)
-		contentWidth = context.constrainWidth(style, contentWidth, containingBlock.Width, horizontalInsets)
-		forcedWidth = &contentWidth
+		if !leftAuto && !rightAuto {
+			contentWidth := math.Max(0, containingBlock.Width-leftPx-rightPx-marginLeft-marginRight-horizontalInsets)
+			contentWidth = context.constrainWidth(style, contentWidth, containingBlock.Width, horizontalInsets)
+			forcedWidth = &contentWidth
+		} else if !isReplacedElement(node.node) && (style.verticalLayout() || style.WritingMode() == writingModeHorizontalTB) {
+			intrinsic, err := context.intrinsicContentWidths(node, containingBlock.Width)
+			if err != nil {
+				return nil, blockLayoutOverrides{}, err
+			}
+			availableInset := 0.0
+			if !leftAuto {
+				availableInset += leftPx
+			}
+			if !rightAuto {
+				availableInset += rightPx
+			}
+			availableContent := math.Max(0, containingBlock.Width-availableInset-marginLeft-marginRight-horizontalInsets)
+			contentWidth := math.Min(math.Max(intrinsic.minimum, availableContent), intrinsic.preferred)
+			contentWidth = context.constrainWidth(style, contentWidth, containingBlock.Width, horizontalInsets)
+			forcedWidth = &contentWidth
+		}
 	}
 
 	var overrides blockLayoutOverrides
@@ -1443,7 +1464,7 @@ func (context *layoutContext) outOfFlowInsetOverrides(style computedStyle, conta
 		overrides.forceContentHeight = &contentHeight
 	}
 
-	return forcedWidth, overrides
+	return forcedWidth, overrides, nil
 }
 
 func positionOutOfFlowBox(box *Box, style computedStyle, containingBlock Rect, viewport Viewport) {
@@ -2252,14 +2273,68 @@ func (context *layoutContext) intrinsicInlineWidths(nodes []*styledNode, availab
 	return result, nil
 }
 
-func (context *layoutContext) intrinsicFlexContentWidths(node *styledNode, availableWidth float64) (intrinsicWidths, error) {
-	var result intrinsicWidths
-	count := 0
-	row := node.style.FlexDirection() == computed.FlexDirectionRow || node.style.FlexDirection() == computed.FlexDirectionRowReverse
+func collectFlexChildNodes(node *styledNode) []*styledNode {
+	if node == nil {
+		return nil
+	}
+	items := make([]*styledNode, 0, len(node.children))
+	var textRun []*styledNode
+	flushTextRun := func() {
+		if len(textRun) == 0 {
+			return
+		}
+		if flexTextRunHasContent(textRun) {
+			runChildren := make([]*styledNode, len(textRun))
+			copy(runChildren, textRun)
+			items = append(items, &styledNode{
+				style:    runChildren[0].style,
+				children: runChildren,
+			})
+		}
+		textRun = textRun[:0]
+	}
 	for _, child := range node.children {
 		if child == nil || child.generated || child.style.Display() == displayNone || isOutOfFlow(child.style.Position()) {
 			continue
 		}
+		if child.node != nil && child.node.Type == dom.TextNode {
+			textRun = append(textRun, child)
+			continue
+		}
+		if child.node == nil || child.node.Type != dom.ElementNode {
+			continue
+		}
+		flushTextRun()
+		items = append(items, child)
+	}
+	flushTextRun()
+	return items
+}
+
+func flexTextRunHasContent(run []*styledNode) bool {
+	for _, candidate := range run {
+		if candidate == nil || candidate.node == nil {
+			continue
+		}
+		switch candidate.style.WhiteSpace() {
+		case whiteSpacePre, whiteSpacePreWrap, whiteSpaceBreak:
+			if candidate.node.Data != "" {
+				return true
+			}
+		default:
+			if strings.TrimSpace(candidate.node.Data) != "" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (context *layoutContext) intrinsicFlexContentWidths(node *styledNode, availableWidth float64) (intrinsicWidths, error) {
+	var result intrinsicWidths
+	children := collectFlexChildNodes(node)
+	row := node.style.FlexDirection() == computed.FlexDirectionRow || node.style.FlexDirection() == computed.FlexDirectionRowReverse
+	for _, child := range children {
 		measured, err := context.intrinsicOuterWidths(child, availableWidth)
 		if err != nil {
 			return intrinsicWidths{}, err
@@ -2271,11 +2346,10 @@ func (context *layoutContext) intrinsicFlexContentWidths(node *styledNode, avail
 			result.minimum = math.Max(result.minimum, measured.minimum)
 			result.preferred = math.Max(result.preferred, measured.preferred)
 		}
-		count++
 	}
-	if row && count > 1 {
+	if row && len(children) > 1 {
 		gap := math.Max(0, resolveLength(node.style.ColumnGap(), availableWidth, context.viewport, 0))
-		result.preferred += float64(count-1) * gap
+		result.preferred += float64(len(children)-1) * gap
 	}
 	if result.preferred < result.minimum {
 		result.preferred = result.minimum

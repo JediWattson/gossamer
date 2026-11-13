@@ -131,3 +131,32 @@ func TestFlexItemsHonorAlignSelfOverrides(t *testing.T) {
 	assertNear(t, "row flex align-self end", row.Bounds.Y, 80)
 	assertNear(t, "column flex align-self end", column.Bounds.X, 80)
 }
+
+func TestFlexContainerRendersDirectTextNodesAndIgnoresWhitespaceRuns(t *testing.T) {
+	t.Parallel()
+
+	document, err := htmlparser.Parse(strings.NewReader(`<!doctype html><html><body style="margin:0">
+		<div id="centered" style="display:flex;align-items:center;justify-content:center;width:128px;height:36px">0:00 / 0:07</div>
+		<div id="gapped" style="display:flex;gap:10px;width:200px">
+			<div id="first" style="width:20px;height:10px"></div>
+			<div id="second" style="width:20px;height:10px"></div>
+		</div>
+	</body></html>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame, err := render.Render(document, render.Viewport{Width: 240, Height: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fragment := findTextFragment(collectTextFragments(frame.Root), "0:00 / 0:07")
+	if fragment == nil {
+		t.Fatal("direct text inside flex container was not laid out or painted")
+	}
+	if fragment.X <= 0 || fragment.X+fragment.Width >= 128 {
+		t.Fatalf("centered flex text X=%v width=%v, want horizontally centered within 128px", fragment.X, fragment.Width)
+	}
+	first, _ := frame.Layout.Geometry(findStaticPageElementByID(document, "first"))
+	second, _ := frame.Layout.Geometry(findStaticPageElementByID(document, "second"))
+	assertNear(t, "whitespace-only text node must not insert extra gap item", second.Bounds.X, first.Bounds.X+first.Bounds.Width+10)
+}

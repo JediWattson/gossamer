@@ -125,3 +125,39 @@ func TestPositionedLayoutSizesAutoBoxFromInsetsAndPropagatesPercentHeight(t *tes
 		t.Fatalf("footer y = %v, want 250", got)
 	}
 }
+
+func TestPositionedLayoutShrinksAutoWidthWithSingleInset(t *testing.T) {
+	t.Parallel()
+
+	document, err := htmlparser.Parse(strings.NewReader(`<!doctype html><html><body style="margin:0">
+		<div style="display:block;position:relative;width:400px;height:120px">
+			<div id="right" style="display:block;position:absolute;right:4px;bottom:4px">
+				<div style="display:block;width:48px;height:48px"></div>
+			</div>
+			<div id="left" style="display:block;position:absolute;left:4px;top:4px">
+				<div style="display:block;width:48px;height:48px"></div>
+			</div>
+		</div>
+	</body></html>`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame, err := render.Render(document, render.Viewport{Width: 400, Height: 120})
+	if err != nil {
+		t.Fatal(err)
+	}
+	right, ok := frame.Layout.Geometry(findStaticPageElementByID(document, "right"))
+	if !ok {
+		t.Fatal("right element has no layout geometry")
+	}
+	if right.Bounds != (render.Rect{X: 348, Y: 68, Width: 48, Height: 48}) {
+		t.Fatalf("right bounds = %#v, want {X:348, Y:68, Width:48, Height:48}", right.Bounds)
+	}
+	left, ok := frame.Layout.Geometry(findStaticPageElementByID(document, "left"))
+	if !ok {
+		t.Fatal("left element has no layout geometry")
+	}
+	if left.Bounds != (render.Rect{X: 4, Y: 4, Width: 48, Height: 48}) {
+		t.Fatalf("left bounds = %#v, want {X:4, Y:4, Width:48, Height:48}", left.Bounds)
+	}
+}

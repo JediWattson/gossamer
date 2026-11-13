@@ -15,7 +15,7 @@ import (
 	"github.com/JediWattson/gossamer/internal/sitecompat"
 )
 
-const fidelityPaintSHA256 = "7cf7f92f92c73be1ac79bb97e05e6a546757f10b3cb414548555b5e9d0fad656"
+const fidelityPaintSHA256 = "5c81b01dcb728d27bf06b5c0220e7f4082e19a328a611fae68ea4b3919110fbc"
 
 func TestStrandRenderingFidelityBaseline(t *testing.T) {
 	runRenderingFidelityBaseline(t, nativeengine.New(nativeengine.Config{}))
