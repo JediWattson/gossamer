@@ -106,6 +106,7 @@ const (
 	nativeMathRandom
 	nativeDateConstructor
 	nativeDateNow
+	nativeDateParse
 	nativeGlobalIsNaN
 	nativeNumberConstructor
 	nativeNumberToString
@@ -129,6 +130,10 @@ const (
 	nativeObjectDefineProperties
 	nativePromiseAll
 	nativePromiseAllFulfill
+	nativePromiseAllSettled
+	nativePromiseAllSettledFulfill
+	nativePromiseAllSettledReject
+	nativePromiseRace
 	nativeStringEndsWith
 	nativeObjectGetOwnPropertyDescriptors
 	nativeObjectIsFrozen
@@ -621,6 +626,10 @@ func (interpreter *Interpreter) registerBuiltinCallbacks() error {
 		nativeObjectDefineProperties:          builtinObjectDefineProperties,
 		nativePromiseAll:                      builtinPromiseAll,
 		nativePromiseAllFulfill:               builtinPromiseAllFulfill,
+		nativePromiseAllSettled:               builtinPromiseAllSettled,
+		nativePromiseAllSettledFulfill:        builtinPromiseAllSettledFulfill,
+		nativePromiseAllSettledReject:         builtinPromiseAllSettledReject,
+		nativePromiseRace:                     builtinPromiseRace,
 		nativeObjectGetPrototypeOf:            builtinObjectGetPrototypeOf,
 		nativeObjectSetPrototypeOf:            builtinObjectSetPrototypeOf,
 		nativeObjectKeys:                      builtinObjectKeys,
@@ -786,6 +795,7 @@ func (interpreter *Interpreter) registerBuiltinCallbacks() error {
 		nativeMathRandom:                      builtinMathRandom,
 		nativeDateConstructor:                 builtinDateConstructor,
 		nativeDateNow:                         builtinDateNow,
+		nativeDateParse:                       builtinDateParse,
 		nativeGlobalIsNaN:                     builtinGlobalIsNaN,
 		nativeNumberConstructor:               builtinNumberConstructor,
 		nativeNumberToString:                  builtinNumberToString,
@@ -1462,7 +1472,7 @@ func builtinObjectPrototypeValueOf(execution *execution, _ memory.Ref, _ memory.
 }
 
 func builtinArrayPush(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, arguments []memory.Value) (memory.Value, error) {
-	array, err := requireArray(execution.context, this)
+	array, err := execution.arrayReceiver(this)
 	if err != nil {
 		return memory.Value{}, err
 	}
@@ -1483,7 +1493,7 @@ func builtinArrayPush(execution *execution, _ memory.Ref, _ memory.Function, thi
 }
 
 func builtinArrayPop(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, _ []memory.Value) (memory.Value, error) {
-	array, err := requireArray(execution.context, this)
+	array, err := execution.arrayReceiver(this)
 	if err != nil {
 		return memory.Value{}, err
 	}
@@ -1509,7 +1519,7 @@ func builtinArrayPop(execution *execution, _ memory.Ref, _ memory.Function, this
 }
 
 func builtinArrayJoin(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, arguments []memory.Value) (memory.Value, error) {
-	array, err := requireArray(execution.context, this)
+	array, err := execution.arrayReceiver(this)
 	if err != nil {
 		return memory.Value{}, err
 	}
@@ -1547,7 +1557,7 @@ func builtinArrayJoin(execution *execution, _ memory.Ref, _ memory.Function, thi
 }
 
 func builtinArraySlice(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, arguments []memory.Value) (memory.Value, error) {
-	array, err := requireArray(execution.context, this)
+	array, err := execution.arrayReceiver(this)
 	if err != nil {
 		return memory.Value{}, err
 	}

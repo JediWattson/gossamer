@@ -58,6 +58,9 @@ func lex(source string, tolerant bool) ([]Token, error) {
 	input := &scanner{source: source, line: 1, column: 1, tolerant: tolerant}
 	tokens := make([]Token, 0, len(source)/3+1)
 	allowRegExp := true
+	var parenHeaderStack []bool
+	pendingHeaderParen := false
+	previousKind := EOF
 	for {
 		if err := input.skipTrivia(); err != nil {
 			return nil, err
@@ -98,7 +101,28 @@ func lex(source string, tolerant bool) ([]Token, error) {
 		}
 		input.trackTemplateBrace(token.Kind)
 		tokens = append(tokens, token)
-		allowRegExp = !tokenEndsExpression(token.Kind)
+		if token.Kind == RightParen {
+			closedHeader := false
+			if len(parenHeaderStack) != 0 {
+				closedHeader = parenHeaderStack[len(parenHeaderStack)-1]
+				parenHeaderStack = parenHeaderStack[:len(parenHeaderStack)-1]
+			}
+			allowRegExp = closedHeader
+		} else {
+			allowRegExp = !tokenEndsExpression(token.Kind)
+		}
+		switch {
+		case token.Kind == If || token.Kind == While || token.Kind == For:
+			pendingHeaderParen = previousKind != Dot && previousKind != OptionalChain
+		case token.Kind == Identifier && token.Text == "await":
+			// Preserve pendingHeaderParen for `for await (...)`.
+		case token.Kind == LeftParen:
+			parenHeaderStack = append(parenHeaderStack, pendingHeaderParen)
+			pendingHeaderParen = false
+		default:
+			pendingHeaderParen = false
+		}
+		previousKind = token.Kind
 	}
 }
 

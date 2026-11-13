@@ -1293,6 +1293,81 @@ runHotLoop();
 	}
 }
 
+func TestStatementHeaderRegExpSwitchLexicalScopeDateParsePromiseAllSettledAndProxyArrayIteration(t *testing.T) {
+	t.Parallel()
+
+	image, err := compiler.Compile(`
+let matched = 0;
+for (const key of ["jwt", "other", "Token"]) /^(?:jwt|token)$/i.test(key) && (matched += 1);
+if (matched === 2) /^ok$/.test("ok") && (matched += 10);
+let loops = 0;
+while (loops < 1) /^loop$/.test("loop") && (loops += 1);
+
+function classify(value) {
+  switch (typeof value) {
+    case "string":
+      const upper = value.toUpperCase(), len = upper.length;
+      return upper + ":" + len;
+    case "number":
+      let doubled = value * 2;
+      return "num:" + doubled;
+    default:
+      return "other";
+  }
+}
+
+const epochZero = Date.parse("1970-01-01T00:00:00Z");
+const parsedDate = new Date("2020-01-02T03:04:05Z").getTime();
+const invalidDate = Number.isNaN(Date.parse("not-a-date"));
+
+const backing = ["a", "b"];
+const proxyArray = new Proxy(backing, {});
+proxyArray.push("c");
+let joined = "";
+for (const item of proxyArray) {
+  joined += item;
+}
+const spreadCopy = [...proxyArray];
+const proxyChecks = [
+  joined === "abc",
+  spreadCopy.join("-") === "a-b-c",
+  proxyArray.includes("b"),
+  proxyArray.indexOf("c") === 2,
+  proxyArray.slice(1).join("") === "bc"
+].every(Boolean);
+
+async function verify() {
+  const settled = await Promise.allSettled([Promise.resolve("ok"), Promise.reject("bad"), 7]);
+  const settledSummary = settled.map(entry => entry.status + ":" + (entry.value ?? entry.reason)).join(",");
+  const raceWinner = await Promise.race([Promise.resolve("first"), Promise.reject("second")]);
+  const ok = [
+    matched === 12,
+    loops === 1,
+    classify("hi") === "HI:2",
+    classify(5) === "num:10",
+    epochZero === 0,
+    parsedDate === 1577934245000,
+    invalidDate,
+    proxyChecks,
+    settledSummary === "fulfilled:ok,rejected:bad,fulfilled:7",
+    raceWinner === "first"
+  ].every(Boolean);
+  if (!ok) {
+    throw new Error("efchat compatibility checks failed");
+  }
+}
+verify();
+1;
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := executeBootstrapped(t, 847, image)
+	if result.Kind() != memory.ValueNumber || result.Number() != 1 {
+		t.Fatalf("efchat compatibility result = %#v, want 1", result)
+	}
+}
+
 func execute(t *testing.T, realmID browserruntime.RealmID, image program.Program) memory.Value {
 	return executeWithConfig(t, realmID, image, browserruntime.InterpreterConfig{})
 }

@@ -38,7 +38,11 @@ func (intrinsics *Intrinsics) installPromiseBuiltins(context *TaskContext) error
 	}
 	intrinsics.PromiseConstructor = constructor
 	if err := installMethods(intrinsics, context, constructor, []builtinMethod{
-		{"resolve", 1, nativePromiseResolve}, {"reject", 1, nativePromiseReject}, {"all", 1, nativePromiseAll},
+		{"resolve", 1, nativePromiseResolve},
+		{"reject", 1, nativePromiseReject},
+		{"all", 1, nativePromiseAll},
+		{"allSettled", 1, nativePromiseAllSettled},
+		{"race", 1, nativePromiseRace},
 	}); err != nil {
 		return err
 	}
@@ -172,6 +176,223 @@ func builtinPromiseAllFulfill(execution *execution, _ memory.Ref, function memor
 		}
 	}
 	return memory.UndefinedValue(), nil
+}
+
+func builtinPromiseAllSettled(execution *execution, _ memory.Ref, _ memory.Function, _ memory.Value, arguments []memory.Value) (memory.Value, error) {
+	output, err := execution.context.NewPromise()
+	if err != nil {
+		return memory.Value{}, err
+	}
+	values, err := execution.context.NewArray(0)
+	if err == nil {
+		err = execution.appendIterableToArray(values, argument(arguments, 0))
+	}
+	if err != nil {
+		reason, language, conversionErr := execution.promiseRejectionValue(err)
+		if conversionErr != nil {
+			return memory.Value{}, conversionErr
+		}
+		if !language {
+			return memory.Value{}, err
+		}
+		if rejectErr := execution.rejectPromise(output, reason); rejectErr != nil {
+			return memory.Value{}, rejectErr
+		}
+		return memory.RefValue(output), nil
+	}
+	inputs, err := execution.context.DerefArray(values)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	results, err := execution.context.NewArray(inputs.Length)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	if inputs.Length == 0 {
+		if err := execution.resolvePromise(output, memory.RefValue(results)); err != nil {
+			return memory.Value{}, err
+		}
+		return memory.RefValue(output), nil
+	}
+	state, err := execution.context.NewCell()
+	if err != nil {
+		return memory.Value{}, err
+	}
+	if err := execution.context.Set(state, 0, memory.NumberValue(float64(inputs.Length))); err != nil {
+		return memory.Value{}, err
+	}
+	for index, element := range inputs.Elements {
+		promiseValue, err := builtinPromiseResolve(execution, memory.Ref{}, memory.Function{}, memory.UndefinedValue(), []memory.Value{element.Value})
+		if err != nil {
+			return memory.Value{}, err
+		}
+		fulfillName, err := execution.context.NewString("Promise.allSettled fulfill")
+		if err != nil {
+			return memory.Value{}, err
+		}
+		fulfill, err := execution.context.NewBoundNativeFunction(
+			memory.RefValue(fulfillName), memory.NullValue(), 1, nativePromiseAllSettledFulfill,
+			memory.RefValue(output), memory.RefValue(results), memory.RefValue(state), memory.NumberValue(float64(index)),
+		)
+		if err != nil {
+			return memory.Value{}, err
+		}
+		rejectName, err := execution.context.NewString("Promise.allSettled reject")
+		if err != nil {
+			return memory.Value{}, err
+		}
+		reject, err := execution.context.NewBoundNativeFunction(
+			memory.RefValue(rejectName), memory.NullValue(), 1, nativePromiseAllSettledReject,
+			memory.RefValue(output), memory.RefValue(results), memory.RefValue(state), memory.NumberValue(float64(index)),
+		)
+		if err != nil {
+			return memory.Value{}, err
+		}
+		promise := promiseValue.Ref()
+		if err := execution.context.AddPromiseReaction(promise, memory.PromiseReaction{
+			OnFulfilled: memory.RefValue(fulfill), OnRejected: memory.RefValue(reject), Downstream: memory.NullValue(),
+		}); err != nil {
+			return memory.Value{}, err
+		}
+		if err := execution.context.MarkPromiseHandled(promise); err != nil {
+			return memory.Value{}, err
+		}
+		snapshot, err := execution.context.DerefPromise(promise)
+		if err != nil {
+			return memory.Value{}, err
+		}
+		if snapshot.State != memory.PromisePending {
+			if err := execution.enqueuePromiseReactions(promise); err != nil {
+				return memory.Value{}, err
+			}
+		}
+	}
+	return memory.RefValue(output), nil
+}
+
+func builtinPromiseAllSettledFulfill(execution *execution, _ memory.Ref, function memory.Function, _ memory.Value, arguments []memory.Value) (memory.Value, error) {
+	return promiseAllSettledSettle(execution, function, "fulfilled", "value", argument(arguments, 0))
+}
+
+func builtinPromiseAllSettledReject(execution *execution, _ memory.Ref, function memory.Function, _ memory.Value, arguments []memory.Value) (memory.Value, error) {
+	return promiseAllSettledSettle(execution, function, "rejected", "reason", argument(arguments, 0))
+}
+
+func promiseAllSettledSettle(execution *execution, function memory.Function, status, payloadKey string, payload memory.Value) (memory.Value, error) {
+	if len(function.Captures) != 4 || !function.Captures[0].IsRef() || !function.Captures[1].IsRef() ||
+		!function.Captures[2].IsRef() || function.Captures[3].Kind() != memory.ValueNumber {
+		return memory.Value{}, fmt.Errorf("%w: Promise.allSettled callback has invalid captures", ErrNativeFunction)
+	}
+	output := function.Captures[0].Ref()
+	results := function.Captures[1].Ref()
+	state := function.Captures[2].Ref()
+	index, err := requireUint32(function.Captures[3], "Promise.allSettled index", true)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	entry, err := execution.context.NewHeapObject()
+	if err != nil {
+		return memory.Value{}, err
+	}
+	statusKeyRef, err := execution.context.NewString("status")
+	if err != nil {
+		return memory.Value{}, err
+	}
+	statusValRef, err := execution.context.NewString(status)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	if err := execution.context.DefineProperty(entry, statusKeyRef, memory.DataProperty(memory.RefValue(statusValRef), true, true, true)); err != nil {
+		return memory.Value{}, err
+	}
+	payloadKeyRef, err := execution.context.NewString(payloadKey)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	if err := execution.context.DefineProperty(entry, payloadKeyRef, memory.DataProperty(payload, true, true, true)); err != nil {
+		return memory.Value{}, err
+	}
+	if err := execution.context.SetArrayElement(results, index, memory.RefValue(entry)); err != nil {
+		return memory.Value{}, err
+	}
+	cell, err := execution.context.Deref(state)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	if len(cell.Fields) == 0 || cell.Fields[0].Kind() != memory.ValueNumber || cell.Fields[0].Number() < 1 {
+		return memory.Value{}, fmt.Errorf("%w: Promise.allSettled remaining count is invalid", ErrNativeFunction)
+	}
+	remaining := cell.Fields[0].Number() - 1
+	if err := execution.context.Set(state, 0, memory.NumberValue(remaining)); err != nil {
+		return memory.Value{}, err
+	}
+	if remaining == 0 {
+		if err := execution.resolvePromise(output, memory.RefValue(results)); err != nil && !errors.Is(err, memory.ErrPromiseSettled) {
+			return memory.Value{}, err
+		}
+	}
+	return memory.UndefinedValue(), nil
+}
+
+func builtinPromiseRace(execution *execution, _ memory.Ref, _ memory.Function, _ memory.Value, arguments []memory.Value) (memory.Value, error) {
+	output, err := execution.context.NewPromise()
+	if err != nil {
+		return memory.Value{}, err
+	}
+	values, err := execution.context.NewArray(0)
+	if err == nil {
+		err = execution.appendIterableToArray(values, argument(arguments, 0))
+	}
+	if err != nil {
+		reason, language, conversionErr := execution.promiseRejectionValue(err)
+		if conversionErr != nil {
+			return memory.Value{}, conversionErr
+		}
+		if !language {
+			return memory.Value{}, err
+		}
+		if rejectErr := execution.rejectPromise(output, reason); rejectErr != nil {
+			return memory.Value{}, rejectErr
+		}
+		return memory.RefValue(output), nil
+	}
+	inputs, err := execution.context.DerefArray(values)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	resolve, err := newPromiseSettler(execution.context, "resolve", nativePromiseResolveFunction, output)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	reject, err := newPromiseSettler(execution.context, "reject", nativePromiseRejectFunction, output)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	for _, element := range inputs.Elements {
+		promiseValue, err := builtinPromiseResolve(execution, memory.Ref{}, memory.Function{}, memory.UndefinedValue(), []memory.Value{element.Value})
+		if err != nil {
+			return memory.Value{}, err
+		}
+		promise := promiseValue.Ref()
+		if err := execution.context.AddPromiseReaction(promise, memory.PromiseReaction{
+			OnFulfilled: memory.RefValue(resolve), OnRejected: memory.RefValue(reject), Downstream: memory.NullValue(),
+		}); err != nil {
+			return memory.Value{}, err
+		}
+		if err := execution.context.MarkPromiseHandled(promise); err != nil {
+			return memory.Value{}, err
+		}
+		snapshot, err := execution.context.DerefPromise(promise)
+		if err != nil {
+			return memory.Value{}, err
+		}
+		if snapshot.State != memory.PromisePending {
+			if err := execution.enqueuePromiseReactions(promise); err != nil {
+				return memory.Value{}, err
+			}
+		}
+	}
+	return memory.RefValue(output), nil
 }
 
 func builtinPromiseConstructor(execution *execution, _ memory.Ref, _ memory.Function, _ memory.Value, arguments []memory.Value) (memory.Value, error) {

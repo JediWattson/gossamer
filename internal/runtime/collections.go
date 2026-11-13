@@ -1658,7 +1658,7 @@ func builtinArrayFindIndex(execution *execution, _ memory.Ref, _ memory.Function
 }
 
 func builtinArrayIncludes(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, arguments []memory.Value) (memory.Value, error) {
-	array, err := requireArray(execution.context, this)
+	array, err := execution.arrayReceiver(this)
 	if err != nil {
 		return memory.Value{}, err
 	}
@@ -1700,7 +1700,7 @@ func builtinArrayIncludes(execution *execution, _ memory.Ref, _ memory.Function,
 }
 
 func builtinArrayIndexOf(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, arguments []memory.Value) (memory.Value, error) {
-	array, err := requireArray(execution.context, this)
+	array, err := execution.arrayReceiver(this)
 	if err != nil {
 		return memory.Value{}, err
 	}
@@ -1980,7 +1980,13 @@ func builtinSetForEach(execution *execution, _ memory.Ref, _ memory.Function, th
 }
 
 func newIterator(execution *execution, this memory.Value, targetKind memory.HeapKind, iteratorKind memory.IteratorKind) (memory.Value, error) {
-	target, err := requireKind(execution.context, this, targetKind, "iterator receiver")
+	var target memory.Ref
+	var err error
+	if targetKind == memory.HeapArray {
+		target, err = execution.arrayReceiver(this)
+	} else {
+		target, err = requireKind(execution.context, this, targetKind, "iterator receiver")
+	}
 	if err != nil {
 		return memory.Value{}, err
 	}

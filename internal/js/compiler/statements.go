@@ -881,6 +881,15 @@ func (compiler *functionCompiler) compileSwitch(statement *ast.SwitchStatement, 
 		return err
 	}
 	compiler.environmentDepth++
+	compiler.pushScope()
+	defer compiler.popScope()
+	var caseStatements []ast.Statement
+	for _, item := range statement.Cases {
+		caseStatements = append(caseStatements, item.Consequent...)
+	}
+	if err := compiler.instantiateLexicalScope(caseStatements); err != nil {
+		return err
+	}
 	discriminant := compiler.temporaryName("switch")
 	if err := compiler.compileExpression(statement.Discriminant); err != nil {
 		return err

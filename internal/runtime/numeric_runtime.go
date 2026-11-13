@@ -107,11 +107,10 @@ func (intrinsics *Intrinsics) installNumericBuiltins(context *TaskContext) error
 		}
 	}
 
-	now, err := intrinsics.newBuiltinMethod(context, "now", 0, nativeDateNow)
-	if err != nil {
-		return err
-	}
-	if err := defineData(context, intrinsics.DateConstructor, "now", memory.RefValue(now), true, false, true); err != nil {
+	if err := installMethods(intrinsics, context, intrinsics.DateConstructor, []builtinMethod{
+		{"now", 0, nativeDateNow},
+		{"parse", 1, nativeDateParse},
+	}); err != nil {
 		return err
 	}
 	if err := installMethods(intrinsics, context, intrinsics.DatePrototype, []builtinMethod{
@@ -353,10 +352,32 @@ func builtinMathRandom(_ *execution, _ memory.Ref, _ memory.Function, _ memory.V
 func builtinDateConstructor(execution *execution, _ memory.Ref, _ memory.Function, _ memory.Value, arguments []memory.Value) (memory.Value, error) {
 	milliseconds := float64(time.Now().UnixMilli())
 	if len(arguments) != 0 {
-		var err error
-		milliseconds, err = execution.toNumber(arguments[0])
+		primitive, err := execution.toPrimitive(arguments[0], hintDefault)
 		if err != nil {
 			return memory.Value{}, err
+		}
+		if primitive.IsRef() {
+			kind, kindErr := execution.context.HeapKind(primitive.Ref())
+			if kindErr != nil {
+				return memory.Value{}, kindErr
+			}
+			if kind == memory.HeapString {
+				text, textErr := execution.context.DerefString(primitive.Ref())
+				if textErr != nil {
+					return memory.Value{}, textErr
+				}
+				milliseconds = parseDateString(text)
+			} else {
+				milliseconds, err = execution.toNumber(primitive)
+				if err != nil {
+					return memory.Value{}, err
+				}
+			}
+		} else {
+			milliseconds, err = execution.toNumber(primitive)
+			if err != nil {
+				return memory.Value{}, err
+			}
 		}
 	}
 	date, err := execution.context.NewDate(milliseconds)
@@ -365,6 +386,40 @@ func builtinDateConstructor(execution *execution, _ memory.Ref, _ memory.Functio
 
 func builtinDateNow(_ *execution, _ memory.Ref, _ memory.Function, _ memory.Value, _ []memory.Value) (memory.Value, error) {
 	return memory.NumberValue(float64(time.Now().UnixMilli())), nil
+}
+
+func builtinDateParse(execution *execution, _ memory.Ref, _ memory.Function, _ memory.Value, arguments []memory.Value) (memory.Value, error) {
+	if len(arguments) == 0 {
+		return memory.NumberValue(math.NaN()), nil
+	}
+	text, err := execution.toString(arguments[0])
+	if err != nil {
+		return memory.Value{}, err
+	}
+	return memory.NumberValue(parseDateString(text)), nil
+}
+
+func parseDateString(text string) float64 {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return math.NaN()
+	}
+	for _, layout := range []string{
+		time.RFC3339Nano,
+		time.RFC3339,
+		"2006-01-02T15:04:05.999999999",
+		"2006-01-02T15:04:05",
+		"2006-01-02T15:04Z07:00",
+		"2006-01-02T15:04",
+		"2006-01-02",
+		time.RFC1123Z,
+		time.RFC1123,
+	} {
+		if parsed, err := time.Parse(layout, trimmed); err == nil {
+			return float64(parsed.UnixMilli())
+		}
+	}
+	return math.NaN()
 }
 
 func requireDate(execution *execution, this memory.Value) (memory.Date, error) {

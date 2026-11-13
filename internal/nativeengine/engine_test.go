@@ -928,3 +928,64 @@ if (!timerEnvelopeFired) throw new Error("pending timer envelope was lost");
 		t.Fatal(err)
 	}
 }
+
+func TestNativeAbortControllerAndElementToggleAttribute(t *testing.T) {
+	t.Parallel()
+
+	scriptEngine := nativeengine.New(nativeengine.Config{})
+	browserRuntime, err := browser.NewWithEngine(scriptEngine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer browserRuntime.Close()
+	page, err := browserRuntime.NewPage(dom.NewDocument(), &url.URL{Scheme: "https", Host: "gossamer.test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := page.QueueScript(browser.ScriptSource{URL: "abort-and-toggle-attribute.js", Source: `
+const controller = new AbortController();
+let abortedEvents = 0;
+let onabortCalled = false;
+controller.signal.addEventListener("abort", () => { abortedEvents += 1; });
+controller.signal.onabort = () => { onabortCalled = true; };
+if (controller.signal.aborted) {
+  throw new Error("signal started aborted");
+}
+const combined = AbortSignal.any([controller.signal]);
+controller.abort("cancelled");
+if (!controller.signal.aborted || controller.signal.reason !== "cancelled") {
+  throw new Error("controller.abort did not mark signal aborted with reason");
+}
+if (abortedEvents !== 1 || !onabortCalled || !combined.aborted || combined.reason !== "cancelled") {
+  throw new Error("AbortSignal listeners or AbortSignal.any failed");
+}
+let threwReason = null;
+try {
+  controller.signal.throwIfAborted();
+} catch (err) {
+  threwReason = err;
+}
+if (threwReason !== "cancelled") {
+  throw new Error("throwIfAborted did not throw reason");
+}
+
+const el = document.createElement("div");
+if (!el.toggleAttribute("data-ios-pwa") || !el.hasAttribute("data-ios-pwa")) {
+  throw new Error("toggleAttribute without force did not set attribute");
+}
+if (el.toggleAttribute("data-ios-pwa") || el.hasAttribute("data-ios-pwa")) {
+  throw new Error("toggleAttribute second call did not remove attribute");
+}
+if (el.toggleAttribute("data-ios-pwa", false) || el.hasAttribute("data-ios-pwa")) {
+  throw new Error("toggleAttribute(false) when absent should keep attribute absent");
+}
+if (!el.toggleAttribute("data-ios-pwa", true) || el.getAttribute("data-ios-pwa") !== "") {
+  throw new Error("toggleAttribute(true) did not set empty attribute");
+}
+`}); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}

@@ -226,7 +226,7 @@ func arrayProperty(execution *execution, receiver, key memory.Value) (memory.Val
 }
 
 func builtinArrayConcat(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, arguments []memory.Value) (memory.Value, error) {
-	receiver, err := requireArray(execution.context, this)
+	receiver, err := execution.arrayReceiver(this)
 	if err != nil {
 		return memory.Value{}, err
 	}
@@ -236,27 +236,21 @@ func builtinArrayConcat(execution *execution, _ memory.Ref, _ memory.Function, t
 	}
 	offset := uint32(0)
 	appendValue := func(value memory.Value) error {
-		if value.IsRef() {
-			kind, err := execution.context.HeapKind(value.Ref())
+		if arrayRef, err := execution.arrayReceiver(value); err == nil {
+			array, err := execution.context.DerefArray(arrayRef)
 			if err != nil {
 				return err
 			}
-			if kind == memory.HeapArray {
-				array, err := execution.context.DerefArray(value.Ref())
-				if err != nil {
+			if uint64(offset)+uint64(array.Length) > math.MaxUint32 {
+				return ErrOperandType
+			}
+			for _, element := range array.Elements {
+				if err := execution.context.SetArrayElement(result, offset+element.Index, element.Value); err != nil {
 					return err
 				}
-				if uint64(offset)+uint64(array.Length) > math.MaxUint32 {
-					return ErrOperandType
-				}
-				for _, element := range array.Elements {
-					if err := execution.context.SetArrayElement(result, offset+element.Index, element.Value); err != nil {
-						return err
-					}
-				}
-				offset += array.Length
-				return execution.context.SetArrayLength(result, offset)
 			}
+			offset += array.Length
+			return execution.context.SetArrayLength(result, offset)
 		}
 		if offset == math.MaxUint32 {
 			return ErrOperandType
@@ -279,7 +273,7 @@ func builtinArrayConcat(execution *execution, _ memory.Ref, _ memory.Function, t
 }
 
 func builtinArrayShift(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, _ []memory.Value) (memory.Value, error) {
-	arrayRef, err := requireArray(execution.context, this)
+	arrayRef, err := execution.arrayReceiver(this)
 	if err != nil {
 		return memory.Value{}, err
 	}
@@ -315,7 +309,7 @@ func builtinArrayShift(execution *execution, _ memory.Ref, _ memory.Function, th
 }
 
 func builtinArrayUnshift(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, arguments []memory.Value) (memory.Value, error) {
-	arrayRef, err := requireArray(execution.context, this)
+	arrayRef, err := execution.arrayReceiver(this)
 	if err != nil {
 		return memory.Value{}, err
 	}
@@ -348,7 +342,7 @@ func builtinArrayUnshift(execution *execution, _ memory.Ref, _ memory.Function, 
 }
 
 func builtinArraySplice(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, arguments []memory.Value) (memory.Value, error) {
-	arrayRef, err := requireArray(execution.context, this)
+	arrayRef, err := execution.arrayReceiver(this)
 	if err != nil {
 		return memory.Value{}, err
 	}

@@ -40,6 +40,7 @@ const (
 	nativeElementSetAttribute
 	nativeElementRemoveAttribute
 	nativeElementHasAttribute
+	nativeElementToggleAttribute
 	nativeElementIDGet
 	nativeElementIDSet
 	nativeElementQuerySelector
@@ -301,6 +302,10 @@ const (
 	bindingWebSocketPrototype              = "\x00gossamer.websocket.prototype"
 	bindingWebSocketConstructor            = "\x00gossamer.websocket.constructor"
 	bindingWebSocketCache                  = "\x00gossamer.websocket.cache"
+	bindingAbortControllerPrototype        = "\x00gossamer.abort-controller.prototype"
+	bindingAbortControllerConstructor      = "\x00gossamer.abort-controller.constructor"
+	bindingAbortSignalPrototype            = "\x00gossamer.abort-signal.prototype"
+	bindingAbortSignalConstructor          = "\x00gossamer.abort-signal.constructor"
 	hostRecordProperty                     = "\x00gossamer.host.record"
 )
 
@@ -371,6 +376,10 @@ type browserBindings struct {
 	webSocketPrototype              memory.Ref
 	webSocketConstructor            memory.Ref
 	webSocketCache                  memory.Ref
+	abortControllerPrototype        memory.Ref
+	abortControllerConstructor      memory.Ref
+	abortSignalPrototype            memory.Ref
+	abortSignalConstructor          memory.Ref
 	rangePrototype                  memory.Ref
 	selectionPrototype              memory.Ref
 	selection                       memory.Ref
@@ -422,6 +431,7 @@ func (realm *Realm) installBrowserNatives() error {
 		{nativeElementSetAttribute, realm.elementSetAttribute},
 		{nativeElementRemoveAttribute, realm.elementRemoveAttribute},
 		{nativeElementHasAttribute, realm.elementHasAttribute},
+		{nativeElementToggleAttribute, realm.elementToggleAttribute},
 		{nativeElementIDGet, realm.elementIDGet},
 		{nativeElementIDSet, realm.elementIDSet},
 		{nativeElementQuerySelector, realm.elementQuerySelector(false)},
@@ -717,6 +727,14 @@ func (realm *Realm) installBrowserNatives() error {
 		{nativeGlobalFetch, realm.globalFetch},
 		{nativeCryptoRandomUUID, realm.cryptoRandomUUID},
 		{nativeCryptoGetRandomValues, realm.cryptoGetRandomValues},
+		{nativeAbortControllerConstructor, realm.abortControllerConstructor},
+		{nativeAbortControllerAbort, realm.abortControllerAbort},
+		{nativeAbortSignalConstructor, realm.abortSignalConstructor},
+		{nativeAbortSignalAbort, realm.abortSignalAbort},
+		{nativeAbortSignalAny, realm.abortSignalAny},
+		{nativeAbortSignalThrowIfAborted, realm.abortSignalThrowIfAborted},
+		{nativeAbortSignalAddEventListener, realm.abortSignalAddEventListener},
+		{nativeAbortSignalRemoveEventListener, realm.abortSignalRemoveEventListener},
 		{nativeHeadersConstructor, realm.headersConstructor},
 		{nativeHeadersAppend, realm.headersAppend},
 		{nativeHeadersDelete, realm.headersDelete},
@@ -859,6 +877,10 @@ func (realm *Realm) prepareBrowserBindingsLocked(context *browserruntime.TaskCon
 			{bindingWebSocketPrototype, &bindings.webSocketPrototype},
 			{bindingWebSocketConstructor, &bindings.webSocketConstructor},
 			{bindingWebSocketCache, &bindings.webSocketCache},
+			{bindingAbortControllerPrototype, &bindings.abortControllerPrototype},
+			{bindingAbortControllerConstructor, &bindings.abortControllerConstructor},
+			{bindingAbortSignalPrototype, &bindings.abortSignalPrototype},
+			{bindingAbortSignalConstructor, &bindings.abortSignalConstructor},
 			{bindingRangePrototype, &bindings.rangePrototype},
 			{bindingSelectionPrototype, &bindings.selectionPrototype},
 			{bindingSelection, &bindings.selection},
@@ -1027,6 +1049,11 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		return err
 	}
 	bindings.webSocketCache, err = context.NewMap()
+	if err != nil {
+		return err
+	}
+	bindings.abortControllerConstructor, bindings.abortControllerPrototype,
+		bindings.abortSignalConstructor, bindings.abortSignalPrototype, err = realm.newAbortConstructors(context)
 	if err != nil {
 		return err
 	}
@@ -1235,6 +1262,8 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{"localStorage", memory.RefValue(bindings.localStorage)},
 		{"sessionStorage", memory.RefValue(bindings.sessionStorage)},
 		{"WebSocket", memory.RefValue(bindings.webSocketConstructor)},
+		{"AbortController", memory.RefValue(bindings.abortControllerConstructor)},
+		{"AbortSignal", memory.RefValue(bindings.abortSignalConstructor)},
 		{"MutationObserver", memory.RefValue(bindings.mutationObserverConstructor)},
 		{"ResizeObserver", memory.RefValue(bindings.resizeObserverConstructor)},
 		{"IntersectionObserver", memory.RefValue(bindings.intersectionObserverConstructor)},
@@ -1338,6 +1367,10 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{bindingWebSocketPrototype, bindings.webSocketPrototype, false},
 		{bindingWebSocketConstructor, bindings.webSocketConstructor, false},
 		{bindingWebSocketCache, bindings.webSocketCache, false},
+		{bindingAbortControllerPrototype, bindings.abortControllerPrototype, false},
+		{bindingAbortControllerConstructor, bindings.abortControllerConstructor, false},
+		{bindingAbortSignalPrototype, bindings.abortSignalPrototype, false},
+		{bindingAbortSignalConstructor, bindings.abortSignalConstructor, false},
 		{bindingRangePrototype, bindings.rangePrototype, false},
 		{bindingSelectionPrototype, bindings.selectionPrototype, false},
 		{bindingSelection, bindings.selection, false},
@@ -1380,6 +1413,8 @@ func (realm *Realm) installBrowserBindingsLocked(context *browserruntime.TaskCon
 		{"localStorage", bindings.localStorage, false},
 		{"sessionStorage", bindings.sessionStorage, false},
 		{"WebSocket", bindings.webSocketConstructor, true},
+		{"AbortController", bindings.abortControllerConstructor, true},
+		{"AbortSignal", bindings.abortSignalConstructor, true},
 		{"Event", eventConstructor, true},
 		{"CustomEvent", customEventConstructor, true},
 		{"KeyboardEvent", keyboardEventConstructor, true},
@@ -1462,6 +1497,7 @@ func (realm *Realm) installDOMPrototypeProperties(context *browserruntime.TaskCo
 		{realm.bindings.elementPrototype, "setAttribute", 2, nativeElementSetAttribute},
 		{realm.bindings.elementPrototype, "removeAttribute", 1, nativeElementRemoveAttribute},
 		{realm.bindings.elementPrototype, "hasAttribute", 1, nativeElementHasAttribute},
+		{realm.bindings.elementPrototype, "toggleAttribute", 1, nativeElementToggleAttribute},
 		{realm.bindings.elementPrototype, "querySelector", 1, nativeElementQuerySelector},
 		{realm.bindings.elementPrototype, "querySelectorAll", 1, nativeElementQuerySelectorAll},
 		{realm.bindings.elementPrototype, "matches", 1, nativeElementMatches},
@@ -2840,6 +2876,46 @@ func (realm *Realm) elementHasAttribute(context *browserruntime.TaskContext, thi
 	}
 	found, err := host.HasAttribute(handle, name)
 	return memory.BoolValue(found), err
+}
+
+func (realm *Realm) elementToggleAttribute(context *browserruntime.TaskContext, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+	handle, name, err := realm.attributeOperands(context, this, arguments)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	var found bool
+	if host, ok := realm.host.(browser.DOMElementHost); ok {
+		found, err = host.HasAttribute(handle, name)
+	} else {
+		_, found, err = realm.host.GetAttribute(handle, name)
+	}
+	if err != nil {
+		return memory.Value{}, err
+	}
+	shouldHave := !found
+	if len(arguments) > 1 && arguments[1].Kind() != memory.ValueUndefined {
+		shouldHave = truthy(arguments[1])
+	}
+	if shouldHave {
+		if !found {
+			if err := realm.host.SetAttribute(handle, name, ""); err != nil {
+				return memory.Value{}, err
+			}
+			if err := realm.refreshFormCollections(context); err != nil {
+				return memory.Value{}, err
+			}
+		}
+		return memory.BoolValue(true), nil
+	}
+	if found {
+		if err := realm.host.RemoveAttribute(handle, name); err != nil {
+			return memory.Value{}, err
+		}
+		if err := realm.refreshFormCollections(context); err != nil {
+			return memory.Value{}, err
+		}
+	}
+	return memory.BoolValue(false), nil
 }
 
 func (realm *Realm) elementIDGet(context *browserruntime.TaskContext, this memory.Value, _ []memory.Value) (memory.Value, error) {
