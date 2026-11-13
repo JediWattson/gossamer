@@ -38,10 +38,21 @@ type Function struct {
 	ThisMode      FunctionThisMode
 	LexicalThis   Value
 	Code          []byte
+	CodeHash      uint64
 	Locations     SourceLocationTable
 	Constants     []Value
 	Captures      []Value
 	NativeID      uint64
+}
+
+// HashBytecode computes the FNV-1a 64-bit hash of a bytecode slice.
+func HashBytecode(code []byte) uint64 {
+	hash := uint64(14695981039346656037)
+	for _, value := range code {
+		hash ^= uint64(value)
+		hash *= 1099511628211
+	}
+	return hash
 }
 
 func cloneFunction(function Function) Function {
@@ -55,6 +66,7 @@ func cloneFunction(function Function) Function {
 		ThisMode:      function.ThisMode,
 		LexicalThis:   function.LexicalThis,
 		Code:          append([]byte(nil), function.Code...),
+		CodeHash:      function.CodeHash,
 		Locations:     function.Locations.clone(),
 		Constants:     append([]Value(nil), function.Constants...),
 		Captures:      append([]Value(nil), function.Captures...),
@@ -76,6 +88,7 @@ func loadFunction(function Function) Function {
 		ThisMode:      function.ThisMode,
 		LexicalThis:   function.LexicalThis,
 		Code:          function.Code,
+		CodeHash:      function.CodeHash,
 		Locations:     function.Locations,
 		Constants:     function.Constants,
 		Captures:      function.Captures,
@@ -84,6 +97,10 @@ func loadFunction(function Function) Function {
 }
 
 func storeFunction(function Function, shareCode, shareConstants bool) Function {
+	codeHash := function.CodeHash
+	if codeHash == 0 && len(function.Code) > 0 {
+		codeHash = HashBytecode(function.Code)
+	}
 	stored := Function{
 		ObjectHeader:  cloneObjectHeader(function.ObjectHeader),
 		Kind:          function.Kind,
@@ -93,6 +110,7 @@ func storeFunction(function Function, shareCode, shareConstants bool) Function {
 		Constructible: function.Constructible,
 		ThisMode:      function.ThisMode,
 		LexicalThis:   function.LexicalThis,
+		CodeHash:      codeHash,
 		Captures:      append([]Value(nil), function.Captures...),
 		NativeID:      function.NativeID,
 	}

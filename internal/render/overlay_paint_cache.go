@@ -165,32 +165,56 @@ func (cache *effectLayerCache) clear() {
 }
 
 func matchingOpacityEnd(commands []Command, begin int) (int, bool) {
-	depth := 0
-	for index := begin + 1; index < len(commands); index++ {
-		switch commands[index].Kind {
-		case BeginOpacityCommand:
-			depth++
-		case EndOpacityCommand:
-			if depth == 0 {
-				return index, true
-			}
-			depth--
-		}
-	}
-	return 0, false
+	return matchingGroupEnd(commands, begin, EndOpacityCommand)
 }
 
 func matchingTransformEnd(commands []Command, begin int) (int, bool) {
+	return matchingGroupEnd(commands, begin, EndTransformCommand)
+}
+
+func matchingClipEnd(commands []Command, begin int) (int, bool) {
+	return matchingGroupEnd(commands, begin, EndClipCommand)
+}
+
+func matchingGroupEnd(commands []Command, begin int, targetEnd CommandKind) (int, bool) {
+	var stack [16]CommandKind
 	depth := 0
 	for index := begin + 1; index < len(commands); index++ {
-		switch commands[index].Kind {
-		case BeginTransformCommand:
+		kind := commands[index].Kind
+		switch kind {
+		case BeginOpacityCommand:
+			if depth >= len(stack) {
+				return 0, false
+			}
+			stack[depth] = EndOpacityCommand
 			depth++
-		case EndTransformCommand:
+		case BeginTransformCommand:
+			if depth >= len(stack) {
+				return 0, false
+			}
+			stack[depth] = EndTransformCommand
+			depth++
+		case BeginClipCommand:
+			if depth >= len(stack) {
+				return 0, false
+			}
+			stack[depth] = EndClipCommand
+			depth++
+		case EndOpacityCommand, EndTransformCommand, EndClipCommand:
 			if depth == 0 {
-				return index, true
+				if kind == targetEnd {
+					return index, true
+				}
+				return 0, false
+			}
+			if stack[depth-1] != kind {
+				return 0, false
 			}
 			depth--
+		case DrawTextCommand:
+			if commands[index].textOrientation != textPaintHorizontal {
+				return 0, false
+			}
 		}
 	}
 	return 0, false

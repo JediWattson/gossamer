@@ -132,6 +132,7 @@ func (store *Store) allocBytecodeClosure(owner ownership.OwnerID, regionID Regio
 		ThisMode:      thisMode,
 		LexicalThis:   lexicalThis,
 		Code:          templateFunction.Code,
+		CodeHash:      templateFunction.CodeHash,
 		Locations:     templateFunction.Locations,
 		Constants:     templateFunction.Constants,
 	}

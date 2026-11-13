@@ -14,10 +14,12 @@ type snapshotMutationDependencies struct {
 	stylesheets []css.SelectorDependencies
 }
 
+var builtInUserAgentSelectorDependencies = builtInUserAgentStylesheet.SelectorDependencies()
+
 func compileSnapshotMutationDependencies(input Input) snapshotMutationDependencies {
 	count := 1 + len(input.Stylesheets) + len(input.UserStylesheets) + len(input.UserAgentStylesheets)
 	dependencies := snapshotMutationDependencies{stylesheets: make([]css.SelectorDependencies, 0, count)}
-	dependencies.stylesheets = append(dependencies.stylesheets, builtInUserAgentStylesheet.SelectorDependencies())
+	dependencies.stylesheets = append(dependencies.stylesheets, builtInUserAgentSelectorDependencies)
 	for _, stylesheet := range input.UserAgentStylesheets {
 		dependencies.stylesheets = append(dependencies.stylesheets, stylesheet.SelectorDependencies())
 	}
@@ -180,7 +182,10 @@ func (snapshot *Snapshot) RestyleReadViewAfterMutations(
 
 	document := access.Root()
 	input = prepareReadViewInput(document, access, input)
-	context := buildCascadeStyleContext(document, input)
+	context, ok := snapshot.rehydrateCascadeStyleContext(access, input)
+	if !ok {
+		context = buildCascadeStyleContext(document, input)
+	}
 	sort.Slice(dirtyRoots, func(left, right int) bool {
 		leftID, _ := access.ID(dirtyRoots[left])
 		rightID, _ := access.ID(dirtyRoots[right])
@@ -216,7 +221,6 @@ func (snapshot *Snapshot) RestyleReadViewAfterMutations(
 		updated.contentAttributes = collectSnapshotContentAttributes(updated.byID, updated.byPseudoID)
 	}
 	updated.provenance = restyleStableProvenance(snapshot.provenance, styledRoots, styledParents, access)
-	updated.mutationDependencies = compileSnapshotMutationDependencies(input)
 	updated.damageBaseVersion = snapshot.version
 	updated.damage = damageForStableIDs(&updated, snapshot, stableStyledNodeIDs(styledRoots, access))
 	return &updated, true, nil

@@ -31,7 +31,20 @@ func (interpreter *Interpreter) decodeProgram(code []byte, constantCount int) ([
 }
 
 func (interpreter *Interpreter) loadProgram(code []byte, constantCount int) (*cachedBytecode, error) {
-	key := bytecodeKey(code, constantCount)
+	return interpreter.loadProgramWithHash(code, 0, constantCount)
+}
+
+func (interpreter *Interpreter) loadProgramWithHash(code []byte, codeHash uint64, constantCount int) (*cachedBytecode, error) {
+	var key bytecodeCacheKey
+	if codeHash != 0 {
+		key = bytecodeCacheKey{
+			hash:          codeHash,
+			bytes:         len(code),
+			constantCount: constantCount,
+		}
+	} else {
+		key = bytecodeKey(code, constantCount)
+	}
 	interpreter.programMutex.Lock()
 	if cached := interpreter.cachedProgramLocked(key, code); cached != nil {
 		cached.referenced = true
@@ -66,7 +79,7 @@ func (interpreter *Interpreter) loadProgram(code []byte, constantCount int) (*ca
 
 func (interpreter *Interpreter) cachedProgramLocked(key bytecodeCacheKey, code []byte) *cachedBytecode {
 	for _, cached := range interpreter.programs[key] {
-		if bytes.Equal(cached.code, code) {
+		if len(cached.code) == len(code) && (len(code) == 0 || &cached.code[0] == &code[0] || bytes.Equal(cached.code, code)) {
 			return cached
 		}
 	}

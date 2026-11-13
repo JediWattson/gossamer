@@ -741,7 +741,9 @@ func planScrollDamage(previous *image.RGBA, oldFrame, newFrame *Frame, scale flo
 				damage = append(damage, repair...)
 				sources = appendDamageSource(sources, "clip_"+commandKindName(motion.kind), repair)
 			}
-			if !motion.requiresReplay {
+			croppedVectorOrigin := (motion.roundedFill || motion.kind == FillEllipseCommand) &&
+				motion.oldBounds.Add(candidate).Min != motion.newBounds.Min
+			if !motion.requiresReplay && !croppedVectorOrigin {
 				continue
 			}
 		}
@@ -752,7 +754,7 @@ func planScrollDamage(previous *image.RGBA, oldFrame, newFrame *Frame, scale flo
 			(!rectangleContains(clip, motion.oldBounds) || !rectangleContains(clip, motion.newBounds)) {
 			return scrollDamagePlan{}, RasterFallbackMultipleScroll
 		}
-		if motion.delta != candidate && motion.roundedFill && motion.fillContextSafe &&
+		if motion.roundedFill && motion.fillContextSafe &&
 			!oldFrame.DisplayList.Commands[index].Radii.empty() {
 			repair := roundedFillRepairDamage(
 				oldFrame.DisplayList.Commands[index], newFrame.DisplayList.Commands[index],
@@ -921,7 +923,6 @@ func compareProjectedCommand(oldCommand, newCommand Command, scale float64, view
 				}
 			}
 		}
-		motion.requiresReplay = oldCommand.Kind == DrawBoxShadowCommand
 	} else if oldCommand.Kind == BeginClipCommand {
 		motion.oldBounds = scaledRasterRect(oldCommand.Rect, scale).Intersect(viewport)
 		motion.newBounds = scaledRasterRect(newCommand.Rect, scale).Intersect(viewport)
@@ -1270,7 +1271,7 @@ func transformGroupRepairDamage(oldCommands, newCommands []Command, motions []pr
 			continue
 		}
 		groupDelta, ok := oneTransformGroupDelta(motions, begin)
-		if !ok || groupDelta == scroll {
+		if !ok || (groupDelta == scroll && oldBounds[begin].Add(scroll) == newBounds[begin]) {
 			continue
 		}
 		oldTransform, newTransform := oldCommands[begin], newCommands[begin]

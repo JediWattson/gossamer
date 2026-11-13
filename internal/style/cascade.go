@@ -13,6 +13,7 @@ import (
 type stylesheetSource struct {
 	stylesheet css.Stylesheet
 	owner      *dom.Node
+	ownerID    dom.NodeID
 	kind       SourceKind
 	order      int
 	ruleIndex  selectorRuleIndex

@@ -370,7 +370,7 @@ func (execution *execution) acquireBytecodeFrame(stack *Stack, function memory.R
 	if err != nil {
 		return nil, err
 	}
-	program, err := execution.interpreter.loadProgram(descriptor.Code, len(descriptor.Constants))
+	program, err := execution.interpreter.loadProgramWithHash(descriptor.Code, descriptor.CodeHash, len(descriptor.Constants))
 	if err != nil {
 		_ = stack.pop(frame)
 		stack.recycleFrame(frame)

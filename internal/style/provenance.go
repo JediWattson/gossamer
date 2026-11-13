@@ -355,6 +355,7 @@ func restyleStableProvenance(
 
 	builder := newProvenanceBuilder(access)
 	builder.store.byID = make(map[dom.NodeID]nodeProvenance, len(previous.byID))
+	remap := make([]provenanceSourceID, len(previous.sources)+1)
 	ids := make([]dom.NodeID, 0, len(previous.byID))
 	for id := range previous.byID {
 		if _, replaced := dirty[id]; !replaced {
@@ -363,7 +364,7 @@ func restyleStableProvenance(
 	}
 	sort.Slice(ids, func(left, right int) bool { return ids[left] < ids[right] })
 	for _, id := range ids {
-		builder.store.byID[id] = builder.recompact(previous, previous.byID[id])
+		builder.store.byID[id] = builder.recompact(previous, previous.byID[id], remap)
 	}
 
 	var visit func(*styledNode, *styledNode)
@@ -392,15 +393,26 @@ func restyleStableProvenance(
 	return builder.finish()
 }
 
-func (builder *provenanceBuilder) recompact(previous provenanceStore, source nodeProvenance) nodeProvenance {
-	destination := nodeProvenance{
-		ordinary: make([]explanationRecord, len(source.ordinary)),
-		parentID: source.parentID,
-	}
+func (builder *provenanceBuilder) recompact(previous provenanceStore, source nodeProvenance, remap []provenanceSourceID) nodeProvenance {
+	ordinary := source.ordinary
+	cloned := false
 	for index, record := range source.ordinary {
-		if record.present() {
-			destination.ordinary[index] = builder.compactExplanation(previous.expand("", "", record))
+		if !record.present() {
+			continue
 		}
+		updated := builder.remapExplanationRecord(previous, remap, record)
+		if updated != record && !cloned {
+			ordinary = make([]explanationRecord, len(source.ordinary))
+			copy(ordinary[:index], source.ordinary[:index])
+			cloned = true
+		}
+		if cloned {
+			ordinary[index] = updated
+		}
+	}
+	destination := nodeProvenance{
+		ordinary: ordinary,
+		parentID: source.parentID,
 	}
 	if len(source.custom) == 0 {
 		return destination
@@ -414,10 +426,46 @@ func (builder *provenanceBuilder) recompact(previous provenanceStore, source nod
 	for _, property := range properties {
 		record := source.custom[property]
 		if record.present() {
-			destination.custom[property] = builder.compactExplanation(previous.expand(property, "", record))
+			destination.custom[property] = builder.remapExplanationRecord(previous, remap, record)
 		}
 	}
 	return destination
+}
+
+func (builder *provenanceBuilder) remapExplanationRecord(previous provenanceStore, remap []provenanceSourceID, record explanationRecord) explanationRecord {
+	updated := explanationRecord{
+		controllerID:  builder.remapSourceID(previous, remap, record.controllerID),
+		valueSourceID: builder.remapSourceID(previous, remap, record.valueSourceID),
+		resolution:    record.resolution,
+	}
+	if record.rollbackCount > 0 {
+		start := int(record.rollbackStart)
+		end := start + int(record.rollbackCount)
+		if start >= 0 && end >= start && end <= len(previous.rollbacks) {
+			updated.rollbackStart = uint32(len(builder.store.rollbacks))
+			for _, oldID := range previous.rollbacks[start:end] {
+				builder.store.rollbacks = append(builder.store.rollbacks, builder.remapSourceID(previous, remap, oldID))
+			}
+			updated.rollbackCount = record.rollbackCount
+		}
+	}
+	return updated
+}
+
+func (builder *provenanceBuilder) remapSourceID(previous provenanceStore, remap []provenanceSourceID, oldID provenanceSourceID) provenanceSourceID {
+	if oldID == noProvenanceSource || int(oldID) > len(previous.sources) {
+		return noProvenanceSource
+	}
+	if newID := remap[oldID]; newID != noProvenanceSource {
+		return newID
+	}
+	source := previous.sources[int(oldID)-1]
+	if builder.access != nil && source.owner != nil {
+		source = source.stableCopy(builder.access)
+	}
+	newID := builder.intern(source)
+	remap[oldID] = newID
+	return newID
 }
 
 func isElementStyleParent(parent *styledNode) bool {

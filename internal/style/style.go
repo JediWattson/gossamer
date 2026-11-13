@@ -1077,6 +1077,8 @@ type Snapshot struct {
 	byPseudoID           map[stablePseudoKey]ComputedStyle
 	provenance           provenanceStore
 	mutationDependencies snapshotMutationDependencies
+	cascadeContext       cascadeStyleContext
+	hasCachedCascade     bool
 	damageBaseVersion    uint64
 	damage               SnapshotStyleDamage
 	contentAttributes    map[string]struct{}
@@ -1116,7 +1118,8 @@ func ComputeReadView(view dom.ReadView, input Input) (*Snapshot, error) {
 		return nil, fmt.Errorf("%w: read view root must be a document node", dom.ErrInvalidDocument)
 	}
 	input = prepareReadViewInput(root, access, input)
-	styledRoot := buildStyleTree(root, input)
+	context := buildCascadeStyleContext(root, input)
+	styledRoot := styleNode(root, nil, &context, input.Environment)
 	snapshot := &Snapshot{
 		documentIdentity:     access.Identity(),
 		version:              access.Version(),
@@ -1124,12 +1127,64 @@ func ComputeReadView(view dom.ReadView, input Input) (*Snapshot, error) {
 		byID:                 make(map[dom.NodeID]ComputedStyle),
 		byPseudoID:           make(map[stablePseudoKey]ComputedStyle),
 		mutationDependencies: compileSnapshotMutationDependencies(input),
+		cascadeContext:       detachCascadeStyleContext(context, access),
+		hasCachedCascade:     true,
 	}
 	indexStableStyles(styledRoot, snapshot.byID, access, &snapshot.contentAttributes)
 	indexStablePseudoStyles(styledRoot, snapshot.byPseudoID, access, &snapshot.contentAttributes)
 	snapshot.provenance = indexStableProvenance(styledRoot, access)
 	snapshot.rootID, _ = access.ID(root)
 	return snapshot, nil
+}
+
+func detachCascadeStyleContext(context cascadeStyleContext, access *dom.ReadAccess) cascadeStyleContext {
+	detached := context
+	detached.selectorContext = css.MatchContext{}
+	detached.inlineDeclarations = nil
+	detached.ruleScratch = nil
+	if len(context.author.sheets) > 0 {
+		sheets := make([]stylesheetSource, len(context.author.sheets))
+		copy(sheets, context.author.sheets)
+		for index := range sheets {
+			if sheets[index].owner != nil && access != nil {
+				sheets[index].ownerID, _ = access.ID(sheets[index].owner)
+			}
+			sheets[index].owner = nil
+		}
+		detached.author.sheets = sheets
+	}
+	return detached
+}
+
+func (snapshot *Snapshot) rehydrateCascadeStyleContext(access *dom.ReadAccess, input Input) (cascadeStyleContext, bool) {
+	if snapshot == nil || !snapshot.hasCachedCascade {
+		return cascadeStyleContext{}, false
+	}
+	cached := snapshot.cascadeContext
+	if cached.disableRuleIndex != input.disableRuleIndex ||
+		len(cached.user.sheets) != len(input.UserStylesheets) ||
+		len(cached.userAgent.sheets) != 1+len(input.UserAgentStylesheets) {
+		return cascadeStyleContext{}, false
+	}
+	context := cached
+	context.selectorContext = input.selectorContext
+	context.inlineDeclarations = input.InlineDeclarations
+	context.ruleScratch = nil
+	if len(cached.author.sheets) > 0 {
+		sheets := make([]stylesheetSource, len(cached.author.sheets))
+		copy(sheets, cached.author.sheets)
+		for index := range sheets {
+			if sheets[index].ownerID != dom.InvalidNodeID {
+				owner, ok := access.Resolve(sheets[index].ownerID)
+				if !ok || owner == nil {
+					return cascadeStyleContext{}, false
+				}
+				sheets[index].owner = owner
+			}
+		}
+		context.author.sheets = sheets
+	}
+	return context, true
 }
 
 // prepareReadViewInput resolves browser-owned stable selector subjects once
