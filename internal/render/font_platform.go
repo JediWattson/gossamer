@@ -9,4 +9,5 @@ type platformFonts struct {
 	systemRegular *opentype.Font
 	systemItalic  *opentype.Font
 	systemSymbols *opentype.Font
+	emoji         *colorEmojiFont
 }

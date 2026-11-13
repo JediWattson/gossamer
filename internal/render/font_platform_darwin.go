@@ -20,6 +20,7 @@ func loadPlatformFonts() platformFonts {
 			systemRegular: parsePlatformFont("/System/Library/Fonts/SFNS.ttf"),
 			systemItalic:  parsePlatformFont("/System/Library/Fonts/SFNSItalic.ttf"),
 			systemSymbols: parsePlatformFont("/System/Library/Fonts/Apple Symbols.ttf"),
+			emoji:         openColorEmojiFont("/System/Library/Fonts/Apple Color Emoji.ttc"),
 		}
 	})
 	return platformFontBook

@@ -134,6 +134,7 @@ type fontBook struct {
 	systemRegular  *opentype.Font
 	systemItalic   *opentype.Font
 	systemSymbols  *opentype.Font
+	emoji          *colorEmojiFont
 	platformLoaded bool
 	glyphBuffer    sfnt.Buffer
 	faces          map[faceKey]font.Face
@@ -158,11 +159,13 @@ type shapedRun struct {
 }
 
 type shapedGlyph struct {
-	rune    rune
-	x       fixed.Int26_6
-	advance fixed.Int26_6
-	face    font.Face
-	missing bool
+	rune       rune
+	x          fixed.Int26_6
+	advance    fixed.Int26_6
+	face       font.Face
+	emoji      *colorEmojiFont
+	emojiGlyph uint16
+	missing    bool
 }
 
 type bundledFontSet struct {
@@ -335,6 +338,17 @@ func (book *fontBook) draw(
 	for _, glyph := range run.glyphs {
 		dot := origin
 		dot.X += glyph.x
+		if glyph.emoji != nil {
+			if emojiImg, ascentPx, ok := glyph.emoji.glyphBitmap(glyph.emojiGlyph, size); ok {
+				rect := emojiImg.Bounds().Add(image.Pt(dot.X.Round(), dot.Y.Round()-ascentPx))
+				if textColor.A == 255 {
+					draw.Draw(destination, rect, emojiImg, emojiImg.Bounds().Min, draw.Over)
+				} else if textColor.A > 0 {
+					draw.DrawMask(destination, rect, emojiImg, emojiImg.Bounds().Min, image.NewUniform(color.Alpha{A: textColor.A}), image.Point{}, draw.Over)
+				}
+			}
+			continue
+		}
 		if glyph.missing {
 			drawMissingGlyphBox(destination, missingGlyphRect(dot, size, glyph.advance), textColor)
 			continue
@@ -378,7 +392,12 @@ func (book *fontBook) horizontalTextInkBounds(command Command) (image.Rectangle,
 		dot := origin
 		dot.X += glyph.x
 		var rectangle image.Rectangle
-		if glyph.missing {
+		if glyph.emoji != nil {
+			targetBox, ascentPx := glyph.emoji.targetSize(command.FontSize)
+			left := dot.X.Round()
+			top := dot.Y.Round() - ascentPx
+			rectangle = image.Rect(left, top, left+targetBox, top+targetBox)
+		} else if glyph.missing {
 			rectangle = missingGlyphRect(dot, command.FontSize, glyph.advance)
 		} else if glyph.face != nil {
 			rectangle, _, _, _, _ = glyph.face.Glyph(dot, glyph.rune)
@@ -411,18 +430,28 @@ func (book *fontBook) shapeRunLocked(
 	run := shapedRun{glyphs: make([]shapedGlyph, 0, len(text))}
 	var prevFace font.Face
 	previous := rune(-1)
-	for _, current := range text {
+	appendRune := func(current rune) {
 		if isZeroWidthIgnorable(current) {
-			continue
+			return
 		}
 		activeFace, activeOK := book.resolveRuneFaceLocked(primaryFace, primaryFont, size, weight, style, family, webID, current)
 		if !activeOK {
+			if book.emoji != nil {
+				if gid, advUnits, _, emojiOK := book.emoji.lookupCluster(string(current)); emojiOK {
+					adv := book.emoji.glyphAdvanceFixed(advUnits, size)
+					run.glyphs = append(run.glyphs, shapedGlyph{rune: current, x: run.advance, advance: adv, emoji: book.emoji, emojiGlyph: gid})
+					run.advance += adv
+					prevFace = nil
+					previous = -1
+					return
+				}
+			}
 			adv := missingGlyphAdvance(size)
 			run.glyphs = append(run.glyphs, shapedGlyph{rune: current, x: run.advance, advance: adv, missing: true})
 			run.advance += adv
 			prevFace = nil
 			previous = -1
-			continue
+			return
 		}
 		if prevFace == activeFace && previous >= 0 {
 			run.advance += activeFace.Kern(previous, current)
@@ -435,6 +464,28 @@ func (book *fontBook) shapeRunLocked(
 		run.advance += advance
 		prevFace = activeFace
 		previous = current
+	}
+	if !mayContainClusterOrEmoji(text) {
+		for _, current := range text {
+			appendRune(current)
+		}
+		return run, nil
+	}
+	book.ensurePlatformFontsLocked()
+	for _, unit := range splitVerticalTextUnits(text) {
+		if book.emoji != nil {
+			if gid, advUnits, explicitEmoji, ok := book.emoji.lookupCluster(unit); ok && explicitEmoji {
+				adv := book.emoji.glyphAdvanceFixed(advUnits, size)
+				run.glyphs = append(run.glyphs, shapedGlyph{x: run.advance, advance: adv, emoji: book.emoji, emojiGlyph: gid})
+				run.advance += adv
+				prevFace = nil
+				previous = -1
+				continue
+			}
+		}
+		for _, current := range unit {
+			appendRune(current)
+		}
 	}
 	return run, nil
 }
@@ -498,6 +549,7 @@ func (book *fontBook) ensurePlatformFontsLocked() {
 	book.systemRegular = platform.systemRegular
 	book.systemItalic = platform.systemItalic
 	book.systemSymbols = platform.systemSymbols
+	book.emoji = platform.emoji
 }
 
 func isZeroWidthIgnorable(r rune) bool {
