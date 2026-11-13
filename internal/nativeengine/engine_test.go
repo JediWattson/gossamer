@@ -1278,3 +1278,66 @@ for (const bad of [null, undefined]) {
 		t.Fatal(err)
 	}
 }
+
+func TestToLocaleStringBuiltins(t *testing.T) {
+	t.Parallel()
+
+	engine := nativeengine.New(nativeengine.Config{})
+	browserRuntime, err := browser.NewWithEngine(engine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer browserRuntime.Close()
+	location, _ := url.Parse("https://gossamer.test/sub/page")
+	page, err := browserRuntime.NewPage(dom.NewDocument(), location)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer page.Close()
+
+	if _, err := page.QueueScript(browser.ScriptSource{
+		URL: "to-locale-string.js",
+		Source: `
+if ((1234567.89).toLocaleString() !== "1,234,567.89") {
+  throw new Error("Number.toLocaleString grouping failed: " + (1234567.89).toLocaleString());
+}
+if ((-1234.5).toLocaleString("en-US", { minimumFractionDigits: 2 }) !== "-1,234.50") {
+  throw new Error("Number.toLocaleString fraction digits failed: " + (-1234.5).toLocaleString("en-US", { minimumFractionDigits: 2 }));
+}
+if ((42).toLocaleString() !== "42" || (-0).toLocaleString() !== "0" || Number.NaN.toLocaleString() !== "NaN") {
+  throw new Error("Number.toLocaleString special values failed");
+}
+
+const date = new Date(Date.parse("2026-03-15T14:05:09.000Z"));
+if (date.toLocaleString("en-US", { timeZone: "UTC" }) !== "3/15/2026, 2:05:09 PM") {
+  throw new Error("Date.toLocaleString UTC failed: " + date.toLocaleString("en-US", { timeZone: "UTC" }));
+}
+if (date.toLocaleDateString("en-US", { timeZone: "UTC" }) !== "3/15/2026") {
+  throw new Error("Date.toLocaleDateString UTC failed: " + date.toLocaleDateString("en-US", { timeZone: "UTC" }));
+}
+if (date.toLocaleTimeString("en-US", { timeZone: "UTC" }) !== "2:05 PM") {
+  throw new Error("Date.toLocaleTimeString UTC failed: " + date.toLocaleTimeString("en-US", { timeZone: "UTC" }));
+}
+if (new Date(NaN).toLocaleString() !== "Invalid Date" || new Date(NaN).toLocaleDateString() !== "Invalid Date") {
+  throw new Error("Invalid Date toLocale* failed");
+}
+
+if (({ toString() { return "custom"; } }).toLocaleString() !== "custom") {
+  throw new Error("Object.prototype.toLocaleString custom toString failed");
+}
+if ("abc".toLocaleString() !== "abc" || true.toLocaleString() !== "true") {
+  throw new Error("Primitive toLocaleString failed");
+}
+
+const arr = [1200, null, undefined, { toLocaleString() { return "item"; } }];
+if (arr.toLocaleString() !== "1,200,,,item") {
+  throw new Error("Array.prototype.toLocaleString failed: " + arr.toLocaleString());
+}
+`,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := page.Realm.RunOne(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}

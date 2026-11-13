@@ -3,6 +3,7 @@ package runtime
 import (
 	"fmt"
 	"math"
+	"strings"
 
 	"github.com/JediWattson/gossamer/internal/runtime/memory"
 )
@@ -222,6 +223,11 @@ const (
 	nativeEncodeURI
 	nativeDecodeURI
 	nativeURIErrorConstructor
+	nativeObjectPrototypeToLocaleString
+	nativeArrayToLocaleString
+	nativeNumberToLocaleString
+	nativeDateToLocaleString
+	nativeDateToLocaleDateString
 )
 
 // Intrinsics is one task-local instantiation of the native ECMAScript
@@ -834,6 +840,11 @@ func (interpreter *Interpreter) registerBuiltinCallbacks() error {
 		nativeArrayShift:                      builtinArrayShift,
 		nativeArrayUnshift:                    builtinArrayUnshift,
 		nativeArraySplice:                     builtinArraySplice,
+		nativeObjectPrototypeToLocaleString:   builtinObjectPrototypeToLocaleString,
+		nativeArrayToLocaleString:             builtinArrayToLocaleString,
+		nativeNumberToLocaleString:            builtinNumberToLocaleString,
+		nativeDateToLocaleString:              builtinDateToLocaleString,
+		nativeDateToLocaleDateString:          builtinDateToLocaleDateString,
 	}
 	for id, callback := range callbacks {
 		interpreter.nativeMutex.RLock()
@@ -953,6 +964,7 @@ func (intrinsics *Intrinsics) installObjectBuiltins(context *TaskContext) error 
 		{intrinsics.ObjectConstructor, "fromEntries", 1, nativeObjectFromEntries},
 		{intrinsics.ObjectConstructor, "hasOwn", 2, nativeObjectHasOwn},
 		{intrinsics.ObjectPrototype, "toString", 0, nativeObjectPrototypeToString},
+		{intrinsics.ObjectPrototype, "toLocaleString", 0, nativeObjectPrototypeToLocaleString},
 		{intrinsics.ObjectPrototype, "valueOf", 0, nativeObjectPrototypeValueOf},
 		{intrinsics.ObjectPrototype, "hasOwnProperty", 1, nativeObjectPrototypeHasOwnProperty},
 	} {
@@ -1014,6 +1026,7 @@ func (intrinsics *Intrinsics) installArrayBuiltins(context *TaskContext) error {
 		{"reverse", 0, nativeArrayReverse},
 		{"flat", 0, nativeArrayFlat},
 		{"flatMap", 1, nativeArrayFlatMap},
+		{"toLocaleString", 0, nativeArrayToLocaleString},
 	} {
 		function, err := intrinsics.newBuiltinMethod(context, method.name, method.arity, method.id)
 		if err != nil {
@@ -1581,6 +1594,92 @@ func builtinObjectPrototypeValueOf(execution *execution, _ memory.Ref, _ memory.
 		return memory.Value{}, err
 	}
 	return this, nil
+}
+
+func builtinObjectPrototypeToLocaleString(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, _ []memory.Value) (memory.Value, error) {
+	if this.Kind() == memory.ValueUndefined || this.Kind() == memory.ValueNull {
+		return memory.Value{}, fmt.Errorf("%w: Object.prototype.toLocaleString receiver", ErrOperandType)
+	}
+	if this.Kind() == memory.ValueBool {
+		text, err := execution.toString(this)
+		if err != nil {
+			return memory.Value{}, err
+		}
+		return newStringValue(execution.context, text)
+	}
+	methodKey, err := execution.context.NewString("toString")
+	if err != nil {
+		return memory.Value{}, err
+	}
+	method, found, err := execution.getProperty(this, memory.RefValue(methodKey))
+	if err != nil {
+		return memory.Value{}, err
+	}
+	if !found {
+		return memory.Value{}, ErrNotCallable
+	}
+	callable, err := requireCallable(execution.context, method)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	return execution.call(callable, this, nil, callAny)
+}
+
+func builtinArrayToLocaleString(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+	array, err := execution.arrayReceiver(this)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	snapshot, err := execution.context.DerefArray(array)
+	if err != nil {
+		return memory.Value{}, err
+	}
+	methodKey, err := execution.context.NewString("toLocaleString")
+	if err != nil {
+		return memory.Value{}, err
+	}
+	var builder strings.Builder
+	for index := uint32(0); index < snapshot.Length; index++ {
+		if index != 0 {
+			builder.WriteByte(',')
+		}
+		value, found, err := execution.context.ArrayElement(array, index)
+		if err != nil {
+			return memory.Value{}, err
+		}
+		if !found || value.Kind() == memory.ValueUndefined || value.Kind() == memory.ValueNull {
+			continue
+		}
+		if value.Kind() == memory.ValueBool {
+			part, err := execution.toString(value)
+			if err != nil {
+				return memory.Value{}, err
+			}
+			builder.WriteString(part)
+			continue
+		}
+		method, methodFound, err := execution.getProperty(value, memory.RefValue(methodKey))
+		if err != nil {
+			return memory.Value{}, err
+		}
+		if !methodFound {
+			return memory.Value{}, ErrNotCallable
+		}
+		callable, err := requireCallable(execution.context, method)
+		if err != nil {
+			return memory.Value{}, err
+		}
+		localized, err := execution.call(callable, value, arguments, callAny)
+		if err != nil {
+			return memory.Value{}, err
+		}
+		part, err := execution.toString(localized)
+		if err != nil {
+			return memory.Value{}, err
+		}
+		builder.WriteString(part)
+	}
+	return newStringValue(execution.context, builder.String())
 }
 
 func builtinArrayPush(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, arguments []memory.Value) (memory.Value, error) {

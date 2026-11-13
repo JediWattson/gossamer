@@ -32,6 +32,7 @@ func (intrinsics *Intrinsics) installNumericBuiltins(context *TaskContext) error
 	}
 	if err := installMethods(intrinsics, context, intrinsics.NumberPrototype, []builtinMethod{
 		{"toString", 1, nativeNumberToString},
+		{"toLocaleString", 0, nativeNumberToLocaleString},
 		{"valueOf", 0, nativeNumberValueOf},
 	}); err != nil {
 		return err
@@ -120,6 +121,8 @@ func (intrinsics *Intrinsics) installNumericBuiltins(context *TaskContext) error
 		{"valueOf", 0, nativeDateGetTime},
 		{"toISOString", 0, nativeDateToISOString},
 		{"toJSON", 1, nativeDateToISOString},
+		{"toLocaleString", 0, nativeDateToLocaleString},
+		{"toLocaleDateString", 0, nativeDateToLocaleDateString},
 		{"toLocaleTimeString", 0, nativeDateToLocaleTimeString},
 		{"getHours", 0, nativeDateGetHours},
 		{"getUTCMonth", 0, nativeDateGetUTCMonth},
@@ -452,15 +455,49 @@ func builtinDateToISOString(execution *execution, _ memory.Ref, _ memory.Functio
 	return newStringValue(execution.context, formatted)
 }
 
-func builtinDateToLocaleTimeString(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, _ []memory.Value) (memory.Value, error) {
+func builtinDateToLocaleString(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+	return formatLocaleDate(execution, this, arguments, "1/2/2006, 3:04:05 PM")
+}
+
+func builtinDateToLocaleDateString(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+	return formatLocaleDate(execution, this, arguments, "1/2/2006")
+}
+
+func builtinDateToLocaleTimeString(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+	return formatLocaleDate(execution, this, arguments, "3:04 PM")
+}
+
+func formatLocaleDate(execution *execution, this memory.Value, arguments []memory.Value, layout string) (memory.Value, error) {
 	date, err := requireDate(execution, this)
 	if err != nil {
 		return memory.Value{}, err
 	}
-	if math.IsNaN(date.Milliseconds) {
+	if math.IsNaN(date.Milliseconds) || math.IsInf(date.Milliseconds, 0) {
 		return newStringValue(execution.context, "Invalid Date")
 	}
-	return newStringValue(execution.context, time.UnixMilli(int64(date.Milliseconds)).Format("3:04 PM"))
+	instant := time.UnixMilli(int64(date.Milliseconds))
+	if len(arguments) > 1 && arguments[1].IsRef() {
+		tzKey, keyErr := execution.context.NewString("timeZone")
+		if keyErr != nil {
+			return memory.Value{}, keyErr
+		}
+		tzVal, found, getErr := execution.getProperty(arguments[1], memory.RefValue(tzKey))
+		if getErr != nil {
+			return memory.Value{}, getErr
+		}
+		if found && tzVal.Kind() != memory.ValueUndefined {
+			tzName, strErr := execution.toString(tzVal)
+			if strErr != nil {
+				return memory.Value{}, strErr
+			}
+			if strings.EqualFold(tzName, "UTC") {
+				instant = instant.UTC()
+			} else if loc, locErr := time.LoadLocation(tzName); locErr == nil {
+				instant = instant.In(loc)
+			}
+		}
+	}
+	return newStringValue(execution.context, instant.Format(layout))
 }
 
 func builtinDateGetHours(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, _ []memory.Value) (memory.Value, error) {
@@ -651,6 +688,99 @@ func builtinNumberToString(execution *execution, _ memory.Ref, _ memory.Function
 		text = formatNumberRadix(this.Number(), radix)
 	}
 	return newStringValue(execution.context, text)
+}
+
+func builtinNumberToLocaleString(execution *execution, _ memory.Ref, _ memory.Function, this memory.Value, arguments []memory.Value) (memory.Value, error) {
+	if this.Kind() != memory.ValueNumber {
+		return memory.Value{}, ErrOperandType
+	}
+	number := this.Number()
+	if number == 0 {
+		number = 0
+	}
+	if math.IsNaN(number) {
+		return newStringValue(execution.context, "NaN")
+	}
+	if math.IsInf(number, 1) {
+		return newStringValue(execution.context, "∞")
+	}
+	if math.IsInf(number, -1) {
+		return newStringValue(execution.context, "-∞")
+	}
+	minFrac, maxFrac := -1, -1
+	if len(arguments) > 1 && arguments[1].IsRef() {
+		var err error
+		if minFrac, err = optionalIntProperty(execution, arguments[1], "minimumFractionDigits"); err != nil {
+			return memory.Value{}, err
+		}
+		if maxFrac, err = optionalIntProperty(execution, arguments[1], "maximumFractionDigits"); err != nil {
+			return memory.Value{}, err
+		}
+	}
+	var raw string
+	if maxFrac >= 0 {
+		raw = strconv.FormatFloat(number, 'f', maxFrac, 64)
+	} else if math.Abs(number) < 1e21 {
+		raw = strconv.FormatFloat(number, 'f', -1, 64)
+	} else {
+		raw = numberString(number)
+	}
+	if maxFrac < 0 && strings.ContainsAny(raw, "eE") {
+		return newStringValue(execution.context, raw)
+	}
+	sign := ""
+	if strings.HasPrefix(raw, "-") {
+		sign = "-"
+		raw = raw[1:]
+	}
+	intPart, fracPart, hasFrac := strings.Cut(raw, ".")
+	if maxFrac >= 0 && hasFrac {
+		for len(fracPart) > 0 && fracPart[len(fracPart)-1] == '0' && (minFrac < 0 || len(fracPart) > minFrac) {
+			fracPart = fracPart[:len(fracPart)-1]
+		}
+		hasFrac = len(fracPart) > 0
+	}
+	if minFrac > 0 {
+		for len(fracPart) < minFrac {
+			fracPart += "0"
+		}
+		hasFrac = len(fracPart) > 0
+	}
+	var grouped strings.Builder
+	grouped.WriteString(sign)
+	for i := 0; i < len(intPart); i++ {
+		if i > 0 && (len(intPart)-i)%3 == 0 {
+			grouped.WriteByte(',')
+		}
+		grouped.WriteByte(intPart[i])
+	}
+	if hasFrac {
+		grouped.WriteByte('.')
+		grouped.WriteString(fracPart)
+	}
+	return newStringValue(execution.context, grouped.String())
+}
+
+func optionalIntProperty(execution *execution, object memory.Value, key string) (int, error) {
+	name, err := execution.context.NewString(key)
+	if err != nil {
+		return -1, err
+	}
+	value, found, err := execution.getProperty(object, memory.RefValue(name))
+	if err != nil {
+		return -1, err
+	}
+	if !found || value.Kind() == memory.ValueUndefined {
+		return -1, nil
+	}
+	number, err := execution.toNumber(value)
+	if err != nil {
+		return -1, err
+	}
+	if math.IsNaN(number) || number < 0 {
+		return -1, nil
+	}
+	return int(math.Trunc(number)), nil
 }
 
 func builtinNumberValueOf(_ *execution, _ memory.Ref, _ memory.Function, this memory.Value, _ []memory.Value) (memory.Value, error) {

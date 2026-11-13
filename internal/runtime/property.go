@@ -54,10 +54,14 @@ func (execution *execution) getPropertyWithReceiver(base, key, receiver memory.V
 		return execution.getNamedProperty(receiver, context.intrinsics.NumberPrototype, name)
 	}
 	if base.Kind() == memory.ValueBool {
-		// Boolean primitives have no own properties. Boolean.prototype is still
-		// intentionally minimal, but ordinary missing-property reads must box
-		// rather than reject the primitive receiver.
-		return memory.UndefinedValue(), false, nil
+		name, err := execution.propertyName(key)
+		if err != nil {
+			return memory.Value{}, false, err
+		}
+		if context.intrinsics == nil {
+			return memory.Value{}, false, nil
+		}
+		return execution.getNamedProperty(receiver, context.intrinsics.ObjectPrototype, name)
 	}
 	ref, err := requireRef(base, "property base")
 	if err != nil {
